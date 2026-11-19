@@ -1456,9 +1456,7 @@ fn monitor_remote_control_permission() {
                 if let Err(error) = remote_connect_stop(None).await {
                     log::warn!("Failed to stop remote control: {error}");
                 }
-                if let Some(service) = get_service_holder().read().await.as_ref() {
-                    service.stop_bots().await;
-                }
+                bot_control().suspend().await;
             }
             if read_account_context().await.is_ok() {
                 if let Err(error) = account_connect_devices_with_retry().await {
@@ -1757,12 +1755,8 @@ pub struct RemoteConnectStatusResponse {
     pub clients: Vec<openbitfun_services_integrations::remote_connect::RemoteControlClient>,
     pub bot_connected: Option<String>,
     pub bot_verbose_mode: bool,
-    #[serde(default = "default_remote_control_allowed")]
-    pub remote_control_allowed: bool,
-}
-
-fn default_remote_control_allowed() -> bool {
-    true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control_allowed: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2268,7 +2262,7 @@ pub async fn remote_connect_status() -> Result<RemoteConnectStatusResponse, Stri
         clients,
         bot_connected: service.bot_connected_info().await,
         bot_verbose_mode: bot::load_bot_persistence().verbose_mode,
-        remote_control_allowed: device::remote_control_allowed().map_err(|e| e.to_string())?,
+        remote_control_allowed: Some(device::remote_control_allowed().map_err(|e| e.to_string())?),
     })
 }
 

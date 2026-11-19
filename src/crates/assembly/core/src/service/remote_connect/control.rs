@@ -85,6 +85,14 @@ impl RemoteBotControl {
         Ok(())
     }
 
+    /// Suspend inbound channels without changing which paired bots should resume.
+    pub async fn suspend(&self) {
+        self.login_generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(service) = self.service.read().await.as_ref() {
+            service.stop_bots().await;
+        }
+    }
+
     pub async fn status(&self) -> Result<Value> {
         let data = bot::try_load_bot_persistence()?;
         let holder = self.service.read().await;
@@ -229,6 +237,7 @@ impl RemoteBotControl {
     }
 
     async fn start_locked(&self, bot_type: &str) -> Result<Value> {
+        super::device::require_remote_control()?;
         let scope = self.account_scope().await?;
         let data = bot::try_load_bot_persistence()?;
         {
@@ -415,6 +424,7 @@ impl RemoteBotControl {
         // Stop/logout remains available, and the completion is checked again.
         let response = bot::weixin::weixin_qr_poll(session_key, None, verify_code).await?;
         let _mutation = self.mutation.lock().await;
+        super::device::require_remote_control()?;
         anyhow::ensure!(
             self.account_scope().await? == scope
                 && self.login_generation.load(Ordering::Acquire) == generation,

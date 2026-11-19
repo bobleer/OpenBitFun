@@ -246,7 +246,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
   const connectedNetworkTab = anyNetworkConnection.method;
   const connectedBotTab = botInfoToBotTab(status?.bot_connected);
 
-  const cancelPendingWork = useCallback(async () => {
+  const cancelPendingWork = useCallback(async (hostAlreadyStopping = false) => {
     operationGenerationRef.current += 1;
     const currentStatus = remoteConnectStatusSource.getSnapshot().status;
     const candidateOwner = pendingOwnerRef.current ?? connectionOwnerRef.current;
@@ -254,7 +254,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
       ?? (connectionResultRef.current ? remoteNetworkMethod(connectionResultRef.current.method) : null);
     // Closing an invitation preserves an established account route.
     // Disconnect is an explicit action for both Relay endpoints.
-    const owner = (candidateOwner === 'network' && !pendingStartRef.current && selectRemoteNetworkConnection(currentStatus, connectionResultRef.current, ownedMethod ?? undefined).connected)
+    const owner = hostAlreadyStopping || (candidateOwner === 'network' && !pendingStartRef.current && selectRemoteNetworkConnection(currentStatus, connectionResultRef.current, ownedMethod ?? undefined).connected)
       || (candidateOwner === 'bot' && currentStatus?.bot_connected)
       ? null : candidateOwner;
     const pendingStart = pendingStartRef.current;
@@ -330,6 +330,12 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
       void cancelPendingWork();
     };
   }, [cancelPendingWork, isOpen]);
+
+  // Disabling on the CLI can interrupt an invitation while its dialog is open.
+  // The host owns teardown here. An explicit stop would also disable saved bots.
+  useEffect(() => {
+    if (status?.remote_control_allowed === false) void cancelPendingWork(true);
+  }, [cancelPendingWork, status?.remote_control_allowed]);
 
   // ── Polling ──────────────────────────────────────────────────────
 

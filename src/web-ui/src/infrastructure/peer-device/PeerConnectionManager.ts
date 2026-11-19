@@ -307,6 +307,7 @@ interface ConnectionEntry {
   presenceOnline: boolean | null;
   probeRequested: boolean;
   needsReattach: boolean;
+  verifyHiddenAttachment: boolean;
   healthCheckInFlight: Promise<void> | null;
   reattachInFlight: Promise<void> | null;
   hostStarting: boolean;
@@ -517,7 +518,8 @@ export class PeerConnectionManager {
       } else if (controllerOnly && entry.presenceOnline && entry.health === 'ready') {
         // Hosts may prune an invisible controller when their roster changes.
         // Verify the attachment while the peer remains reachable.
-        void this.runHealthCheck(entry, true);
+        entry.verifyHiddenAttachment = true;
+        void this.runHealthCheck(entry);
       } else if (entry.presenceOnline && wasOnline === false && (entry.health === 'degraded' || entry.probeRequested)) {
         this.cancelTimer(entry);
         void this.runHealthCheck(entry);
@@ -570,6 +572,7 @@ export class PeerConnectionManager {
       presenceOnline: null,
       probeRequested: false,
       needsReattach: false,
+      verifyHiddenAttachment: false,
       healthCheckInFlight: null,
       reattachInFlight: null,
       hostStarting: false,
@@ -921,7 +924,7 @@ export class PeerConnectionManager {
    * `peer_control_attach` because the host may have pruned this controller
    * during the gap that made us degraded in the first place.
    */
-  private runHealthCheck(entry: ConnectionEntry, verifyHiddenAttachment = false): Promise<void> {
+  private runHealthCheck(entry: ConnectionEntry): Promise<void> {
     if (this.entries.get(entry.deviceId) !== entry || entry.disposed) {
       return Promise.resolve();
     }
@@ -929,7 +932,7 @@ export class PeerConnectionManager {
       return entry.healthCheckInFlight;
     }
     this.cancelTimer(entry);
-    const check = this.checkHealth(entry, verifyHiddenAttachment).finally(() => {
+    const check = this.checkHealth(entry).finally(() => {
       if (entry.healthCheckInFlight !== check) return;
       entry.healthCheckInFlight = null;
       entry.probeRequested = false;
@@ -942,14 +945,15 @@ export class PeerConnectionManager {
     return check;
   }
 
-  private async checkHealth(entry: ConnectionEntry, verifyHiddenAttachment: boolean): Promise<void> {
+  private async checkHealth(entry: ConnectionEntry): Promise<void> {
     try {
       const { capabilities, status } = await this.probeCapabilities(entry);
       // The host may have dropped this controller (presence loss, routing
       // restart) while every request still succeeded; re-attach instead of
       // reporting `ready` for a link that receives no events.
       const lostAttachment = status.callerAttached === false
-        || (verifyHiddenAttachment && status.callerAttached === null);
+        || (entry.verifyHiddenAttachment && status.callerAttached === null);
+      entry.verifyHiddenAttachment = false;
       if (lostAttachment) {
         log.info('Peer host no longer has this controller attached; re-attaching', {
           deviceId: entry.deviceId,

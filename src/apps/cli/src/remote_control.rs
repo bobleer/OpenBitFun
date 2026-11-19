@@ -129,8 +129,8 @@ impl CliRemoteControlHost {
             let account = self.runtime()?.account_runtime().account_info().await?;
             self.bots.restore(&account.user_id).await?;
             self.reconcile_relay().await?;
-        } else if let Some(service) = self.service.read().await.as_ref() {
-            service.stop_bots().await;
+        } else {
+            self.bots.suspend().await;
         }
         Ok(())
     }

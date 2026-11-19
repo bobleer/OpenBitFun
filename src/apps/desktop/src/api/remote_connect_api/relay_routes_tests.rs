@@ -511,6 +511,24 @@ async fn verify_remote_control_permission(
     .await
     .expect("host should become controller-only");
     account_connect_devices().await.unwrap();
+    assert_eq!(
+        remote_connect_status()
+            .await
+            .unwrap()
+            .remote_control_allowed,
+        Some(false)
+    );
+    let qr_error = remote_connect_weixin_qr_poll(WeixinQrPollRequest {
+        session_key: "fixture".into(),
+        base_url: None,
+        verify_code: None,
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        qr_error.contains("Remote control is disabled"),
+        "{qr_error}"
+    );
     assert!(client
         .device_rpc(&url, peer, id, r#"{"cmd":"ping"}"#)
         .await
