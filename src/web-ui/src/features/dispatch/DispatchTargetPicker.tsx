@@ -14,6 +14,7 @@ import { SSHConnectionDialog } from '@/features/ssh-remote/SSHConnectionDialog';
 import { useAccountLoginState } from '@/infrastructure/account/useAccountLoginState';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { useI18n } from '@/infrastructure/i18n';
+import { useExecutionDeviceName } from '@/infrastructure/peer-device/useExecutionDeviceName';
 import { useAnchoredPopoverPosition } from '@/shared/utils/useAnchoredPopoverPosition';
 import { DispatchInstallDialog } from './DispatchInstallDialog';
 import { DispatchTransportStatus } from './DispatchTransportStatus';
@@ -87,9 +88,12 @@ export const DispatchTargetPicker: React.FC<DispatchTargetPickerProps> = ({
     layoutRevision: `${targets.length}:${loading}:${error ?? ''}`,
   });
 
+  // Name the device that actually runs the task: this machine locally, the
+  // controlled device on a peer surface. "This computer" would be misleading.
+  const localDeviceLabel = useExecutionDeviceName() ?? t('chatInput.dispatch.local');
   const localDisplayLabel = localWorktreeControl?.enabled
     ? localWorktreeControl.label
-    : t('chatInput.dispatch.local');
+    : localDeviceLabel;
   const displayLabel = target.kind === 'local'
     ? localDisplayLabel
     : target.kind === 'device' ? resolveDeviceName(target.deviceId, target.displayName) : target.displayName;
@@ -184,7 +188,7 @@ export const DispatchTargetPicker: React.FC<DispatchTargetPickerProps> = ({
             onClick={() => selectLocalMode(false)}
           >
             <span className="dispatch-target-picker__option-copy">
-              <strong><OverflowText>{t('chatInput.dispatch.local')}</OverflowText></strong>
+              <strong><OverflowText>{localDeviceLabel}</OverflowText></strong>
             </span>
           </MenuItem>
         </Tooltip>
