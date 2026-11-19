@@ -57,6 +57,9 @@ impl RemoteBotControl {
             .as_ref()
             .ok_or_else(|| anyhow!("Remote Connect host is unavailable"))?;
         service.set_bot_account(Some(user_id.into())).await;
+        if !super::device::remote_control_allowed()? {
+            return Ok(());
+        }
         for saved in &data.connections {
             if !restore_eligible(&data, saved, user_id) {
                 continue;
@@ -353,6 +356,7 @@ impl RemoteBotControl {
     }
 
     pub async fn weixin_login_start(&self) -> Result<Value> {
+        super::device::require_remote_control()?;
         let account = self.account_scope().await?;
         let generation = self.login_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let data = bot::try_load_bot_persistence()?;

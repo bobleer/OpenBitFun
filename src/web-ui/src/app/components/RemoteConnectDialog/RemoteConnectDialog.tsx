@@ -194,6 +194,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
   const [selectedLanIp, setSelectedLanIp] = useState<string>('');
   const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [hasAgreedDisclaimer, setHasAgreedDisclaimer] = useState<boolean>(() => getRemoteConnectDisclaimerAgreed());
+  const [savingControlPermission, setSavingControlPermission] = useState(false);
   const [botVerboseMode, setBotVerboseMode] = useState<boolean>(false);
 
   const [qrCopied, setQrCopied] = useState(false);
@@ -1338,6 +1339,19 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
     </button>
   );
 
+  const setRemoteControlAllowed = async (allowed: boolean) => {
+    setSavingControlPermission(true);
+    try {
+      await remoteConnectAPI.setRemoteControlAllowed(allowed);
+      remoteConnectStatusSource.invalidateReads();
+      await remoteConnectStatusSource.refresh();
+    } catch (cause) {
+      notifyError(String(cause), { title: t('remoteConnect.controlSettingFailed') });
+    } finally {
+      setSavingControlPermission(false);
+    }
+  };
+
   const renderOverview = () => (
     <ScrollArea
       className="openbitfun-remote-connect__overview"
@@ -1376,6 +1390,28 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
           })}
         </div>
       </section>
+
+      <div className="openbitfun-remote-connect__setting-row">
+        <div className="openbitfun-remote-connect__setting-copy">
+          <span id="remote-connect-allowed-title" className="openbitfun-remote-connect__setting-title">
+            {t('remoteConnect.controlAllowed')}
+          </span>
+          <span id="remote-connect-allowed-description" className="openbitfun-remote-connect__setting-description">
+            {t('remoteConnect.controlAllowedDescription')}
+          </span>
+        </div>
+        {status?.remote_control_allowed === undefined ? (
+          <span role="status">{t(statusState === 'loading' ? 'remoteConnect.statusChecking' : 'remoteConnect.statusUnavailable')}</span>
+        ) : (
+          <Switch
+            aria-labelledby="remote-connect-allowed-title"
+            aria-describedby="remote-connect-allowed-description"
+            checked={status.remote_control_allowed}
+            disabled={savingControlPermission}
+            onCheckedChange={(allowed) => void setRemoteControlAllowed(allowed)}
+          />
+        )}
+      </div>
 
       {accountLoggedIn && <section
         className="openbitfun-remote-connect__overview-section"
@@ -1646,6 +1682,8 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
               >
                 <AccountPanel />
               </div>
+            ) : status?.remote_control_allowed === false ? (
+              renderNotice(t('remoteConnect.controlDisabledNotice'))
             ) : activeView === 'network' ? (
               <ScrollArea
                 id="remote-connect-panel-network"
