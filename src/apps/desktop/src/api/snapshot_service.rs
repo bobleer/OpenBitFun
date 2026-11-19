@@ -1,5 +1,7 @@
 //! Snapshot Service API
 
+use crate::host::HostHandle;
+use crate::host::State;
 use log::{info, warn};
 use openbitfun_core::agentic::workspace::WorkspaceBinding;
 use openbitfun_core::product_runtime::{
@@ -15,7 +17,6 @@ use openbitfun_runtime_ports::{AgentSessionWorkspaceLocation, SessionStorePort};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::{path::PathBuf, sync::Arc};
-use tauri::{AppHandle, Emitter, State};
 
 use crate::runtime::{DesktopRuntimeContext, DesktopSessionScopeRequest};
 
@@ -466,7 +467,7 @@ async fn begin_snapshot_history_mutation(
 
 #[tauri::command]
 pub async fn rollback_session(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: RollbackSessionRequest,
 ) -> Result<Vec<String>, String> {
@@ -558,7 +559,7 @@ pub async fn rollback_session_to_turn(
 
 #[tauri::command]
 pub async fn accept_session(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: AcceptSessionRequest,
 ) -> Result<serde_json::Value, String> {
@@ -594,7 +595,7 @@ pub async fn accept_session(
 
 #[tauri::command]
 pub async fn accept_file(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: AcceptFileRequest,
 ) -> Result<serde_json::Value, String> {
@@ -631,7 +632,7 @@ pub async fn accept_file(
 
 #[tauri::command]
 pub async fn reject_file(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: AcceptFileRequest,
 ) -> Result<serde_json::Value, String> {
@@ -977,7 +978,7 @@ pub async fn get_session_operations(
 
 #[tauri::command]
 pub async fn accept_operation(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetOperationSummaryRequest,
 ) -> Result<serde_json::Value, String> {
@@ -1021,7 +1022,7 @@ pub async fn accept_operation(
 
 #[tauri::command]
 pub async fn reject_operation(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetOperationSummaryRequest,
 ) -> Result<serde_json::Value, String> {
