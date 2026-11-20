@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
  * The product catalog still owns the renderer contract, so this adapter only
  * turns the catalog's positional signatures into lang-core's LibrarySpec.
  */
-const requireOpenUI = createRequire(new URL('../../web-ui/package.json', import.meta.url));
+// @openuidev/lang-core is a root devDependency: the contract generator runs from the repository root.
+const requireOpenUI = createRequire(new URL('../../../package.json', import.meta.url));
 const { generateSystemPrompt } = requireOpenUI('@openuidev/lang-core');
 // The default profile is a faithful Open Intelligent UI port. Keep the
 // upstream worked examples and wording as a checked-in resource instead of

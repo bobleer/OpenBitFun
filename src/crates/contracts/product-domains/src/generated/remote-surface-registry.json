@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:afa4b554c49e9b98",
+  "digest": "fnv1a64:758c360e1ec556c4",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -709,6 +709,18 @@
       }
     },
     {
+      "id": "browser_webview_report_page_load",
+      "surface": "tauri_command",
+      "remoteWorkspace": "LocalOnly",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "browser_webview_set_agent_target_state",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
@@ -1272,14 +1284,15 @@
     },
     {
       "id": "confirm_frontend_update",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       }
     },
     {
@@ -1332,7 +1345,7 @@
     {
       "id": "create_assistant_workspace",
       "surface": "tauri_command",
-      "remoteWorkspace": "LegacyUnaudited",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },
@@ -1435,50 +1448,54 @@
     },
     {
       "id": "debug_close_devtools",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "debug_devtools_available",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "debug_element_picked",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "debug_open_devtools",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
       }
     },
     {
@@ -1667,87 +1684,105 @@
       }
     },
     {
-      "id": "desktop_card_delete",
+      "id": "delete_terminal_profile",
       "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "desktop_card_delete",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_get",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_list",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_refresh",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_set_always_on_top",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_set_checklist_item",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
       "id": "desktop_card_set_visible",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
       }
     },
     {
@@ -2307,26 +2342,28 @@
     },
     {
       "id": "frontend_update_candidate_failed",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       }
     },
     {
       "id": "frontend_update_candidate_ready",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       }
     },
     {
@@ -2805,14 +2842,15 @@
     },
     {
       "id": "get_frontend_update_status",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       }
     },
     {
@@ -3144,6 +3182,28 @@
       }
     },
     {
+      "id": "get_permission_settings",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "get_personal_overview",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "get_prevent_sleep_enabled",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
@@ -3338,6 +3398,17 @@
       }
     },
     {
+      "id": "get_session_transcript_view",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "get_session_turns",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -3478,6 +3549,28 @@
       }
     },
     {
+      "id": "get_terminal_profiles",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "get_token_usage_activity",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "get_token_usage_statistics",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -3548,6 +3641,17 @@
     {
       "id": "get_workspace_info",
       "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "get_workspace_navigator",
+      "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
@@ -3653,6 +3757,18 @@
       }
     },
     {
+      "id": "git_commit_and_checkout",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
       "id": "git_create_branch",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
@@ -3666,6 +3782,18 @@
     },
     {
       "id": "git_delete_branch",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "git_discard_files",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
       "peer": {
@@ -3917,6 +4045,30 @@
       }
     },
     {
+      "id": "git_unwatch_status",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "git_watch_status",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
       "id": "grant_miniapp_path",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -3954,6 +4106,19 @@
     },
     {
       "id": "hide_agent_companion_desktop_pet",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
+      "peer": {
+        "kind": "retired",
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+      }
+    },
+    {
+      "id": "hide_main_window_after_close_request",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
@@ -3965,7 +4130,19 @@
       }
     },
     {
-      "id": "hide_main_window_after_close_request",
+      "id": "host_shell_attach",
+      "surface": "tauri_command",
+      "remoteWorkspace": "LocalOnly",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "host_shell_respond",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
@@ -4096,6 +4273,17 @@
       }
     },
     {
+      "id": "import_terminal_profiles",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "initialize_acp_clients",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -4211,6 +4399,18 @@
       },
       "cliPeer": {
         "kind": "handled"
+      }
+    },
+    {
+      "id": "launch_review",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteUnsupported",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
       }
     },
     {
@@ -4526,14 +4726,15 @@
     },
     {
       "id": "load_agent_companion_pet_spritesheet",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       }
     },
     {
@@ -4629,14 +4830,15 @@
     },
     {
       "id": "local_file_download",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -4724,6 +4926,43 @@
     },
     {
       "id": "market_image_load",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
+      "peer": {
+        "kind": "retired",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
+      }
+    },
+    {
+      "id": "mesh_list_devices",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "mesh_phone_join_info",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "mesh_status",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
@@ -5012,14 +5251,15 @@
     },
     {
       "id": "miniapp_market_capture_window",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -5132,14 +5372,15 @@
     },
     {
       "id": "miniapp_market_submit_installed",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -5192,14 +5433,15 @@
     },
     {
       "id": "miniapp_render_slide_page",
-      "surface": "tauri_command",
-      "remoteWorkspace": "LegacyUnaudited",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -5352,6 +5594,18 @@
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "obp_remote_command",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
       },
       "cliPeer": {
         "kind": "unsupported",
@@ -5607,6 +5861,54 @@
       }
     },
     {
+      "id": "peer_link_call",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "peer_link_connect",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "peer_link_disconnect",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "peer_link_events",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "peer_mode_ping",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -5663,6 +5965,17 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "preview_cron_occurrences",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
       }
     },
     {
@@ -6270,6 +6583,30 @@
       }
     },
     {
+      "id": "remote_workspace_ensure_connected",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not expose the remote-workspace UI surface"
+      }
+    },
+    {
+      "id": "remote_workspace_link_states",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not expose the remote-workspace UI surface"
+      }
+    },
+    {
       "id": "remote_write_file",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
@@ -6459,14 +6796,15 @@
     },
     {
       "id": "resize_agent_companion_desktop_pet",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       }
     },
     {
@@ -6483,14 +6821,15 @@
     },
     {
       "id": "resolve_browser_dropped_file_paths",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
@@ -6776,14 +7115,15 @@
     },
     {
       "id": "rollback_frontend_update",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
       }
     },
     {
@@ -7198,6 +7538,18 @@
       }
     },
     {
+      "id": "set_assistant_identity",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
       "id": "set_config",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -7320,14 +7672,15 @@
     },
     {
       "id": "set_file_drop_preview_target",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
@@ -7344,26 +7697,28 @@
     },
     {
       "id": "set_macos_edit_menu_mode",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
       "id": "set_main_window_transient_geometry",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
@@ -7543,14 +7898,15 @@
     },
     {
       "id": "show_agent_companion_desktop_pet",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the desktop pet window was retired with the Tauri desktop shell"
       }
     },
     {
@@ -8115,14 +8471,15 @@
     },
     {
       "id": "startup_window_control",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
@@ -8674,6 +9031,17 @@
       }
     },
     {
+      "id": "upsert_terminal_profile",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "validate_config",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -8683,6 +9051,17 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "validate_cron_job_draft",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
       }
     },
     {
@@ -8711,14 +9090,15 @@
     },
     {
       "id": "webdriver_bridge_result",
-      "surface": "tauri_command",
-      "remoteWorkspace": "LegacyUnaudited",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "the embedded WebView WebDriver was retired with the Tauri desktop shell"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "the embedded WebView WebDriver was retired with the Tauri desktop shell"
       }
     },
     {
@@ -8851,5 +9231,20 @@
         "kind": "handled"
       }
     }
+  ],
+  "ownerOnlyEventPrefixes": [
+    "account://",
+    "app-update",
+    "browser-webview-page-load",
+    "desktop-card://",
+    "host://",
+    "mesh://",
+    "openbitfun-update-progress",
+    "openbitfun://file-drop-preview",
+    "peer-host-invoke://",
+    "tray://",
+    "update://",
+    "updater://",
+    "window://"
   ]
 }

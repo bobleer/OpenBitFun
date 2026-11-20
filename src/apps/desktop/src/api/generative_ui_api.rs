@@ -387,7 +387,7 @@ fn decode_polyline_value(bytes: &[u8], index: &mut usize) -> Result<i64, String>
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn gen_ui_provider_call(request: GenUIProviderRequest) -> Result<Value, String> {
     match request.capability.trim() {
         "image.search" | "SearchImage" => native_image_search(&query_arg(&request.args)?).await,

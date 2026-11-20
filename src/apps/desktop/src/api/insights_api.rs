@@ -15,7 +15,7 @@ pub struct LoadInsightsReportRequest {
     pub path: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn generate_insights(request: GenerateInsightsRequest) -> Result<InsightsReport, String> {
     let days = request.days.unwrap_or(30);
     let model_id = request.model_id;
@@ -32,7 +32,7 @@ pub async fn generate_insights(request: GenerateInsightsRequest) -> Result<Insig
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_latest_insights() -> Result<Vec<InsightsReportMeta>, String> {
     InsightsService::load_latest_reports().await.map_err(|e| {
         error!("Failed to load latest insights: {}", e);
@@ -40,7 +40,7 @@ pub async fn get_latest_insights() -> Result<Vec<InsightsReportMeta>, String> {
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_insights_report(
     request: LoadInsightsReportRequest,
 ) -> Result<InsightsReport, String> {
@@ -52,7 +52,7 @@ pub async fn load_insights_report(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn has_insights_data(request: GenerateInsightsRequest) -> Result<bool, String> {
     let days = request.days.unwrap_or(30);
     InsightsService::has_data(days).await.map_err(|e| {
@@ -61,7 +61,7 @@ pub async fn has_insights_data(request: GenerateInsightsRequest) -> Result<bool,
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_insights_generation() -> Result<(), String> {
     InsightsService::cancel().await.map_err(|e| {
         error!("Failed to cancel insights generation: {}", e);

@@ -182,6 +182,8 @@ OpenUI 文档还必须带回相同的 `sourceKind`。owner 会逐字段比较这
 
 架构验证须覆盖两种表达不同的组件应用、无模板自由组合、真实工具参数流的渐进渲染、规范随 owner 保存重开与设置切换后的身份继承、Harmony 固定手机视口和 host shell、违反规则时实际诊断/修正/复验、自由文档 JS 隔离、状态修订、候选失败时旧版本保留、版本冲突，以及上述四类远程场景。Mock/DOM 测试不能证明原生 WebView 沙箱、远程执行或 Detached Dispatch；对应报告必须明确实际覆盖的 host 和场景。
 
+NSH 桌面界面（`src/nsh-ui/src/genui/`）不能加载 `@openuidev/react-lang`，因此自带同一 OpenUI Lang 的读取器：语句、位置参数（参数顺序由 `scripts/generate-genui-contract.mjs` 从产品组件库生成到 `genuiSignatures.ts`，`--check` 校验其新鲜度）、`$state`、提升、`@Each` 与组件库内置函数，以及 `@ToAssistant` / `@OpenUrl` / `@Set` / `@Reset` / `@CopyToClipboard` 动作；它用 NSH 组件绘制全部 55 个组件，按 `GenUIStream` 增量流式渲染，结束后读取工具结果。该界面没有网络授权，图片、地图与 YouTube 以说明文字加“打开”链接呈现；HtmlView 与 `html-document` 以关闭脚本、禁止网络（CSP）的静态页面呈现，并显式标注。宿主 Query/Mutation provider 与渲染诊断后的自动修复尚未接入 NSH，未知组件会在卡片下方列出而不是静默丢弃。
+
 GenUI 当前作为 FlowChat 中的 transient 结果呈现，不提供 owner/CAS 保存、
 重开或交付验收。该范围内的测试应覆盖 OpenUI action、状态回传、受限渲染、
 设置切换与原生/deferred 流式 DOM 增长；远程与 Detached Dispatch 场景不应

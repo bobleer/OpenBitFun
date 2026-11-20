@@ -5,22 +5,10 @@ For development commands, see [AGENTS.md](AGENTS.md) and the repository
 
 ## Window resizing
 
-The main window keeps its content visible while resizing or maximizing. Continuous
-resizing briefly batches expensive transcript and terminal measurements, with
-regular updates during the drag. Single adjustments use normal live layout;
-macOS releases the batch as soon as the native drag ends. Conversations, draft
-text and editor views remain mounted, with no resize cover, logo or reveal animation.
-On macOS the main WebView follows its native container immediately, including
-when embedded browsers are open. Browser children retain their own bounds.
-The opaque scene background is also painted underneath the WebView by AppKit,
-so newly exposed edges retain the page color while WebKit catches up. The sidebar
-keeps its native material. Theme changes and sidebar geometry update this paint;
-translucent or image-backed scene surfaces retain their original composition.
-
-To compare WebView rendering cost without the native sidebar material on macOS
-and Windows, start the app with `OPENBITFUN_NATIVE_WINDOW_MATERIAL=0`. The main
-window then uses the opaque fallback that Windows builds before 22H2 already use;
-the default is unchanged.
+The desktop app is a native NSH app: the window, menus, tray and resizing belong
+to the native shell (AppKit on macOS, Win32 on Windows, GTK on Linux) and the UI
+is laid out natively, with no WebView to resize. The backend runs in the same
+process and is reached through the `openbitfun/native` module.
 
 ## Model selection and smart routing
 
@@ -286,9 +274,10 @@ MiniApp to load the new executable and icon.
 The normal development and packaging commands prepare the optimized shell
 automatically. After changing shell Rust/HTML during an existing development
 session, run `pnpm run prepare:miniapp-shell` before reopening the MiniApp.
-Direct Cargo Desktop builds need the same preparation once. Packaging uses
-Tauri's `externalBin` for platform placement and signing; raw builds require the
-adjacent `openbitfun-miniapp-shell` executable (`.exe` on Windows).
+Direct Cargo Desktop builds need the same preparation once. Packaging places
+`openbitfun-miniapp-shell` next to the native runner (`Contents/MacOS` on macOS)
+and signs it with the app; raw builds require the adjacent executable (`.exe` on
+Windows).
 
 An independent window displays its own Agent permission requests through the
 shared runtime mailbox. Legacy MiniApps that call `agent.cancelStaleRuns` on every
@@ -549,8 +538,9 @@ to belong to an AT-SPI application selected by PID. A running session cannot
 silently rebind its stream within the same generation.
 Applications must expose accessibility information for semantic control.
 
-The `.deb` package declares GStreamer and portal runtime dependencies. For an
-AppImage or a directly launched development binary on Ubuntu, install:
+The native Linux package is a tarball (`OpenBitFun-nsh_<version>_<arch>-linux.tar.gz`)
+that declares no system dependencies. For it, or a directly launched development
+binary on Ubuntu, install:
 
 ```bash
 sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good xdg-desktop-portal xdg-desktop-portal-gnome
@@ -684,11 +674,24 @@ Installation restarts OpenBitFun on this device and interrupts its active sessio
 Choosing **Later**, or closing the confirmation, keeps the downloaded update.
 The checkmark remains available whenever you are ready.
 
-Downloaded updates remain available after closing and reopening OpenBitFun.
-After reopening, the current updater requires access to the update server to
-restore installer metadata, but does not download the package again. If this
-step or installation fails, the pending update remains available to retry.
-Use **Download again** in the error dialog if the cached package is damaged.
+Downloaded updates remain available after closing and reopening OpenBitFun; the
+signed package is verified again before installation and is not downloaded again.
+If installation fails, the pending update remains available to retry. Use
+**Download again** in the error dialog if the cached package is damaged.
+
+On macOS the update replaces the application bundle in place (asking for an
+administrator password when the bundle's folder is not writable) and restarts.
+Windows and Linux builds report that in-place installation is not available yet;
+download the new package from openbitfun.com.
+
+Installed builds of the earlier Tauri-based desktop update into the native app on
+macOS through their usual update flow: the release lists the native package under
+the key those builds read, the bundle keeps their executable name as a link to the
+native runner, and settings, workspaces, sessions and accounts are read from the
+same data directories. On Windows and Linux those builds report that no update
+package exists for their platform; install the native package manually. Window
+size and position, UI-only preferences kept in the old WebView storage, the
+desktop pet window and desktop cards do not carry over.
 
 Application updates always belong to the local desktop, including while viewing
 a peer device or a remote workspace. They do not install software on the peer or
@@ -737,20 +740,19 @@ can be distinguished from a client lifecycle problem.
 
 ## Development startup
 
-Run `pnpm run desktop:dev` from the repository root. The launcher prepares
-Flashgrep and the locked Sherpa speech libraries before compiling Desktop.
-Sherpa libraries or archives are reused from the current target cache or the
-main Git checkout's target cache. If absent, curl downloads the version-specific
-archive, supporting HTTP and SOCKS proxies; Cargo handles extraction and linking.
-Explicit `SHERPA_ONNX_LIB_DIR` and `SHERPA_ONNX_ARCHIVE_DIR` overrides are preserved.
+Run `pnpm run desktop:dev` from the repository root. It builds the UI bundle
+(`nsh build src/apps/desktop-nsh`), the backend library
+(`cargo build -p openbitfun-desktop --lib`) and the runner
+(`src/apps/desktop-nsh/native`, `--features runner`), then starts
+`target/debug/openbitfun-nsh` with `NSH_APP_DIR=target/desktop-nsh/nsh`. The NSH
+crates need rustc 1.97 or newer (`RUSTUP_TOOLCHAIN=1.98.1`).
 
 Development shares the installed app's existing settings, workspaces and sessions
-by default. Both launchers keep a separate development host channel and retain
-the existing session writer and scheduler leases:
+by default:
 
 ```sh
 pnpm run desktop:dev
-pnpm run desktop:preview:debug
+pnpm run desktop:preview:debug   # run the last build without rebuilding
 ```
 
 Use `--isolated-data` for separate development data under the current checkout's
@@ -758,19 +760,6 @@ Use `--isolated-data` for separate development data under the current checkout's
 place and remains accessible with this flag; switching modes does not move or
 delete sessions. Explicit storage environment overrides remain authoritative,
 and `--shared-data` is still accepted as an explicit alias for the default.
-
-To run an independent instance in another worktree, isolate its data and choose
-different ports. Changing ports alone does not separate the development host
-that owns the shared product data:
-
-```sh
-OPENBITFUN_DEV_PORT=1432 pnpm run desktop:dev -- --isolated-data
-```
-
-HMR uses port 1431 in this example; `OPENBITFUN_DEV_HMR_PORT` can override it.
-The launcher supplies the same HTTP URL to Tauri that Vite listens on, and both
-the main window and companion window read that configured URL.
-
 
 ## Windows release signing (maintainers)
 
@@ -793,20 +782,17 @@ Certum/the reseller about regaining access; do not assume the Desktop login can
 export it. Replacing the provisioning seed also requires updating the CI secret
 and potentially reactivating the mobile app.
 
-The workflow compiles with `--no-bundle`, then opens the SimplySign session.
-`--bundle-only` in the Desktop build wrapper runs `tauri bundle` using the same
-product and updater configuration, without recompiling. Tauri signs the NSIS
-payload and installer before generating updater `.sig` files. Since Tauri
-restores the unsigned raw Desktop EXE after bundling, the workflow separately
-signs that EXE before the custom installer hashes and embeds it. Finally, it
-signs the custom installer. Subsequent release staging copies/renames those
-bytes and generates the existing updater/manual-download signatures.
+The workflow packages the native app (`pnpm run desktop-nsh:package:windows`),
+opens the SimplySign session, signs the runner executable, the backend DLL and the
+MiniApp shell, and rebuilds the release zip from the signed files. Subsequent
+release staging copies/renames those bytes and generates the manual-download
+signatures.
 
 Verification requires Windows Authenticode trust, the configured signer and a
 timestamp. Any failure blocks artifact upload. A publication run requires all
 three secrets; an artifact-only run with none configured explicitly builds
 unsigned packages. Partial configuration always fails. No PFX/private-key export
-is required, and the existing Tauri updater key remains unchanged.
+is required, and the existing updater signing key remains unchanged.
 
 Login uses a pinned community action, not an official Certum CI API. Its GUI
 login compatibility and any additional certificate PIN prompt must be validated
@@ -819,7 +805,7 @@ Focused checks:
 
 ```sh
 pnpm run check:github-config
-node --test scripts/desktop-tauri-build.test.mjs OpenBitFun-Installer/scripts/build-installer.test.cjs
+node --test scripts/ci/native-release-tooling.test.mjs
 pwsh -NoProfile -File scripts/ci/sign-windows.test.ps1
 ```
 
