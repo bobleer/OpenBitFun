@@ -178,6 +178,7 @@ fn request_options(client: &AIClient, format: ApiFormat, extra: Option<&Value>) 
         ApiFormat::GeminiCodeAssist => {
             gemini::code_assist::image_budget_request_options(client, extra)
         }
+        ApiFormat::Relay => Ok(serde_json::json!({})),
     }
 }
 
@@ -191,6 +192,7 @@ fn output_reserve(config: &AIConfig, format: ApiFormat, options: &Value) -> usiz
         ApiFormat::Gemini | ApiFormat::GeminiCodeAssist => {
             options["generationConfig"]["maxOutputTokens"].as_u64()
         }
+        ApiFormat::Relay => None,
     };
     cap.map_or_else(
         || automatic_max_output_tokens(config.context_window) as usize,
@@ -319,6 +321,7 @@ pub(in crate::client) fn validate_override(
         ApiFormat::Anthropic => ("messages", Some("system")),
         ApiFormat::OpenAIResponses => ("input", Some("instructions")),
         ApiFormat::Gemini | ApiFormat::GeminiCodeAssist => ("contents", Some("systemInstruction")),
+        ApiFormat::Relay => return Ok(false),
     };
     let Some(override_messages) = body.get(key) else {
         return Ok(false);

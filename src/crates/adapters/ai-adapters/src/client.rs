@@ -11,6 +11,7 @@ mod image_budget;
 #[cfg(feature = "image-generation")]
 pub mod image_generation;
 pub(crate) mod quirks;
+pub mod relay_transport;
 mod request_capacity;
 pub(crate) mod response_aggregator;
 pub(crate) mod responses_websocket;
@@ -349,6 +350,8 @@ impl AIClient {
                     extra_body,
                 )?;
             }
+            // The owner device compiles its own presets.
+            ApiFormat::Relay => {}
         }
         Ok(())
     }
@@ -631,6 +634,12 @@ impl AIClient {
         request_context: Option<&ModelRequestContext>,
         extra_body: Option<&serde_json::Value>,
     ) -> Result<Vec<Message>> {
+        // A model of another device: the owner applies its own request
+        // policy (images, extra body, retries) to the round.
+        if ApiFormat::parse(&self.config.format)? == ApiFormat::Relay {
+            let _ = (tools, request_context, extra_body);
+            return Ok(messages);
+        }
         // Project only the outgoing copy, against the actual selected client.
         responses_websocket::validate(self)?;
         // Account/channel failover and direct analysis calls share this boundary.
@@ -688,6 +697,10 @@ impl AIClient {
         trace: Option<ModelExchangeTraceConfig>,
         request_context: Option<ModelRequestContext>,
     ) -> Result<StreamResponse> {
+        if ApiFormat::parse(&self.config.format)? == ApiFormat::Relay {
+            let _ = (extra_body, max_tries, trace, request_context);
+            return relay_transport::send_stream(self, messages, tools).await;
+        }
         let can_reduce_batch = extra_body.as_ref().is_none_or(|body| {
             ["messages", "input", "contents"]
                 .iter()
@@ -746,6 +759,10 @@ impl AIClient {
         trace: Option<ModelExchangeTraceConfig>,
         request_context: Option<ModelRequestContext>,
     ) -> Result<StreamResponse> {
+        if ApiFormat::parse(&self.config.format)? == ApiFormat::Relay {
+            let _ = (extra_body, max_tries, trace, request_context);
+            return relay_transport::send_stream(self, messages, tools).await;
+        }
         match ApiFormat::parse(&self.config.format)? {
             ApiFormat::OpenAIChat => {
                 openai::chat::send_stream(
@@ -801,6 +818,7 @@ impl AIClient {
                 )
                 .await
             }
+            ApiFormat::Relay => unreachable!("relay rounds return above"),
         }
     }
 
@@ -864,6 +882,9 @@ impl AIClient {
             ApiFormat::Anthropic => anthropic::discovery::list_models(self).await,
             ApiFormat::Gemini => gemini::discovery::list_models(self).await,
             ApiFormat::GeminiCodeAssist => gemini::code_assist::list_models(self).await,
+            ApiFormat::Relay => Err(anyhow::anyhow!(
+                "the models of another device are listed by the account's model catalog"
+            )),
         }
     }
 }
