@@ -440,7 +440,7 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
   assert.match(
     rustJob.steps.find((step) => step.name === 'Create Tauri resource directories')
       ?.run ?? '',
-    /mkdir -p dist src\/mobile-web\/dist/,
+    /mkdir -p dist src\/apps\/extension-host\/dist/,
   );
   assert.equal(
     frontendJob.steps.some(
@@ -726,7 +726,6 @@ test('gates fast checks and PR packaging behind one fail-closed build decision',
   for (const stepName of [
     'Verify committed release metadata',
     'Build plugin Host resources',
-    'Build mobile web',
     'Project a Nightly version',
     'Verify projected release metadata',
   ]) {
