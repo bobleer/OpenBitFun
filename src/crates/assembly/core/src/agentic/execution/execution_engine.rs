@@ -54,11 +54,8 @@ use crate::agentic::tools::implementations::{AgentExecutionTool, SkillTool};
 use crate::agentic::tools::product_runtime::{
     collect_product_loaded_deferred_tool_specs, GetToolSpecTool,
 };
-use crate::agentic::tools::{
-    resolve_tool_manifest, tool_context_runtime, ResolvedToolManifest, ToolRuntimeRestrictions,
-};
+use crate::agentic::tools::{tool_context_runtime, ResolvedToolManifest, ToolRuntimeRestrictions};
 use crate::agentic::WorkspaceBinding;
-use crate::infrastructure::ai::get_global_ai_client_factory;
 use crate::infrastructure::ai::reasoning_catalog::reasoning_preset_runtime_fingerprint;
 use crate::native_hooks::{self, NativeHookSessionFacts};
 use crate::service::config::get_global_config_service;
@@ -2756,9 +2753,14 @@ impl ExecutionEngine {
             )
             .await?;
 
-        let ai_client_factory = get_global_ai_client_factory().await.map_err(|e| {
-            OpenBitFunError::AIClient(format!("Failed to get AI client factory: {}", e))
-        })?;
+        let ai_client_factory = self
+            .round_executor
+            .models
+            .client_factory()
+            .await
+            .map_err(|e| {
+                OpenBitFunError::AIClient(format!("Failed to get AI client factory: {}", e))
+            })?;
         let reasoning_preset = match self
             .resolve_reasoning_selection_for_turn(&session.session_id, context)
             .await
@@ -2860,12 +2862,14 @@ impl ExecutionEngine {
             &context.runtime_tool_restrictions,
         );
         let tool_manifest = if enable_tools {
-            let manifest = resolve_tool_manifest(
-                &allowed_tools,
-                &tool_policy.exposure_overrides,
-                &tool_description_context,
-            )
-            .await;
+            let manifest = self
+                .round_executor
+                .tool_manifest(
+                    &allowed_tools,
+                    &tool_policy.exposure_overrides,
+                    &tool_description_context,
+                )
+                .await;
             Some(manifest)
         } else {
             None
@@ -3559,6 +3563,7 @@ impl ExecutionEngine {
             Some(
                 self.model_pools
                     .prepare(
+                        self.round_executor.models.as_ref(),
                         &context.session_id,
                         session.config.model_pool_selection_revision,
                         pool_id,
@@ -3605,9 +3610,14 @@ impl ExecutionEngine {
             model_id
         );
 
-        let ai_client_factory = get_global_ai_client_factory().await.map_err(|e| {
-            OpenBitFunError::AIClient(format!("Failed to get AI client factory: {}", e))
-        })?;
+        let ai_client_factory = self
+            .round_executor
+            .models
+            .client_factory()
+            .await
+            .map_err(|e| {
+                OpenBitFunError::AIClient(format!("Failed to get AI client factory: {}", e))
+            })?;
 
         // Get AI client by model ID
         let reasoning_preset = if selected_pool.is_some() {
@@ -3756,12 +3766,14 @@ impl ExecutionEngine {
                 agent_type,
                 allowed_tools.len()
             );
-            let manifest = resolve_tool_manifest(
-                &allowed_tools,
-                &tool_policy.exposure_overrides,
-                &tool_description_context,
-            )
-            .await;
+            let manifest = self
+                .round_executor
+                .tool_manifest(
+                    &allowed_tools,
+                    &tool_policy.exposure_overrides,
+                    &tool_description_context,
+                )
+                .await;
             Some(manifest)
         } else {
             None
@@ -4347,6 +4359,7 @@ impl ExecutionEngine {
                 } else {
                     self.model_pools
                         .prepare(
+                            self.round_executor.models.as_ref(),
                             &context.session_id,
                             session.config.model_pool_selection_revision,
                             pool_id,
@@ -4409,12 +4422,14 @@ impl ExecutionEngine {
                         &context.runtime_tool_restrictions,
                     );
                     if enable_tools {
-                        let manifest = resolve_tool_manifest(
-                            &allowed_tools,
-                            &tool_policy.exposure_overrides,
-                            &description_context,
-                        )
-                        .await;
+                        let manifest = self
+                            .round_executor
+                            .tool_manifest(
+                                &allowed_tools,
+                                &tool_policy.exposure_overrides,
+                                &description_context,
+                            )
+                            .await;
                         tool_listing_sections =
                             Self::build_tool_listing_sections(&manifest, &description_context)
                                 .await;
