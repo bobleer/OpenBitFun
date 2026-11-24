@@ -12,16 +12,10 @@ use std::io::Cursor;
 mod openai_patches;
 use openai_patches::OpenAiPatches;
 
-/// Size reserved for path-only history, opaque URLs or unreadable headers.
-pub const UNKNOWN_IMAGE_DIMENSIONS: (u32, u32) = (2048, 2048);
+pub use openbitfun_core_types::token_estimate::{estimate_image_tokens, UNKNOWN_IMAGE_DIMENSIONS};
 
 fn grid(width: u32, height: u32, edge: u32) -> u64 {
     u64::from(width.div_ceil(edge)) * u64::from(height.div_ceil(edge))
-}
-
-/// Model-neutral estimate used before the runtime selects a provider.
-pub fn estimate_image_tokens(width: u32, height: u32) -> usize {
-    usize::try_from(50 + 200 * grid(width, height, 512)).unwrap_or(usize::MAX)
 }
 
 /// Estimates for known vision processors. A custom model ID retains the

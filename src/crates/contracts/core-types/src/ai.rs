@@ -1080,3 +1080,8 @@ mod remote_model_routing_compatibility {
         assert_eq!(serde_json::to_value(model).unwrap(), old);
     }
 }
+
+/// Shared token estimate used before the provider reports authoritative usage.
+pub fn estimate_text_tokens(text: &str) -> usize {
+    crate::token_estimate::TokenCounter::estimate_tokens(text)
+}
