@@ -12057,6 +12057,7 @@ dependencies = [
  "anydoc",
  "dashmap",
  "dunce",
+ "futures",
  "globset",
  "grep-regex",
  "grep-searcher",
