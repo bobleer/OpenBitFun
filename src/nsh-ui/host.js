@@ -1960,6 +1960,15 @@ const DEV_FIXTURES = {
     }
     return devConfigs[path];
   },
+  product_control_invoke: args => {
+    const req = payloadOf(args);
+    if (req.action !== "configure" || req.capabilityId !== "setting.ai.memory" || req.optionId !== "enabled") {
+      throw new Error("Command product_control_invoke not found");
+    }
+    const enabled = req.value === true;
+    devConfigs.memories = { ...devConfigs.memories, generate_memories: enabled, use_memories: enabled };
+    return { configured: true, effectiveValue: devConfigs.memories };
+  },
   set_config: args => {
     const req = payloadOf(args);
     if (!req.path) return null;

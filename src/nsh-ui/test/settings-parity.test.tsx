@@ -56,8 +56,7 @@ const MAC_PERMISSIONS = {
 };
 
 /** The settings harness over a fleet entry; the CLI device refuses desktop control as a CLI host does. */
-async function openFleetSettings() {
-  const backend = createBackend();
+async function openFleetSettings(backend = createBackend()) {
   const base = backend.handlers["openbitfun.invoke"];
   const sent: Array<{ action: string; target: string | null; request: unknown }> = [];
   let imported: unknown = null;
@@ -91,8 +90,110 @@ async function openFleetSettings() {
   };
   host = fleetObpHost(backend, { fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator() });
   const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
-  return { app, sent, imported: () => imported };
+  return { app, sent, backend, host, imported: () => imported };
 }
+
+test("memory keeps three sections and reveals processing fields only when expanded or searched", async () => {
+  const { app } = await openFleetSettings();
+  await app.waitFor("nav-settings-page-session-memory");
+  await app.press("nav-settings-page-session-memory");
+  await app.waitFor("memory-processing-toggle");
+  expect(app.texts()).toContain("Memory");
+  expect(app.texts()).toContain("Memory models");
+  expect(app.texts()).toContain("Memory processing");
+  expect(app.texts()).toContain("Clear external tool output");
+  expect(app.shows("memory-enabled")).toBe(true);
+  expect(app.shows("memory-open-folder")).toBe(true);
+  expect(app.shows("memory-extract-model")).toBe(true);
+  expect(app.shows("memory-consolidation-model")).toBe(true);
+  expect(app.shows("memory-idle-hours")).toBe(false);
+  expect(app.shows("memory-consolidation-batch")).toBe(false);
+  expect(app.shows("memory-max-unused-days")).toBe(false);
+
+  await app.press("memory-processing-toggle");
+  await app.waitFor("memory-idle-hours");
+  expect(app.shows("memory-consolidation-batch")).toBe(true);
+  expect(app.shows("memory-max-unused-days")).toBe(true);
+  await app.press("memory-processing-toggle");
+  expect(app.shows("memory-idle-hours")).toBe(false);
+
+  await app.type("settings-search", "Days before unused memories expire");
+  await app.waitFor("settings-search-hit-field-memory-max-unused-days");
+  await app.press("settings-search-hit-field-memory-max-unused-days");
+  await app.waitFor("memory-max-unused-days");
+  expect(app.value("memory-max-unused-days")).toBe("30");
+});
+
+for (const [generate, use] of [[true, false], [false, true]] as const) {
+  test(`memory toggle reads legacy flags ${generate}/${use} and changes both without overwriting other settings`, async () => {
+    const memories = {
+      generate_memories: generate,
+      use_memories: use,
+      generate_for_btw_sessions: true,
+      extract_model: "model-1",
+      max_unused_days: 30,
+    };
+    const backend = createBackend({ configs: { memories } });
+    const { app } = await openFleetSettings(backend);
+    await app.press("nav-settings-page-session-memory");
+    await app.waitFor("memory-enabled");
+    expect(app.accessibility("memory-enabled")?.checked).toBe("false");
+    expect(app.shows("generate-memories")).toBe(false);
+    expect(app.shows("use-memories")).toBe(false);
+    expect(app.shows("memory-btw-sessions")).toBe(false);
+    expect(backend.settingsWrites).toHaveLength(0);
+
+    // A sibling changed after this page loaded must survive the combined write.
+    backend.handlers["openbitfun.invoke"]({ action: "set_config", request: { path: "memories.max_unused_days", value: 90 } });
+    for (const enabled of [true, false]) {
+      await app.press("memory-enabled");
+      expect(app.accessibility("memory-enabled")?.checked).toBe(String(enabled));
+      expect(backend.settingsWrites.at(-1)).toEqual({
+        path: "memories",
+        value: { ...memories, generate_memories: enabled, use_memories: enabled, max_unused_days: 90 },
+      });
+    }
+    const mutations = backend.calls.filter(call => call.action === "product_control_invoke" &&
+      (call.request as { capabilityId?: string })?.capabilityId === "setting.ai.memory");
+    expect(mutations.map(call => call.request)).toEqual([true, false].map(value => ({
+      action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value,
+    })));
+  });
+}
+
+test("memory toggle keeps the stored state and reports a refused combined write", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const call = data as { action: string; request?: { capabilityId?: string } };
+    if (call.action === "product_control_invoke" && call.request?.capabilityId === "setting.ai.memory") {
+      return { ok: false, error: "Failed to save memory settings" };
+    }
+    return invoke(data);
+  };
+  const { app } = await openFleetSettings(backend);
+  await app.press("nav-settings-page-session-memory");
+  await app.waitFor("memory-enabled");
+  await app.press("memory-enabled");
+  await app.waitFor("Failed to save memory settings");
+  expect(app.accessibility("memory-enabled")?.checked).toBe("true");
+  expect(backend.settingsWrites).toHaveLength(0);
+});
+
+test("memory toggle sends one combined intent to the selected fleet device", async () => {
+  const { app, host } = await openFleetSettings();
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-session-memory");
+  await app.waitFor("memory-enabled");
+  await app.press("memory-enabled");
+  expect(host.fleetCalls.filter(call => call.command === "product_control_invoke" &&
+    (call.args.request as { capabilityId?: string })?.capabilityId === "setting.ai.memory")).toEqual([{
+      target: "dev-b",
+      command: "product_control_invoke",
+      args: { request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value: false } },
+    }]);
+});
 
 test("desktop control lists the device's own permissions and asks for one there; a CLI device says it can't", async () => {
   const { app, sent } = await openFleetSettings();

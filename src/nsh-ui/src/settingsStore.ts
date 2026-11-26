@@ -1,10 +1,11 @@
 // Settings values and writes.
 //
 // Reads are per config path, because `get_configs` fails the whole batch when a
-// single path is missing on the host. Every field is a dotted leaf path
-// (`app.auto_update`, `editor.font_size`, `memories.extract_model`), and a write
-// replaces that one value through `set_config`. Nothing here patches a snapshot
-// of a parent object read at load time: such a write would put back every
+// single path is missing on the host. Fields read dotted leaf paths
+// (`app.auto_update`, `editor.font_size`, `memories.extract_model`) and write
+// through `set_config` or a typed settings intent. The combined memory toggle
+// uses its owner's intent to update both flags together. Nothing here patches
+// a snapshot of a parent object read at load time: such a write would put back every
 // sibling as it was when the page opened, reverting what another section or
 // surface changed since (the quick-action list in `app.ai_experience`, the
 // interface language in `app`).
@@ -44,6 +45,8 @@ export interface FieldSpec {
   labelKey?: MessageKey;
   /** The dotted leaf config path the value lives at. */
   path: string;
+  /** A second boolean controlled by the same toggle; enabled only when both are true. */
+  linkedBooleanPath?: string;
   /**
    * Legacy: a dotted field inside `path`. Read and written as the leaf
    * `${path}.${field}`, never by patching the parent object.
@@ -93,7 +96,7 @@ export interface FieldSpec {
    * A typed settings command that writes this value instead of a leaf
    * `set_config` (`{ [requestKey]: value }`, sent to the device in context).
    */
-  mutation?: { command: string; requestKey: string };
+  mutation?: { command: string; requestKey: string; request?: Record<string, unknown> };
 }
 
 /** The settings pages, mirroring the desktop's settings registry. */
@@ -740,38 +743,25 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "memory",
-    title: "Session memory",
+    title: "Memory",
     titleKey: "settings.section.memory",
     page: "session-memory",
     fields: [
       {
-        id: "generate-memories",
-        label: "Extract memories from sessions",
-        labelKey: "settings.field.generateMemories",
-        descriptionKey: "settings.field.generateMemoriesDesc",
+        id: "memory-enabled",
+        label: "Enable memory",
+        labelKey: "settings.field.memoryEnabled",
+        descriptionKey: "settings.field.memoryEnabledDesc",
         path: "memories.generate_memories",
+        linkedBooleanPath: "memories.use_memories",
         kind: "boolean",
+        mutation: {
+          command: "product_control_invoke",
+          requestKey: "value",
+          request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled" },
+        },
         optional: true,
-        keywords: ["memory", "remember"],
-      },
-      {
-        id: "use-memories",
-        label: "Include memories in prompts",
-        labelKey: "settings.field.useMemories",
-        descriptionKey: "settings.field.useMemoriesDesc",
-        path: "memories.use_memories",
-        kind: "boolean",
-        optional: true,
-        keywords: ["memory", "recall"],
-      },
-      {
-        id: "memory-btw-sessions",
-        label: "Learn from background sessions",
-        labelKey: "settings.field.memoryBtwSessions",
-        descriptionKey: "settings.field.memoryBtwSessionsDesc",
-        path: "memories.generate_for_btw_sessions",
-        kind: "boolean",
-        optional: true,
+        keywords: ["memory", "remember", "recall"],
       },
       {
         id: "memory-external-context",
@@ -781,42 +771,20 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "memories.external_context_policy",
         kind: "select",
         options: [
-          { value: "clear_tool_results", label: "Keep, clear the tool results", labelKey: "settings.opt.clearToolResults" },
+          { value: "clear_tool_results", label: "Clear external tool output", labelKey: "settings.opt.clearToolResults" },
           { value: "allow", label: "Keep as-is", labelKey: "settings.opt.keepAsIs" },
           { value: "skip_session", label: "Skip extracting", labelKey: "settings.opt.skipExtracting" },
         ],
         optional: true,
       },
-      {
-        id: "memory-max-unused-days",
-        label: "Forget after (days)",
-        labelKey: "settings.field.memoryMaxUnusedDays",
-        descriptionKey: "settings.field.memoryMaxUnusedDaysDesc",
-        path: "memories.max_unused_days",
-        kind: "number",
-        min: 1,
-        max: 3650,
-        optional: true,
-        placeholder: "30 (1–3650)",
-        placeholderKey: "settings.placeholder.memoryMaxUnusedDays",
-        unit: "days",
-        unitKey: "settings.unit.days",
-      },
-      {
-        id: "memory-consolidation-batch",
-        label: "Memories per consolidation",
-        labelKey: "settings.field.memoryConsolidationBatch",
-        descriptionKey: "settings.field.memoryConsolidationBatchDesc",
-        path: "memories.max_raw_memories_for_consolidation",
-        kind: "number",
-        min: 1,
-        max: 512,
-        optional: true,
-        placeholder: "64 (1–512)",
-        placeholderKey: "settings.placeholder.memoryConsolidationBatch",
-        unit: "items",
-        unitKey: "settings.unit.memories",
-      },
+    ],
+  },
+  {
+    id: "memory-models",
+    title: "Memory models",
+    titleKey: "settings.section.memoryModels",
+    page: "session-memory",
+    fields: [
       {
         id: "memory-extract-model",
         label: "Model that extracts memories",
@@ -841,6 +809,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         optional: true,
         defaultValue: "",
       },
+    ],
+  },
+  {
+    id: "memory-processing",
+    title: "Memory processing",
+    titleKey: "settings.section.memoryProcessing",
+    page: "session-memory",
+    fields: [
       {
         id: "memory-idle-hours",
         label: "A session must be idle for (hours)",
@@ -916,6 +892,36 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         unit: "max",
         unitKey: "settings.unit.concurrent",
         optional: true,
+      },
+      {
+        id: "memory-consolidation-batch",
+        label: "Memories per consolidation",
+        labelKey: "settings.field.memoryConsolidationBatch",
+        descriptionKey: "settings.field.memoryConsolidationBatchDesc",
+        path: "memories.max_raw_memories_for_consolidation",
+        kind: "number",
+        min: 1,
+        max: 512,
+        optional: true,
+        placeholder: "64 (1–512)",
+        placeholderKey: "settings.placeholder.memoryConsolidationBatch",
+        unit: "items",
+        unitKey: "settings.unit.memories",
+      },
+      {
+        id: "memory-max-unused-days",
+        label: "Forget after (days)",
+        labelKey: "settings.field.memoryMaxUnusedDays",
+        descriptionKey: "settings.field.memoryMaxUnusedDaysDesc",
+        path: "memories.max_unused_days",
+        kind: "number",
+        min: 1,
+        max: 3650,
+        optional: true,
+        placeholder: "30 (1–3650)",
+        placeholderKey: "settings.placeholder.memoryMaxUnusedDays",
+        unit: "days",
+        unitKey: "settings.unit.days",
       },
     ],
   },
@@ -1137,7 +1143,10 @@ export function fieldMissing(spec: FieldSpec): boolean {
 /** What the row shows: the stored value, or the default the host applies instead. */
 export function fieldDisplay(spec: FieldSpec): unknown {
   const stored = fieldValue(spec);
-  return stored === undefined ? defaultForField(spec) : stored;
+  const displayed = stored === undefined ? defaultForField(spec) : stored;
+  if (!spec.linkedBooleanPath) return displayed;
+  const linked = fieldDisplay({ ...spec, path: spec.linkedBooleanPath, linkedBooleanPath: undefined });
+  return displayed === true && linked === true;
 }
 
 /**
@@ -1205,6 +1214,10 @@ async function runLoadSettingsValues(deviceKey: string): Promise<void> {
       const path = leafPath(field);
       leafPaths.add(path);
       if (field.optional) optional.add(path);
+      if (field.linkedBooleanPath) {
+        leafPaths.add(field.linkedBooleanPath);
+        if (field.optional) optional.add(field.linkedBooleanPath);
+      }
       const root = path.split(".")[0];
       if (root) rootSections.add(root);
     }
@@ -1378,11 +1391,18 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
       try {
         if (spec.mutation) {
           // The device applies its own rule and stores the section; the row shows what was asked.
-          await invokeSettingsMutation(spec.mutation.command, { [spec.mutation.requestKey]: value });
+          await invokeSettingsMutation(spec.mutation.command, {
+            ...spec.mutation.request,
+            [spec.mutation.requestKey]: value,
+          });
         } else {
           await setConfig(path, value);
         }
-        settingsValues.update(values => ({ ...values, [path]: value }));
+        settingsValues.update(values => ({
+          ...values,
+          [path]: value,
+          ...(spec.linkedBooleanPath ? { [spec.linkedBooleanPath]: value } : {}),
+        }));
         if (path === "app.ai_experience.enable_prompt_suggestion" && typeof value === "boolean") {
           setPromptSuggestionsEnabled(value);
         }

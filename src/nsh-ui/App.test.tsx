@@ -1849,7 +1849,7 @@ test("session memory takes its models and its window from this page", async () =
 
   await app.press("Settings");
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Session memory");
+  await app.waitFor("Memory");
   await app.waitFor("Model that extracts memories");
 
   // A configured model is written to its own leaf, so the fields this page does
@@ -1869,6 +1869,7 @@ test("session memory takes its models and its window from this page", async () =
 
   // A rollout window that outlives the retention is refused with the reason, and
   // nothing is written: the host would reject the pair as well.
+  await app.press("memory-processing-toggle");
   const before = backend.settingsWrites.length;
   await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "5");
@@ -2817,12 +2818,21 @@ test("settings reaches the session-memory switches", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Session memory");
+  await app.waitFor("Memory");
+  await app.press("memory-processing-toggle");
   await app.waitFor("Days before unused memories expire");
   expect(app.value("memory-max-unused-days")).toBe("30");
 
-  await app.press("generate-memories");
-  expect(backend.settingsWrites).toContainEqual({ path: "memories.generate_memories", value: false });
+  await app.press("memory-enabled");
+  expect(backend.calls).toContainEqual({
+    action: "product_control_invoke",
+    request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value: false },
+    raw: false,
+  });
+  expect(backend.settingsWrites.find(write => write.path === "memories")?.value).toMatchObject({
+    generate_memories: false,
+    use_memories: false,
+  });
 
   // An enum the host deserializes: skip extraction for polluted sessions.
   await app.press("memory-external-context");
@@ -2871,7 +2881,7 @@ test("a field the host stores nothing for shows its default and stays writable",
   await app.press("prevent-sleep");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Extract useful facts and preferences from conversations");
+  await app.waitFor("Extract useful facts and preferences from conversations and use saved memories in future sessions");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
 });
 test("settings carries the input and workspace groups as leaf writes", async () => {

@@ -1878,6 +1878,23 @@ export function createBackend(options: BackendOptions = {}): Backend {
   function answerSettingsMutation(action: string, payload: Record<string, unknown>): unknown {
     if (options.legacySettingsHost) throw new Error(`Command ${action} not found`);
     switch (action) {
+      case "product_control_invoke": {
+        if (payload.action !== "configure" || payload.capabilityId !== "setting.ai.memory" || payload.optionId !== "enabled") {
+          throw new Error("Command product_control_invoke not found");
+        }
+        const enabled = payload.value === true;
+        const memories = {
+          ...((readLive("memories") ?? {}) as Record<string, unknown>),
+          generate_memories: enabled,
+          use_memories: enabled,
+        };
+        writeLive("memories", memories);
+        // Some fixtures keep both the document and legacy flat read paths.
+        for (const path of ["memories.generate_memories", "memories.use_memories"]) {
+          if (path in liveConfigs) liveConfigs[path] = enabled;
+        }
+        return { configured: true, effectiveValue: memories };
+      }
       // permission page view (wave 4): the host's projection of the stored documents.
       case "get_permission_settings": {
         const view = permissionView(permissionDocument()) as Record<string, unknown>;
@@ -2150,6 +2167,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return { ...accountSyncStatus };
       }
       // settings mutations (wave 3 config)
+      case "product_control_invoke":
       case "ai_model_upsert":
       case "ai_model_delete":
       case "resolve_ai_model_request_url":

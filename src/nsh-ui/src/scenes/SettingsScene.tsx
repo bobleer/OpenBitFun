@@ -800,6 +800,8 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
           { id: "session", labelKey: "settings.section.session" },
           { id: "task-models", labelKey: "settings.taskModels.title" },
           { id: "memory", labelKey: "settings.section.memory" },
+          { id: "memory-models", labelKey: "settings.section.memoryModels" },
+          { id: "memory-processing", labelKey: "settings.section.memoryProcessing" },
         ],
       },
       {
@@ -1014,6 +1016,7 @@ function searchSettings(): SettingsSearchHit[] {
 const sectionAnchorRefs: Record<string, ViewRef | null> = {};
 /** The section to reveal once the page that holds it has rendered. */
 let pendingAnchor: string | null = null;
+const memoryProcessingOpen = signal(false);
 
 function registerSectionAnchor(id: string, ref: ViewRef | null): void {
   sectionAnchorRefs[id] = ref;
@@ -1037,6 +1040,7 @@ function syncModelsTabForAnchor(id: string): void {
 /** Scrolls the open page to one of its sections. */
 export function revealSettingsSection(id: string): void {
   syncModelsTabForAnchor(id);
+  if (id === "memory-processing") memoryProcessingOpen.set(true);
   const ref = sectionAnchorRefs[id];
   if (ref) {
     ref.reveal({ vertical: "start" });
@@ -1734,6 +1738,7 @@ function SettingsGroup(props: {
   notice?: string;
   onDismissNotice?: () => void;
   extra?: JSX.Element;
+  expanded?: boolean;
   children?: JSX.Element;
 }) {
   return (
@@ -1746,7 +1751,9 @@ function SettingsGroup(props: {
         />
       </If>
       <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
-      <View style={insetGroupStyle()}>{props.children}</View>
+      <If when={props.expanded !== false}>
+        <View style={insetGroupStyle()}>{props.children}</View>
+      </If>
     </View>
   );
 }
@@ -2420,7 +2427,13 @@ function FieldRow(props: { spec: FieldSpec; first?: boolean }) {
 }
 
 /** A field section from the table, drawn as one card with its own notice. */
-function FieldSection(props: { sectionId: string; children?: JSX.Element; leading?: JSX.Element }) {
+function FieldSection(props: {
+  sectionId: string;
+  children?: JSX.Element;
+  leading?: JSX.Element;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   const section = SETTINGS_SECTIONS.find(entry => entry.id === props.sectionId);
   if (!section) return null;
   const hasLeading = Boolean(props.leading);
@@ -2431,6 +2444,31 @@ function FieldSection(props: { sectionId: string; children?: JSX.Element; leadin
       hideTitle={sectionTitle(section) === tr(settingsPageEntry(section.page).labelKey)}
       notice={sectionNotice(section.id)}
       onDismissNotice={() => setSectionNotice(section.id, "")}
+      expanded={props.expanded}
+      extra={props.onToggle ? (
+        <View
+          role="button"
+          accessibilityLabel={`${section.id}-toggle`}
+          accessibilityState={{ expanded: props.expanded }}
+          tooltip={sectionTitle(section)}
+          onPress={props.onToggle}
+          style={{
+            width: layout.touchTarget,
+            height: layout.touchTarget,
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: radii.md,
+            cursor: "pointer",
+          }}
+          hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+          activeStyle={tactileActiveStyle(0.99)}
+          focusVisibleStyle={focusRingStyle()}
+        >
+          <View style={rotatingChevronStyle(props.expanded === true)}>
+            <Icon name="chevron-right" size={14} color={palette().textMuted} />
+          </View>
+        </View>
+      ) : undefined}
     >
       {props.leading}
       <Each of={section.fields} key={field => field.id}>
@@ -10346,6 +10384,12 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
         <FieldSection sectionId="memory">
           <MemoryActionsRow />
         </FieldSection>
+        <FieldSection sectionId="memory-models" />
+        <FieldSection
+          sectionId="memory-processing"
+          expanded={memoryProcessingOpen()}
+          onToggle={() => memoryProcessingOpen.update(open => !open)}
+        />
       </View>
     );
   }
@@ -10543,6 +10587,7 @@ export function SettingsScene() {
     closeMcpAuth();
     compactPageOpen.set(false);
     settingsSearchQuery.set("");
+    memoryProcessingOpen.set(false);
     loadedDeviceForSection.clear();
     deviceScopeSwitchedInSettings = false;
   });
