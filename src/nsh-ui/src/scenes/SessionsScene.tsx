@@ -6,7 +6,7 @@
  */
 
 import { Buffer } from "buffer";
-import { Canvas, cleanup, Clipboard, computed, effect, Image, List, openUrl, Overlay, reduceMotion, Scroll, signal, Text, untracked, View } from "nsh";
+import { Canvas, cleanup, Clipboard, computed, effect, Image, keymap, List, openUrl, Overlay, reduceMotion, Scroll, signal, Text, untracked, View } from "nsh";
 import type {
   Align,
   Bounds,
@@ -567,8 +567,12 @@ function acceptActivePromptSuggestion(): boolean {
   if (!suggestion) return false;
   const sessionId = activeSessionId();
   composerText.set(suggestion);
+  composerCaretPos.set(suggestion.length);
   clearPromptSuggestion(sessionId, activeSessionDevice());
-  composerInputRef?.focus();
+  queueMicrotask(() => {
+    composerInputRef?.focus();
+    composerInputRef?.setSelection(suggestion.length, suggestion.length);
+  });
   return true;
 }
 
@@ -6836,6 +6840,7 @@ function SessionComposer(props: SessionComposerProps) {
   const paneWidth = signal(0);
   const localDrag = props.dragActive ?? signal(false);
   const localComposing = signal(false);
+  const inputFocused = signal(false);
   const localPlusOpen = props.plusOpen ?? signal(false);
   const localPlusAnchor = props.plusAnchor ?? signal<ViewRef | null>(null);
   const isCompact = () => Boolean(props.compact?.());
@@ -6846,6 +6851,47 @@ function SessionComposer(props: SessionComposerProps) {
   let selectionStart: number | null = null;
   let selectionEnd: number | null = null;
   let lastTrackedText = props.draft();
+
+  const acceptPromptSuggestion = () => {
+    const suggestion = props.promptSuggestion?.() ?? "";
+    if (!suggestion || isDisabled() || localComposing() || props.draft().length > 0) return;
+    selectionStart = suggestion.length;
+    selectionEnd = suggestion.length;
+    lastTrackedText = suggestion;
+    props.onAcceptPromptSuggestion?.();
+    queueMicrotask(() => {
+      localInputRef?.focus();
+      localInputRef?.setSelection(suggestion.length, suggestion.length);
+    });
+  };
+
+  if (props.promptSuggestion && props.onAcceptPromptSuggestion) {
+    // NSH `<Input>` `onKeyPress` only delivers printable text, Backspace, Enter, and Escape,
+    // while Tab triggers native focus traversal. Intercept Tab / ArrowRight via `keymap.bind`
+    // only while this composer input is focused with an active empty-draft suggestion.
+    effect(() => {
+      const suggestion = props.promptSuggestion!();
+      const active =
+        Boolean(suggestion) &&
+        inputFocused() &&
+        !localComposing() &&
+        !isDisabled() &&
+        props.draft().length === 0;
+      if (!active) return;
+      try {
+        return keymap.bind(
+          {
+            tab: () => acceptPromptSuggestion(),
+            right: () => acceptPromptSuggestion(),
+          },
+          { when: "always" },
+        );
+      } catch {
+        // Platforms without hardware Tab/Right shortcuts keep the pointer pill.
+        return undefined;
+      }
+    });
+  }
 
   const applyDraftValue = (next: string, caret: number) => {
     selectionStart = caret;
@@ -6950,7 +6996,13 @@ function SessionComposer(props: SessionComposerProps) {
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
               }}
-              onFocus={() => props.onFocusPane?.()}
+              onFocus={() => {
+                inputFocused.set(true);
+                props.onFocusPane?.();
+              }}
+              onBlur={() => {
+                inputFocused.set(false);
+              }}
               onChange={event => {
                 const prev = props.draft();
                 const next = event.value;
@@ -6983,9 +7035,10 @@ function SessionComposer(props: SessionComposerProps) {
             <If when={props.promptSuggestion?.() ?? ""}>
               <View
                 role="button"
+                focusable={false}
                 accessibilityLabel="accept-prompt-suggestion"
                 tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
-                onPress={() => props.onAcceptPromptSuggestion?.()}
+                onPress={acceptPromptSuggestion}
                 style={{
                   boxSizing: "border-box",
                   flexDirection: "row",

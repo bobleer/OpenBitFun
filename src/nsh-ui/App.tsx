@@ -1806,8 +1806,9 @@ function AuxPane(props: { captionInset?: () => number } = {}) {
       }}
     >
       <View
+        testID="aux-pane-header"
         style={{
-          height: compactShell() ? layout.touchTarget : props.captionInset?.() ? layout.topBarHeight : 38,
+          height: compactShell() ? layout.touchTarget : layout.topBarHeight,
           paddingLeft: space.md,
           paddingRight: (props.captionInset?.() ?? 0) + space.md,
           flexDirection: "row",

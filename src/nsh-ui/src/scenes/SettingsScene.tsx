@@ -1608,7 +1608,19 @@ function SectionHeader(props: { title: string; description?: string; extra?: JSX
         </If>
       </View>
       <If when={Boolean(props.extra)}>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, marginLeft: "auto" }}>{props.extra}</View>
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: space.sm,
+            marginLeft: "auto",
+            minWidth: 0,
+            maxWidth: "100%",
+          }}
+        >
+          {props.extra}
+        </View>
       </If>
     </View>
   );
@@ -10881,7 +10893,8 @@ function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
         alignItems: "center",
         gap: space.sm,
         minHeight: SETTINGS_LIST_ROW,
-        paddingHorizontal: space.sm,
+        paddingLeft: space.sm,
+        paddingRight: props.extra ? 0 : space.sm,
         marginTop: space.lg,
       }}
     >
@@ -10897,7 +10910,17 @@ function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
         {props.label}
       </Text>
       <If when={Boolean(props.extra)}>
-        <View style={{ flex: 1, minWidth: 0, alignItems: "flex-end" }}>{props.extra}</View>
+        <View
+          style={{
+            flex: 1,
+            minWidth: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "flex-end",
+          }}
+        >
+          {props.extra}
+        </View>
       </If>
     </View>
   );
@@ -10932,10 +10955,26 @@ function DeviceScopeChip() {
       else={
         <View
           accessibilityLabel="settings-scope-chip"
-          style={{ flexDirection: "row", alignItems: "center", gap: space.xs, height: controlHeight.sm }}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            height: controlHeight.sm,
+            paddingHorizontal: space.sm,
+            minWidth: 0,
+            maxWidth: "100%",
+          }}
         >
           <Icon name="laptop" size={14} color={palette().textSecondary} />
-          <Text style={{ ...textStyle("label", { color: palette().text }), numberOfLines: 1 }}>
+          <Text
+            style={{
+              ...textStyle("label", { color: palette().text }),
+              flexShrink: 1,
+              minWidth: 0,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
             {tr("devices.thisDevice")}
           </Text>
         </View>
@@ -10944,7 +10983,6 @@ function DeviceScopeChip() {
       <SelectDropdown<string>
         size="sm"
         variant="ghost"
-        maxWidth={SETTINGS_LIST_WIDTH - space.x4l}
         value={deviceContext() || null}
         options={scopeDeviceOptions()}
         accessibilityLabel="settings-scope-chip"

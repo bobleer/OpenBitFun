@@ -386,3 +386,34 @@ test("a peer device's storage page never scans or cleans the controller's snapsh
     expect(host.fleetCalls.some(call => call.command === command)).toBe(false);
   }
 });
+
+test("a long device name in the Device scope chip truncates inside its column without overlapping the Device label", async () => {
+  const nav = fleetNavigator();
+  nav.devices = nav.devices.map(device =>
+    (device as { deviceId?: string }).deviceId === "dev-b"
+      ? { ...device, name: "ecs-openbitfun-personal-lwb" }
+      : device,
+  );
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: nav,
+  });
+  for (const viewport of [DESKTOP, { width: 760, height: 800, platform: "macos" as const }]) {
+    const app = await open(HARNESS, { ...viewport, host: { handlers: host.handlers } });
+    await app.waitFor("settings-scope-chip");
+    await app.press("settings-scope-chip");
+    await app.press("settings-scope-device-dev-b");
+    await app.waitUntil(() => app.texts().includes("ecs-openbitfun-personal-lwb"));
+
+    const listBox = app.layout("settings-scope-list");
+    const labelBox = app.layout("text:Device");
+    const chipBox = app.layout("settings-scope-chip");
+    expect(listBox).toBeTruthy();
+    expect(labelBox).toBeTruthy();
+    expect(chipBox).toBeTruthy();
+    expect(chipBox!.width).toBeGreaterThan(0);
+    expect(chipBox!.x).toBeGreaterThanOrEqual(labelBox!.x + labelBox!.width);
+    expect(chipBox!.x + chipBox!.width).toBeLessThanOrEqual(listBox!.x + listBox!.width);
+  }
+});

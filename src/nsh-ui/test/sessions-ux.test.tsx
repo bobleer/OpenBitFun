@@ -1851,7 +1851,8 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   });
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
 
-  // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears and hides once user starts typing.
+  // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears, hides once user starts typing,
+  // and accepts on Tab or ArrowRight while the composer is focused without moving focus to the Tab pill.
   persistedSuggestion = undefined;
   await app.host.send("openbitfun.event", {
     event: "agentic://prompt-suggestion",
@@ -1866,6 +1867,26 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   await app.waitFor("accept-prompt-suggestion", { state: "gone" });
   await app.clear("composer");
   await app.waitFor("accept-prompt-suggestion");
+
+  await app.keyboard.press("tab");
+  await app.waitUntil(() => app.value("composer") === "Summarize the diff for review");
+  expect(app.shows("accept-prompt-suggestion")).toBe(false);
+
+  // ArrowRight also accepts when the focused composer is empty again.
+  await app.clear("composer");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://prompt-suggestion",
+    payload: {
+      sessionId: "session-1",
+      sourceTurnId: "turn-2",
+      suggestion: "Check the build output",
+    },
+  });
+  await app.waitFor("accept-prompt-suggestion");
+  await app.keyboard.press("right");
+  await app.waitUntil(() => app.value("composer") === "Check the build output");
+  expect(app.shows("accept-prompt-suggestion")).toBe(false);
+  await app.clear("composer");
 
   // 3. Starting a new turn clears any active suggestion immediately.
   await app.host.send("openbitfun.event", {

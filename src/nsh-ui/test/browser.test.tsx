@@ -285,6 +285,12 @@ test("the inspector's Browser tab sits beside the session and an agent page of t
   await app.press("session-tool-browser");
   await app.waitFor("aux-tab-browser");
   expect(app.shows("aux-tab-changes") || app.shows("aux-tab-git")).toBe(true);
+  const sessionHeaderBox = app.layout("id:session-header");
+  const auxHeaderBox = app.layout("id:aux-pane-header");
+  expect(sessionHeaderBox).toBeTruthy();
+  expect(auxHeaderBox).toBeTruthy();
+  expect(auxHeaderBox!.y).toBe(sessionHeaderBox!.y);
+  expect(auxHeaderBox!.height).toBe(sessionHeaderBox!.height);
   await app.waitFor("browser-toolbar");
   expect(app.shows("tool-pane-header")).toBe(false);
   await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));

@@ -1375,6 +1375,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
         style={{
           boxSizing: "border-box",
           height: controlHeight[props.size ?? "md"],
+          minWidth: 0,
           maxWidth: "100%",
           paddingHorizontal: (props.variant ?? "default") === "ghost" ? space.sm : space.md,
           paddingVertical: 0,
