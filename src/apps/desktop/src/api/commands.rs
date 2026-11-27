@@ -553,6 +553,9 @@ pub struct ReadFileContentRequest {
     #[serde(rename = "filePath")]
     pub file_path: String,
     pub encoding: Option<String>,
+    /// Opts into a decoded snapshot with the original bytes' identity.
+    #[serde(default, rename = "textEncoding")]
+    pub text_encoding: Option<openbitfun_services_core::file_text_encoding::TextFileEncoding>,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
 }
@@ -2756,11 +2759,12 @@ pub async fn explorer_get_children_paginated(
 pub async fn read_file_content(
     state: State<'_, AppState>,
     request: ReadFileContentRequest,
-) -> Result<String, String> {
+) -> Result<super::path_target::ReadFileContent, String> {
     read_text_file(
         &state,
         &request.file_path,
         request.encoding.as_deref(),
+        request.text_encoding,
         request.remote_connection_id.as_deref(),
         request.workspace_id.as_deref(),
     )

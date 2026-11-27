@@ -30,6 +30,7 @@ chrono = { workspace = true, optional = true }
 chrono-tz = { workspace = true, optional = true }
 git2 = { workspace = true, optional = true }
 dunce = { workspace = true, optional = true }
+encoding_rs = { workspace = true, optional = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 fs2 = { workspace = true, optional = true }
@@ -92,6 +93,7 @@ filesystem = [
     "tokio/fs",
     "tokio/rt",
 ]
+file-text-encoding = ["dep:encoding_rs", "dep:sha2"]
 json-io = [
     "dep:fs2",
     "dep:tokio",

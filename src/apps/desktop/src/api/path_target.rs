@@ -304,13 +304,21 @@ pub fn stat_local_path_metadata(
     })
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub enum ReadFileContent {
+    Text(String),
+    Decoded(openbitfun_services_core::file_text_encoding::DecodedTextFile),
+}
+
 pub async fn read_text_file(
     app_state: &AppState,
     raw_path: &str,
     encoding: Option<&str>,
+    text_encoding: Option<openbitfun_services_core::file_text_encoding::TextFileEncoding>,
     preferred_remote_connection_id: Option<&str>,
     workspace_id: Option<&str>,
-) -> Result<String, String> {
+) -> Result<ReadFileContent, String> {
     let target = resolve_desktop_path_target(
         app_state,
         raw_path,
@@ -320,13 +328,18 @@ pub async fn read_text_file(
     .await?;
     match &target {
         DesktopPathTarget::Local { resolved_path, .. } => {
-            if encoding.is_some_and(|value| value.eq_ignore_ascii_case("base64")) {
+            if text_encoding.is_some()
+                || encoding.is_some_and(|value| value.eq_ignore_ascii_case("base64"))
+            {
                 let bytes = app_state
                     .filesystem_service
                     .read_file_bytes(&resolved_path.to_string_lossy())
                     .await
                     .map_err(|e| format!("Failed to read file content: {}", e))?;
-                return Ok(BASE64.encode(bytes));
+                return match text_encoding {
+                    Some(codec) => codec.decode(&bytes).map(ReadFileContent::Decoded),
+                    None => Ok(ReadFileContent::Text(BASE64.encode(bytes))),
+                };
             }
 
             let result = app_state
@@ -334,7 +347,7 @@ pub async fn read_text_file(
                 .read_file(&resolved_path.to_string_lossy())
                 .await
                 .map_err(|e| format!("Failed to read file content: {}", e))?;
-            Ok(result.content)
+            Ok(ReadFileContent::Text(result.content))
         }
         DesktopPathTarget::Remote {
             requested_path,
@@ -348,7 +361,10 @@ pub async fn read_text_file(
                 .read_file(&entry.connection_id, requested_path)
                 .await
                 .map_err(|e| format!("Failed to read remote file: {}", e))?;
-            encode_remote_file_bytes(bytes, encoding)
+            match text_encoding {
+                Some(codec) => codec.decode(&bytes).map(ReadFileContent::Decoded),
+                None => encode_remote_file_bytes(bytes, encoding).map(ReadFileContent::Text),
+            }
         }
     }
 }

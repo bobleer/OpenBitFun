@@ -6603,6 +6603,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dunce",
+ "encoding_rs",
  "filetime",
  "fs2",
  "git2",
