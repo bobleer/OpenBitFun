@@ -14,7 +14,34 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+/// Process-wide monotonic floor for index revisions so replacing a local-only
+/// `FleetIndex` with the signed-in account's `FleetIndex` always produces a
+/// strictly newer revision (preventing UIs from dropping `fleet://index-changed`).
+static PROCESS_REVISION_FLOOR: AtomicU64 = AtomicU64::new(0);
+
+fn reserve_initial_revision() -> u64 {
+    let now = crate::now_ms();
+    let mut current = PROCESS_REVISION_FLOOR.load(Ordering::Acquire);
+    loop {
+        let next = now.max(current.saturating_add(1));
+        match PROCESS_REVISION_FLOOR.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn record_revision(revision: u64) {
+    PROCESS_REVISION_FLOOR.fetch_max(revision, Ordering::AcqRel);
+}
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
@@ -211,7 +238,7 @@ impl FleetIndex {
         cache_path: Option<PathBuf>,
         sink: Option<Arc<dyn FleetEventSink>>,
     ) -> Arc<Self> {
-        let start = crate::now_ms();
+        let start = reserve_initial_revision();
         let index = Arc::new(Self {
             self_device_id: self_device_id.clone(),
             cache_path,
@@ -285,8 +312,9 @@ impl FleetIndex {
 
     fn bump(state: &mut IndexState, device_id: &str, pending: &mut Pending, prompts: bool) {
         state.dirty = true;
-        state.revision += 1;
+        state.revision = state.revision.saturating_add(1);
         let revision = state.revision;
+        record_revision(revision);
         if let Some(entry) = state.devices.get_mut(device_id) {
             entry.changed_revision = revision;
         }
@@ -294,6 +322,47 @@ impl FleetIndex {
         if prompts {
             pending.prompts_changed.insert(device_id.to_string());
         }
+    }
+
+    /// Re-announces this index with a strictly newer revision so clients that
+    /// previously read a local-only index immediately reload from this one.
+    pub fn announce_current(&self) {
+        let Some(sink) = self.sink.as_ref() else {
+            return;
+        };
+        let (revision, device_ids) = {
+            let mut state = self.lock();
+            state.revision = state.revision.saturating_add(1);
+            let revision = state.revision;
+            record_revision(revision);
+            (
+                revision,
+                state.devices.keys().cloned().collect::<Vec<String>>(),
+            )
+        };
+        sink.emit(
+            FLEET_INDEX_CHANGED_EVENT,
+            json!(FleetIndexChanged {
+                revision,
+                device_ids,
+            }),
+        );
+    }
+
+    /// Whether `device_id` is online and mesh-reachable without an active link
+    /// after a prior connection attempt failed (used to wake failing peer loops
+    /// promptly when Link topology or addresses update).
+    pub fn needs_link_retry(&self, device_id: &str) -> bool {
+        let state = self.lock();
+        let Some(entry) = state.devices.get(device_id) else {
+            return false;
+        };
+        !entry.is_self
+            && entry.online == Some(true)
+            && entry.mesh
+            && entry.unsupported.is_none()
+            && entry.link.is_none()
+            && entry.health == LinkHealth::Failing
     }
 
     fn publish(&self, pending: Pending) {
@@ -396,7 +465,16 @@ impl FleetIndex {
                 }
                 let entry = state.devices.entry(peer.device_id.clone()).or_default();
                 let before = entry.facts(&peer.device_id);
-                entry.name = peer.name.clone();
+                // Keep a known human-readable name (e.g. from cache or prior directory read)
+                // when a presence update falls back to the raw device id because the directory
+                // was temporarily unavailable.
+                if !peer.name.trim().is_empty()
+                    && (entry.name.trim().is_empty()
+                        || entry.name == peer.device_id
+                        || peer.name != peer.device_id)
+                {
+                    entry.name = peer.name.clone();
+                }
                 entry.host_kind = peer.host_kind;
                 entry.version = peer.version.clone().or(entry.version.take());
                 entry.route = peer.route.clone();
@@ -485,8 +563,9 @@ impl FleetIndex {
             if state.devices.remove(device_id).is_none() {
                 return false;
             }
-            state.revision += 1;
+            state.revision = state.revision.saturating_add(1);
             let revision = state.revision;
+            record_revision(revision);
             state.removed.push((device_id.to_string(), revision));
             if state.removed.len() > MAX_REMOVED_HISTORY {
                 let drop = state.removed.len() - MAX_REMOVED_HISTORY;

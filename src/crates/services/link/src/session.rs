@@ -117,13 +117,22 @@ pub fn disabled_by_environment() -> bool {
 #[serde(rename_all = "camelCase")]
 struct CachedCredentials {
     user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuer_url: Option<String>,
     credentials: MeshCredentials,
+}
+
+fn same_network(a: &MeshCredentials, b: &MeshCredentials) -> bool {
+    a.network_name == b.network_name && a.network_secret == b.network_secret && a.peers == b.peers
 }
 
 struct Running {
     account: AccountIdentity,
     node: Arc<LinkNode>,
     credentials: MeshCredentials,
+    needs_rejoin: bool,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -330,14 +339,35 @@ impl Link {
 
     async fn run(self: Arc<Self>) {
         let mut stopping = self.stopping.subscribe();
+        let mut retry_backoff = MIN_BACKOFF;
         loop {
             if *stopping.borrow() {
                 break;
             }
             self.reconcile().await;
+            let wait = match self.status.borrow().state {
+                MeshState::Failed => {
+                    let wait = retry_backoff.min(self.options.account_poll);
+                    retry_backoff = (retry_backoff * 2).min(self.options.account_poll);
+                    wait
+                }
+                MeshState::Restarting | MeshState::Starting => {
+                    retry_backoff = MIN_BACKOFF;
+                    Duration::ZERO
+                }
+                _ => {
+                    retry_backoff = MIN_BACKOFF;
+                    self.options.account_poll
+                }
+            };
+            if wait.is_zero() {
+                continue;
+            }
             tokio::select! {
-                _ = tokio::time::sleep(self.options.account_poll) => {}
-                _ = self.wake.notified() => {}
+                _ = tokio::time::sleep(wait) => {}
+                _ = self.wake.notified() => {
+                    retry_backoff = MIN_BACKOFF;
+                }
                 _ = stopping.changed() => {}
             }
         }
@@ -364,10 +394,31 @@ impl Link {
                 }
                 self.set_state(MeshState::Starting, None);
                 match self.start_account(account).await {
-                    Ok(running) => {
+                    Ok((mut running, verify_in_background)) => {
                         log::info!("Link started for the signed-in account");
+                        let verify_args = verify_in_background.then(|| {
+                            (
+                                running.account.clone(),
+                                Arc::clone(&running.node),
+                                running.credentials.clone(),
+                            )
+                        });
                         *lock(&self.node) = Some(Arc::clone(&running.node));
-                        *self.running.lock().await = Some(running);
+                        let mut guard = self.running.lock().await;
+                        if let Some((verify_account, verify_node, verify_credentials)) = verify_args
+                        {
+                            let link = Arc::clone(self);
+                            running.tasks.push(tokio::spawn(async move {
+                                link.verify_cached_credentials(
+                                    verify_account,
+                                    verify_node,
+                                    verify_credentials,
+                                )
+                                .await;
+                            }));
+                        }
+                        *guard = Some(running);
+                        drop(guard);
                         self.refresh().await;
                     }
                     Err((state, reason)) => {
@@ -381,7 +432,7 @@ impl Link {
 
     /// Keeps a running node's token fresh and replaces a node that stopped.
     async fn maintain(self: &Arc<Self>) {
-        let (account, node, credentials) = {
+        let (account, node, credentials, needs_rejoin) = {
             let running = self.running.lock().await;
             let Some(running) = running.as_ref() else {
                 return;
@@ -390,8 +441,15 @@ impl Link {
                 running.account.clone(),
                 Arc::clone(&running.node),
                 running.credentials.clone(),
+                running.needs_rejoin,
             )
         };
+        if needs_rejoin {
+            log::warn!("The account network changed; rejoining");
+            self.stop_running(MeshState::Starting).await;
+            self.wake.notify_one();
+            return;
+        }
         if node.has_stopped() {
             log::warn!("Link node stopped unexpectedly; restarting");
             *lock(&self.restarts) += 1;
@@ -409,7 +467,7 @@ impl Link {
             return;
         }
         match self.fetch(&account).await {
-            Ok(fresh) if fresh.network_name == credentials.network_name => {
+            Ok(fresh) if same_network(&fresh, &credentials) => {
                 node.set_join_token(fresh.join_token.as_deref());
                 if let Some(running) = self.running.lock().await.as_mut() {
                     running.credentials = fresh;
@@ -422,6 +480,83 @@ impl Link {
                 self.wake.notify_one();
             }
             Err(error) => log::warn!("Link join token refresh failed: {}", error),
+        }
+    }
+
+    fn normalized_issuer_url(&self) -> &str {
+        self.options.issuer_url.trim().trim_end_matches('/')
+    }
+
+    fn load_cached(&self, account: &AccountIdentity) -> Option<CachedCredentials> {
+        std::fs::read(self.options.data_dir.join(CREDENTIALS_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<CachedCredentials>(&bytes).ok())
+            .filter(|cached| cached.user_id == account.user_id)
+            .filter(|cached| {
+                cached
+                    .device_id
+                    .as_deref()
+                    .is_none_or(|device_id| device_id == account.device_id)
+            })
+            .filter(|cached| cached.credentials.validate().is_ok())
+    }
+
+    fn fresh_cached_credentials(&self, account: &AccountIdentity) -> Option<MeshCredentials> {
+        let cached = self.load_cached(account)?;
+        if cached.device_id.as_deref() != Some(account.device_id.as_str()) {
+            return None;
+        }
+        if cached.issuer_url.as_deref() != Some(self.normalized_issuer_url()) {
+            return None;
+        }
+        cached
+            .credentials
+            .usable_join_token(now_secs(), TOKEN_REFRESH_MARGIN_SECS)?;
+        Some(cached.credentials)
+    }
+
+    async fn verify_cached_credentials(
+        &self,
+        account: AccountIdentity,
+        node: Arc<LinkNode>,
+        cached: MeshCredentials,
+    ) {
+        match self.fetch(&account).await {
+            Ok(fresh) if same_network(&fresh, &cached) => {
+                node.set_join_token(fresh.join_token.as_deref());
+                let mut running = self.running.lock().await;
+                if let Some(running) = running.as_mut() {
+                    if running.account == account && Arc::ptr_eq(&running.node, &node) {
+                        running.credentials = fresh;
+                    }
+                }
+                log::debug!("Verified cached Link credentials in background");
+            }
+            Ok(_) => {
+                log::warn!("Cached Link network parameters changed on server; scheduling rejoin");
+                let should_wake = {
+                    let mut guard = self.running.lock().await;
+                    if let Some(running) = guard.as_mut() {
+                        if running.account == account && Arc::ptr_eq(&running.node, &node) {
+                            running.needs_rejoin = true;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if should_wake {
+                    self.wake.notify_one();
+                }
+            }
+            Err(error) => {
+                log::debug!(
+                    "Background Link credential verification deferred: {}",
+                    error
+                );
+            }
         }
     }
 
@@ -444,6 +579,8 @@ impl Link {
         .await?;
         let cached = CachedCredentials {
             user_id: account.user_id.clone(),
+            device_id: Some(account.device_id.clone()),
+            issuer_url: Some(self.normalized_issuer_url().to_string()),
             credentials: credentials.clone(),
         };
         if let Ok(json) = serde_json::to_vec(&cached) {
@@ -458,26 +595,23 @@ impl Link {
     async fn credentials(
         &self,
         account: &AccountIdentity,
-    ) -> Result<MeshCredentials, (MeshState, String)> {
+    ) -> Result<(MeshCredentials, bool), (MeshState, String)> {
+        if let Some(cached) = self.fresh_cached_credentials(account) {
+            log::debug!("Starting Link with fresh cached credentials");
+            return Ok((cached, true));
+        }
         match self.fetch(account).await {
-            Ok(credentials) => Ok(credentials),
-            Err(FetchError::Transient(error)) => {
-                let cached = std::fs::read(self.options.data_dir.join(CREDENTIALS_FILE))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<CachedCredentials>(&bytes).ok())
-                    .filter(|cached| cached.user_id == account.user_id)
-                    .filter(|cached| cached.credentials.validate().is_ok());
-                match cached {
-                    Some(cached) => {
-                        log::warn!(
-                            "Link issuer unavailable; using cached credentials: {}",
-                            error
-                        );
-                        Ok(cached.credentials)
-                    }
-                    None => Err((MeshState::Failed, error)),
+            Ok(credentials) => Ok((credentials, false)),
+            Err(FetchError::Transient(error)) => match self.load_cached(account) {
+                Some(cached) => {
+                    log::warn!(
+                        "Link issuer unavailable; using cached credentials: {}",
+                        error
+                    );
+                    Ok((cached.credentials, true))
                 }
-            }
+                None => Err((MeshState::Failed, error)),
+            },
             Err(FetchError::Refused(error)) => Err((MeshState::Failed, error)),
             Err(FetchError::Unsupported(error)) => Err((MeshState::Unsupported, error)),
         }
@@ -486,8 +620,8 @@ impl Link {
     async fn start_account(
         self: &Arc<Self>,
         account: AccountIdentity,
-    ) -> Result<Running, (MeshState, String)> {
-        let credentials = self.credentials(&account).await?;
+    ) -> Result<(Running, bool), (MeshState, String)> {
+        let (credentials, from_cache) = self.credentials(&account).await?;
         let listener_port = match self.options.preferred_listener_port {
             Some(port) => Some(free_listener_port(port).map_err(|error| {
                 (
@@ -553,12 +687,16 @@ impl Link {
                 accept_loop(accept_node, sender).await;
             }));
         }
-        Ok(Running {
-            account,
-            node,
-            credentials,
-            tasks,
-        })
+        Ok((
+            Running {
+                account,
+                node,
+                credentials,
+                needs_rejoin: false,
+                tasks,
+            },
+            from_cache,
+        ))
     }
 
     async fn stop_running(&self, reason: MeshState) {
@@ -619,5 +757,220 @@ async fn accept_loop(node: Arc<LinkNode>, sender: mpsc::Sender<LinkStream>) {
             return;
         }
         tokio::time::sleep(delay).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct StaticSession {
+        identity: AccountIdentity,
+        token: Option<String>,
+        token_calls: Arc<AtomicUsize>,
+    }
+
+    impl AccountSession for StaticSession {
+        fn identity(&self) -> BoxFuture<'_, Option<AccountIdentity>> {
+            let identity = self.identity.clone();
+            Box::pin(async move { Some(identity) })
+        }
+
+        fn access_token(&self) -> BoxFuture<'_, Result<Option<String>, String>> {
+            let token = self.token.clone();
+            let calls = Arc::clone(&self.token_calls);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(token)
+            })
+        }
+    }
+
+    fn sample_credentials(expires_at: Option<i64>) -> MeshCredentials {
+        MeshCredentials {
+            version: 1,
+            network_name: "obf-0123456789abcdef".into(),
+            network_secret: "0123456789abcdef0123456789abcdef".into(),
+            peers: vec!["ws://127.0.0.1:1/".into()],
+            easytier_version: None,
+            issued_at: Some(now_secs()),
+            join_token: Some("obfjt1.e30.c2ln".into()),
+            join_token_expires_at: expires_at,
+        }
+    }
+
+    fn test_link(
+        data_dir: PathBuf,
+        issuer_url: &str,
+        account_poll: Duration,
+        token: Option<String>,
+    ) -> (Arc<Link>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (inbound_sender, inbound) = mpsc::channel(ACCEPT_QUEUE);
+        let options = LinkOptions {
+            data_dir,
+            issuer_url: issuer_url.to_string(),
+            client_version: "2.0.0-test".into(),
+            preferred_listener_port: None,
+            disable_p2p: true,
+            role: NodeRole::Device,
+            display_name: None,
+            tls_roots: crate::issuer::TlsRoots::default(),
+            account_poll,
+            status_interval: Duration::from_secs(10),
+        };
+        let session = Arc::new(StaticSession {
+            identity: AccountIdentity {
+                user_id: "user-1".into(),
+                device_id: "dev-a".into(),
+            },
+            token,
+            token_calls: Arc::clone(&calls),
+        });
+        let link = Arc::new(Link {
+            options,
+            session,
+            status: watch::channel(MeshStatus::new(MeshState::SignedOut, None)).0,
+            running: tokio::sync::Mutex::new(None),
+            node: Mutex::new(None),
+            wake: Notify::new(),
+            stopping: watch::channel(false).0,
+            restarts: Mutex::new(0),
+            inbound_sender,
+            inbound: tokio::sync::Mutex::new(inbound),
+            supervisor: Mutex::new(None),
+        });
+        (link, calls)
+    }
+
+    #[tokio::test]
+    async fn fast_starts_from_fresh_cached_credentials_without_blocking_on_issuer() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = AccountIdentity {
+            user_id: "user-1".into(),
+            device_id: "dev-a".into(),
+        };
+        let creds = sample_credentials(Some(now_secs() + TOKEN_REFRESH_MARGIN_SECS + 600));
+        let cached = CachedCredentials {
+            user_id: account.user_id.clone(),
+            device_id: Some(account.device_id.clone()),
+            issuer_url: Some("https://issuer.example".into()),
+            credentials: creds.clone(),
+        };
+        write_private(
+            &dir.path().join(CREDENTIALS_FILE),
+            &serde_json::to_vec(&cached).unwrap(),
+        )
+        .unwrap();
+
+        let (link, calls) = test_link(
+            dir.path().to_path_buf(),
+            "https://issuer.example/",
+            Duration::from_secs(15),
+            Some("tok".into()),
+        );
+        let (resolved, from_cache) = link.credentials(&account).await.unwrap();
+        assert!(from_cache);
+        assert_eq!(resolved, creds);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "fresh cache should skip blocking on issuer HTTP"
+        );
+
+        // Changing issuer URL bypasses fast-start cache.
+        let (other_issuer, _) = test_link(
+            dir.path().to_path_buf(),
+            "https://other.example",
+            Duration::from_secs(15),
+            Some("tok".into()),
+        );
+        assert!(other_issuer.fresh_cached_credentials(&account).is_none());
+
+        // Expiring token bypasses fast-start cache.
+        let expiring = CachedCredentials {
+            credentials: sample_credentials(Some(now_secs() + TOKEN_REFRESH_MARGIN_SECS - 10)),
+            ..cached
+        };
+        write_private(
+            &dir.path().join(CREDENTIALS_FILE),
+            &serde_json::to_vec(&expiring).unwrap(),
+        )
+        .unwrap();
+        assert!(link.fresh_cached_credentials(&account).is_none());
+    }
+
+    #[test]
+    fn legacy_cached_credentials_without_device_id_still_load_for_offline_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = sample_credentials(Some(now_secs() + 3600));
+        // Format written by builds before `deviceId` and `issuerUrl` existed.
+        let legacy_json = serde_json::json!({
+            "userId": "user-1",
+            "credentials": creds,
+        });
+        write_private(
+            &dir.path().join(CREDENTIALS_FILE),
+            &serde_json::to_vec(&legacy_json).unwrap(),
+        )
+        .unwrap();
+
+        let account = AccountIdentity {
+            user_id: "user-1".into(),
+            device_id: "dev-a".into(),
+        };
+        let (link, _) = test_link(
+            dir.path().to_path_buf(),
+            "https://issuer.example",
+            Duration::from_secs(15),
+            Some("tok".into()),
+        );
+        // Legacy files don't fast-start (device binding unknown), but still load
+        // on transient issuer failures.
+        assert!(link.fresh_cached_credentials(&account).is_none());
+        let loaded = link.load_cached(&account).expect("legacy cache loads");
+        assert_eq!(loaded.credentials, creds);
+        assert_eq!(loaded.device_id, None);
+    }
+
+    #[tokio::test]
+    async fn startup_failure_retries_with_backoff_faster_than_account_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        struct FailingTokenSession(Arc<AtomicUsize>);
+        impl AccountSession for FailingTokenSession {
+            fn identity(&self) -> BoxFuture<'_, Option<AccountIdentity>> {
+                Box::pin(async {
+                    Some(AccountIdentity {
+                        user_id: "user-1".into(),
+                        device_id: "dev-a".into(),
+                    })
+                })
+            }
+            fn access_token(&self) -> BoxFuture<'_, Result<Option<String>, String>> {
+                let calls = Arc::clone(&self.0);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err("temporary network error".into())
+                })
+            }
+        }
+        let mut options = LinkOptions::from_environment(dir.path().to_path_buf(), "2.0.0-test");
+        options.account_poll = Duration::from_secs(30);
+        options.preferred_listener_port = None;
+        let link = Link::start(options, Arc::new(FailingTokenSession(Arc::clone(&calls))));
+        // Should attempt initially and retry at ~1s (well before the 30s account_poll).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+        while calls.load(Ordering::SeqCst) < 2 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let count = calls.load(Ordering::SeqCst);
+        link.shutdown().await;
+        assert!(
+            count >= 2,
+            "expected failed startup to retry before 30s account_poll, got {count} calls"
+        );
     }
 }

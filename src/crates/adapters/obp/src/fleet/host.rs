@@ -123,6 +123,9 @@ const UI_BUNDLE_PEER_TIMEOUT: Duration = Duration::from_secs(5);
 const UI_BUNDLE_MAX_PEERS: usize = 8;
 /// How long a directory read is reused for presence.
 const DIRECTORY_TTL: Duration = Duration::from_secs(60);
+/// Upper bound on waiting for the account directory during presence discovery
+/// so slow or retrying directory HTTP calls never stall Link peer connections.
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long opening a Link stream to a peer may take.
 const LINK_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -550,6 +553,7 @@ pub struct LinkPresence {
     directory: Arc<dyn FleetDirectory>,
     /// The host's links can reach the account's cloud node.
     dials_cloud_node: bool,
+    directory_timeout: Duration,
     cache: Mutex<Option<(Instant, Vec<FleetDirectoryDevice>)>>,
     /// This host's own display name from the latest successful directory read.
     self_name: Mutex<Option<String>>,
@@ -575,6 +579,26 @@ impl LinkPresence {
             self_id,
             directory,
             dials_cloud_node,
+            directory_timeout: DIRECTORY_TIMEOUT,
+            cache: Mutex::new(None),
+            self_name: Mutex::new(None),
+            complete: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_directory_timeout(
+        link: Arc<Link>,
+        self_id: String,
+        directory: Arc<dyn FleetDirectory>,
+        directory_timeout: Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            link,
+            self_id,
+            directory,
+            dials_cloud_node: false,
+            directory_timeout,
             cache: Mutex::new(None),
             self_name: Mutex::new(None),
             complete: std::sync::atomic::AtomicBool::new(false),
@@ -592,15 +616,26 @@ impl LinkPresence {
         if cached.is_some() {
             return cached;
         }
-        match self.directory.devices().await {
-            Ok(rows) => {
+        match tokio::time::timeout(self.directory_timeout, self.directory.devices()).await {
+            Ok(Ok(rows)) => {
                 *self.cache.lock().unwrap_or_else(|p| p.into_inner()) =
                     Some((Instant::now(), rows.clone()));
                 Some(rows)
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 log::debug!("Fleet presence without the account directory: {error}");
                 // An older read is better than none.
+                self.cache
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .map(|(_, rows)| rows.clone())
+            }
+            Err(_) => {
+                log::debug!(
+                    "Fleet presence account directory timed out after {:?}",
+                    self.directory_timeout
+                );
                 self.cache
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -614,8 +649,10 @@ impl LinkPresence {
 impl FleetPresenceSource for LinkPresence {
     fn presence(&self) -> FleetFuture<'_, Vec<FleetPeerPresence>> {
         Box::pin(async move {
-            let status = self.link.status();
             let directory = self.directory().await;
+            // Read Link status after the directory call completes so any peers
+            // discovered while the HTTP request was in flight are visible now.
+            let status = self.link.status();
             if let Some(rows) = directory.as_deref() {
                 let own_name = rows
                     .iter()
@@ -856,7 +893,12 @@ impl PeerConnector for LinkPeerConnector {
         let authority = Arc::clone(&self.authority);
         Box::pin(async move {
             let mut status = link.status();
-            if status.peer(&device_id).is_none() {
+            let needs_refresh = status.virtual_ip.is_none()
+                || status.peer(&device_id).is_none_or(|peer| {
+                    peer.virtual_ip.is_empty()
+                        || status.virtual_ip.as_deref() == Some(peer.virtual_ip.as_str())
+                });
+            if needs_refresh {
                 status = link.refresh().await;
             }
             let peer = status.peer(&device_id).ok_or_else(|| {
@@ -1397,6 +1439,7 @@ impl FleetHost {
 
     /// Stops replication, releases every index link and writes the cache.
     pub fn shutdown(&self) {
+        self.mux.close();
         if let Some(watcher) = self
             .watcher
             .lock()

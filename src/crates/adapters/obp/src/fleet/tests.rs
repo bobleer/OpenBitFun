@@ -1292,3 +1292,113 @@ fn bound_partition_retains_assistant_workspace_ahead_of_workspace_limit() {
     assert_eq!(partition.workspaces[1].workspace_id, "asst-secondary");
     assert!(partition.sessions_truncated);
 }
+
+#[tokio::test]
+async fn presence_change_wakes_failing_peer_loop_out_of_backoff() {
+    let local = FakeOwner::new("dev-a", "inst-a");
+    let backend: Arc<dyn FleetBackend> = Arc::new(FakeBackend {
+        device_id: "dev-a".into(),
+        owner: Arc::clone(&local),
+    });
+    let index = FleetIndex::new("dev-a".into(), None, None);
+    let transport = Arc::new(FakeTransport::default());
+    let owner_b = FakeOwner::new("dev-b", "inst-b");
+    owner_b.put_workspace(workspace("ws-b", "Ubuntu"));
+    transport.add(
+        presence("dev-b", "Ubuntu", FleetHostKind::Desktop),
+        Some(FakePeer::Fleet(Arc::clone(&owner_b))),
+    );
+    // Simulate Link reporting dev-b while local virtual_ip/route is not ready yet.
+    transport.unreachable.lock().unwrap().insert("dev-b".into());
+
+    let config = FleetSyncConfig {
+        presence_poll: Duration::from_secs(60),
+        retry_min: Duration::from_secs(20),
+        retry_max: Duration::from_secs(60),
+        ..FleetSyncConfig::default()
+    };
+    let sync = FleetSync::new(
+        Arc::clone(&index),
+        backend,
+        Arc::clone(&transport) as _,
+        config,
+    );
+    sync.start();
+
+    // First dial fails and puts dev-b into failing state + 20s backoff sleep.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !index.needs_link_retry("dev-b") && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(index.needs_link_retry("dev-b"));
+
+    // Mesh converges: dev-b becomes reachable and Link fires presence_changed().
+    transport.unreachable.lock().unwrap().remove("dev-b");
+    let started = tokio::time::Instant::now();
+    sync.presence_changed();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while index.partition("dev-b").is_none() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sync.shutdown();
+    assert!(
+        index.partition("dev-b").is_some(),
+        "dev-b should sync promptly on presence_changed instead of waiting 20s backoff"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "presence_changed wake took too long: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn index_revisions_are_strictly_monotonic_across_instances_and_preserve_known_names() {
+    let events = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    struct Capture(Arc<Mutex<Vec<(String, Value)>>>);
+    impl super::FleetEventSink for Capture {
+        fn emit(&self, event: &str, payload: Value) {
+            self.0.lock().unwrap().push((event.to_string(), payload));
+        }
+    }
+
+    // Simulate LOCAL index bumping multiple times within the same millisecond,
+    // then CURRENT replacing LOCAL in the same process.
+    let local = FleetIndex::new("dev-a".into(), None, None);
+    for i in 0..5 {
+        local.set_self_display_name(Some(format!("Mac {i}")));
+    }
+    let local_rev = local.revision();
+
+    let account = FleetIndex::new(
+        "dev-a".into(),
+        None,
+        Some(Arc::new(Capture(Arc::clone(&events)))),
+    );
+    assert!(
+        account.revision() > local_rev,
+        "new account FleetIndex revision {} must exceed prior local revision {}",
+        account.revision(),
+        local_rev
+    );
+    let before_announce = account.revision();
+    account.announce_current();
+    assert!(account.revision() > before_announce);
+    let emitted = events.lock().unwrap();
+    assert!(emitted.iter().any(|(event, payload)| {
+        event == FLEET_INDEX_CHANGED_EVENT
+            && payload["revision"].as_u64() == Some(account.revision())
+    }));
+    drop(emitted);
+
+    // Presence with a human-readable directory name, followed by a directory
+    // outage falling back to the raw device id, must keep the known name.
+    account.set_presence(&[presence("dev-b", "UBUNTU", FleetHostKind::Desktop)]);
+    assert_eq!(account.device_facts("dev-b").unwrap().name, "UBUNTU");
+    account.set_presence(&[presence("dev-b", "dev-b", FleetHostKind::Desktop)]);
+    assert_eq!(account.device_facts("dev-b").unwrap().name, "UBUNTU");
+    // A real rename still updates the name.
+    account.set_presence(&[presence("dev-b", "UBUNTU-2", FleetHostKind::Desktop)]);
+    assert_eq!(account.device_facts("dev-b").unwrap().name, "UBUNTU-2");
+}

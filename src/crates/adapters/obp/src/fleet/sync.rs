@@ -160,6 +160,7 @@ impl Default for FleetSyncConfig {
 
 struct PeerTask {
     hint: Arc<Notify>,
+    retry_now: watch::Sender<u64>,
     handle: JoinHandle<()>,
 }
 
@@ -275,6 +276,10 @@ impl FleetSync {
 
     /// Re-read presence and start or stop the per-device links.
     pub async fn refresh_presence(self: &Arc<Self>) {
+        self.refresh_presence_inner(true).await;
+    }
+
+    async fn refresh_presence_inner(self: &Arc<Self>, wake_failing: bool) {
         let presence = self.peers.presence().await;
         if let Some(self_name) = self.peers.self_display_name() {
             self.index.set_self_display_name(Some(self_name));
@@ -299,13 +304,28 @@ impl FleetSync {
             keep
         });
         for device_id in wanted.keys() {
-            if tasks.contains_key(device_id) {
+            if let Some(task) = tasks.get(device_id) {
+                if wake_failing && self.index.needs_link_retry(device_id) {
+                    task.retry_now
+                        .send_modify(|generation| *generation = generation.wrapping_add(1));
+                }
                 continue;
             }
             let hint = Arc::new(Notify::new());
-            let handle =
-                tokio::spawn(Arc::clone(self).peer_loop(device_id.clone(), Arc::clone(&hint)));
-            tasks.insert(device_id.clone(), PeerTask { hint, handle });
+            let (retry_now, retry_rx) = watch::channel(0u64);
+            let handle = tokio::spawn(Arc::clone(self).peer_loop(
+                device_id.clone(),
+                Arc::clone(&hint),
+                retry_rx,
+            ));
+            tasks.insert(
+                device_id.clone(),
+                PeerTask {
+                    hint,
+                    retry_now,
+                    handle,
+                },
+            );
         }
         drop(tasks);
         if let Err(error) = self.index.flush() {
@@ -315,13 +335,14 @@ impl FleetSync {
 
     async fn presence_loop(self: Arc<Self>) {
         let mut stop = self.stop.subscribe();
+        let mut wake_failing = true;
         loop {
-            self.refresh_presence().await;
-            tokio::select! {
-                _ = self.presence_hint.notified() => {}
-                _ = tokio::time::sleep(self.config.presence_poll) => {}
+            self.refresh_presence_inner(wake_failing).await;
+            wake_failing = tokio::select! {
+                _ = self.presence_hint.notified() => true,
+                _ = tokio::time::sleep(self.config.presence_poll) => false,
                 _ = stop.changed() => return,
-            }
+            };
         }
     }
 
@@ -341,10 +362,19 @@ impl FleetSync {
         }
     }
 
-    async fn peer_loop(self: Arc<Self>, device_id: String, hint: Arc<Notify>) {
+    async fn peer_loop(
+        self: Arc<Self>,
+        device_id: String,
+        hint: Arc<Notify>,
+        mut retry_rx: watch::Receiver<u64>,
+    ) {
         let mut stop = self.stop.subscribe();
         let mut backoff = self.config.retry_min;
         loop {
+            // Snapshot the retry generation before dialing so a Link presence
+            // change arriving while this attempt fails wakes the backoff wait.
+            let _ = *retry_rx.borrow_and_update();
+            let attempted_at = tokio::time::Instant::now();
             match self.peers.subscribe_index(&device_id).await {
                 Err(error) => {
                     log::debug!("Fleet index link failed: device_id={device_id}, error={error}");
@@ -363,11 +393,27 @@ impl FleetSync {
             }
             let _ = self.index.flush();
             tokio::select! {
-                _ = tokio::time::sleep(backoff) => {}
-                _ = hint.notified() => {}
+                _ = tokio::time::sleep(backoff) => {
+                    backoff = (backoff * 2).min(self.config.retry_max);
+                }
+                changed = retry_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let earliest = attempted_at + self.config.retry_min.min(Duration::from_millis(500));
+                    if tokio::time::Instant::now() < earliest {
+                        tokio::select! {
+                            _ = tokio::time::sleep_until(earliest) => {}
+                            _ = stop.changed() => return,
+                        }
+                    }
+                    backoff = self.config.retry_min;
+                }
+                _ = hint.notified() => {
+                    backoff = (backoff * 2).min(self.config.retry_max);
+                }
                 _ = stop.changed() => return,
             }
-            backoff = (backoff * 2).min(self.config.retry_max);
         }
     }
 

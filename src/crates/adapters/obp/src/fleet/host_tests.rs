@@ -387,3 +387,35 @@ async fn link_presence_exposes_self_name_and_refreshes_after_invalidation() {
     );
     link.shutdown().await;
 }
+
+#[tokio::test]
+async fn link_presence_bounds_hung_directory_without_stalling() {
+    struct HungDirectory;
+    impl FleetDirectory for HungDirectory {
+        fn devices(&self) -> FleetFuture<'_, Result<Vec<FleetDirectoryDevice>, String>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let link = Link::start(
+        openbitfun_link::session::LinkOptions::from_environment(temp.path().to_path_buf(), "test"),
+        Arc::new(SignedOutSession),
+    );
+    let presence = LinkPresence::with_directory_timeout(
+        Arc::clone(&link),
+        "self-dev".into(),
+        Arc::new(HungDirectory),
+        Duration::from_millis(80),
+    );
+    let started = Instant::now();
+    let rows = presence.presence().await;
+    assert!(rows.is_empty());
+    assert!(!presence.lists_every_device());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "hung directory stalled presence read: {:?}",
+        started.elapsed()
+    );
+    link.shutdown().await;
+}

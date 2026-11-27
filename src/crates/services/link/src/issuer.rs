@@ -2,9 +2,13 @@
 //! OpenBitFun identity access token, naming this device so the response
 //! carries a join token bound to it.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::credentials::{MeshCredentials, MESH_CREDENTIALS_PATH};
+
+static PLATFORM_CLIENT: Mutex<Option<reqwest::Client>> = Mutex::new(None);
+static BUNDLED_CLIENT: Mutex<Option<reqwest::Client>> = Mutex::new(None);
 
 /// Why credentials could not be fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +69,7 @@ pub async fn fetch_credentials(
     .await
 }
 
-fn http_client(roots: TlsRoots) -> Result<reqwest::Client, String> {
+fn build_http_client(roots: TlsRoots) -> Result<reqwest::Client, String> {
     openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
     let builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -84,6 +88,23 @@ fn http_client(roots: TlsRoots) -> Result<reqwest::Client, String> {
         }
     };
     builder.build().map_err(|error| error.to_string())
+}
+
+fn http_client(roots: TlsRoots) -> Result<reqwest::Client, String> {
+    let slot = match roots {
+        TlsRoots::Platform => &PLATFORM_CLIENT,
+        TlsRoots::Bundled => &BUNDLED_CLIENT,
+    };
+    if let Some(client) = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+    {
+        return Ok(client.clone());
+    }
+    let client = build_http_client(roots)?;
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(guard.get_or_insert(client).clone())
 }
 
 /// [`fetch_credentials`] with the given HTTPS roots.

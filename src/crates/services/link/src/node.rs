@@ -11,10 +11,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use easytier::common::global_ctx::{EventBusSubscriber, GlobalCtxEvent};
+use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::openbitfun::{create_instance_on_current_runtime, NativeCoreInstance};
 use easytier_core::config::toml::TomlConfig;
 use easytier_core::gateway::{DataPlaneTcpListener, DataPlaneTcpStream};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinHandle;
 
 use crate::status::{
@@ -25,6 +27,13 @@ use crate::stream::{LinkListener, LinkStream};
 
 /// How long a device that left the network stays in `recent_peers`.
 const RECENT_PEER_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+/// Fast status convergence cadence right after startup or a Link topology event.
+const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+/// How long after startup or a topology event the node stays on the fast cadence
+/// before settling back to `status_interval`.
+const FAST_REFRESH_WINDOW: Duration = Duration::from_secs(15);
+/// Coalesce bursts of EasyTier events into at most one immediate refresh per gap.
+const MIN_EVENT_REFRESH_GAP: Duration = Duration::from_millis(100);
 
 /// How a node presents itself to the account's other members.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,6 +77,7 @@ struct Inner {
     seen: Mutex<HashMap<String, MeshPeer>>,
     obp_port: Mutex<Option<u16>>,
     subnets: Mutex<Option<(std::time::Instant, Vec<LocalSubnet>)>>,
+    refresh_wake: Notify,
 }
 
 /// A running node. Dropping it without [`LinkNode::stop`] stops the status
@@ -134,6 +144,8 @@ impl LinkNode {
         );
         let instance = create_instance_on_current_runtime(config)
             .map_err(|error| format!("failed to create the Link node: {error}"))?;
+        // Subscribe before `start()` so early DHCP and relay peer events are never missed.
+        let mut events = subscribe_native_instance_event(&instance);
         if let Err(error) = instance.start().await {
             instance.stop().await;
             easytier::openbitfun::set_join_token(&options.network_name, &options.hostname, None);
@@ -153,13 +165,60 @@ impl LinkNode {
             seen: Mutex::new(HashMap::new()),
             obp_port: Mutex::new(None),
             subnets: Mutex::new(None),
+            refresh_wake: Notify::new(),
         });
         let poll_inner = Arc::clone(&inner);
         let interval = options.status_interval.max(Duration::from_millis(200));
         let poller = tokio::spawn(async move {
+            let mut fast_until = tokio::time::Instant::now() + FAST_REFRESH_WINDOW;
+            let mut last_heartbeat = tokio::time::Instant::now() - interval;
+            let mut force_publish = true;
             loop {
-                poll_inner.refresh().await;
-                tokio::time::sleep(interval).await;
+                let now = tokio::time::Instant::now();
+                let heartbeat_due =
+                    force_publish || now.saturating_duration_since(last_heartbeat) >= interval;
+                poll_inner.refresh_with_policy(heartbeat_due).await;
+                let refreshed_at = tokio::time::Instant::now();
+                if heartbeat_due {
+                    last_heartbeat = refreshed_at;
+                }
+                force_publish = false;
+                let sleep_for = if refreshed_at < fast_until {
+                    interval.min(FAST_REFRESH_INTERVAL)
+                } else {
+                    interval
+                };
+                let sleep = tokio::time::sleep(sleep_for);
+                tokio::pin!(sleep);
+                loop {
+                    tokio::select! {
+                        _ = &mut sleep => break,
+                        _ = poll_inner.refresh_wake.notified() => {
+                            fast_until = tokio::time::Instant::now() + FAST_REFRESH_WINDOW;
+                            force_publish = true;
+                            let gap = refreshed_at + MIN_EVENT_REFRESH_GAP;
+                            if tokio::time::Instant::now() < gap {
+                                tokio::time::sleep_until(gap).await;
+                            }
+                            break;
+                        }
+                        event = recv_topology_event(&mut events) => {
+                            match event {
+                                TopologyEvent::Relevant => {
+                                    fast_until = tokio::time::Instant::now() + FAST_REFRESH_WINDOW;
+                                    let gap = refreshed_at + MIN_EVENT_REFRESH_GAP;
+                                    if tokio::time::Instant::now() < gap {
+                                        tokio::time::sleep_until(gap).await;
+                                    }
+                                    break;
+                                }
+                                TopologyEvent::Closed => {
+                                    events = None;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         });
         Ok(Arc::new(Self {
@@ -404,6 +463,12 @@ impl LinkNode {
         self.inner
             .status
             .send_modify(|status| status.obp_port = port);
+        // Binding the OBP listener means DHCP just assigned this node's
+        // virtual IP: refresh immediately so virtual_ip and peers propagate
+        // without waiting for the next timer tick.
+        if port.is_some() {
+            self.inner.refresh_wake.notify_one();
+        }
     }
 }
 
@@ -445,8 +510,43 @@ fn role_from_flag(controller: bool) -> NodeRole {
     }
 }
 
+enum TopologyEvent {
+    Relevant,
+    Closed,
+}
+
+fn is_topology_event(event: &GlobalCtxEvent) -> bool {
+    matches!(
+        event,
+        GlobalCtxEvent::PeerAdded(_)
+            | GlobalCtxEvent::PeerRemoved(_)
+            | GlobalCtxEvent::PeerConnAdded(_)
+            | GlobalCtxEvent::PeerConnRemoved(_)
+            | GlobalCtxEvent::DhcpIpv4Changed(_, _)
+            | GlobalCtxEvent::DhcpIpv4Conflicted(_)
+    )
+}
+
+async fn recv_topology_event(events: &mut Option<EventBusSubscriber>) -> TopologyEvent {
+    let Some(rx) = events.as_mut() else {
+        return std::future::pending().await;
+    };
+    loop {
+        match rx.recv().await {
+            Ok(event) if is_topology_event(&event) => return TopologyEvent::Relevant,
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(_)) => return TopologyEvent::Relevant,
+            Err(broadcast::error::RecvError::Closed) => return TopologyEvent::Closed,
+        }
+    }
+}
+
 impl Inner {
     async fn refresh(&self) {
+        self.refresh_with_policy(true).await;
+    }
+
+    async fn refresh_with_policy(&self, always_publish: bool) {
         let now = crate::now_ms();
         let node = self.instance.node_snapshot().await;
         let routes = self.instance.route_snapshots().await;
@@ -599,18 +699,26 @@ impl Inner {
         };
 
         let obp_port = *lock(&self.obp_port);
-        self.status.send_modify(|status| {
-            status.state = MeshState::Running;
-            status.reason = None;
-            status.device_id = Some(self.hostname.clone());
-            status.role = self.role;
-            status.virtual_ip = node.ipv4_addr.map(|inet| inet.address().to_string());
-            status.nat_type = nat_type_name(node.stun_info.udp_nat_type).map(str::to_string);
-            status.obp_port = obp_port;
-            status.peers = peers;
-            status.recent_peers = recent_peers;
-            status.relay_nodes = relays;
-            status.updated_at_ms = now;
-        });
+        let mut next = MeshStatus::new(MeshState::Running, None);
+        next.device_id = Some(self.hostname.clone());
+        next.role = self.role;
+        next.virtual_ip = node.ipv4_addr.map(|inet| inet.address().to_string());
+        next.nat_type = nat_type_name(node.stun_info.udp_nat_type).map(str::to_string);
+        next.obp_port = obp_port;
+        next.peers = peers;
+        next.recent_peers = recent_peers;
+        next.relay_nodes = relays;
+        next.updated_at_ms = now;
+        if always_publish {
+            self.status.send_replace(next);
+        } else {
+            self.status.send_if_modified(|current| {
+                let changed = current.differs_materially(&next);
+                if changed {
+                    *current = next;
+                }
+                changed
+            });
+        }
     }
 }
