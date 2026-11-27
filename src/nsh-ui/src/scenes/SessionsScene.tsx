@@ -3086,11 +3086,11 @@ function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string;
 
 type ItemOf<K extends TranscriptItem["kind"]> = Extract<TranscriptItem, { kind: K }>;
 
-function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking" }>, pane: 0 | 1 = 0): JSX.Element {
+function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking" }>, pane: LivePane = 0, prefix = ""): JSX.Element {
   const text: string | (() => string) = item.roundId
-    ? () => (pane === 1 ? getSecondaryLiveRoundThinking(item.roundId!) : getLiveRoundThinking(item.roundId!))
+    ? () => livePaneThinking(pane, item.roundId!)
     : item.text;
-  return <ThinkingBlock partKey={item.key} text={text} kind={item.reasoningKind} live={item.live} />;
+  return <ThinkingBlock partKey={`${prefix}${item.key}`} text={text} kind={item.reasoningKind} live={item.live} />;
 }
 
 /**
@@ -3215,6 +3215,25 @@ function liveToolToCallView(tool: LiveToolItem): ToolCallView {
 
 const liveRounds = computed<LiveModelRound[]>(() => liveTurn()?.rounds ?? []);
 
+/** Ordinary panes use their fine-grained channels; ephemeral panes supply their own rounds. */
+type LivePane = 0 | 1 | (() => LiveModelRound[]);
+function livePaneText(pane: LivePane, roundId: string): string {
+  return typeof pane === "function" ? pane().find(round => round.roundId === roundId)?.text ?? ""
+    : pane === 1 ? getSecondaryLiveRoundText(roundId) : getLiveRoundText(roundId);
+}
+function livePaneThinking(pane: LivePane, roundId: string): string {
+  return typeof pane === "function" ? pane().find(round => round.roundId === roundId)?.thinking ?? ""
+    : pane === 1 ? getSecondaryLiveRoundThinking(roundId) : getLiveRoundThinking(roundId);
+}
+function livePaneHasText(pane: LivePane, round: LiveModelRound): boolean {
+  return typeof pane === "function" ? hasVisibleTextFrom(round.text)
+    : pane === 1 ? hasSecondaryLiveRoundText(round.roundId) : hasLiveRoundText(round.roundId);
+}
+function livePaneHasTailText(pane: LivePane, round: LiveModelRound): boolean {
+  return typeof pane === "function" ? hasVisibleTextFrom(round.text, Math.max(0, ...round.tools.map(tool => tool.textOffset ?? 0)))
+    : pane === 1 ? hasSecondaryLiveRoundTailText(round.roundId) : hasLiveRoundTailText(round.roundId);
+}
+
 type LiveDisplayBlock =
   | { kind: "liveText"; key: string; roundId: string; start: number; end?: number }
   | { kind: "thinking"; key: string; roundId: string; reasoningKind?: "reasoning" | "summary"; live: boolean }
@@ -3238,13 +3257,14 @@ function isLiveProcessItemActive(item: FoldedProcessItem): boolean {
  * the single active row, and `TurnWaitingIndicator` occupies that exact same
  * slot during inter-tool LLM gaps without vertical ping-pong or double spinners.
  */
-function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): LiveDisplayBlock[] {
+function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: LivePane = 0): LiveDisplayBlock[] {
   const singleRound = rounds.length === 1;
   const raw: LiveDisplayBlock[] = [];
   for (const round of rounds) {
-    const hasThinking = pane === 1 ? hasSecondaryLiveRoundThinking(round.roundId) : hasLiveRoundThinking(round.roundId);
-    const hasText = pane === 1 ? hasSecondaryLiveRoundText(round.roundId) : hasLiveRoundText(round.roundId);
-    const hasTailText = pane === 1 ? hasSecondaryLiveRoundTailText(round.roundId) : hasLiveRoundTailText(round.roundId);
+    const hasThinking = typeof pane === "function" ? hasVisibleTextFrom(round.thinking)
+      : pane === 1 ? hasSecondaryLiveRoundThinking(round.roundId) : hasLiveRoundThinking(round.roundId);
+    const hasText = livePaneHasText(pane, round);
+    const hasTailText = livePaneHasTailText(pane, round);
     if (hasThinking) {
       raw.push({
         kind: "thinking",
@@ -3369,7 +3389,7 @@ function shouldReserveLiveFooterSpace(
 function liveBlocksHaveActiveMotion(
   blocks: ReadonlyArray<LiveDisplayBlock>,
   rounds: ReadonlyArray<LiveModelRound>,
-  pane: 0 | 1,
+  pane: LivePane,
 ): boolean {
   for (const block of blocks) {
     if (block.kind === "thinking" && block.live) return true;
@@ -3387,9 +3407,8 @@ function liveBlocksHaveActiveMotion(
   }
   const latestRound = rounds[rounds.length - 1];
   if (latestRound && !latestRound.completed) {
-    const hasText = pane === 1 ? hasSecondaryLiveRoundText(latestRound.roundId) : hasLiveRoundText(latestRound.roundId);
-    const hasTailText =
-      pane === 1 ? hasSecondaryLiveRoundTailText(latestRound.roundId) : hasLiveRoundTailText(latestRound.roundId);
+    const hasText = livePaneHasText(pane, latestRound);
+    const hasTailText = livePaneHasTailText(pane, latestRound);
     if (latestRound.tools.length === 0 ? hasText : hasTailText) return true;
   }
   return false;
@@ -3445,22 +3464,22 @@ function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; acc
 }
 
 /** Fine-grained streaming text slice: subscribes only to its own round's text channel. */
-function LiveTextSegment(props: { roundId: string; start: number; end?: number; pane: 0 | 1; itemKey: string }) {
+function LiveTextSegment(props: { roundId: string; start: number; end?: number; pane: LivePane; itemKey: string; live?: boolean }) {
   const slice = computed(() => {
-    const full = props.pane === 1 ? getSecondaryLiveRoundText(props.roundId) : getLiveRoundText(props.roundId);
+    const full = livePaneText(props.pane, props.roundId);
     const start = Math.min(full.length, Math.max(0, props.start));
     const end = props.end !== undefined ? Math.min(full.length, Math.max(start, props.end)) : full.length;
     return full.slice(start, end);
   });
   return (
     <If when={hasVisibleTextFrom(slice())}>
-      <AnswerMarkdown text={slice()} live={true} itemKey={props.itemKey} />
+      <AnswerMarkdown text={slice()} live={props.live !== false} preserveFullReply={props.live === false} itemKey={props.itemKey} />
     </If>
   );
 }
 
 /** Shared live-turn block list used identically by Primary and Secondary split panes. */
-function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: 0 | 1; cardPrefix?: string }) {
+function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: LivePane; cardPrefix?: string; live?: boolean }) {
   const prefix = props.cardPrefix ?? "";
   return (
     <View style={{ gap: 8 }}>
@@ -3476,7 +3495,8 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: 0
                   start={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).start}
                   end={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).end}
                   pane={props.pane}
-                  itemKey={block().key}
+                  live={props.live}
+                  itemKey={`${prefix}${block().key}`}
                 />
               </If>
               <If when={kind() === "thinking"}>
@@ -3484,11 +3504,9 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: 0
                   const item = () => block() as Extract<LiveDisplayBlock, { kind: "thinking" }>;
                   return (
                     <ThinkingBlock
-                      partKey={item().key}
+                      partKey={`${prefix}${item().key}`}
                       text={() =>
-                        props.pane === 1
-                          ? getSecondaryLiveRoundThinking(item().roundId)
-                          : getLiveRoundThinking(item().roundId)
+                        livePaneThinking(props.pane, item().roundId)
                       }
                       kind={item().reasoningKind}
                       live={item().live}
@@ -3523,8 +3541,8 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: 0
                   calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
                   cardId={`${prefix}${block().key}`}
                   stateOf={persistedToolState}
-                  renderThinking={entry => renderFoldedThinking(entry, props.pane)}
-                  live={true}
+                  renderThinking={entry => renderFoldedThinking(entry, props.pane, prefix)}
+                  live={props.live !== false}
                 />
               </If>
             </View>
@@ -3586,7 +3604,7 @@ function turnTokenLabel(turn: unknown): string {
 
 /** One footer per settled turn: copy the answer, fork from here, and what it cost. */
 /** Copy, fork and "{model} · {duration}": on hover only (spec §3 Assistant). */
-function TurnFooter(props: { turn: unknown; visible?: boolean }) {
+function TurnFooter(props: { turn: unknown; visible?: boolean; allowFork?: boolean }) {
   const hasAnswer = computed(() => turnHasAssistantText(props.turn));
   const turnId = computed(() => turnKeyOf(props.turn));
   const meta = computed(() =>
@@ -3602,6 +3620,7 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
   const revealed = () => props.visible !== false || copiedBlock() === `answer-${turnId()}`;
   return (
     <View
+      accessibilityLabel={`turn-footer-${turnId()}`}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -3635,7 +3654,7 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
           }}
         />
       </If>
-      <If when={turnId() && !runningTurnId() ? turnId() : ""}>
+      <If when={props.allowFork !== false && turnId() && !runningTurnId() ? turnId() : ""}>
         {id => (
           <IconButton
             icon="git-branch"
@@ -10525,6 +10544,53 @@ function SecondarySessionPane() {
   );
 }
 
+/** BTW composes the ordinary transcript and footer, without persistent message actions. */
+function BtwTurn(props: { entry: SideQuestion }) {
+  const hovered = signal(false);
+  const rounds = computed(() => props.entry.state === "running" ? props.entry.rounds : props.entry.rounds.map(round => ({
+    ...round, completed: true, thinkingEnded: true,
+    tools: round.tools.map(tool => ["queued", "waiting", "running", "confirmation"].includes(tool.status)
+      ? { ...tool, status: "cancelled" as const } : tool),
+  })));
+  const blocks = computed(() => buildLiveDisplayBlocks(rounds(), rounds));
+  const prefix = () => `btw-${props.entry.requestId}-`;
+  const footerTurn = computed(() => props.entry.transcript ?? {
+    turnId: props.entry.turnId ?? `btw-turn-${props.entry.requestId}`,
+    user: { text: props.entry.question },
+    items: props.entry.rounds.filter(round => round.text).map(round => ({ kind: "text", text: round.text })),
+  });
+  return (
+    <View
+      accessibilityLabel={`btw-turn-${props.entry.requestId}`}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      style={{ width: "100%", gap: space.md }}
+    >
+      <UserBubble
+        partKey={`btw-${props.entry.requestId}`}
+        text={props.entry.question}
+        timestamp={props.entry.transcript?.user.timestampMs}
+        images={props.entry.images}
+        allowRollback={false}
+      />
+      <View accessibilityLabel="side-question-answer" style={{ width: "100%", gap: space.sm }}>
+        <If when={Boolean(props.entry.transcript)}>
+          <TranscriptItems items={turnItems(props.entry.transcript)} preserveFullReply={true} />
+        </If>
+        <If when={!props.entry.transcript}>
+          <LiveTranscriptBlocks blocks={blocks} pane={rounds} cardPrefix={prefix()} live={props.entry.state === "running"} />
+        </If>
+        <If when={props.entry.state === "running" && !liveBlocksHaveActiveMotion(blocks(), rounds(), rounds)}>
+          <TurnWaitingIndicator startedAt={() => props.entry.startedAt} accessibilityLabel="side-question-state" />
+        </If>
+        <If when={props.entry.state !== "running"}>
+          <TurnFooter turn={footerTurn()} visible={hovered() || compactLayout()} allowFork={false} />
+        </If>
+      </View>
+    </View>
+  );
+}
+
 /**
  * Unified ephemeral `/btw` side-question pane reusing Primary's exact
  * `SessionPaneShell`, `SessionHeaderBar`, `UserBubble`, `MarkdownBody`,
@@ -10599,7 +10665,8 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   effect(() => {
     const list = history();
     list.length;
-    current()?.answer.length;
+    current()?.rounds;
+    current()?.transcript;
     if (btwFollowLatest()) {
       scrollRef?.scrollToEnd({ animated: false });
       syncBtwRail(0);
@@ -10785,42 +10852,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
                     }}
                     style={{ gap: space.md }}
                   >
-                    <UserBubble
-                      partKey={`btw-${entry().requestId}`}
-                      text={entry().question}
-                      images={entry().images?.map(img => ({
-                        id: img.id,
-                        name: img.name,
-                        ...(img.dataUrl ? { dataUrl: img.dataUrl } : {}),
-                        ...(img.imagePath ? { imagePath: img.imagePath } : {}),
-                      }))}
-                      showCopy={true}
-                    />
-
-                    <If when={entry().answer.length > 0}>
-                      <View accessibilityLabel="side-question-answer" style={{ width: "100%", gap: space.xs }}>
-                        <MarkdownBody text={entry().answer} live={entry().state === "running"} />
-                        <If when={entry().state !== "running"}>
-                          <View style={{ flexDirection: "row", alignItems: "center", paddingTop: space.hair }}>
-                            <CopyChip partKey={`btw-ans-${entry().requestId}`} text={entry().answer} />
-                          </View>
-                        </If>
-                      </View>
-                    </If>
-
-                    <If when={entry().state === "running"}>
-                      <View
-                        accessibilityLabel="side-question-state"
-                        style={transcriptRowStyle(false)}
-                      >
-                        <TranscriptRowIconSlot>
-                          <BrandSpinner size={12} variant="matrix" />
-                        </TranscriptRowIconSlot>
-                        <Text style={textStyle("label", { color: palette().textMuted })}>
-                          {tr("btw.thinking")}
-                        </Text>
-                      </View>
-                    </If>
+                    <BtwTurn entry={entry()} />
 
                     <If when={entry().state === "cancelled"}>
                       <View
@@ -10884,6 +10916,12 @@ function BtwSessionPane(props?: { compact?: boolean }) {
             />
           </If>
         </View>
+      }
+      preComposer={
+        <>
+          <PermissionPrompts sessionId={() => sideQuestion()?.childSessionId ?? null} />
+          <QuestionPrompts sessionId={() => sideQuestion()?.childSessionId ?? null} />
+        </>
       }
       composer={
         <SessionComposer

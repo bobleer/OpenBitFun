@@ -126,7 +126,7 @@ test("a side question streams its child session's answer and can be stopped", as
   // The answer arrives as the child session's own text chunks; the parent's transcript is untouched.
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
-    payload: { sessionId: asked.childSessionId, turnId: "btw-turn", roundId: "r1", text: "It is `src/router.ts`." },
+    payload: { sessionId: asked.childSessionId, turnId: `btw-turn-${asked.requestId}`, roundId: "r1", text: "It is `src/router.ts`." },
   });
   await app.waitFor("side-question-answer");
   expect(backend.actions()).not.toContain("submit_user_message");

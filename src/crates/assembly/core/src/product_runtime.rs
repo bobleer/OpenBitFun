@@ -2030,6 +2030,30 @@ impl CoreAgentRuntimeCompatibility {
         before_turn_index: Option<usize>,
         limit: Option<usize>,
     ) -> OpenBitFunResult<PersistedSessionTurnPage> {
+        validate_persisted_session_id(session_id)?;
+        let manager = self.coordinator.get_session_manager();
+        manager.validate_session_storage_path_binding(session_id, storage_path)?;
+        // BTW has canonical history in memory and no durable record. Read it
+        // without the writer lease: a running turn may be waiting on this reader.
+        if let Some(page) = manager.with_transient_session_turns(session_id, |turns| {
+            let mut visible = turns.iter().rev().filter(|turn| {
+                before_turn_index.is_none_or(|end| turn.turn_index < end)
+                    && turn.kind.is_transcript_visible()
+            });
+            let mut selected: Vec<_> = visible
+                .by_ref()
+                .take(limit.unwrap_or(usize::MAX))
+                .cloned()
+                .collect();
+            let has_earlier = visible.next().is_some();
+            selected.reverse();
+            PersistedSessionTurnPage {
+                turns: selected,
+                has_earlier,
+            }
+        }) {
+            return Ok(page);
+        }
         let read = self
             .begin_persisted_session_read(storage_path, session_id)
             .await?;

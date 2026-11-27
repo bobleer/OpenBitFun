@@ -9,6 +9,7 @@
 // connection that can drop events delivers the same event.
 
 import { forgetFollowedTurns, settleLiveTurnFromView, settleSecondaryLiveTurnFromView } from "./agentEvents";
+import { refreshSideQuestionTranscript, sideQuestion } from "./btwStore";
 import { refreshAttention } from "./attentionStore";
 import { fleetActive, listenEvent } from "./bridge";
 import { fleetDevices, refreshFleetNavigator, refreshFleetPrompts } from "./fleetStore";
@@ -75,6 +76,8 @@ async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promi
   }
 
   const reads: Array<Promise<unknown>> = [];
+  const btw = sideQuestion();
+  if (btw && (!scoped || origins.has(btw.deviceId))) reads.push(refreshSideQuestionTranscript());
   const contextAffected = !scoped || origins.has(deviceContext());
   if (fleet) {
     // In fleet mode `refreshSessionsSilently()` already calls `refreshFleetNavigator()`;

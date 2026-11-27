@@ -31,6 +31,9 @@ import {
   type Accessor,
   type Signal,
 } from "nsh";
+import { admitRuntimeEvent } from "./runtimeEventReplay";
+import { applyToolEvent, type LiveRoundMeta, type LiveToolItem } from "./liveToolEvents";
+export type { LiveToolItem } from "./liveToolEvents";
 import type { RunningTurnSnapshot } from "./api";
 import { backendConnection, listenEvent, windowShellId } from "./bridge";
 import {
@@ -77,30 +80,6 @@ import {
   upsertSessionFromEvent,
 } from "./state";
 
-export interface LiveToolItem {
-  toolId: string;
-  toolName: string;
-  effectiveToolName?: string;
-  status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled";
-  input?: unknown;
-  detail: string;
-  progressMessage?: string;
-  error?: string;
-  durationMs?: number;
-  /** The tool's `Completed` result payload, drawn in the expanded card. */
-  result?: unknown;
-  /** The text the model was given back, when the host reports it apart from `result`. */
-  resultForAssistant?: string;
-  /** A GenerativeUI call's OpenUI source so far, from `GenUIStream` deltas. */
-  genuiStream?: { source: string; title?: string; format: string; seq: number };
-  /**
-   * How much of the round's answer text had arrived when the tool first appeared.
-   * The transcript cuts the round's text at this offset, so text written before a
-   * tool call stays above its card and text written after it stays below.
-   */
-  textOffset?: number;
-}
-
 export interface LiveModelRound {
   roundId: string;
   roundIndex: number;
@@ -124,18 +103,6 @@ export interface LiveTurnState {
   rounds: LiveModelRound[];
   /** True between `dialog-turn-completed` and the durable disk-persistence fence. */
   settling: boolean;
-}
-
-interface LiveRoundMeta {
-  roundId: string;
-  roundIndex: number;
-  attemptId?: string;
-  effectiveModelName?: string;
-  reasoningKind?: "reasoning" | "summary";
-  thinkingEnded?: boolean;
-  tools: LiveToolItem[];
-  completed: boolean;
-  durationMs?: number;
 }
 
 interface RoundStreamChannel {
@@ -1048,18 +1015,6 @@ function attemptOf(
   return typeof id === "string" && id ? id : undefined;
 }
 
-function summarizeLiveInput(value: unknown, limit = 160): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}…` : value;
-  try {
-    const text = JSON.stringify(value);
-    if (!text) return "";
-    return text.length > limit ? `${text.slice(0, limit)}…` : text;
-  } catch {
-    return "";
-  }
-}
-
 /** Attempt IDs superseded by provider retries; late chunks with these IDs are ignored. */
 const supersededAttempts = new Set<string>();
 /** Sessions whose ended turn waits for the host's view to report it settled. */
@@ -1720,167 +1675,6 @@ export function settleSecondaryLiveTurnFromView(sessionId: string): void {
   });
 }
 
-function applyToolEvent(
-  round: LiveRoundMeta,
-  rawToolEvent: Record<string, unknown>,
-  textOffset = 0,
-): LiveRoundMeta {
-  const eventType = String(rawToolEvent.event_type ?? rawToolEvent.eventType ?? "");
-  const toolId = String(rawToolEvent.tool_id ?? rawToolEvent.toolId ?? "");
-  const toolName = String(rawToolEvent.tool_name ?? rawToolEvent.toolName ?? "");
-  const effectiveToolName =
-    typeof rawToolEvent.effective_tool_name === "string"
-      ? rawToolEvent.effective_tool_name
-      : typeof rawToolEvent.effectiveToolName === "string"
-        ? rawToolEvent.effectiveToolName
-        : undefined;
-  if (!toolId && !toolName) return round;
-
-  const key = toolId || toolName;
-  const existingIdx = round.tools.findIndex(item => item.toolId === key);
-  const existing: LiveToolItem =
-    existingIdx >= 0
-      ? round.tools[existingIdx]
-      : {
-          toolId: key,
-          toolName: effectiveToolName || toolName || "tool",
-          ...(effectiveToolName ? { effectiveToolName } : {}),
-          status: "running",
-          detail: "",
-          textOffset,
-        };
-
-  let next: LiveToolItem = {
-    ...existing,
-    ...(toolName ? { toolName: effectiveToolName || toolName } : {}),
-    ...(effectiveToolName ? { effectiveToolName } : {}),
-  };
-
-  switch (eventType) {
-    case "EarlyDetected":
-    case "ParamsPartial": {
-      const nextStatus = existing.status === "completed" ? "completed" : "running";
-      const nextDetail =
-        typeof rawToolEvent.params === "string" && rawToolEvent.params
-          ? summarizeLiveInput(rawToolEvent.params)
-          : next.detail;
-      if (
-        existingIdx >= 0 &&
-        nextStatus === existing.status &&
-        nextDetail === existing.detail &&
-        next.toolName === existing.toolName &&
-        next.effectiveToolName === existing.effectiveToolName
-      ) {
-        return round;
-      }
-      next = {
-        ...next,
-        status: nextStatus,
-        detail: nextDetail,
-      };
-      break;
-    }
-    case "GenUIStream": {
-      // The decoded OpenUI source of a GenerativeUI call, delta by delta; `reset`
-      // starts the source over (a new message), `seq` drops a repeated delta.
-      const seq = typeof rawToolEvent.seq === "number" ? rawToolEvent.seq : -1;
-      const previous = existing.genuiStream;
-      if (previous && !rawToolEvent.reset && seq >= 0 && seq <= previous.seq) return round;
-      const text = typeof rawToolEvent.text === "string" ? rawToolEvent.text : "";
-      const title = typeof rawToolEvent.title === "string" && rawToolEvent.title ? rawToolEvent.title : previous?.title;
-      next = {
-        ...next,
-        status: existing.status === "completed" ? "completed" : "running",
-        genuiStream: {
-          source: rawToolEvent.reset || !previous ? text : previous.source + text,
-          format: typeof rawToolEvent.format === "string" ? rawToolEvent.format : "openui-lang",
-          seq,
-          ...(title ? { title } : {}),
-        },
-      };
-      break;
-    }
-    case "Queued":
-      next = { ...next, status: "queued" };
-      break;
-    case "Waiting":
-      next = { ...next, status: "waiting" };
-      break;
-    case "Started":
-      next = {
-        ...next,
-        status: "running",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
-          : {}),
-      };
-      break;
-    case "Progress":
-      next = {
-        ...next,
-        status: "running",
-        ...(typeof rawToolEvent.message === "string"
-          ? { progressMessage: rawToolEvent.message }
-          : {}),
-      };
-      break;
-    case "ConfirmationNeeded":
-      next = {
-        ...next,
-        status: "confirmation",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
-          : {}),
-      };
-      break;
-    case "Confirmed":
-      next = { ...next, status: "running" };
-      break;
-    case "Rejected":
-    case "Cancelled":
-      next = {
-        ...next,
-        status: "cancelled",
-        ...(typeof rawToolEvent.reason === "string" ? { error: rawToolEvent.reason } : {}),
-      };
-      break;
-    case "Completed": {
-      const resultForAssistant =
-        rawToolEvent.result_for_assistant ?? rawToolEvent.resultForAssistant;
-      next = {
-        ...next,
-        status: "completed",
-        ...(rawToolEvent.result !== undefined ? { result: rawToolEvent.result } : {}),
-        ...(typeof resultForAssistant === "string" && resultForAssistant
-          ? { resultForAssistant }
-          : {}),
-        ...(typeof rawToolEvent.duration_ms === "number"
-          ? { durationMs: rawToolEvent.duration_ms }
-          : {}),
-      };
-      break;
-    }
-    case "Failed":
-      next = {
-        ...next,
-        status: "failed",
-        ...(typeof rawToolEvent.error === "string" ? { error: rawToolEvent.error } : {}),
-        ...(typeof rawToolEvent.duration_ms === "number"
-          ? { durationMs: rawToolEvent.duration_ms }
-          : {}),
-      };
-      break;
-    default:
-      return round;
-  }
-
-  const tools =
-    existingIdx >= 0
-      ? round.tools.map((item, idx) => (idx === existingIdx ? next : item))
-      : [...round.tools, next];
-  return { ...round, tools };
-}
-
 /**
  * A turn of a session that is not on screen ended: its parked stream is dropped
  * (the persisted turn is what opening it shows now) and, when asked, its queue is
@@ -1915,11 +1709,6 @@ function finishOtherSessionTurn(payload: TurnEventPayload | null, drain: boolean
 // repeats. The `agentic://*` events stay the live channel: they are what the
 // per-frame text merge and the smooth reveal are built on.
 
-const RUNTIME_CURSOR_KEY = "__openbitfunRuntimeEventCursor";
-const RUNTIME_STREAM_KEY = "__openbitfunRuntimeStreamId";
-/** Set by the text-chunk merge: `[cursor, end offset]` of each merged chunk. */
-const CHUNK_SPANS_KEY = "__openbitfunChunkSpans";
-
 type AgentEventHandler = (payload: never) => void;
 const agentEventHandlers = new Map<string, AgentEventHandler>();
 /** Per session (`"<device>/<session>"`), the delivery position a replayed snapshot already covered. */
@@ -1934,25 +1723,8 @@ let replayingSnapshot = false;
  * floor keeps only the text after it.
  */
 function admitLiveEvent(event: string, payload: unknown): unknown {
-  if (!payload || typeof payload !== "object") return payload;
-  const record = payload as Record<string, unknown>;
-  const floor = replayFloors.get(keyOf(sessionOf(record as { sessionId?: string })));
-  if (!floor) return payload;
-  const cursor = record[RUNTIME_CURSOR_KEY];
-  if (typeof cursor !== "number" || record[RUNTIME_STREAM_KEY] !== floor.streamId) return payload;
-  if (cursor <= floor.cursor) return null;
-  const spans = record[CHUNK_SPANS_KEY];
-  if (event !== "agentic://text-chunk" || !Array.isArray(spans)) return payload;
-  let cut = 0;
-  for (const span of spans) {
-    if (Array.isArray(span) && typeof span[0] === "number" && typeof span[1] === "number" && span[0] <= floor.cursor) {
-      cut = Math.max(cut, span[1]);
-    }
-  }
-  if (cut === 0) return payload;
-  const field = (["text", "delta", "content", "chunk"] as const).find(key => typeof record[key] === "string");
-  if (!field) return payload;
-  return { ...record, [field]: String(record[field]).slice(cut) };
+  const session = payload && typeof payload === "object" ? sessionOf(payload as { sessionId?: string }) : "";
+  return admitRuntimeEvent(event, payload, replayFloors.get(keyOf(session)));
 }
 
 function onAgentEvent<T>(event: string, handler: (payload: T) => void): void {
