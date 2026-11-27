@@ -774,19 +774,27 @@ test("AgentsScene creates, edits, deletes custom mode and configures/resets buil
   // Built-in profile tool configuration (raw: true) & reset (raw: true)
   await app.press("agent-configure-Standard");
   await app.waitFor("Configure Profile · Standard");
-  // The profile lists the subagents Standard may call; a switch is scoped to Standard.
+  await app.press("agent-capability-subagents");
+  await app.press("mode-subagents-manage");
   await app.waitFor("parent-subagent-Explorer");
   expect(mock.callFor("list_manageable_subagents").at(-1)?.request).toMatchObject({
     parentAgentType: "Standard",
   });
   await app.press("parent-subagent-Explorer");
+  expect(mock.callFor("update_subagent_config")).toHaveLength(0);
+  await app.press("mode-subagents-save");
   await app.waitUntil(() => mock.callFor("update_subagent_config").length > 0);
   expect(mock.callFor("update_subagent_config")[0]?.request).toMatchObject({
     subagentId: "Explorer",
     parentAgentType: "Standard",
     enabled: false,
   });
+  await app.waitFor("mode-subagents-manage");
+  await app.press("mode-subagents-back");
+  await app.press("agent-capability-tools");
+  await app.press("profile-manage");
   await app.press("builder-tool-Bash");
+  expect(mock.callFor("set_agent_profile_config")).toHaveLength(0);
   await app.press("profile-save");
 
   const setProfileCall = mock.callFor("set_agent_profile_config")[0];
@@ -798,11 +806,167 @@ test("AgentsScene creates, edits, deletes custom mode and configures/resets buil
     },
   });
 
+  await app.waitFor("profile-manage");
   await app.press("profile-reset");
   const resetProfileCall = mock.callFor("reset_agent_profile_config")[0];
   expect(resetProfileCall?.raw).toBe(true);
   expect(resetProfileCall?.request).toMatchObject({ agentId: "Standard" });
+  await app.press("profile-back");
   await app.press("agent-builder-close");
+});
+
+test("Agent tool groups keep reusable definitions and profile permissions independently editable", async () => {
+  const mock = createAgentsSkillsBackend();
+  type SavedGroup = { id: string; name: string; toolNames: string[] };
+  const original = { id: "daily", name: "Daily checks", toolNames: ["Read", "Bash", "RetiredTool"] };
+  let groups: SavedGroup[] = [original];
+  let storedVersion = 1;
+  const groupWrites: SavedGroup[][] = [];
+  const invoke = mock.handlers["openbitfun.invoke"];
+  mock.handlers["openbitfun.invoke"] = data => {
+    const args = data as { action: string; request?: Record<string, unknown>; raw?: unknown };
+    const success = (value: unknown) => ({ ok: true, transport: "dev", value });
+    if (args.action === "get_all_tools_info") {
+      expect(args.raw).toEqual({});
+      return success([
+        { name: "GetToolSpec" },
+        { name: "DocsLookup", description: "Query indexed documentation",
+          dynamic_info: { providerId: "mcp:docs", mcp: { serverName: "Docs server" } } },
+      ]);
+    }
+    if (args.request?.path === "app.user_tool_groups") {
+      if (args.action === "get_config") return success({ version: storedVersion, groups });
+      if (args.action === "set_config") {
+        const value = args.request.value as { version: number; groups: SavedGroup[] };
+        expect(value.version).toBe(1);
+        groups = value.groups;
+        groupWrites.push(groups);
+        return success(null);
+      }
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "agents");
+  await app.press("agent-configure-Standard");
+  await app.press("agent-capability-tools");
+  await app.waitFor("Daily checks");
+  await app.press("profile-manage");
+  await app.type("builder-tools-search", "indexed documentation");
+  await app.waitFor("Extension · Docs server");
+  await app.waitFor("builder-tool-DocsLookup");
+  expect(app.shows("builder-tool-Read")).toBe(false);
+  await app.clear("builder-tools-search");
+  expect(app.shows("builder-tool-GetToolSpec")).toBe(false);
+
+  await app.press("id:agent-tool-group-user:daily");
+  expect(mock.callFor("set_agent_profile_config")).toHaveLength(0);
+  expect(groupWrites).toHaveLength(0);
+  await app.press("agent-tool-groups-manage");
+  await app.press("agent-tool-group-edit-daily");
+  await app.waitFor("RetiredTool");
+  await app.clear("agent-tool-group-name");
+  await app.type("agent-tool-group-name", "Daily inspection");
+  await app.press("agent-tool-group-save");
+  await app.waitFor("agent-tool-group-add");
+  expect(groups).toEqual([{ ...original, name: "Daily inspection" }]);
+
+  await app.press("agent-tool-group-add");
+  await app.type("agent-tool-group-name", "Documentation");
+  await app.type("agent-tool-group-search", "docs");
+  await app.press("agent-tool-group-tool-DocsLookup");
+  await app.press("agent-tool-group-save");
+  await app.waitFor("agent-tool-group-add");
+  const added = groups[1];
+  expect(added).toMatchObject({ name: "Documentation", toolNames: ["DocsLookup"] });
+  await app.press(`agent-tool-group-up-${added.id}`);
+  await app.waitUntil(() => groups[0]?.id === added.id);
+  await app.press(`agent-tool-group-delete-${added.id}`);
+  await app.press(`agent-tool-group-delete-${added.id}-confirm`);
+  await app.waitUntil(() => groups.length === 1);
+  expect(groupWrites).toHaveLength(4);
+  expect(groups).toEqual([{ ...original, name: "Daily inspection" }]);
+
+  await app.press("agent-tool-group-edit-daily");
+  await app.clear("agent-tool-group-name");
+  await app.type("agent-tool-group-name", "Stale draft");
+  groups = [{ ...original, name: "Updated on another device" }];
+  await app.press("agent-tool-group-save");
+  await app.waitFor("This tool group changed elsewhere. Close and reopen Tools to load the latest groups.");
+  await app.press("agent-tool-group-cancel");
+  await app.waitFor("Discard your unsaved changes to this tool group?");
+  await app.press("Discard changes");
+  await app.waitFor("agent-tool-group-add");
+  expect(groupWrites).toHaveLength(4);
+  expect(mock.callFor("set_agent_profile_config")).toHaveLength(0);
+
+  await app.press("agent-tool-group-done");
+  await app.press("profile-save");
+  await app.waitFor("profile-manage");
+  expect(mock.callFor("set_agent_profile_config")[0]).toMatchObject({
+    raw: true,
+    request: { agentId: "Standard", config: { enabled_tools: ["Read", "Write", "Grep", "Bash"] } },
+  });
+  expect(groupWrites).toHaveLength(4);
+  expect(groups).toEqual([{ ...original, name: "Updated on another device" }]);
+  await app.press("profile-back");
+  await app.press("agent-capability-tools");
+  await app.waitFor("Updated on another device");
+
+  storedVersion = 2;
+  await app.press("profile-back");
+  await app.press("agent-capability-tools");
+  await app.waitFor("This version cannot edit the saved tool groups.");
+  await app.press("profile-manage");
+  await app.press("builder-tool-Bash");
+  expect(groupWrites).toHaveLength(4);
+  expect(mock.callFor("set_agent_profile_config")).toHaveLength(1);
+});
+
+test("subagent capability retry submits only the pending changes after a partial save", async () => {
+  const mock = createAgentsSkillsBackend();
+  const invoke = mock.handlers["openbitfun.invoke"];
+  const updates: string[] = [];
+  let refuseHelper = true;
+  mock.handlers["openbitfun.invoke"] = data => {
+    const args = data as { action: string; request?: Record<string, unknown> };
+    if (args.action === "list_manageable_subagents") {
+      const response = invoke(data) as { ok: boolean; value: unknown[] };
+      return { ...response, value: [...response.value, {
+        id: "External", name: "External assistant", source: "external", effectiveEnabled: true,
+      }] };
+    }
+    if (args.action === "update_subagent_config") {
+      const id = String(args.request?.subagentId);
+      updates.push(id);
+      if (refuseHelper && id === "HelperSub") return { ok: false, error: "Device is busy", transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await openLibraryTab(app, "agents");
+  await app.press("agent-configure-Standard");
+  await app.press("agent-capability-subagents");
+  await app.press("mode-subagents-manage");
+  expect(app.enabled("parent-subagent-External")).toBe(false);
+  await app.press("parent-subagent-Explorer");
+  await app.press("parent-subagent-HelperSub");
+  expect(updates).toHaveLength(0);
+  await app.press("mode-subagents-save");
+  await app.waitFor("Some changes are already in effect. Retry to apply the remaining changes. Could not update the subagent: Device is busy");
+  expect(updates).toEqual(["Explorer", "HelperSub"]);
+  expect(app.accessibility("id:parent-subagent-Explorer")?.checked).toBe("false");
+  expect(app.accessibility("id:parent-subagent-HelperSub")?.checked).toBe("false");
+  refuseHelper = false;
+  await app.press("mode-subagents-save");
+  await app.waitFor("mode-subagents-manage");
+  expect(updates).toEqual(["Explorer", "HelperSub", "HelperSub"]);
+  expect(mock.callFor("update_subagent_config").map(call => call.request)).toEqual([
+    { parentAgentType: "Standard", subagentId: "Explorer", enabled: false, workspaceId: "workspace-1" },
+    { parentAgentType: "Standard", subagentId: "HelperSub", enabled: false, workspaceId: "workspace-1" },
+  ]);
 });
 
 test("AgentsScene creates, edits, configures, reloads, and deletes subagents", async () => {
@@ -1041,6 +1205,120 @@ test("SkillsScene toggles global disabled, inspects SKILL.md, validates, install
   });
 });
 
+test("Skill Groups copy, edit, reorder and delete while preserving unavailable members and agent selections", async () => {
+  const mock = createAgentsSkillsBackend();
+  const reviewer = "user::openbitfun::reviewer";
+  const core = "user::openbitfun-system::core-guide";
+  const retired = "user::unavailable::retired";
+  const disabled = "user::openbitfun::disabled";
+  type SavedGroup = { id: string; name: string; skillKeys: string[] };
+  let groups: SavedGroup[] = [{ id: "release", name: "Release checklist", skillKeys: [reviewer, retired, disabled] }];
+  const groupWrites: SavedGroup[][] = [];
+  const agentWrites: unknown[] = [];
+  let enabled = [core];
+  const invoke = mock.handlers["openbitfun.invoke"];
+  mock.handlers["openbitfun.invoke"] = data => {
+    const { action, request } = data as { action: string; request?: Record<string, unknown> };
+    const success = (value: unknown) => ({ ok: true, transport: "dev", value });
+    if (request?.path === "app.user_skill_groups") {
+      if (action === "get_config") return success({ version: 1, groups });
+      if (action === "set_config") {
+        const value = request.value as { version: number; groups: SavedGroup[] };
+        expect(value.version).toBe(1);
+        groups = value.groups;
+        groupWrites.push(groups);
+        return success(null);
+      }
+    }
+    if (action === "get_skill_configs") {
+      const answer = invoke(data) as { value: { skills: Array<Record<string, unknown>> } };
+      return success({ skills: [
+        ...answer.value.skills.map(skill => skill.key === core ? { ...skill, groupKey: "meta" } : skill),
+        { key: disabled, name: "Disabled Skill", path: "/skills/disabled", level: "user" },
+      ], diagnostics: [] });
+    }
+    if (action === "get_agent_profile_configs") return success({ Standard: { enabled_tools: ["Read", "Skill"] } });
+    if (action === "get_mode_skill_configs") return success([
+      { key: reviewer, name: "Code Reviewer", globallyEnabled: true, effectiveEnabled: enabled.includes(reviewer) },
+      { key: core, name: "Core Guide", isBuiltin: true, groupKey: "meta", globallyEnabled: true, effectiveEnabled: enabled.includes(core) },
+      { key: disabled, name: "Disabled Skill", globallyEnabled: false, effectiveEnabled: false },
+    ]);
+    if (action === "replace_mode_skill_selection") {
+      agentWrites.push(request);
+      enabled = (request?.enabledSkillKeys ?? []) as string[];
+      return success(null);
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await openLibraryTab(app, "skills");
+  await app.press("skills-tab-groups");
+  await app.waitFor("Release checklist");
+  await app.waitFor("1 unavailable");
+
+  await app.press("id:skill-group-open-builtin:meta");
+  expect(app.shows("skill-group-editor-save")).toBe(false);
+  await app.press("skill-group-editor-copy");
+  await app.press("skill-group-editor-save");
+  await app.waitFor("Meta copy");
+  expect(groups[1]).toMatchObject({ name: "Meta copy", skillKeys: [core] });
+  const copyId = groups[1].id;
+
+  await app.press("id:skill-group-open-user:release");
+  await app.waitFor(`text:${retired}`);
+  await app.clear("skill-group-editor-name");
+  await app.type("skill-group-editor-name", "Release checks");
+  await app.press("skill-group-editor-save");
+  await app.waitFor("Release checks");
+  expect(groups[0]).toMatchObject({ id: "release", name: "Release checks", skillKeys: [reviewer, retired, disabled] });
+  await app.press("label:skill-group-actions-user:release");
+  await app.press("skill-group-move-down");
+  await app.waitUntil(() => groups[0].id === copyId);
+
+  await app.press("skill-group-create");
+  await app.type("skill-group-editor-name", "Review Pack");
+  await app.type("skill-group-editor-search", "Code Reviewer");
+  await app.press(`id:skill-group-editor-member-${reviewer}`);
+  await app.press("skill-group-editor-save");
+  await app.waitFor("Review Pack");
+  expect(groups[2]).toMatchObject({ name: "Review Pack", skillKeys: [reviewer] });
+  await app.type("skills-groups-search-input", "Core Guide");
+  await app.waitFor("Review Pack", { state: "gone" });
+  await app.clear("skills-groups-search-input");
+
+  await app.press(`label:skill-group-actions-user:${copyId}`);
+  await app.press("skill-group-delete");
+  await app.press("skill-group-delete-confirm");
+  await app.waitFor("Meta copy", { state: "gone" });
+  expect(groups.map(group => group.name)).toEqual(["Release checks", "Review Pack"]);
+
+  await app.press("id:skill-group-open-user:release");
+  await app.clear("skill-group-editor-name");
+  await app.type("skill-group-editor-name", "Local edit");
+  groups = groups.map(group => group.id === "release" ? { ...group, name: "Changed elsewhere" } : group);
+  await app.press("skill-group-editor-save");
+  await app.waitFor("This group changed elsewhere. Close the editor and refresh before editing it again.");
+  expect(groupWrites).toHaveLength(5);
+  expect(app.value("skill-group-editor-name")).toBe("Local edit");
+  await app.press("skill-group-editor-close");
+  await app.press("Discard changes");
+  await app.waitFor("skill-group-editor", { state: "gone" });
+
+  await openLibraryTab(app, "agents");
+  await app.press("agent-configure-Standard");
+  await app.press("agent-capability-skills");
+  await app.press("mode-skills-manage");
+  await app.waitFor("Changed elsewhere");
+  await app.waitFor("Review Pack");
+  expect(agentWrites).toHaveLength(0);
+  await app.press("id:agent-skill-group-user:release");
+  expect(agentWrites).toHaveLength(0);
+  await app.press("mode-skills-save");
+  await app.waitUntil(() => agentWrites.length === 1);
+  expect(agentWrites[0]).toMatchObject({ modeId: "Standard", enabledSkillKeys: [reviewer, core] });
+  expect(groupWrites).toHaveLength(5);
+});
+
 test("SkillsScene marketplace lists, searches, shows Installed badge, downloads, and degrades on remote/peer", async () => {
   const mock = createAgentsSkillsBackend({ skillConfigsShape: "array", marketShape: "array" });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
@@ -1142,10 +1420,11 @@ test("Agents and Skills load the user-level catalogue without a workspace, as th
   await app.waitUntil(() => mock.callFor("get_available_modes").length > before);
 });
 
-test("an agent that can load skills lists them and replaces its selection per skill", async () => {
+test("an agent skill draft can be discarded and retry preserves unrelated changes on the host", async () => {
   const mock = createAgentsSkillsBackend();
   let enabled = ["review", "deploy"];
   const replaced: unknown[] = [];
+  let failSave = true;
   const invoke = mock.handlers["openbitfun.invoke"];
   mock.handlers["openbitfun.invoke"] = (data: unknown) => {
     const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: Record<string, unknown> };
@@ -1173,7 +1452,7 @@ test("an agent that can load skills lists them and replaces its selection per sk
       expect(args.raw).toMatchObject({ modeId: "Standard" });
       return {
         ok: true,
-        value: ["review", "deploy"].map(key => ({
+        value: ["review", "deploy", "report"].map(key => ({
           key,
           name: key,
           description: `${key} skill`,
@@ -1185,6 +1464,7 @@ test("an agent that can load skills lists them and replaces its selection per sk
     }
     if (args.action === "replace_mode_skill_selection") {
       replaced.push(args.request);
+      if (failSave) return { ok: false, error: "The device is busy", transport: "dev" };
       enabled = ((args.request?.enabledSkillKeys ?? []) as string[]).slice();
       return { ok: true, value: "ok", transport: "dev" };
     }
@@ -1193,11 +1473,39 @@ test("an agent that can load skills lists them and replaces its selection per sk
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
   await app.waitFor("nav-library");
   await openLibraryTab(app, "agents");
-  await app.press("agent-configure-Standard");
+  await app.waitFor("id:agent-configure-Standard");
+  expect(app.accessibility("id:agent-configure-Standard")).toMatchObject({ role: "button", label: "Standard" });
+  await app.press("id:agent-configure-Standard");
+  await app.press("agent-capability-skills");
+  await app.waitFor("text:deploy");
+  expect(app.shows("mode-skill-deploy")).toBe(false);
+  await app.press("mode-skills-manage");
   await app.waitFor("mode-skill-deploy");
   await app.press("mode-skill-deploy");
+  expect(replaced).toHaveLength(0);
+  await app.press("mode-skills-cancel");
+  await app.waitFor("Discard the unsaved changes to this agent's skills?");
+  await app.press("Discard changes");
+  await app.waitFor("mode-skills-manage");
+  await app.waitFor("text:deploy");
+  expect(replaced).toHaveLength(0);
+
+  await app.press("mode-skills-manage");
+  await app.press("mode-skill-deploy");
+  await app.press("mode-skills-save");
   await app.waitUntil(() => replaced.length === 1);
   expect(replaced[0]).toMatchObject({ modeId: "Standard", enabledSkillKeys: ["review"] });
+  await app.waitFor("Could not update the agent's skills: The device is busy");
+  expect(app.enabled("mode-skills-save")).toBe(true);
+  enabled.push("report");
+  failSave = false;
+  await app.press("mode-skills-save");
+  await app.waitFor("mode-skills-manage");
+  expect(replaced).toHaveLength(2);
+  expect(replaced[1]).toMatchObject({ modeId: "Standard", enabledSkillKeys: ["review", "report"] });
+  expect(app.shows("text:deploy")).toBe(false);
+  await app.press("mode-skills-back");
+  await app.waitFor("agent-capability-skills");
 });
 
 test("Agents and Skills switch to the compact layout at phone width and keep their primary action", async () => {

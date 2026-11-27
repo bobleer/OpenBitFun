@@ -1,8 +1,8 @@
 import {
+  batch,
   cleanup,
   Clipboard,
   computed,
-  context,
   effect,
   horizontalSizeClass,
   Scroll,
@@ -10,7 +10,9 @@ import {
   Text,
   untracked,
   View,
+  type InputRef,
   type JSX,
+  type ScrollRef,
   type ViewRef,
 } from "nsh";
 import { Input, TextView } from "nsh/base";
@@ -31,8 +33,9 @@ import {
 } from "../companionStore";
 import { PetCharacterGrid } from "../ui/companion";
 import { STATIC_MARKDOWN_OPTIONS, createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
-import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { fleetDeviceById, fleetDevices, refreshFleetNavigator } from "../fleetStore";
+import { confirmBtwClose, setConfirmBtwClose } from "../btwStore";
 import { isCommandUnavailable } from "../hostCommands";
 import { isRemotePeerContext } from "../shared/deviceScope";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
@@ -45,35 +48,58 @@ import {
 } from "../usageActivity";
 import { StateMark, deviceGlyphIcon, stateColor } from "../ui/fleet";
 import { AccountDevicesPage } from "./AccountDevicesPage";
+import { ExternalAppHooks, ExternalAppSkills, type ExternalAppHookBatchState } from "./ExternalAppAssets";
+import { ExternalAppBatchHeader } from "./ExternalAppBatch";
+import { ExternalAppInstructions } from "./ExternalAppInstructions";
+import { ExternalAppAccount } from "./ExternalAppAccount";
+import { ExternalAppPets } from "./ExternalAppPets";
+import { ExternalRuntimeReviewSections } from "./ExternalRuntimeReview";
+import { ExternalRuntimePolicySection } from "./ExternalRuntimePolicy";
+import { ExternalRuntimeInventory } from "./ExternalRuntimeInventory";
+import { McpServerList } from "./McpServerList";
+import { McpJsonEditor } from "./McpJsonEditor";
+import { McpServerEditor } from "./McpServerEditor";
+import { McpImportDialog } from "./McpImportDialog";
+import { ExternalMcpImportGroup } from "./ExternalMcpImports";
 import { Bar, Cell, Grid, Plot, PlotAxis } from "nsh/base/plot";
 import {
   EXTERNAL_SESSION_NAMES,
-  applyMcpImport,
+  canRevealExternalSource,
+  canSetSessionDiscovery,
+  changeExternalSourceControl,
   externalBlock,
   externalDiscoveryError,
   externalDiscoverySaving,
   externalError,
   externalLoadState,
   externalSnapshot,
+  externalSourceControl,
+  externalSourceControlBusy,
+  externalSourceControlError,
   loadExternalImport,
   loadRemovedSessions,
   mcpImportBusy,
   externalMcpNotice,
   mcpImportPlan,
-  mcpItemSelectable,
-  mcpItemStateKey,
-  mcpPlanState,
+  readExternalSourceControl,
   removedRestoreBusy,
   removedRestoreFailed,
   removedSessionKey,
   removedSessions,
   removedSessionsState,
   restoreRemovedSession,
+  revealExternalSource,
+  sessionDiscoveryBusy,
+  sessionDiscoveryConfig,
+  sessionDiscoveryError,
+  sessionDiscoveryLoad,
   setAutomaticDiscovery,
+  setSessionDiscovery,
   syncExternalImportScope,
   type ExternalSourceRow,
-  type McpImportItem,
 } from "../externalImportStore";
+import { TabGroup } from "../ui/TabGroup";
+import { ProductBrandIcon } from "../ui/ProductBrandIcon";
 import {
   INSIGHTS_DAY_OPTIONS,
   accountStatus,
@@ -126,10 +152,10 @@ import {
   CONTENT_WIDTH_STEP,
   DEFAULT_CONTENT_WIDTH,
   MIN_CONTENT_WIDTH,
-  adjustContentWidth,
   contentWidth,
   contentWidthNotice,
   resetContentWidth,
+  setContentWidth,
 } from "../contentWidthStore";
 import {
   ensureRuntimeLogging,
@@ -144,12 +170,12 @@ import {
   FONT_LEVELS,
   MAX_FONT_PX,
   MIN_FONT_PX,
-  adjustFontPx,
   chooseFontLevel,
   fontLevel,
   fontNotice,
   fontPx,
   resetFontPreference,
+  setCustomFontPx,
   type FontLevel,
 } from "../fontPreferenceStore";
 import {
@@ -165,6 +191,7 @@ import {
 } from "../format";
 import {
   SUPPORTED_LOCALES,
+  appLocaleSaving,
   currentLocale,
   localeMeta,
   localizeHostError,
@@ -187,20 +214,19 @@ import {
   mcpResourcesRows,
   mcpResourcesServer,
   openMcpResource,
-  openMcpResources,
   setMcpResourceQuery,
 } from "../mcpResourcesStore";
 import {
-  MCP_TRANSPORTS,
   cancelMcpRemoteOAuth,
   clearMcpRemoteAuth,
   closeMcpAuth,
   closeMcpDraft,
   closeMcpImport,
+  canSaveMcpDraft,
+  canSaveMcpJson,
+  canImportMcpServers,
   closeMcpJson,
   copyMcpOAuthUrl,
-  deleteMcpServer,
-  enableMcpServer,
   ensureMcp,
   importMcpServers,
   loadMcpDocument,
@@ -210,42 +236,36 @@ import {
   mcpDocument,
   mcpDocumentLoaded,
   mcpDraft,
+  mcpDraftDirty,
   mcpImportCandidates,
-  mcpImportNotice,
+  mcpImportDirty,
   mcpImportOpen,
-  mcpImportText,
-  mcpJsonNotice,
+  mcpImportReading,
+  mcpJsonDirty,
   mcpJsonOpen,
-  mcpJsonState,
-  mcpJsonText,
+  mcpListError,
   mcpLoading,
   mcpNotice,
+  mcpOAuthBrowserAvailable,
   mcpOAuthBusy,
   mcpOAuthNotice,
+  mcpOAuthPending,
   mcpOAuthServer,
   mcpOAuthSession,
   mcpOAuthStatusLabel,
   mcpOAuthUrlUnopened,
   mcpServerRows,
-  openMcpAuth,
   openMcpDraft,
   openMcpImport,
   openMcpJson,
-  previewMcpImport,
   refreshMcpServers,
   reloadMcpForDevice,
-  restartMcpServer,
+  requestCloseMcpAuth,
   saveMcpDraft,
   saveMcpJson,
   saveMcpRemoteAuth,
   setMcpAuthValue,
-  setMcpImportText,
   startMcpRemoteOAuth,
-  startMcpServer,
-  stopMcpServer,
-  updateMcpDraft,
-  updateMcpImportCandidate,
-  updateMcpJson,
 } from "../mcpStore";
 import {
   addAllSelectedDiscoveredModels,
@@ -365,24 +385,23 @@ import {
   type PermissionMode,
 } from "../permissionPolicyStore";
 import {
-  POOL_STRATEGIES,
+  canSavePoolDraft,
   closePoolDraft,
   deletePool,
   ensurePools,
-  loadPoolStatus,
   loadPools,
-  movePoolMember,
   openPoolDraft,
+  poolBusy,
   poolDraft,
-  poolStatuses,
+  poolDraftDirty,
   pools,
+  poolsLoading,
   poolsNotice,
   poolsSupported,
   savePoolDraft,
-  togglePoolMember,
-  updatePoolDraft,
   type ModelPool,
 } from "../poolStore";
+import { ModelPoolEditor, poolStrategyLabel } from "./ModelPoolEditor";
 import {
   closeQuickActionDraft,
   deleteQuickAction,
@@ -408,7 +427,6 @@ import {
 } from "../sendPolicyStore";
 import {
   SETTINGS_SECTIONS,
-  appLanguageValue,
   defaultForField,
   fieldDisplay,
   fieldEmptyLabel,
@@ -424,14 +442,19 @@ import {
   generalControlValues,
   loadGeneralControl,
   memoryActionBusy,
-  memoryResetPending,
+  memoryConfigLoaded,
+  memoryEnabledValue,
+  memorySettingsBusy,
   openMemoryFolder,
   resetMemory,
+  resetMemorySettings,
+  setMemoryEnabled,
   setGeneralControl,
   type GeneralControlOption,
   loadSettingsValues,
   maxForField,
   minForField,
+  modelTargetForField,
   optionLabel,
   sectionNotice,
   sectionOfField,
@@ -440,12 +463,15 @@ import {
   settingsLoaded,
   settingsNotice,
   settingsValues,
+  settingsValuesCurrent,
+  supportsExecutionCapability,
   writeAppLanguage,
   writeField,
+  type AgentModelTarget,
   type FieldSpec,
   type SettingsPageId,
 } from "../settingsStore";
-import { loadTerminalShells, terminalShells } from "../terminalStore";
+import { findConfiguredTerminalShell, loadTerminalPreferences, loadTerminalShells, terminalPreferences, terminalShells } from "../terminalStore";
 import {
   cleanSnapshotStorage, inspectSnapshotStorage, setConfig,
   type SessionSummary, type SnapshotPeriod, type SnapshotStorageOverview,
@@ -468,6 +494,7 @@ import {
   compactLayout,
   concentricRadius,
   controlHeight,
+  designControlColors,
   fontMono,
   isLightAppearance,
   layout,
@@ -485,8 +512,9 @@ import {
   type AppearanceId,
 } from "../theme";
 import { chooseAppearancePreset, setFollowSystemAppearance } from "../themeStore";
+import { designTokens } from "../generated/designTokens";
 // wave24-replica: MCP servers from the account that still need a secret here.
-import { loadAccountRecords, mcpSecretsNote } from "../accountRecordsStore";
+import { loadAccountRecords } from "../accountRecordsStore";
 import {
   accountSync,
   accountSyncBusy,
@@ -522,7 +550,7 @@ import {
 import { ExternalBrowserSection } from "../ui/externalBrowser";
 // wave22-p5 settings parity: shortcut remapping, desktop control permissions, settings export/import.
 import { keymap } from "nsh";
-import { TextField } from "../ui/primitives";
+import { EmptyStateCard, TextField } from "../ui/primitives";
 import {
   effectiveKeystroke,
   keystrokeReservedHere,
@@ -569,6 +597,10 @@ import {
   InlineBanner,
   InlineConfirmBar,
   InlineDeleteConfirm,
+  ConfigFormCompactContext,
+  ConfigRow,
+  ConfigSection,
+  ConfigSectionHeader,
   InlineFieldSaveGroup,
   InputBox,
   SearchInput,
@@ -580,12 +612,17 @@ import {
 import {
   activeWorkspace,
   archiveSessionRow,
+  auxPaneDisplayMode,
   deviceContext,
   isSessionArchived,
   loadSessions,
+  navigateScene,
+  openLibrary,
   selectDeviceContext,
+  registerSettingsExitGuard,
   sessionTotal,
   sessions,
+  type AuxPaneDisplayMode,
 } from "../state";
 import {
   USAGE_DISTRIBUTIONS,
@@ -596,6 +633,7 @@ import {
   setUsageEntryFilter,
   toggleUsageExpanded,
   usageActivity,
+  usageActivityLoading,
   usageActivityNotice,
   usageBuckets,
   usageCacheHitRate,
@@ -605,6 +643,7 @@ import {
   usageExpanded,
   usageGranularity,
   usageGroups,
+  usageLoading,
   usageModels,
   usageNotice,
   usageRange,
@@ -690,10 +729,11 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.input",
         descriptionKey: "settings.page.inputDesc",
         icon: "command",
-        keywords: ["selection", "send", "queue"],
+        keywords: ["selection", "send", "queue", "btw"],
         anchors: [
           { id: "input", labelKey: "settings.section.input" },
           { id: "send-policy", labelKey: "settings.sendPolicy.title" },
+          { id: "btw-close-confirmation", labelKey: "btw.closeSettingsTitle" },
         ],
       },
       {
@@ -802,6 +842,7 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
           { id: "memory", labelKey: "settings.section.memory" },
           { id: "memory-models", labelKey: "settings.section.memoryModels" },
           { id: "memory-processing", labelKey: "settings.section.memoryProcessing" },
+          { id: "memory-enabled", labelKey: "settings.memory.enabled" },
         ],
       },
       {
@@ -810,7 +851,11 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         descriptionKey: "settings.page.editorDesc",
         icon: "code",
         keywords: ["editor", "font", "indent", "minimap", "word wrap"],
-        anchors: [],
+        anchors: [
+          { id: "editor", labelKey: "settings.editor.appearance" },
+          { id: "editor-behavior", labelKey: "settings.editor.behavior" },
+          { id: "editor-display", labelKey: "settings.editor.display" },
+        ],
       },
       {
         id: "terminal",
@@ -946,81 +991,97 @@ export function settingsPageEntry(id: SettingsPageId): SettingsPageEntry {
   return ALL_SETTINGS_PAGES.find(page => page.id === resolved) ?? ALL_SETTINGS_PAGES[0];
 }
 
+/** Whether a search destination is visible and its section can be revealed on this surface. */
+export function canOpenSettingsSearchTarget(id: SettingsPageId, anchor?: string): boolean {
+  const pageId = resolveSettingsPage(id);
+  const page = ALL_SETTINGS_PAGES.find(entry => entry.id === pageId);
+  if (!page || !settingsPageVisible(page)) return false;
+  if (pageId === "storage" && !localSnapshotStorageAvailable()) return false;
+  const section = anchor ?? SETTINGS_PAGE_ALIASES[id]?.anchor;
+  return !section || page.anchors.some(entry => entry.id === section) ||
+    SETTINGS_SECTIONS.some(entry => resolveSettingsPage(entry.page) === pageId && entry.id === section);
+}
+
 /** The page Settings shows; General when it opens, as on the desktop. */
 export const selectedSettingsPage = signal<SettingsPageId>("general");
 /** What the settings navigation's search field holds. */
 export const settingsSearchQuery = signal("");
 
 export interface SettingsSearchHit {
-  /** A stable key for the row. */
   key: string;
   pageId: SettingsPageId;
-  /** The text that matched: a page, a section or a field label. */
+  icon: IconName;
   label: string;
-  /** The page it lives on, shown under a field or section hit. */
   context: string;
-  /** The section to reveal once the page is open. */
+  detail: string;
   anchor?: string;
 }
 
-/**
- * Searches page names, page keywords, section titles and the label, hint and
- * keywords of every field, in the active language. A page hit comes first; a
- * field hit names the page it lives on and reveals its section.
- */
-export function settingsSearchResults(): SettingsSearchHit[] {
-  return settingsSearchHits();
+interface SettingsSearchRecord extends SettingsSearchHit {
+  terms: readonly string[];
 }
 
-/** One search per query (and language): the results list, its count and Enter read it. */
-const settingsSearchHits = computed<SettingsSearchHit[]>(() => searchSettings());
-
-function searchSettings(): SettingsSearchHit[] {
-  const needle = settingsSearchQuery().trim().toLowerCase();
-  if (!needle) return [];
-  const matches = (...texts: Array<string | undefined>): boolean =>
-    texts.some(text => (text ?? "").toLowerCase().includes(needle));
-  const hits: SettingsSearchHit[] = [];
-  for (const page of ALL_SETTINGS_PAGES) {
-    if (!settingsPageVisible(page)) continue;
-    const pageLabel = tr(page.labelKey);
-    if (matches(pageLabel, tr(page.descriptionKey), ...page.keywords)) {
-      hits.push({ key: `page:${page.id}`, pageId: page.id, label: pageLabel, context: tr(page.descriptionKey) });
-    }
-    for (const anchor of page.anchors) {
-      const title = tr(anchor.labelKey);
-      if (matches(title) && !matches(pageLabel)) {
-        hits.push({ key: `anchor:${page.id}:${anchor.id}`, pageId: page.id, label: title, context: pageLabel, anchor: anchor.id });
-      }
-    }
-  }
+// Both search surfaces use the same localized index and visibility gates.
+const settingsSearchIndex = computed<SettingsSearchRecord[]>(() => {
+  const records: SettingsSearchRecord[] = [];
+  const sectionsByPage = new Map<SettingsPageId, (typeof SETTINGS_SECTIONS)[number][]>();
   for (const section of SETTINGS_SECTIONS) {
-    const pageLabel = tr(settingsPageEntry(section.page).labelKey);
-    const sectionPage = resolveSettingsPage(section.page);
-    for (const field of section.fields) {
-      if (matches(fieldLabel(field), fieldHint(field), ...(field.keywords ?? []))) {
-        hits.push({
-          key: `field:${field.id}`,
-          pageId: sectionPage,
-          label: fieldLabel(field),
-          context: sectionTitle(section) === pageLabel ? pageLabel : `${pageLabel} · ${sectionTitle(section)}`,
-          anchor: section.id,
-        });
+    const page = SETTINGS_PAGE_ALIASES[section.page]?.pageId ?? section.page;
+    const entries = sectionsByPage.get(page) ?? [];
+    entries.push(section);
+    sectionsByPage.set(page, entries);
+  }
+  for (const group of SETTINGS_PAGE_GROUPS) {
+    for (const page of visibleSettingsPages(group)) {
+      const pageLabel = tr(page.labelKey);
+      const detail = tr(page.descriptionKey);
+      const context = [tr(group.labelKey), pageLabel].join(" › ");
+      const common = { pageId: page.id, icon: page.icon };
+      records.push({ ...common, key: "page:" + page.id, label: pageLabel, context, detail,
+        terms: [pageLabel, detail, page.id, ...page.keywords] });
+      for (const anchor of page.anchors) {
+        const label = tr(anchor.labelKey);
+        records.push({ ...common, key: "anchor:" + page.id + ":" + anchor.id, label, context, detail,
+          anchor: anchor.id, terms: [label, anchor.id] });
+      }
+      for (const section of sectionsByPage.get(page.id) ?? []) {
+        for (const field of section.fields) {
+          const label = fieldLabel(field);
+          const hint = fieldHint(field) ?? detail;
+          const sectionLabel = sectionTitle(section);
+          records.push({ ...common, key: "field:" + field.id, label, detail: hint,
+            context: sectionLabel === pageLabel ? context : context + " › " + sectionLabel,
+            anchor: section.id === "memory" && field.kind === "model" ? "memory-models" : section.id,
+            terms: [label, hint, field.id, ...(field.keywords ?? [])] });
+        }
       }
     }
   }
-  return hits.slice(0, 30);
+  return records;
+});
+
+export function findSettingsHits(query: string, limit = 30): SettingsSearchHit[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const matches = settingsSearchIndex().filter(record =>
+    record.terms.some(text => text.toLowerCase().includes(needle)));
+  const matchedDetails = new Set(matches.filter(record => record.anchor).map(record => record.pageId));
+  return matches.filter(record => record.anchor || !matchedDetails.has(record.pageId) ||
+    record.label.toLowerCase() === needle).slice(0, limit);
 }
+
+const settingsSearchResults = computed(() => findSettingsHits(settingsSearchQuery()));
+const activeSettingsAnchor = signal<string | null>(null);
 
 /** Views of the sections on the open page, so the navigation can reveal one. */
 const sectionAnchorRefs: Record<string, ViewRef | null> = {};
 /** The section to reveal once the page that holds it has rendered. */
-let pendingAnchor: string | null = null;
+let pendingAnchor: { pageId: SettingsPageId; id: string } | null = null;
 const memoryProcessingOpen = signal(false);
 
 function registerSectionAnchor(id: string, ref: ViewRef | null): void {
   sectionAnchorRefs[id] = ref;
-  if (ref && pendingAnchor === id) {
+  if (ref && pendingAnchor?.id === id && pendingAnchor.pageId === selectedSettingsPage()) {
     pendingAnchor = null;
     ref.reveal({ vertical: "start" });
   }
@@ -1039,20 +1100,30 @@ function syncModelsTabForAnchor(id: string): void {
 
 /** Scrolls the open page to one of its sections. */
 export function revealSettingsSection(id: string): void {
+  activeSettingsAnchor.set(id);
   syncModelsTabForAnchor(id);
   if (id === "memory-processing") memoryProcessingOpen.set(true);
   const ref = sectionAnchorRefs[id];
   if (ref) {
     ref.reveal({ vertical: "start" });
   } else {
-    pendingAnchor = id;
+    pendingAnchor = { pageId: selectedSettingsPage(), id };
   }
 }
 
-/** The page or device switch the unsaved-changes prompt is holding back. */
+/** A settings transition held by the unsaved-changes dialog. */
 type PendingSettingsNavigation =
-  | { kind: "page"; pageId: SettingsPageId; anchor?: string }
-  | { kind: "device"; deviceId: string };
+  | { kind: "page"; pageId: SettingsPageId; anchor?: string; clearSearch?: boolean }
+  | { kind: "models-tab"; tab: ModelsPageTab }
+  | { kind: "device"; deviceId: string }
+  | { kind: "device-page"; deviceId: string; pageId: SettingsPageId; anchor?: string }
+  | { kind: "mcp-list" }
+  | { kind: "mcp-reload" }
+  | { kind: "mcp-form-close" }
+  | { kind: "mcp-form-reload"; id?: string }
+  | { kind: "mcp-import-close" }
+  | { kind: "compact-list" }
+  | { kind: "scene"; proceed: () => void };
 
 const pendingNavigation = signal<PendingSettingsNavigation | null>(null);
 
@@ -1084,24 +1155,29 @@ function useDeviceScopedLoad(sectionKey: string, ensureInitial: () => void, relo
  * Opens a settings page. Text typed into a field and not saved yet would be lost
  * by the page change, so the change waits for Save / Discard / Keep editing.
  */
-export function requestSettingsPage(requested: SettingsPageId, requestedAnchor?: string): void {
+export function requestSettingsPage(requested: SettingsPageId, requestedAnchor?: string, clearSearch = false): void {
   const alias = SETTINGS_PAGE_ALIASES[requested];
-  const pageId = alias?.pageId ?? requested;
+  const pageId = resolveSettingsPage(requested);
   const anchor = requestedAnchor ?? alias?.anchor;
   if (pageId === selectedSettingsPage()) {
+    if (anchor && poolDraftDirty()) {
+      requestSettingsTransition({ kind: "page", pageId, anchor, clearSearch });
+      return;
+    }
+    if (clearSearch) settingsSearchQuery.set("");
     compactPageOpen.set(true);
     if (anchor) revealSettingsSection(anchor);
+    else { pendingAnchor = null; activeSettingsAnchor.set(null); }
     return;
   }
-  if (dirtyFields().length > 0) {
-    pendingNavigation.set({ kind: "page", pageId, anchor });
-    return;
-  }
-  goToSettingsPage(pageId, anchor);
+  requestSettingsTransition({ kind: "page", pageId, anchor, clearSearch });
 }
 
-function goToSettingsPage(pageId: SettingsPageId, anchor?: string): void {
+function goToSettingsPage(pageId: SettingsPageId, anchor?: string, clearSearch?: boolean): void {
   pendingNavigation.set(null);
+  pendingAnchor = null;
+  activeSettingsAnchor.set(anchor ?? null);
+  if (clearSearch) settingsSearchQuery.set("");
   compactPageOpen.set(true);
   selectedSettingsPage.set(pageId);
   if (anchor) revealSettingsSection(anchor);
@@ -1110,11 +1186,20 @@ function goToSettingsPage(pageId: SettingsPageId, anchor?: string): void {
 /** Switches the active device scope, guarding any unsaved text drafts first. */
 function requestDeviceScope(deviceId: string): void {
   if (!deviceId || deviceId === deviceContext()) return;
-  if (dirtyFields().length > 0) {
-    pendingNavigation.set({ kind: "device", deviceId });
-    return;
+  requestSettingsTransition({ kind: "device", deviceId });
+}
+
+/** Opens a Device page with its owning scope, through the unsaved-changes guard. */
+export function openDeviceSettings(pageId: SettingsPageId, deviceId?: string, anchor?: string): void {
+  const target = fleetActive() ? deviceId || deviceContext() : "";
+  if (target && target !== deviceContext()) {
+    const owner = fleetDeviceById(target);
+    if (!owner || owner.state === "offline" || owner.state === "unreachable") {
+      pushToast(tr("settings.offline"), "warning");
+      return;
+    }
   }
-  applyDeviceScope(deviceId);
+  requestSettingsTransition({ kind: "device-page", deviceId: target, pageId, anchor });
 }
 
 function applyDeviceScope(deviceId: string): void {
@@ -1125,18 +1210,66 @@ function applyDeviceScope(deviceId: string): void {
   void selectDeviceContext(deviceId);
 }
 
+function transitionFields(pending: PendingSettingsNavigation): FieldSpec[] {
+  return pending.kind.startsWith("mcp-") ? [] : dirtyFields();
+}
+
+function requestSettingsTransition(next: PendingSettingsNavigation): boolean {
+  if (poolBusy() || mcpBusy() === "mcp-json" || mcpBusy() === "mcp-save" || mcpBusy() === "mcp-import" || mcpImportReading()) return false;
+  if (poolDraftDirty() || mcpJsonDirty() || mcpDraftDirty() || mcpImportDirty() || transitionFields(next).length > 0) {
+    pendingNavigation.set(next);
+    return false;
+  }
+  applyPendingNavigation(next);
+  return true;
+}
+
 function applyPendingNavigation(pending: PendingSettingsNavigation): void {
-  if (pending.kind === "device") {
-    applyDeviceScope(pending.deviceId);
-  } else {
-    goToSettingsPage(pending.pageId, pending.anchor);
+  pendingNavigation.set(null);
+  if (mcpJsonOpen()) closeMcpJson();
+  if (mcpDraft()) closeMcpDraft();
+  if (mcpImportOpen()) closeMcpImport();
+  if (poolDraft()) closePoolDraft();
+  switch (pending.kind) {
+    case "mcp-list":
+    case "mcp-form-close":
+    case "mcp-import-close":
+      break;
+    case "mcp-form-reload":
+      openMcpDraft(pending.id);
+      break;
+    case "device":
+      applyDeviceScope(pending.deviceId);
+      break;
+    case "device-page":
+      batch(() => {
+        if (pending.deviceId && pending.deviceId !== deviceContext()) applyDeviceScope(pending.deviceId);
+        goToSettingsPage(resolveSettingsPage(pending.pageId), pending.anchor, true);
+        navigateScene("settings");
+      });
+      break;
+    case "page":
+      goToSettingsPage(pending.pageId, pending.anchor, pending.clearSearch);
+      break;
+    case "models-tab":
+      modelsPageTab.set(pending.tab);
+      break;
+    case "mcp-reload":
+      openMcpJson();
+      void loadMcpDocument();
+      break;
+    case "compact-list":
+      compactPageOpen.set(false);
+      break;
+    case "scene":
+      pending.proceed();
+      break;
   }
 }
 
 /** Opens what a search row names and clears the query. */
 export function openSettingsSearchHit(hit: SettingsSearchHit): void {
-  settingsSearchQuery.set("");
-  requestSettingsPage(hit.pageId, hit.anchor);
+  requestSettingsPage(hit.pageId, hit.anchor, true);
 }
 
 const APPEARANCE_PRESET_KEYS: Record<AppearanceId, MessageKey> = {
@@ -1228,17 +1361,6 @@ const WEB_SEARCH_AUTH_KEYS: Record<string, MessageKey> = {
   header: "settings.webSearch.authHeader",
 };
 
-const POOL_STRATEGY_KEYS: Record<string, { labelKey: MessageKey; hintKey: MessageKey }> = {
-  ordered: {
-    labelKey: "settings.pools.strategyOrdered",
-    hintKey: "settings.pools.strategyOrderedHint",
-  },
-  balanced: {
-    labelKey: "settings.pools.strategyBalanced",
-    hintKey: "settings.pools.strategyBalancedHint",
-  },
-};
-
 const TASK_MODEL_KEYS: Record<string, MessageKey> = {
   session_title: "settings.taskModels.sessionTitle",
   git_commit: "settings.taskModels.commitMessage",
@@ -1277,7 +1399,6 @@ const rowMenuId = signal<string | null>(null);
 /** Whether the diagnostics bundle export is waiting for the privacy confirmation. */
 const diagnosticsExportPending = signal(false);
 /** The MCP server a delete is waiting to be confirmed for. */
-const mcpDeletePending = signal<string | null>(null);
 const rowMenuAnchors = signal<Record<string, ViewRef | null>>({});
 
 function setRowAnchor(key: string, el: ViewRef | null): void {
@@ -1341,11 +1462,13 @@ function dirtyFields(): FieldSpec[] {
 function clampNumber(spec: FieldSpec, value: number): number {
   const min = minForField(spec) ?? Number.NEGATIVE_INFINITY;
   const max = maxForField(spec) ?? Number.POSITIVE_INFINITY;
-  return Math.min(max, Math.max(min, Math.trunc(value)));
+  const rounded = spec.precision ? Number(value.toFixed(spec.precision)) : Math.trunc(value);
+  return Math.min(max, Math.max(min, rounded));
 }
 
 /** A step that moves a wide range in useful increments. */
 function stepFor(spec: FieldSpec): number {
+  if (spec.precision) return 10 ** -spec.precision;
   const span = (maxForField(spec) ?? 0) - (minForField(spec) ?? 0);
   if (span >= 10000) return 100;
   if (span >= 1000) return 10;
@@ -1411,18 +1534,17 @@ function signedInAccountDisplay(): string {
   return accountDisplay().identity?.displayName || tr("home.signedIn");
 }
 
-// --- Settings layout (calm inset grouped lists) -----------------------------
-// Page: 680 column, 32 gutter (16 compact), 28 top, 26/600 large title.
-// Sections: a 13/600 secondary header, 8 below, then one inset grouped list
-// (radius 12, panelRaised, hairline borderSubtle, no shadow) whose rows are at
-// least 48 tall with 0x16 padding and separators inset 16 from the left.
+// --- Settings layout ---
 
 const SETTINGS_CONTENT_MAX = layout.settingsWidth;
 const SETTINGS_ROW_MIN = 48;
 const SETTINGS_ROW_INSET = space.lg;
-/** The left list (visual spec §4.9): 240 wide, rows 30. */
 const SETTINGS_LIST_WIDTH = layout.navMediumWidth;
-const SETTINGS_LIST_ROW = controlHeight.sm + space.hair;
+// ConfigPageLayout uses the content panel, not the application window, as its container.
+const SETTINGS_FORM_STACK_WIDTH = 520;
+const SETTINGS_FIELD_WIDTH = designTokens.metrics.menu.width;
+const SETTINGS_SAVE_BUTTON_WIDTH = 64;
+const settingsNavigationMetrics = designTokens.metrics.navigationPanel;
 
 /** The scene's own laid-out width (used to tune list width and gutters at narrow desktop sizes). */
 const settingsSceneWidth = signal(0);
@@ -1446,10 +1568,8 @@ function settingsListWidth(): number {
 }
 
 function settingsGutter(): number {
-  if (settingsCompact()) return layout.phoneGutter;
   const width = settingsSceneWidth();
-  if (width > 0 && width < 800) return space.xl;
-  return layout.pageGutter;
+  return width > 0 ? Math.min(space.xl, Math.max(space.md, Math.round(width * 0.03))) : space.xl;
 }
 
 /** A hairline separator inset 16 from the left, drawn over the top or bottom edge of a row. */
@@ -1470,91 +1590,22 @@ function RowSeparator(props: { edge: "top" | "bottom"; inset?: number }) {
   );
 }
 
-/** The row's text column: a 14 label and a 12 muted description. */
-function RowText(props: { label: string; description?: string; tabular?: boolean; grow: boolean }) {
-  return (
-    <View
-      style={{
-        flexGrow: props.grow ? 1 : 0,
-        flexShrink: 1,
-        flexBasis: props.grow ? 180 : undefined,
-        minWidth: 0,
-        gap: space.hair,
-      }}
-    >
-      <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
-        {props.label}
-      </Text>
-      <If when={props.description ?? ""}>
-        {description => (
-          <Text
-            style={{
-              ...textStyle("caption", { tabular: props.tabular }),
-              lineHeight: textLineHeight(12, 1.45),
-              maxWidth: 460,
-            }}
-          >
-            {description()}
-          </Text>
-        )}
-      </If>
-    </View>
-  );
-}
-
-/**
- * One row of a settings list: label and description on the left, the control
- * on the right (or under the text when `stacked`). At compact width the control
- * wraps under the text when both do not fit.
- */
 function SettingsRow(props: {
+  testID?: string;
   wrap?: boolean;
   label: string;
   description?: string;
   first?: boolean;
-  /** Puts the control under the text instead of beside it (long lists, editors). */
   stacked?: boolean;
+  controlWidth?: number;
   children?: JSX.Element;
 }) {
   return (
-    <View
-      style={{
-        position: "relative",
-        flexDirection: props.stacked ? "column" : "row",
-        flexWrap: props.stacked || props.wrap === false ? undefined : "wrap",
-        alignItems: props.stacked ? "stretch" : "center",
-        columnGap: space.lg,
-        rowGap: space.sm,
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-        minHeight: SETTINGS_ROW_MIN,
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-    >
-      <If when={!props.first}>
-        <RowSeparator edge="top" />
-      </If>
-      <RowText label={props.label} description={props.description} grow={!props.stacked} />
-      <If when={Boolean(props.children)}>
-        <View
-          style={{
-            // Stacked content takes the row's width, so a wrapping grid inside it
-            // wraps; as an item of a wrapping row it would keep its one-line width.
-            flexDirection: props.stacked ? "column" : "row",
-            flexWrap: props.stacked ? undefined : "wrap",
-            alignItems: props.stacked ? "stretch" : "center",
-            justifyContent: props.stacked ? "flex-start" : "flex-end",
-            flexShrink: props.stacked ? 0 : 1,
-            minWidth: 0,
-            maxWidth: props.stacked || settingsCompact() ? "100%" : "60%",
-            marginLeft: props.stacked ? undefined : "auto",
-            gap: space.sm,
-          }}
-        >
-          {props.children}
-        </View>
-      </If>
-    </View>
+    <ConfigRow testID={props.testID} label={props.label} description={props.description}
+      wrap={props.wrap} stacked={props.stacked} controlWidth={props.controlWidth}
+      divider={false} topDivider={!props.first}>
+      {props.children}
+    </ConfigRow>
   );
 }
 
@@ -1567,61 +1618,10 @@ function repeatsPageTitle(title: string): boolean {
   return title === tr(settingsPageEntry(selectedSettingsPage()).labelKey);
 }
 
-/**
- * A section's header: its 16/600 title, the line that explains it right under
- * the title (read before the controls, not after them), and the section's own
- * actions on the right. With no title (the page title already says it) the
- * explanation and the actions share the line.
- */
 function SectionHeader(props: { title: string; description?: string; extra?: JSX.Element }) {
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        // On a narrow window the actions move under the explanation instead of squeezing it.
-        flexWrap: "wrap",
-        alignItems: props.description ? "flex-end" : "center",
-        columnGap: space.md,
-        rowGap: space.sm,
-        minHeight: space.xl,
-        marginBottom: space.md,
-      }}
-    >
-      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 240, minWidth: 0, gap: space.xs }}>
-        <If when={props.title}>
-          <Text role="header" style={textStyle("sectionTitle")}>
-            {props.title}
-          </Text>
-        </If>
-        <If when={props.description ?? ""}>
-          {description => (
-            <Text
-              style={{
-                ...textStyle("caption"),
-                lineHeight: textLineHeight(12, 1.5),
-                maxWidth: 600,
-              }}
-            >
-              {description()}
-            </Text>
-          )}
-        </If>
-      </View>
-      <If when={Boolean(props.extra)}>
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            gap: space.sm,
-            marginLeft: "auto",
-            minWidth: 0,
-            maxWidth: "100%",
-          }}
-        >
-          {props.extra}
-        </View>
-      </If>
+    <View style={{ marginBottom: space.md }}>
+      <ConfigSectionHeader title={props.title} description={props.description} extra={props.extra} />
     </View>
   );
 }
@@ -1744,7 +1744,6 @@ function insetGroupStyle(padding = 0) {
 function SettingsGroup(props: {
   id: string;
   title: string;
-  /** The page title already says it (a page with one section): draw no header. */
   hideTitle?: boolean;
   description?: string;
   notice?: string;
@@ -1754,112 +1753,32 @@ function SettingsGroup(props: {
   children?: JSX.Element;
 }) {
   return (
-    <View ref={el => registerSectionAnchor(props.id, el)} style={{ minWidth: 0 }}>
-      <If when={!props.hideTitle || Boolean(props.extra) || Boolean(props.description)}>
-        <SectionHeader
-          title={props.hideTitle ? "" : props.title}
-          description={props.description}
-          extra={props.extra}
-        />
-      </If>
-      <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
-      <If when={props.expanded !== false}>
-        <View style={insetGroupStyle()}>{props.children}</View>
-      </If>
-    </View>
+    <ConfigSection title={props.hideTitle ? "" : props.title}
+      subtitle={props.description} extra={props.extra} flush
+      anchorRef={node => registerSectionAnchor(props.id, node)}
+      notice={<SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />}>
+      {props.children}
+    </ConfigSection>
   );
 }
 
-const SettingsInsetContext = context<number>(0);
-
-/**
- * A section drawn by its own component (permissions, MCP, usage, ...): the same
- * header and inset list as `SettingsGroup`, with an optional inner padding for
- * freeform content. `SettingsConfigRow`s inside reach the list's edges.
- */
 function SettingsSection(props: {
   title: string;
   subtitle?: string;
   extra?: JSX.Element;
-  /** The outcome of this section's own load or write (`SectionNoticeBanner`). */
   notice?: string;
   onDismissNotice?: () => void;
   bodyPadding?: number;
   flush?: boolean;
   children?: JSX.Element;
 }) {
-  const inset = (): number => (props.flush ? 0 : (props.bodyPadding ?? 16));
   return (
-    <View style={{ minWidth: 0 }}>
-      <If when={!repeatsPageTitle(props.title) || Boolean(props.extra) || Boolean(props.subtitle)}>
-        <SectionHeader
-          title={repeatsPageTitle(props.title) ? "" : props.title}
-          description={props.subtitle}
-          extra={props.extra}
-        />
-      </If>
-      <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
-      <View style={insetGroupStyle(inset())}>
-        <SettingsInsetContext.Provider value={inset()}>{props.children}</SettingsInsetContext.Provider>
-      </View>
-    </View>
-  );
-}
-
-/** A row inside a `SettingsSection`: the list row geometry with explicit dividers. */
-function SettingsConfigRow(props: {
-  label: string;
-  description?: string;
-  /** Bottom hairline (default `true`); pass `false` on the last row. */
-  divider?: boolean;
-  topDivider?: boolean;
-  controlWidth?: number;
-  controlAlign?: "end" | "stretch";
-  descriptionTabular?: boolean;
-  children?: JSX.Element;
-}) {
-  const stretch = (): boolean => props.controlAlign === "stretch";
-  return (
-    <View
-      style={{
-        position: "relative",
-        marginHorizontal: -SettingsInsetContext(),
-        minHeight: SETTINGS_ROW_MIN,
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-        flexDirection: "row",
-        flexWrap: "wrap",
-        alignItems: "center",
-        columnGap: space.lg,
-        rowGap: space.sm,
-      }}
-    >
-      <If when={Boolean(props.topDivider)}>
-        <RowSeparator edge="top" />
-      </If>
-      <RowText label={props.label} description={props.description} tabular={props.descriptionTabular} grow={true} />
-      <If when={Boolean(props.children)}>
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: stretch() ? "flex-start" : "flex-end",
-            flexShrink: 1,
-            minWidth: 0,
-            marginLeft: "auto",
-            width: settingsCompact() ? undefined : props.controlWidth,
-            maxWidth: "100%",
-            gap: space.sm,
-          }}
-        >
-          {props.children}
-        </View>
-      </If>
-      <If when={props.divider !== false}>
-        <RowSeparator edge="bottom" />
-      </If>
-    </View>
+    <ConfigSection title={repeatsPageTitle(props.title) ? "" : props.title}
+      subtitle={props.subtitle} extra={props.extra} bodyPadding={props.bodyPadding ?? space.lg}
+      flush={props.flush}
+      notice={<SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />}>
+      {props.children}
+    </ConfigSection>
   );
 }
 
@@ -1886,7 +1805,7 @@ function RowSaveButton(props: { spec: FieldSpec; dirty: boolean; onPress: () => 
       style={{
         boxSizing: "border-box",
         minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-        minWidth: 64,
+        minWidth: SETTINGS_SAVE_BUTTON_WIDTH,
         paddingHorizontal: space.md,
         flexShrink: 0,
         flexDirection: "row",
@@ -1940,7 +1859,7 @@ function segmentedFits(spec: FieldSpec): boolean {
   if (spec.selectPresentation) return spec.selectPresentation === "segmented";
   if (spec.dynamicOptions) return false;
   const options = fieldOptions(spec);
-  if (options.length > 3) return false;
+  if (options.length > 3 || options.some(option => option.disabledReason)) return false;
   let totalCols = 0;
   for (const option of options) {
     const cols = segmentedLabelColumns(optionLabel(option));
@@ -1950,7 +1869,7 @@ function segmentedFits(spec: FieldSpec): boolean {
   return totalCols <= 28;
 }
 
-function ChoiceControl(props: { spec: FieldSpec }) {
+function ChoiceControl(props: { spec: FieldSpec; disabled?: boolean }) {
   const spec = props.spec;
   const current = () => String(fieldDisplay(spec) ?? "") || (spec.emptyMeans ?? "");
   const options = () =>
@@ -1958,9 +1877,12 @@ function ChoiceControl(props: { spec: FieldSpec }) {
       value: option.value,
       label: optionLabel(option),
       accessibilityLabel: `${spec.id}-${option.value}`,
+      disabled: props.disabled || Boolean(option.disabledReason),
+      description: option.disabledReason ? tr(option.disabledReason) : undefined,
     }));
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, maxWidth: "100%" }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm,
+      width: segmentedFits(spec) ? undefined : "100%", minWidth: 0, maxWidth: "100%" }}>
       <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
       <If when={segmentedFits(spec)}>
         <SegmentedTabs size="sm" value={current()} options={options()} onChange={value => void writeField(spec, value)} />
@@ -1970,10 +1892,11 @@ function ChoiceControl(props: { spec: FieldSpec }) {
           size="sm"
           value={current()}
           options={options()}
-          accessibilityLabel={spec.id}
-          disabled={fieldSaving(spec)}
-          minWidth={NUMBER_STEPPER_WIDTH}
-          maxWidth={settingsCompact() ? undefined : 280}
+          testID={spec.id}
+          accessibilityLabel={fieldLabel(spec)}
+          accessibilityDescription={fieldDescription(spec)}
+          disabled={props.disabled || fieldSaving(spec)}
+          fullWidth
           align="end"
           onChange={value => void writeField(spec, value)}
         />
@@ -1987,7 +1910,7 @@ function ChoiceControl(props: { spec: FieldSpec }) {
  * enabled chat models by `name · model`. An id the host no longer configures is
  * kept visible as such instead of reading as "follow".
  */
-function ModelChoiceControl(props: { spec: FieldSpec }) {
+function ModelChoiceControl(props: { spec: FieldSpec; disabled?: boolean }) {
   const spec = props.spec;
   const current = (): string => {
     const value = fieldDisplay(spec);
@@ -2019,17 +1942,18 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
     return rows;
   };
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, maxWidth: "100%" }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, width: "100%", minWidth: 0 }}>
       <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
       <SelectDropdown
         size="sm"
         value={current()}
         options={options()}
         searchable={options().length > 8}
-        accessibilityLabel={spec.id}
-        disabled={fieldSaving(spec)}
-        minWidth={settingsCompact() ? NUMBER_STEPPER_WIDTH : 220}
-        maxWidth={settingsCompact() ? undefined : 300}
+        testID={spec.id}
+        accessibilityLabel={fieldLabel(spec)}
+        accessibilityDescription={fieldHint(spec)}
+        disabled={props.disabled || fieldSaving(spec)}
+        fullWidth
         align="end"
         onChange={value => void writeField(spec, value || null)}
       />
@@ -2037,12 +1961,61 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
   );
 }
 
+function executionModelPoolsSupported(): boolean {
+  return supportsExecutionCapability("model_routing_v1") && supportsExecutionCapability("model_pool_selection_v1");
+}
+
+function ModelTargetChoiceControl(props: { spec: FieldSpec; disabled?: boolean }) {
+  const spec = props.spec;
+  const selected = () => modelTargetForField(spec);
+  const value = () => selected() ? JSON.stringify(selected()) : "";
+  const choices = () => {
+    const rows: Array<{ selection: AgentModelTarget; label: string; description?: string; accessibilityLabel: string }> = [
+      { selection: { kind: "inherit" }, label: tr("settings.execution.inheritModel"), accessibilityLabel: `${spec.id}-inherit` },
+      { selection: { kind: "model", model_ref: "fast" }, label: tr("settings.field.fastRole"), accessibilityLabel: `${spec.id}-fast` },
+      { selection: { kind: "model", model_ref: "primary" }, label: tr("settings.field.primaryRole"), accessibilityLabel: `${spec.id}-primary` },
+      ...selectableChatModels().filter(model => model.id !== "fast" && model.id !== "primary").map(model => ({
+        selection: { kind: "model" as const, model_ref: model.id },
+        label: modelOptionText(model), accessibilityLabel: `${spec.id}-model-${model.id}`,
+      })),
+    ];
+    if (executionModelPoolsSupported() && poolsSupported()) {
+      for (const pool of pools()) rows.push({
+        selection: { kind: "pool", pool_id: pool.id }, label: pool.name, description: tr("settings.pools.title"),
+        accessibilityLabel: `${spec.id}-pool-${pool.id}`,
+      });
+    }
+    return rows;
+  };
+  const options = () => {
+    const options = choices().map(({ selection, ...row }) => ({ ...row, value: JSON.stringify(selection), disabled: false }));
+    const stored = selected();
+    if (stored && stored.kind !== "inherit" && !options.some(option => option.value === value())) {
+      const name = stored.kind === "pool" ? stored.pool_id : stored.model_ref;
+      options.push({ value: value(), label: tr("settings.field.notConfiguredSuffix", { name }),
+        accessibilityLabel: `${spec.id}-unavailable`, disabled: true });
+    }
+    return options;
+  };
+  const select = (key: string) => {
+    if (props.disabled || fieldSaving(spec) || !selected()) return;
+    const choice = choices().find(row => JSON.stringify(row.selection) === key);
+    if (choice && key !== value()) void writeField(spec, choice.selection);
+  };
+  return <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, width: "100%", minWidth: 0 }}>
+    <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
+    <SelectDropdown size="sm" value={value()} options={options()} searchable={options().length > 8}
+      testID={spec.id} accessibilityLabel={fieldLabel(spec)} disabled={props.disabled || fieldSaving(spec) || !selected()}
+      fullWidth align="end" onChange={select} />
+  </View>;
+}
+
 /**
  * Every number row's stepper has this width, so the boxes of all number rows
  * share one right-aligned column and their values line up.
  */
 /** Same width as a settings select, so steppers and selects share one right rail. */
-const NUMBER_STEPPER_WIDTH = 200;
+const NUMBER_STEPPER_WIDTH = SETTINGS_FIELD_WIDTH;
 
 /**
  * A rough advance width of `text` at `fontSize`: tabular digits ~0.62em, other
@@ -2068,8 +2041,10 @@ function approxTextWidth(text: string, fontSize: number): number {
  * Reset, No limit) sits left of the box, so it never moves the column.
  */
 function SettingsNumberStepper(props: {
-  /** Accessibility base: the value is `id`, the buttons `id-decrease` / `id-increase`. */
+  /** Stable selectors for the input and its step buttons. */
   id: string;
+  label?: string;
+  description?: string;
   text: string;
   placeholder?: string;
   unit?: string;
@@ -2081,7 +2056,10 @@ function SettingsNumberStepper(props: {
   onIncrease: () => void;
   onChangeText?: (value: string) => void;
   onSubmit?: () => void;
+  onCancelEdit?: () => void;
+  decimal?: boolean;
   leading?: JSX.Element;
+  fill?: boolean;
 }) {
   const editable = (): boolean => Boolean(props.onChangeText) && !props.readonly;
   const stepButton = () => ({
@@ -2102,12 +2080,15 @@ function SettingsNumberStepper(props: {
     return Math.max(approxTextWidth(shown, fontSize()), approxTextWidth("000", fontSize())) + space.xs;
   };
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
+    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm,
+      width: props.fill ? "100%" : undefined, minWidth: 0, maxWidth: "100%" }}>
       {props.leading}
       <View
         style={{
           boxSizing: "border-box",
-          width: NUMBER_STEPPER_WIDTH,
+          width: props.fill ? undefined : NUMBER_STEPPER_WIDTH,
+          flex: props.fill ? 1 : undefined,
+          minWidth: 0,
           maxWidth: "100%",
           height: compactLayout() ? layout.touchTarget : controlHeight.sm,
           flexDirection: "row",
@@ -2119,7 +2100,7 @@ function SettingsNumberStepper(props: {
           borderWidth: 1,
           borderColor: props.dirty ? palette().accent : palette().borderSubtle,
           backgroundColor: palette().inputBg,
-          flexShrink: 0,
+          flexShrink: props.fill ? 1 : 0,
           ...paintTransition(MOTION_DURATION.fast),
         }}
         focusWithinStyle={{ borderColor: palette().fieldFocusBorder }}
@@ -2147,11 +2128,16 @@ function SettingsNumberStepper(props: {
           <If when={editable()}>
             <Input
               value={props.text}
-              accessibilityLabel={props.id}
+              testID={props.id}
+              accessibilityLabel={props.label ?? props.id}
+              accessibilityDescription={props.description}
               placeholder={props.placeholder ?? ""}
-              keyboardType="number-pad"
+              keyboardType={props.decimal ? "decimal-pad" : "number-pad"}
               onChange={event => props.onChangeText?.(event.value)}
               onSubmit={() => props.onSubmit?.()}
+              onKeyPress={event => {
+                if (event.key === "Escape") props.onCancelEdit?.();
+              }}
               onBlur={() => {
                 if (props.dirty) props.onSubmit?.();
               }}
@@ -2177,7 +2163,9 @@ function SettingsNumberStepper(props: {
           </If>
           <If when={!editable()}>
             <Text
-              accessibilityLabel={props.id}
+              testID={props.id}
+              accessibilityLabel={props.label ?? props.id}
+              accessibilityDescription={props.description}
               style={{
                 ...valueStyle(),
                 color: props.text ? palette().text : palette().textMuted,
@@ -2273,9 +2261,9 @@ function FieldStatus(props: { saving: boolean; saved: boolean }) {
  * `Option` and holds unset; such a value has a "No limit" action, any other a
  * Reset to the backend's default.
  */
-function NumberControl(props: { spec: FieldSpec }) {
+function NumberControl(props: { spec: FieldSpec; disabled?: boolean }) {
   const spec = props.spec;
-  const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined && !spec.clearable;
+  const unavailable = () => props.disabled || (fieldMissing(spec) && defaultForField(spec) === undefined && !spec.clearable);
   const value = (): number | null => {
     const raw = fieldDisplay(spec);
     if (raw === undefined || raw === null || raw === "") return null;
@@ -2309,9 +2297,13 @@ function NumberControl(props: { spec: FieldSpec }) {
   return (
     <SettingsNumberStepper
       id={spec.id}
+      label={fieldLabel(spec)}
+      description={fieldHint(spec)}
+      fill
       text={draftOf(spec)}
       placeholder={placeholder()}
       unit={showsUnit() ? fieldUnit(spec) : undefined}
+      decimal={Boolean(spec.precision)}
       dirty={fieldDirty(spec)}
       readonly={unavailable()}
       decreaseDisabled={unavailable() || fieldSaving(spec) || (stepBase() !== null && stepBase()! <= (min() ?? Number.NEGATIVE_INFINITY))}
@@ -2319,11 +2311,11 @@ function NumberControl(props: { spec: FieldSpec }) {
       onDecrease={() => stepNumber(spec, -1)}
       onIncrease={() => stepNumber(spec, 1)}
       onChangeText={text => setDraft(spec, text)}
-      onSubmit={() => void commitDraft(spec)}
+      onSubmit={() => { if (!unavailable()) void commitDraft(spec); }}
       leading={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
-          <If when={spec.clearable === true && !noLimit()}>
+          <If when={!unavailable() && spec.clearable === true && !noLimit()}>
             <Button
               label={tr("settings.placeholder.noLimit")}
               tooltip={tr("settings.field.clearLimit")}
@@ -2339,7 +2331,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           </If>
           <If when={!spec.clearable && backendDefault() !== null}>
             <StepperSlot width={controlHeight.sm}>
-              <If when={resettable() && !fieldDirty(spec)}>
+              <If when={!unavailable() && resettable() && !fieldDirty(spec)}>
                 <StepperAccessory
                   icon="undo"
                   tooltip={tr("settings.field.resetToDefault", { value: String(backendDefault() ?? "") })}
@@ -2368,7 +2360,8 @@ function TextControl(props: { spec: FieldSpec }) {
         flexDirection: "row",
         alignItems: "center",
         gap: space.sm,
-        width: settingsCompact() ? "100%" : 300,
+        width: "100%",
+        minWidth: 0,
         flexShrink: 1,
         maxWidth: "100%",
       }}
@@ -2380,7 +2373,9 @@ function TextControl(props: { spec: FieldSpec }) {
         masked={spec.masked === true}
         readonly={unavailable()}
         disabled={unavailable()}
-        accessibilityLabel={spec.id}
+        testID={spec.id}
+        accessibilityLabel={fieldLabel(spec)}
+        accessibilityDescription={fieldHint(spec)}
         style={{ flex: 1, minWidth: 0 }}
         onChange={value => setDraft(spec, value)}
         onSubmit={() => void commitDraft(spec)}
@@ -2393,7 +2388,10 @@ function TextControl(props: { spec: FieldSpec }) {
 }
 
 function fieldDescription(spec: FieldSpec): string {
-  return fieldHint(spec) ?? "";
+  const hint = fieldHint(spec) ?? "";
+  const value = fieldDisplay(spec);
+  const reason = spec.options?.find(option => option.value === value)?.disabledReason;
+  return reason ? [hint, tr(reason)].filter(Boolean).join(" ") : hint;
 }
 
 /** Fields the desktop sets through product control, which also applies them on the host. */
@@ -2402,34 +2400,47 @@ const GENERAL_CONTROL_FOR: Record<string, GeneralControlOption> = {
   "prevent-sleep": "prevent-sleep",
 };
 
-function FieldRow(props: { spec: FieldSpec; first?: boolean }) {
+function FieldRow(props: { spec: FieldSpec; first?: boolean; disabled?: boolean; unsupported?: boolean }) {
   const spec = props.spec;
   const control = GENERAL_CONTROL_FOR[spec.id];
   const controlled = (): boolean => Boolean(control) && generalControlValue(control) !== undefined;
   const checked = (): boolean => (controlled() ? generalControlValue(control) === true : fieldDisplay(spec) === true);
   const saving = (): boolean => fieldSaving(spec) || (Boolean(control) && generalControlSaving() === control);
-  const description = (): string => (controlled() ? (fieldHint(spec) ?? "") : fieldDescription(spec));
+  const description = (): string => props.unsupported ? unsupportedOnDevice()
+    : controlled() ? (fieldHint(spec) ?? "") : fieldDescription(spec);
+  const disabled = () => props.disabled || props.unsupported;
+  const controlWidth = () => {
+    if (spec.kind === "boolean" || (spec.kind === "select" && segmentedFits(spec))) return undefined;
+    if (spec.kind === "text") return SETTINGS_FIELD_WIDTH + SETTINGS_SAVE_BUTTON_WIDTH + space.sm;
+    return SETTINGS_FIELD_WIDTH;
+  };
   return (
-    <SettingsRow label={fieldLabel(spec)} description={description()} first={props.first}>
+    <SettingsRow testID={`settings-row-${spec.id}`} label={fieldLabel(spec)} description={description()}
+      first={props.first} controlWidth={controlWidth()}>
       <If when={spec.kind === "boolean"}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <FieldStatus saving={saving()} saved={fieldJustSaved(spec.id)} />
           <ToggleSwitch
             value={checked()}
-            accessibilityLabel={spec.id}
-            disabled={saving()}
+            testID={spec.id}
+            accessibilityLabel={fieldLabel(spec)}
+            accessibilityDescription={description() || undefined}
+            disabled={disabled() || saving()}
             onChange={next => void (controlled() ? setGeneralControl(control, next) : writeField(spec, next))}
           />
         </View>
       </If>
       <If when={spec.kind === "select"}>
-        <ChoiceControl spec={spec} />
+        <ChoiceControl spec={spec} disabled={disabled()} />
       </If>
       <If when={spec.kind === "model"}>
-        <ModelChoiceControl spec={spec} />
+        <ModelChoiceControl spec={spec} disabled={disabled()} />
+      </If>
+      <If when={spec.kind === "model-target"}>
+        <ModelTargetChoiceControl spec={spec} disabled={disabled()} />
       </If>
       <If when={spec.kind === "number"}>
-        <NumberControl spec={spec} />
+        <NumberControl spec={spec} disabled={disabled()} />
       </If>
       <If when={spec.kind === "text"}>
         <TextControl spec={spec} />
@@ -2445,6 +2456,8 @@ function FieldSection(props: {
   leading?: JSX.Element;
   expanded?: boolean;
   onToggle?: () => void;
+  extra?: JSX.Element;
+  unavailable?: (spec: FieldSpec) => boolean;
 }) {
   const section = SETTINGS_SECTIONS.find(entry => entry.id === props.sectionId);
   if (!section) return null;
@@ -2480,11 +2493,12 @@ function FieldSection(props: {
             <Icon name="chevron-right" size={14} color={palette().textMuted} />
           </View>
         </View>
-      ) : undefined}
+      ) : props.extra}
     >
       {props.leading}
       <Each of={section.fields} key={field => field.id}>
-        {(field, index) => <FieldRow spec={field()} first={!hasLeading && index() === 0} />}
+        {(field, index) => <FieldRow spec={field()} first={!hasLeading && index() === 0}
+          unsupported={props.unavailable?.(field())} />}
       </Each>
       {props.children}
     </SettingsGroup>
@@ -2504,6 +2518,7 @@ function matchesNoticeTemplate(text: string, templateKey: MessageKey, placeholde
 function settingsNoticeTone(notice: string): "danger" | "warning" | "success" | "info" {
   if (
     notice === tr("settings.memory.resetDone") ||
+    notice === tr("settings.memory.settingsResetDone") ||
     matchesNoticeTemplate(notice, "settings.notice.savedField", "label") ||
     matchesNoticeTemplate(notice, "settings.notice.languageSaved", "label")
   ) {
@@ -2511,6 +2526,7 @@ function settingsNoticeTone(notice: string): "danger" | "warning" | "success" | 
   }
   if (
     notice === tr("settings.notice.memoryWindowRefusal") ||
+    notice === tr("settings.appearance.fontSaveFailed") ||
     notice === tr("settings.notice.hostUpdateRequired") ||
     notice === tr("settings.permissions.timeoutValidation") ||
     matchesNoticeTemplate(notice, "settings.notice.needsNumber", "label")
@@ -2606,20 +2622,6 @@ function SelectableChip(props: {
       </Text>
     </View>
   );
-}
-
-function poolMemberTone(status: string): "success" | "warning" | "danger" | "neutral" {
-  const s = status.trim().toLowerCase();
-  if (s === "healthy" || s === "available" || s === "ready" || s === "ok" || s === "active") {
-    return "success";
-  }
-  if (s.includes("cool") || s.includes("degrad") || s.includes("rate") || s.includes("throt") || s === "busy") {
-    return "warning";
-  }
-  if (s.includes("fail") || s.includes("err") || s.includes("unavail") || s.includes("unhealthy") || s === "disabled") {
-    return "danger";
-  }
-  return "neutral";
 }
 
 function formatResetAt(raw: string | number): string {
@@ -2819,7 +2821,7 @@ function PermissionsSection() {
         </SettingsSection>
 
         <SettingsSection title={tr("settings.polish.globalRules")} flush={true}>
-          <SettingsConfigRow
+          <ConfigRow
             label={tr("settings.permissions.globalRulesTitle")}
             description={formatPlural(
               permissionRuleCount(),
@@ -2836,9 +2838,9 @@ function PermissionsSection() {
               accessibilityLabel="edit-permission-rules"
               onPress={() => beginRulesDraft()}
             />
-          </SettingsConfigRow>
+          </ConfigRow>
           <If when={permissionModeControl() !== null}>
-            <SettingsConfigRow
+            <ConfigRow
               label={
                 permissionModeControl() === true
                   ? tr("settings.permissions.composerSwitchOn")
@@ -2852,7 +2854,7 @@ function PermissionsSection() {
                 accessibilityLabel="permission-mode-control"
                 onChange={next => void setPermissionModeControl(next)}
               />
-            </SettingsConfigRow>
+            </ConfigRow>
           </If>
         </SettingsSection>
 
@@ -3084,7 +3086,7 @@ function ApprovalSection() {
         notice={approvalNotice()}
         onDismissNotice={() => approvalNotice.set("")}
       >
-        <SettingsConfigRow label={tr("settings.polish.assessedBy")}>
+        <ConfigRow label={tr("settings.polish.assessedBy")}>
           <SegmentedTabs
             size="sm"
             value={kind()}
@@ -3102,7 +3104,7 @@ function ApprovalSection() {
             ]}
             onChange={value => void saveApproval({ modelKind: value as "chat" | "decision" })}
           />
-        </SettingsConfigRow>
+        </ConfigRow>
         <If when={kind() === "chat"}>
           <View style={{ position: "relative" }}>
             <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingTop: 10, paddingBottom: 6 }}>
@@ -3129,7 +3131,7 @@ function ApprovalSection() {
           </View>
         </If>
         <If when={kind() === "decision"}>
-          <SettingsConfigRow
+          <ConfigRow
             label={tr("settings.permissions.decisionModel")}
             description={tr("settings.permissions.decisionModelHint")}
           >
@@ -3165,9 +3167,9 @@ function ApprovalSection() {
                 }
               />
             </View>
-          </SettingsConfigRow>
+          </ConfigRow>
           <If when={decisionCredential() !== null}>
-            <SettingsConfigRow label={tr("settings.polish.decisionKey")}>
+            <ConfigRow label={tr("settings.polish.decisionKey")}>
               <InputBox
                 size="sm"
                 leadingIcon="key"
@@ -3200,10 +3202,10 @@ function ApprovalSection() {
                   onPress={() => void clearDecisionCredential()}
                 />
               </If>
-            </SettingsConfigRow>
+            </ConfigRow>
           </If>
         </If>
-        <SettingsConfigRow label={tr("settings.permissions.timeout")}>
+        <ConfigRow label={tr("settings.permissions.timeout")}>
           <SettingsNumberStepper
             id="approval-timeout"
             text={pick("timeout", approvalSettings() ? String(approvalSettings()!.timeoutSeconds) : "")}
@@ -3217,8 +3219,8 @@ function ApprovalSection() {
             onChangeText={val => approvalDrafts.update(current => ({ ...current, timeout: val }))}
             onSubmit={() => saveApprovalTimeout()}
           />
-        </SettingsConfigRow>
-        <SettingsConfigRow label={tr("settings.permissions.whenUnsure")}>
+        </ConfigRow>
+        <ConfigRow label={tr("settings.permissions.whenUnsure")}>
           <SegmentedTabs
             size="sm"
             value={approvalSettings()?.onAsk ?? "user"}
@@ -3228,8 +3230,8 @@ function ApprovalSection() {
             ]}
             onChange={val => void saveApproval({ onAsk: val === "reject" ? "reject" : "user" })}
           />
-        </SettingsConfigRow>
-        <SettingsConfigRow label={tr("settings.permissions.whenFails")} divider={false}>
+        </ConfigRow>
+        <ConfigRow label={tr("settings.permissions.whenFails")} divider={false}>
           <SegmentedTabs
             size="sm"
             value={approvalSettings()?.onError ?? "ask"}
@@ -3239,7 +3241,7 @@ function ApprovalSection() {
             ]}
             onChange={val => void saveApproval({ onError: val === "reject" ? "reject" : "ask" })}
           />
-        </SettingsConfigRow>
+        </ConfigRow>
       </SettingsSection>
     </If>
   );
@@ -3259,7 +3261,7 @@ function SendPolicySection() {
       notice={sendPolicyNotice()}
       onDismissNotice={() => sendPolicyNotice.set("")}
     >
-      <SettingsConfigRow
+      <ConfigRow
         label={tr("settings.sendPolicy.duringTurn")}
         description={currentHint()}
         divider={false}
@@ -3274,7 +3276,22 @@ function SendPolicySection() {
           }))}
           onChange={value => void chooseMidTurnSendPolicy(value)}
         />
-      </SettingsConfigRow>
+      </ConfigRow>
+    </SettingsSection>
+  );
+}
+
+function BtwCloseSettingsSection() {
+  return (
+    <SettingsSection title={tr("btw.closeSettingsTitle")} flush>
+      <SettingsRow label={tr("btw.confirmCloseSetting")} description={tr("btw.confirmCloseDescription")} first>
+        <ToggleSwitch
+          value={confirmBtwClose()}
+          testID="btw-confirm-close-setting"
+          accessibilityLabel={tr("btw.confirmCloseSetting")}
+          onChange={setConfirmBtwClose}
+        />
+      </SettingsRow>
     </SettingsSection>
   );
 }
@@ -3290,7 +3307,7 @@ function DraftRow(props: {
 }) {
   const value = (): string => drafts()[props.id] ?? "";
   return (
-    <SettingsConfigRow
+    <ConfigRow
       label={props.label}
       description={props.hint}
       topDivider={true}
@@ -3310,7 +3327,7 @@ function DraftRow(props: {
         inputAccessibilityLabel={props.id}
         saveAccessibilityLabel={`${props.id}-save`}
       />
-    </SettingsConfigRow>
+    </ConfigRow>
   );
 }
 
@@ -3340,7 +3357,7 @@ function WebSearchSection() {
       onDismissNotice={() => webSearchNotice.set("")}
     >
       <View>
-        <SettingsConfigRow
+        <ConfigRow
           label={tr("settings.webSearch.provider")}
           description={
             providerMeta(providerId())
@@ -3367,7 +3384,7 @@ function WebSearchSection() {
               void chooseSearchProvider(value as (typeof WEB_SEARCH_PROVIDERS)[number]["value"])
             }
           />
-        </SettingsConfigRow>
+        </ConfigRow>
         <If when={keyedProvider()}>
           <DraftRow
             id="search-credential-id"
@@ -3390,7 +3407,7 @@ function WebSearchSection() {
               monospace
               onSave={value => void setHttpEndpoint(value.trim())}
             />
-            <SettingsConfigRow
+            <ConfigRow
               label={tr("settings.webSearch.auth")}
               topDivider={true}
               divider={false}
@@ -3411,7 +3428,7 @@ function WebSearchSection() {
                   })
                 }
               />
-            </SettingsConfigRow>
+            </ConfigRow>
             <If when={http().auth.mode === "header"}>
               <DraftRow
                 id="search-http-header"
@@ -3694,20 +3711,34 @@ function QuickActionsSection() {
   );
 }
 
+async function commitMcpJson(): Promise<boolean> {
+  const saved = await saveMcpJson();
+  if (saved && !mcpNotice()) pushToast(tr("common.saved"), "success");
+  return saved;
+}
+
+async function commitMcpDraft(): Promise<boolean> {
+  const saved = await saveMcpDraft();
+  if (saved && !mcpNotice()) pushToast(tr("common.saved"), "success");
+  return saved;
+}
+
+async function commitMcpImport(): Promise<boolean> {
+  const count = mcpImportCandidates()?.filter(row => row.selected).length ?? 0;
+  const imported = await importMcpServers();
+  if (imported && !mcpNotice()) pushToast(tr("settings.mcp.importSaved", { count: formatCount(count) }), "success");
+  return imported;
+}
+
 function McpSection() {
-  useDeviceScopedLoad("mcp", ensureMcp, () => reloadMcpForDevice());
+  useDeviceScopedLoad("mcp", ensureMcp, () => {
+    closeMcpResources();
+    reloadMcpForDevice();
+  });
   void loadAccountRecords();
-  const draft = () => mcpDraft();
-  const mcpModalOpen = usePresenceFlag(() => Boolean(mcpDraft()));
   const mcpDocumentUsable = (): boolean => mcpDocument() !== null;
   const mcpIsInitialLoading = (): boolean =>
     mcpAvailable() === null || (mcpLoading() && mcpServerRows().length === 0 && !mcpDocumentLoaded());
-  const stopped = (status: string): boolean => {
-    const name = status.trim().toLowerCase();
-    return name === "stopped" || name === "uninitialized" || name === "failed";
-  };
-  const canStart = (row: ReturnType<typeof mcpServerRows>[number]): boolean =>
-    row.startSupported && row.commandAvailable !== false;
   return (
     <SettingsSection
       flush={true}
@@ -3715,7 +3746,7 @@ function McpSection() {
       subtitle={tr("settings.mcp.subtitle")}
       extra={
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-          <If when={mcpDocumentUsable()}>
+          <If when={!mcpJsonOpen() && mcpDocumentUsable()}>
             <Button
               label={tr("settings.mcp.addServer")}
               variant="primary"
@@ -3725,36 +3756,40 @@ function McpSection() {
               onPress={() => openMcpDraft()}
             />
           </If>
-          <If when={mcpDocumentUsable()}>
+          <If when={!mcpJsonOpen() && mcpDocumentUsable()}>
             <Button
               label={tr("common.import")}
               variant="secondary"
               size="sm"
               accessibilityLabel="mcp-import"
-              onPress={() => (mcpImportOpen() ? closeMcpImport() : openMcpImport())}
+              onPress={openMcpImport}
             />
           </If>
           <Button
-            label={tr("settings.mcp.json")}
-            variant="ghost"
+            label={tr(mcpJsonOpen() ? "settings.mcp.jsonBackToList" : "settings.mcp.json")}
+            variant="secondary"
             size="sm"
+            leadingIcon={mcpJsonOpen() ? "arrow-left" : undefined}
             accessibilityLabel="mcp-json-toggle"
-            onPress={() => (mcpJsonOpen() ? closeMcpJson() : openMcpJson())}
+            disabled={mcpBusy() === "mcp-json"}
+            onPress={() => (mcpJsonOpen() ? requestSettingsTransition({ kind: "mcp-list" }) : openMcpJson())}
           />
-          <IconButton
-            icon="refresh"
-            size="sm"
-            tooltip={tr("settings.mcp.reload")}
-            accessibilityLabel="mcp-reload"
-            onPress={() => {
-              void refreshMcpServers();
-              void loadMcpDocument();
-            }}
-          />
+          <If when={!mcpJsonOpen()}>
+            <IconButton
+              icon="refresh"
+              size="sm"
+              tooltip={tr("settings.mcp.reload")}
+              accessibilityLabel="mcp-reload"
+              onPress={() => {
+                void refreshMcpServers();
+                void loadMcpDocument();
+              }}
+            />
+          </If>
         </View>
       }
     >
-      <View>
+      <If when={mcpJsonOpen()} else={<View>
         <If when={mcpNotice()}>
           {notice => (
             <View
@@ -3798,212 +3833,8 @@ function McpSection() {
           </View>
         </If>
 
-        <Each of={mcpServerRows()} key={row => row.id}>
-          {(row, index) => (
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: space.md,
-                paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: space.md,
-                minHeight: SETTINGS_ROW_MIN,
-                position: "relative",
-                opacity: row().enabled ? 1 : 0.72,
-                ...paintTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-            >
-              <If when={index() !== 0}>
-                <RowSeparator edge="top" />
-              </If>
-              <If when={row().enabled && row().status.trim().toLowerCase() === "failed"}>
-                <View style={{ alignSelf: "flex-start", height: settingsRowLabelLineHeight(), justifyContent: "center" }}>
-                  <StateMark state="failed" size={12} />
-                </View>
-              </If>
-              <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
-                <Text
-                  style={{
-                    ...textStyle("body"),
-                    fontWeight: "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {`${row().name} · ${row().id}`}
-                </Text>
-                <Text
-                  style={{
-                    ...textStyle("mono", { color: palette().textMuted }),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                  }}
-                >
-                  {`${row().transport || tr("settings.mcp.unknownTransport")} · ${
-                    row().command || row().url || row().statusMessage || ""
-                  }`}
-                </Text>
-                <If when={!row().enabled && row().statusMessage ? row().statusMessage : ""}>
-                  {hint => <Text style={textStyle("caption")}>{hint()}</Text>}
-                </If>
-                <If when={mcpSecretsNote(row().id)}>
-                  {note => (
-                    <Text style={textStyle("caption")} accessibilityLabel={`mcp-needs-secret-${row().id}`}>
-                      {note()}
-                    </Text>
-                  )}
-                </If>
-              </View>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 1, minWidth: 0, gap: space.sm }}>
-                <Text
-                  style={textStyle("caption", {
-                    color:
-                      row().enabled && row().status.trim().toLowerCase() === "failed"
-                        ? stateColor("failed")
-                        : palette().textSecondary,
-                  })}
-                >
-                  {row().enabled ? row().status : tr("common.disabled")}
-                </Text>
-                <If when={!!row().url}>
-                  <Button
-                    label={
-                      row().authConfigured === true
-                        ? tr("settings.mcp.reauthorize")
-                        : tr("settings.mcp.authorize")
-                    }
-                    variant="secondary"
-                    size="sm"
-                    accessibilityLabel={`mcp-auth-${row().id}`}
-                    onPress={() =>
-                      mcpOAuthServer() === row().id ? closeMcpAuth() : openMcpAuth(row().id)
-                    }
-                  />
-                </If>
-                <If when={stopped(row().status)}>
-                  <Button
-                    label={
-                      canStart(row())
-                        ? row().enabled
-                          ? tr("common.start")
-                          : tr("settings.mcp.enableAndStart")
-                        : tr("common.unavailable")
-                    }
-                    variant="secondary"
-                    size="sm"
-                    accessibilityLabel={`mcp-start-${row().id}`}
-                    onPress={() => {
-                      if (!canStart(row())) {
-                        openMcpDraft(row().id);
-                      } else if (row().enabled) {
-                        void startMcpServer(row().id);
-                      } else {
-                        // The host refuses to start a disabled server: enable it first.
-                        void enableMcpServer(row().id, { start: true });
-                      }
-                    }}
-                  />
-                </If>
-                <If when={!stopped(row().status) && row().enabled}>
-                  <Button
-                    label={tr("settings.mcp.resources")}
-                    variant="secondary"
-                    size="sm"
-                    accessibilityLabel={`mcp-resources-${row().id}`}
-                    onPress={() =>
-                      mcpResourcesServer() === row().id
-                        ? closeMcpResources()
-                        : void openMcpResources(row().id)
-                    }
-                  />
-                </If>
-                <View ref={el => setRowAnchor(`mcp:${row().id}`, el)} style={{ flexShrink: 0 }}>
-                  <IconButton
-                    icon="more"
-                    size="sm"
-                    tooltip={tr("settings.mcp.serverActions")}
-                    active={rowMenuId() === `mcp:${row().id}`}
-                    accessibilityLabel={`mcp-actions-${row().id}`}
-                    onPress={() =>
-                      rowMenuId.set(
-                        rowMenuId() === `mcp:${row().id}` ? null : `mcp:${row().id}`,
-                      )
-                    }
-                  />
-                </View>
-              </View>
-              <DropdownMenu
-                open={rowMenuId() === `mcp:${row().id}`}
-                anchor={rowMenuAnchors()[`mcp:${row().id}`] ?? null}
-                align="end"
-                minWidth={170}
-                items={[
-                  ...(!row().enabled
-                    ? [
-                        {
-                          id: "enable",
-                          label: tr("common.enable"),
-                          icon: "check" as const,
-                          accessibilityLabel: `mcp-enable-${row().id}`,
-                          onSelect: () => void enableMcpServer(row().id),
-                        },
-                      ]
-                    : []),
-                  {
-                    id: "edit",
-                    label: tr("common.edit"),
-                    icon: "edit",
-                    accessibilityLabel: `mcp-edit-${row().id}`,
-                    onSelect: () => openMcpDraft(row().id),
-                  },
-                  ...(!stopped(row().status)
-                    ? [
-                        {
-                          id: "stop",
-                          label: tr("common.stop"),
-                          icon: "stop" as const,
-                          accessibilityLabel: `mcp-stop-${row().id}`,
-                          onSelect: () => void stopMcpServer(row().id),
-                        },
-                      ]
-                    : []),
-                  {
-                    id: "restart",
-                    label: tr("common.restart"),
-                    icon: "refresh",
-                    accessibilityLabel: `mcp-restart-${row().id}`,
-                    onSelect: () =>
-                      canStart(row()) ? void restartMcpServer(row().id) : openMcpDraft(row().id),
-                  },
-                  {
-                    id: "status",
-                    label: tr("settings.mcp.refreshStatus"),
-                    icon: "info",
-                    accessibilityLabel: `mcp-status-${row().id}`,
-                    onSelect: () => void refreshMcpServers(),
-                  },
-                  {
-                    id: "delete",
-                    label: tr("common.delete"),
-                    icon: "trash",
-                    danger: true,
-                    confirmDelete: true,
-                    confirmAccessibilityLabel: `mcp-delete-confirm-${row().id}`,
-                    accessibilityLabel: `mcp-delete-${row().id}`,
-                    onSelect: () => {
-                      mcpDeletePending.set(null);
-                      void deleteMcpServer(row().id);
-                    },
-                  },
-                ]}
-                onClose={() => rowMenuId.set(null)}
-              />
-            </View>
-          )}
-        </Each>
-        <If when={mcpServerRows().length === 0 && mcpAvailable() === true && !mcpLoading()}>
+        <McpServerList />
+        <If when={mcpServerRows().length === 0 && mcpAvailable() === true && !mcpLoading() && !mcpListError()}>
           <SettingsEmptyState icon="plug" message={tr("settings.mcp.noServers")} />
         </If>
         <If when={mcpBusy()}>
@@ -4015,158 +3846,121 @@ function McpSection() {
             </View>
           )}
         </If>
-      </View>
-
-      {/* MCP Raw JSON Modal */}
-      <ModalDialog
-        open={mcpJsonOpen()}
-        title={tr("settings.mcp.jsonModalTitle")}
-        subtitle={tr("settings.mcp.jsonModalSubtitle")}
-        size="lg"
-        accessibilityLabel="mcp-json-modal"
-        onClose={() => closeMcpJson()}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
-            <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
-              {localizeHostError(mcpJsonState())}
-            </Text>
-            <Button
-              label={tr("common.discard")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="mcp-json-cancel"
-              onPress={() => closeMcpJson()}
-            />
-            <Button
-              label={tr("settings.mcp.saveJson")}
-              variant="primary"
-              size="md"
-              accessibilityLabel="mcp-json-save"
-              onPress={() => void saveMcpJson()}
-            />
-          </View>
-        }
-      >
-        <View style={{ gap: space.md }}>
-          <If when={mcpJsonNotice()}>
-            {notice => <InlineBanner tone="danger" message={localizeHostError(notice())} />}
-          </If>
-          <InputBox
-            multiline
-            monospace
-            minHeight={220}
-            value={mcpJsonText()}
-            accessibilityLabel="mcp-json"
-            onChange={val => updateMcpJson(val)}
-          />
-        </View>
-      </ModalDialog>
+      </View>}>
+        <McpJsonEditor onClose={() => requestSettingsTransition({ kind: "mcp-list" })}
+          onReload={() => requestSettingsTransition({ kind: "mcp-reload" })} onSave={() => void commitMcpJson()} />
+      </If>
 
       {/* MCP OAuth Modal */}
       <ModalDialog
         open={Boolean(mcpOAuthServer())}
         title={tr("settings.mcp.authorizeTitle", { server: mcpOAuthServer() ?? "" })}
-        subtitle={tr("settings.mcp.oauthStatus", { status: mcpOAuthStatusLabel(mcpOAuthSession()) })}
+        subtitle={mcpOAuthBrowserAvailable() ? tr("settings.mcp.oauthStatus", { status: mcpOAuthStatusLabel(mcpOAuthSession()) }) : undefined}
         size="md"
         accessibilityLabel="mcp-auth-modal"
         // Authorization finishes in the browser: the click that returns to this window must not end it.
-        keepOpenOnBackdrop={Boolean(mcpOAuthSession()) && !["authorized", "failed", "cancelled"].includes(mcpOAuthSession()!.status)}
-        onClose={() => closeMcpAuth()}
+        keepOpenOnBackdrop={mcpOAuthPending() || mcpOAuthBusy()}
+        onClose={requestCloseMcpAuth}
         footer={
           <Button
             label={tr("common.close")}
             variant="secondary"
             size="md"
             accessibilityLabel="mcp-auth-close"
-            onPress={() => closeMcpAuth()}
+            disabled={mcpOAuthBusy()}
+            onPress={requestCloseMcpAuth}
           />
         }
       >
         <View style={{ gap: space.md }}>
-          <View style={{ gap: space.sm }}>
-            <Text style={textStyle("label", { color: palette().textSecondary })}>
-              {tr("settings.mcp.browserOAuth")}
-            </Text>
-            <If when={mcpOAuthSession()?.redirectUri ?? ""}>
-              {uri => (
-                <Text style={textStyle("mono", { color: palette().textMuted })}>
-                  {tr("settings.mcp.oauthRedirect", { uri: uri() })}
-                </Text>
-              )}
-            </If>
-            <If when={mcpOAuthSession()?.message ?? ""}>
-              {message => <Text style={textStyle("caption")}>{message()}</Text>}
-            </If>
-            <If when={mcpOAuthUrlUnopened() ? (mcpOAuthSession()?.authorizationUrl ?? "") : ""}>
-              {url => (
-                <View style={{ gap: space.sm }}>
-                  <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
-                    {tr("settings.mcp.oauthOpenFailed")}
+          <If when={mcpOAuthBrowserAvailable()}>
+            <View style={{ gap: space.sm }}>
+              <Text style={textStyle("label", { color: palette().textSecondary })}>
+                {tr("settings.mcp.browserOAuth")}
+              </Text>
+              <If when={mcpOAuthSession()?.redirectUri ?? ""}>
+                {uri => (
+                  <Text style={textStyle("mono", { color: palette().textMuted })}>
+                    {tr("settings.mcp.oauthRedirect", { uri: uri() })}
                   </Text>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: space.md,
-                      paddingHorizontal: space.md,
-                      paddingVertical: space.sm,
-                      borderRadius: radii.md,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceTertiary,
-                    }}
-                  >
-                    <Text
+                )}
+              </If>
+              <If when={mcpOAuthSession()?.message ?? ""}>
+                {message => <Text style={textStyle("caption")}>{message()}</Text>}
+              </If>
+              <If when={mcpOAuthPending() && mcpOAuthUrlUnopened() ? (mcpOAuthSession()?.authorizationUrl ?? "") : ""}>
+                {url => (
+                  <View style={{ gap: space.sm }}>
+                    <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
+                      {tr("settings.mcp.oauthOpenFailed")}
+                    </Text>
+                    <View
                       style={{
-                        ...textStyle("mono", { color: palette().text }),
-                        flex: 1,
-                        minWidth: 0,
-                        numberOfLines: 2,
-                        textOverflow: "ellipsis-middle",
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.md,
+                        paddingHorizontal: space.md,
+                        paddingVertical: space.sm,
+                        borderRadius: radii.md,
+                        borderCurve: "continuous",
+                        borderWidth: 1,
+                        borderColor: palette().borderSubtle,
+                        backgroundColor: palette().surfaceTertiary,
                       }}
                     >
-                      {url()}
-                    </Text>
-                    <Button
-                      label={tr("settings.mcp.copyAddress")}
-                      variant="secondary"
-                      size="sm"
-                      leadingIcon="copy"
-                      accessibilityLabel="mcp-auth-copy-url"
-                      onPress={() => copyMcpOAuthUrl()}
-                    />
+                      <Text
+                        style={{
+                          ...textStyle("mono", { color: palette().text }),
+                          flex: 1,
+                          minWidth: 0,
+                          numberOfLines: 2,
+                          textOverflow: "ellipsis-middle",
+                        }}
+                      >
+                        {url()}
+                      </Text>
+                      <Button
+                        label={tr("settings.mcp.copyAddress")}
+                        variant="secondary"
+                        size="sm"
+                        leadingIcon="copy"
+                        accessibilityLabel="mcp-auth-copy-url"
+                        onPress={() => copyMcpOAuthUrl()}
+                      />
+                    </View>
                   </View>
-                </View>
-              )}
-            </If>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-              <Button
-                label={
-                  mcpOAuthSession()?.status === "authorized"
-                    ? tr("settings.mcp.authorizeAgain")
-                    : tr("settings.mcp.authorizeInBrowser")
-                }
-                variant="primary"
-                size="sm"
-                loading={mcpOAuthBusy()}
-                accessibilityLabel="mcp-auth-start"
-                onPress={() => void startMcpRemoteOAuth()}
-              />
-              <Button
-                label={tr("settings.mcp.cancelAuth")}
-                variant="ghost"
-                size="sm"
-                accessibilityLabel="mcp-auth-cancel"
-                onPress={() => void cancelMcpRemoteOAuth()}
-              />
+                )}
+              </If>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                <Button
+                  label={
+                    mcpOAuthSession()?.status === "authorized"
+                      ? tr("settings.mcp.authorizeAgain")
+                      : tr("settings.mcp.authorizeInBrowser")
+                  }
+                  variant="primary"
+                  size="sm"
+                  loading={mcpOAuthBusy()}
+                  disabled={mcpOAuthPending()}
+                  accessibilityLabel="mcp-auth-start"
+                  onPress={() => void startMcpRemoteOAuth()}
+                />
+                <Button
+                  label={tr("settings.mcp.cancelAuth")}
+                  variant="ghost"
+                  size="sm"
+                  accessibilityLabel="mcp-auth-cancel"
+                  disabled={mcpOAuthBusy() || !mcpOAuthPending()}
+                  onPress={() => void cancelMcpRemoteOAuth()}
+                />
+              </View>
             </View>
-          </View>
+          </If>
           <View
             style={{
               gap: space.md,
-              paddingTop: space.md,
-              borderTopWidth: 1,
+              paddingTop: mcpOAuthBrowserAvailable() ? space.md : 0,
+              borderTopWidth: mcpOAuthBrowserAvailable() ? 1 : 0,
               borderColor: palette().borderSubtle,
             }}
           >
@@ -4189,6 +3983,7 @@ function McpSection() {
                 variant="secondary"
                 size="sm"
                 accessibilityLabel="mcp-auth-save-value"
+                disabled={mcpOAuthBusy()}
                 onPress={() => void saveMcpRemoteAuth()}
               />
               <Button
@@ -4196,6 +3991,7 @@ function McpSection() {
                 variant="danger"
                 size="sm"
                 accessibilityLabel="mcp-auth-clear"
+                disabled={mcpOAuthBusy()}
                 onPress={() => void clearMcpRemoteAuth()}
               />
               <View style={{ flex: 1 }} />
@@ -4207,114 +4003,7 @@ function McpSection() {
         </View>
       </ModalDialog>
 
-      {/* MCP Import Modal */}
-      <ModalDialog
-        open={mcpImportOpen()}
-        title={tr("settings.mcp.importTitle")}
-        subtitle={tr("settings.mcp.importSubtitle")}
-        size="lg"
-        accessibilityLabel="mcp-import-modal"
-        onClose={() => closeMcpImport()}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
-            <Button
-              label={tr("common.preview")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="mcp-import-preview"
-              onPress={() => previewMcpImport()}
-            />
-            <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
-              {localizeHostError(mcpImportNotice())}
-            </Text>
-            <Button
-              label={tr("common.close")}
-              variant="ghost"
-              size="md"
-              accessibilityLabel="mcp-import-close"
-              onPress={() => closeMcpImport()}
-            />
-            <Button
-              label={tr("settings.mcp.importSelected")}
-              variant="primary"
-              size="md"
-              disabled={mcpImportCandidates() === null}
-              accessibilityLabel="mcp-import-save"
-              onPress={() => void importMcpServers()}
-            />
-          </View>
-        }
-      >
-        <View style={{ gap: space.md }}>
-          <InputBox
-            multiline
-            monospace
-            minHeight={140}
-            value={mcpImportText()}
-            placeholder={'{\n  "mcpServers": {\n    "name": { "command": "npx", "args": ["-y", "pkg"] }\n  }\n}'}
-            accessibilityLabel="mcp-import-text"
-            onChange={val => setMcpImportText(val)}
-          />
-          <Each of={mcpImportCandidates() ?? []} key={candidate => candidate.sourceId}>
-            {candidate => (
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-                <SelectableChip
-                  label={
-                    candidate().unsupported
-                      ? tr("settings.mcp.unsupported")
-                      : candidate().selected
-                        ? tr("common.import")
-                        : tr("settings.mcp.skip")
-                  }
-                  active={candidate().selected && !candidate().unsupported}
-                  accessibilityLabel={`mcp-import-select-${candidate().sourceId}`}
-                  onPress={() =>
-                    candidate().unsupported
-                      ? undefined
-                      : updateMcpImportCandidate(candidate().sourceId, { selected: !candidate().selected })
-                  }
-                />
-                <Text
-                  style={{
-                    ...textStyle("mono", { color: palette().textMuted }),
-                    minWidth: 96,
-                    maxWidth: 160,
-                    flexShrink: 1,
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {candidate().sourceId}
-                </Text>
-                <InputBox
-                  size="sm"
-                  monospace
-                  value={candidate().targetId}
-                  readonly={candidate().unsupported !== ""}
-                  accessibilityLabel={`mcp-import-target-${candidate().sourceId}`}
-                  style={{ flex: 1, minWidth: 140 }}
-                  onChange={val =>
-                    updateMcpImportCandidate(candidate().sourceId, { targetId: val })
-                  }
-                />
-                <If when={candidate().unsupported}>
-                  {reason => (
-                    <Text
-                      style={{
-                        ...textStyle("caption", { color: stateColor("needs_you") }),
-                        flex: 1,
-                        minWidth: 140,
-                      }}
-                    >
-                      {reason()}
-                    </Text>
-                  )}
-                </If>
-              </View>
-            )}
-          </Each>
-        </View>
-      </ModalDialog>
+      <McpImportDialog onClose={() => requestSettingsTransition({ kind: "mcp-import-close" })} onSave={() => void commitMcpImport()} />
 
       {/* MCP Resources Modal */}
       <ModalDialog
@@ -4432,182 +4121,9 @@ function McpSection() {
         </View>
       </ModalDialog>
 
-      {/* MCP Add/Edit Server Modal */}
-      <ModalDialog
-        open={mcpModalOpen()}
-        title={
-          draft()?.originalId
-            ? tr("settings.mcp.editServerTitle", { id: draft()!.originalId! })
-            : tr("settings.mcp.newServerTitle")
-        }
-        subtitle={tr("settings.mcp.serverModalSubtitle")}
-        size="md"
-        accessibilityLabel="mcp-draft-modal"
-        onClose={() => closeMcpDraft()}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
-            <If when={!draft()?.originalId}>
-              <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
-                {tr("settings.mcp.storedDisabledHint")}
-              </Text>
-            </If>
-            <If when={Boolean(draft()?.originalId)}>
-              <View style={{ flex: 1 }} />
-            </If>
-            <Button
-              label={tr("common.cancel")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="mcp-draft-cancel"
-              onPress={() => closeMcpDraft()}
-            />
-            <Button
-              label={tr("common.save")}
-              variant="primary"
-              size="md"
-              accessibilityLabel="mcp-draft-save"
-              onPress={() => void saveMcpDraft()}
-            />
-          </View>
-        }
-      >
-        <If when={Boolean(draft())}>
-          <View style={{ gap: 12 }}>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-              <InputBox
-                label={tr("common.name")}
-                value={draft()?.name ?? ""}
-                placeholder={tr("common.name")}
-                accessibilityLabel="mcp-draft-name"
-                style={{ flex: 1, minWidth: 160 }}
-                onChange={val => updateMcpDraft({ name: val })}
-              />
-              <InputBox
-                label={tr("settings.mcp.serverId")}
-                monospace
-                value={draft()?.id ?? ""}
-                placeholder={
-                  draft()?.originalId
-                    ? draft()!.originalId!
-                    : tr("settings.mcp.idFromNamePlaceholder")
-                }
-                readonly={Boolean(draft()?.originalId)}
-                accessibilityLabel="mcp-draft-id"
-                style={{ flex: 1, minWidth: 160 }}
-                onChange={val => updateMcpDraft({ id: val })}
-              />
-            </View>
-            <View style={{ gap: 6 }}>
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("settings.mcp.transport")}
-              </Text>
-              <SegmentedTabs
-                size="sm"
-                value={draft()?.transport ?? "stdio"}
-                options={MCP_TRANSPORTS.map(transport => ({
-                  value: transport.value,
-                  label: transport.label,
-                  accessibilityLabel: `mcp-draft-transport-${transport.value}`,
-                }))}
-                onChange={transport => updateMcpDraft({ transport })}
-              />
-            </View>
-            <If when={draft()?.transport === "stdio"}>
-              <View style={{ gap: 10 }}>
-                <InputBox
-                  label={tr("settings.mcp.command")}
-                  monospace
-                  value={draft()?.command ?? ""}
-                  placeholder={tr("settings.mcp.commandPlaceholder")}
-                  accessibilityLabel="mcp-draft-command"
-                  onChange={val => updateMcpDraft({ command: val })}
-                />
-                <InputBox
-                  label={tr("settings.mcp.args")}
-                  multiline
-                  monospace
-                  minHeight={68}
-                  value={draft()?.args ?? ""}
-                  placeholder={tr("settings.mcp.argsPlaceholder")}
-                  accessibilityLabel="mcp-draft-args"
-                  onChange={val => updateMcpDraft({ args: val })}
-                />
-                <InputBox
-                  label={tr("settings.mcp.env")}
-                  multiline
-                  monospace
-                  minHeight={68}
-                  value={draft()?.env ?? ""}
-                  placeholder={tr("settings.mcp.envPlaceholder")}
-                  accessibilityLabel="mcp-draft-env"
-                  onChange={val => updateMcpDraft({ env: val })}
-                />
-                <InputBox
-                  label={tr("settings.mcp.cwd")}
-                  monospace
-                  value={draft()?.workingDirectory ?? ""}
-                  placeholder={tr("settings.mcp.cwdPlaceholder")}
-                  accessibilityLabel="mcp-draft-cwd"
-                  onChange={val => updateMcpDraft({ workingDirectory: val })}
-                />
-              </View>
-            </If>
-            <If when={Boolean(draft()) && draft()?.transport !== "stdio"}>
-              <View style={{ gap: 10 }}>
-                <InputBox
-                  label={tr("settings.mcp.serverUrl")}
-                  monospace
-                  value={draft()?.url ?? ""}
-                  placeholder="https://host/mcp"
-                  accessibilityLabel="mcp-draft-url"
-                  onChange={val => updateMcpDraft({ url: val })}
-                />
-                <InputBox
-                  label={tr("settings.mcp.headers")}
-                  multiline
-                  monospace
-                  minHeight={68}
-                  value={draft()?.headers ?? ""}
-                  placeholder={tr("settings.mcp.headersPlaceholder")}
-                  accessibilityLabel="mcp-draft-headers"
-                  onChange={val => updateMcpDraft({ headers: val })}
-                />
-              </View>
-            </If>
-            <View style={{ gap: 6 }}>
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("settings.mcp.startupTimeout")}
-              </Text>
-              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
-                <SelectableChip
-                  label={draft()?.enabled ? tr("common.enabled") : tr("common.disabled")}
-                  active={Boolean(draft()?.enabled)}
-                  accessibilityLabel="mcp-draft-enabled"
-                  onPress={() => updateMcpDraft({ enabled: !(draft()?.enabled ?? false) })}
-                />
-                <SelectableChip
-                  label={
-                    draft()?.autoStart
-                      ? tr("settings.mcp.startsWithApp")
-                      : tr("settings.mcp.startedByHand")
-                  }
-                  active={Boolean(draft()?.autoStart)}
-                  accessibilityLabel="mcp-draft-autostart"
-                  onPress={() => updateMcpDraft({ autoStart: !(draft()?.autoStart ?? false) })}
-                />
-                <InputBox
-                  size="sm"
-                  value={draft()?.startupSeconds ?? ""}
-                  placeholder={tr("settings.mcp.startupSecondsPlaceholder")}
-                  accessibilityLabel="mcp-draft-startup"
-                  style={{ width: 112 }}
-                  onChange={val => updateMcpDraft({ startupSeconds: val })}
-                />
-              </View>
-            </View>
-          </View>
-        </If>
-      </ModalDialog>
+      <McpServerEditor onClose={() => requestSettingsTransition({ kind: "mcp-form-close" })}
+        onReload={() => requestSettingsTransition({ kind: "mcp-form-reload", id: mcpDraft()?.originalId })}
+        onSave={() => void commitMcpDraft()} />
     </SettingsSection>
   );
 }
@@ -4822,13 +4338,10 @@ function AcpSection() {
   );
 }
 
-const TREND_BUCKETS = 12;
+const TREND_BUCKETS = 90;
 const USAGE_DAY_ROWS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 const HEATMAP_HEIGHT = 96;
 const HEATMAP_PADDING_INNER = 0.22;
-
-const hoveredUsageActivityIdx = signal<number | null>(null);
-const hoveredUsageTrendIdx = signal<number | null>(null);
 
 function heatmapPlotWidth(weekCount: number): number {
   const pitch = HEATMAP_HEIGHT / (USAGE_DAY_ROWS.length - HEATMAP_PADDING_INNER);
@@ -4856,7 +4369,7 @@ interface UsageTrendPlotRow {
   totalTokens: number;
 }
 
-function trendBars(): UsageTrendPlotRow[] {
+const trendBars = computed<UsageTrendPlotRow[]>(() => {
   const hourly = usageGranularity() === "hour";
   return usageBuckets()
     .slice(-TREND_BUCKETS)
@@ -4874,7 +4387,7 @@ function trendBars(): UsageTrendPlotRow[] {
         totalTokens: bucket.inputTokens + bucket.outputTokens,
       };
     });
-}
+});
 
 interface UsageHeatmapPlotRow {
   weekKey: string;
@@ -4884,7 +4397,7 @@ interface UsageHeatmapPlotRow {
   tokens: number;
 }
 
-function usageHeatmapPlotData(): { weeks: string[]; rows: UsageHeatmapPlotRow[] } {
+const usageHeatmapPlotData = computed<{ weeks: string[]; rows: UsageHeatmapPlotRow[] }>(() => {
   const activity = usageActivity();
   if (!activity) return { weeks: [], rows: [] };
   const weekCount = Math.max(1, activity.weekCount);
@@ -4903,7 +4416,7 @@ function usageHeatmapPlotData(): { weeks: string[]; rows: UsageHeatmapPlotRow[] 
     });
   });
   return { weeks, rows };
-}
+});
 
 function activitySpan(): string {
   const activity = usageActivity();
@@ -4919,14 +4432,41 @@ function activityTotal(): string {
   return formatTokens(activity.totalTokens);
 }
 
+function UsageMetricRow(props: { testID: string; label: string; value: string; description?: string; first?: boolean }) {
+  return (
+    <SettingsRow testID={props.testID} label={props.label} description={props.description} first={props.first}>
+      <Text style={{ ...textStyle("body", { tabular: true }), fontWeight: "600" }}>{props.value}</Text>
+    </SettingsRow>
+  );
+}
+
+function UsageLoadingLine() {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, padding: SETTINGS_ROW_INSET }}>
+      <Spinner size={12} color={palette().textMuted} />
+      <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+    </View>
+  );
+}
+
 function UsageSection() {
-  useDeviceScopedLoad("usage", () => void loadUsage(), () => void loadUsage(true));
+  effect(() => {
+    deviceContext();
+    backendConnection();
+    untracked(() => void loadUsage());
+  });
+  const hoveredUsageActivityIdx = signal<number | null>(null);
+  const hoveredUsageTrendIdx = signal<number | null>(null);
+  effect(() => {
+    usageActivity();
+    hoveredUsageActivityIdx.set(null);
+  });
+  effect(() => {
+    usageBuckets();
+    hoveredUsageTrendIdx.set(null);
+  });
   const hourly = (): boolean => usageGranularity() === "hour";
-  const hitRate = (): string => {
-    const totals = usageTotals();
-    if (!totals) return "";
-    return formatPercent(usageCacheHitRate(totals), 1);
-  };
+  const hasUsage = () => (usageTotals()?.requests ?? 0) > 0;
   const hoveredActivityDay = (): UsageHeatmapPlotRow | null => {
     const idx = hoveredUsageActivityIdx();
     if (idx === null) return null;
@@ -4947,243 +4487,7 @@ function UsageSection() {
 
   return (
     <View style={{ gap: layout.sectionGap }}>
-      <SettingsSection
-        title={tr("settings.usage.title")}
-        flush={true}
-        subtitle={tr("settings.usage.subtitle")}
-        notice={usageNotice()}
-        onDismissNotice={() => usageNotice.set("")}
-        extra={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
-            <Scroll smoothWheel horizontal style={{ maxWidth: "100%", flexShrink: 1 }}>
-              <SegmentedTabs
-                size="sm"
-                value={usageRange()}
-                options={USAGE_RANGES.map(range => ({
-                  value: range.value,
-                  label: USAGE_RANGE_KEYS[range.value] ? tr(USAGE_RANGE_KEYS[range.value]) : range.label,
-                  accessibilityLabel: `usage-range-${range.value}`,
-                }))}
-                onChange={value => void chooseUsageRange(value)}
-              />
-            </Scroll>
-            <IconButton
-              icon="refresh"
-              size="sm"
-              tooltip={tr("settings.usage.reload")}
-              accessibilityLabel="usage-reload"
-              onPress={() => void loadUsage(true)}
-            />
-          </View>
-        }
-      >
-        <If when={usageUnsupported()}>
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
-            <Text style={textStyle("caption")}>{tr("settings.usage.unsupported")}</Text>
-          </View>
-        </If>
-        <If when={!usageUnsupported() && !usageTotals() && !usageNotice()}>
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
-            <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
-          </View>
-        </If>
-        <If when={usageTotals()}>
-          {totals => (
-            <View
-              style={{
-                minHeight: SETTINGS_ROW_MIN,
-                paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: space.md,
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                columnGap: space.lg,
-                rowGap: space.sm,
-              }}
-            >
-              <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 0, gap: space.hair }}>
-                <Text style={textStyle("body", { tabular: true })}>
-                  {tr("settings.usage.summaryRequestsTokens", {
-                    requests: formatCount(totals().requests),
-                    tokens: formatTokens(totals().tokens),
-                  })}
-                </Text>
-                <Text style={textStyle("caption", { tabular: true })}>
-                  {tr("settings.usage.tokenBreakdown", {
-                    input: formatTokens(totals().inputTokens),
-                    output: formatTokens(totals().outputTokens),
-                    cached: formatTokens(totals().cachedTokens),
-                    cacheWrites: formatTokens(totals().cacheWriteTokens),
-                  })}
-                </Text>
-              </View>
-              <View style={{ alignItems: "flex-end", gap: space.hair, marginLeft: "auto", flexShrink: 0 }}>
-                <If when={hitRate()}>
-                  {rate => (
-                    <Text style={{ ...textStyle("label", { color: palette().textSecondary, tabular: true }), fontWeight: "400" }}>
-                      {tr("settings.usage.cacheHitRate", { rate: rate() })}
-                    </Text>
-                  )}
-                </If>
-                <If when={totals().failedRequests > 0 || totals().unknownRequests > 0}>
-                  <Text
-                    style={textStyle("caption", {
-                      color: totals().failedRequests > 0 ? stateColor("needs_you") : palette().textMuted,
-                      tabular: true,
-                    })}
-                  >
-                    {tr("settings.usage.failedUnknown", {
-                      failed: totals().failedRequests,
-                      unknown: totals().unknownRequests,
-                    })}
-                  </Text>
-                </If>
-              </View>
-            </View>
-          )}
-        </If>
-      </SettingsSection>
-
-      {/* Six-month activity heatmap: every cell is one host bucket. */}
-      <View style={{ minWidth: 0 }}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: space.sm,
-            minHeight: space.xl,
-            marginBottom: space.sm,
-            paddingHorizontal: space.xs,
-          }}
-        >
-          <Text role="header" style={textStyle("label", { tabular: true, color: palette().textSecondary })}>
-            {tr("settings.usage.activityHeading", {
-              span: activitySpan() || tr("settings.usage.lastSixMonths"),
-            })}
-          </Text>
-          <If when={Boolean(usageActivity())}>
-            <Text
-              style={{
-                ...textStyle("caption", {
-                  color: hoveredActivityDay() ? palette().text : palette().textMuted,
-                  tabular: true,
-                }),
-                fontWeight: hoveredActivityDay() ? "600" : "400",
-              }}
-            >
-              {hoveredActivityDay()
-                ? tr("settings.usage.dayTokens", {
-                    date: hoveredActivityDay()!.dateKey,
-                    tokens: formatTokens(hoveredActivityDay()!.tokens) || "0",
-                  })
-                : tr("settings.usage.hoverToInspect")}
-            </Text>
-          </If>
-        </View>
-        <View style={[insetGroupStyle(space.lg), { gap: space.md }]}>
-          <If when={usageActivity()}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
-              <View style={{ width: 28, height: HEATMAP_HEIGHT, flexShrink: 0, justifyContent: "space-between" }}>
-                <Each of={localizedDayAxis()} key="index">
-                  {label => (
-                    <View style={{ flex: 1, justifyContent: "center" }}>
-                      <Text style={textStyle("micro")}>
-                        {label()}
-                      </Text>
-                    </View>
-                  )}
-                </Each>
-              </View>
-              <Scroll smoothWheel horizontal style={{ flex: 1, minWidth: 0 }}>
-                <Plot<UsageHeatmapPlotRow>
-                  data={usageHeatmapPlotData().rows}
-                  xScale={{
-                    type: "band",
-                    domain: usageHeatmapPlotData().weeks,
-                    paddingInner: HEATMAP_PADDING_INNER,
-                    paddingOuter: 0,
-                  }}
-                  yScale={{
-                    type: "band",
-                    domain: [...USAGE_DAY_ROWS],
-                    paddingInner: HEATMAP_PADDING_INNER,
-                    paddingOuter: 0,
-                  }}
-                  colorScale={{
-                    type: "ordinal",
-                    domain: ["0", "1", "2", "3", "4"],
-                    range: usageHeatmapStepColors(),
-                  }}
-                  accessibilityLabel="usage-activity-heatmap"
-                  onHoverChange={event => hoveredUsageActivityIdx.set(event.index)}
-                  style={{
-                    width: heatmapPlotWidth(usageHeatmapPlotData().weeks.length),
-                    height: HEATMAP_HEIGHT,
-                  }}
-                >
-                  <Cell
-                    x="weekKey"
-                    y="dow"
-                    color="levelKey"
-                    cornerRadii={radii.xs}
-                    hoverCellStyle={{
-                      borderWidth: 1.5,
-                      borderColor: palette().text,
-                      borderRadius: radii.xs,
-                    }}
-                  />
-                </Plot>
-              </Scroll>
-            </View>
-          </If>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              flexWrap: "wrap",
-              gap: space.sm,
-            }}
-          >
-            <Text style={textStyle("caption")}>
-              {activityTotal()
-                ? isLightAppearance()
-                  ? tr("settings.usage.heatmapCaptionLightWithTotal", { total: activityTotal() })
-                  : tr("settings.usage.heatmapCaptionDarkWithTotal", { total: activityTotal() })
-                : isLightAppearance()
-                  ? tr("settings.usage.heatmapCaptionLight")
-                  : tr("settings.usage.heatmapCaptionDark")}
-            </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
-              <Text style={textStyle("micro")}>{tr("common.less")}</Text>
-              <Each of={[0, 1, 2, 3, 4]} key={lvl => String(lvl)}>
-                {lvl => (
-                  <View
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: radii.xs,
-                      backgroundColor: usageHeatmapStepColors()[lvl()],
-                    }}
-                  />
-                )}
-              </Each>
-              <Text style={textStyle("micro")}>{tr("common.more")}</Text>
-            </View>
-          </View>
-          <If when={usageActivityNotice()}>
-            {notice => (
-              <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
-                {localizeHostError(notice())}
-              </Text>
-            )}
-          </If>
-        </View>
-      </View>
-
-      <If when={trendBars().length > 0}>
+      <If when={usageActivityLoading() || usageActivity() || (!usageUnsupported() && usageActivityNotice())}>
         <View style={{ minWidth: 0 }}>
           <View
             style={{
@@ -5198,130 +4502,183 @@ function UsageSection() {
             }}
           >
             <Text role="header" style={textStyle("label", { tabular: true, color: palette().textSecondary })}>
-              {hourly()
-                ? tr("settings.usage.trendHours", { count: trendBars().length })
-                : tr("settings.usage.trendDays", { count: trendBars().length })}
+              {tr("settings.usage.activityHeading", {
+                span: activitySpan() || tr("settings.usage.lastSixMonths"),
+              })}
             </Text>
-            <If
-              when={hoveredTrendRow()}
-              else={
-                <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: radii.xs,
-                        backgroundColor: palette().accent,
-                      }}
-                    />
-                    <Text style={textStyle("micro")}>{tr("settings.usage.output")}</Text>
-                  </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: radii.xs,
-                        backgroundColor: palette().accentBorder,
-                      }}
-                    />
-                    <Text style={textStyle("micro")}>{tr("settings.usage.input")}</Text>
-                  </View>
+            <If when={Boolean(usageActivity())}>
+              <Text
+                style={{
+                  ...textStyle("caption", {
+                    color: hoveredActivityDay() ? palette().text : palette().textMuted,
+                    tabular: true,
+                  }),
+                  fontWeight: hoveredActivityDay() ? "600" : "400",
+                }}
+              >
+                {hoveredActivityDay()
+                  ? tr("settings.usage.dayTokens", {
+                      date: hoveredActivityDay()!.dateKey,
+                      tokens: formatTokens(hoveredActivityDay()!.tokens) || "0",
+                    })
+                  : tr("settings.usage.hoverToInspect")}
+              </Text>
+            </If>
+          </View>
+          <View style={[insetGroupStyle(space.lg), { gap: space.md }]}>
+            <If when={usageActivityLoading() && !usageActivity()}><UsageLoadingLine /></If>
+            <If when={usageActivity()}>
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
+                <View style={{ width: 28, height: HEATMAP_HEIGHT, flexShrink: 0, justifyContent: "space-between" }}>
+                  <Each of={localizedDayAxis()} key="index">
+                    {label => (
+                      <View style={{ flex: 1, justifyContent: "center" }}>
+                        <Text style={textStyle("micro")}>
+                          {label()}
+                        </Text>
+                      </View>
+                    )}
+                  </Each>
                 </View>
-              }
-            >
-              {row => (
-                <Text
-                  style={{
-                    ...textStyle("caption", { color: palette().text, tabular: true }),
-                    fontWeight: "600",
-                  }}
-                >
-                  {tr("settings.usage.trendHover", {
-                    bucket: formatBucket(row().bucket, hourly()),
-                    input: formatTokens(row().inputTokens) || "0",
-                    output: formatTokens(row().outputTokens) || "0",
-                    total: formatTokens(row().totalTokens) || "0",
-                  })}
+                <Scroll smoothWheel horizontal style={{ flex: 1, minWidth: 0 }}>
+                  <Plot<UsageHeatmapPlotRow>
+                    data={usageHeatmapPlotData().rows}
+                    xScale={{
+                      type: "band",
+                      domain: usageHeatmapPlotData().weeks,
+                      paddingInner: HEATMAP_PADDING_INNER,
+                      paddingOuter: 0,
+                    }}
+                    yScale={{
+                      type: "band",
+                      domain: [...USAGE_DAY_ROWS],
+                      paddingInner: HEATMAP_PADDING_INNER,
+                      paddingOuter: 0,
+                    }}
+                    colorScale={{
+                      type: "ordinal",
+                      domain: ["0", "1", "2", "3", "4"],
+                      range: usageHeatmapStepColors(),
+                    }}
+                    accessibilityLabel="usage-activity-heatmap"
+                    onHoverChange={event => hoveredUsageActivityIdx.set(event.index)}
+                    style={{
+                      width: heatmapPlotWidth(usageHeatmapPlotData().weeks.length),
+                      height: HEATMAP_HEIGHT,
+                    }}
+                  >
+                    <Cell
+                      x="weekKey"
+                      y="dow"
+                      color="levelKey"
+                      cornerRadii={radii.xs}
+                      hoverCellStyle={{
+                        borderWidth: 1.5,
+                        borderColor: palette().text,
+                        borderRadius: radii.xs,
+                      }}
+                    />
+                  </Plot>
+                </Scroll>
+              </View>
+            </If>
+            <If when={usageActivity()}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: space.sm,
+                }}
+              >
+                <Text style={textStyle("caption")}>
+                  {activityTotal()
+                    ? isLightAppearance()
+                      ? tr("settings.usage.heatmapCaptionLightWithTotal", { total: activityTotal() })
+                      : tr("settings.usage.heatmapCaptionDarkWithTotal", { total: activityTotal() })
+                    : isLightAppearance()
+                      ? tr("settings.usage.heatmapCaptionLight")
+                      : tr("settings.usage.heatmapCaptionDark")}
+                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
+                  <Text style={textStyle("micro")}>{tr("common.less")}</Text>
+                  <Each of={[0, 1, 2, 3, 4]} key={lvl => String(lvl)}>
+                    {lvl => (
+                      <View
+                        style={{
+                          width: 10,
+                          height: 10,
+                          borderRadius: radii.xs,
+                          backgroundColor: usageHeatmapStepColors()[lvl()],
+                        }}
+                      />
+                    )}
+                  </Each>
+                  <Text style={textStyle("micro")}>{tr("common.more")}</Text>
+                </View>
+              </View>
+            </If>
+            <If when={usageActivityNotice()}>
+              {notice => (
+                <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
+                  {localizeHostError(notice())}
                 </Text>
               )}
             </If>
           </View>
-          <View style={insetGroupStyle(space.md)}>
-            <View style={{ paddingLeft: 48, paddingRight: space.sm, paddingTop: space.sm, paddingBottom: space.xl }}>
-              <Plot<UsageTrendPlotRow>
-                data={trendBars()}
-                xScale={{
-                  type: "band",
-                  paddingInner: 0.38,
-                  paddingOuter: 0.14,
-                  maxBandWidth: 40,
-                }}
-                yScale={{
-                  type: "linear",
-                  domain: trendBars().some(b => b.totalTokens > 0) ? undefined : [0, 1],
-                }}
-                crossLineStyle={{
-                  backgroundColor: palette().surfaceSubtle,
-                  borderRadius: radii.xs,
-                }}
-                accessibilityLabel="usage-trend-chart"
-                onHoverChange={event => hoveredUsageTrendIdx.set(event.index)}
-                style={{ width: "100%", height: 140 }}
-              >
-                <Grid
-                  ticks={4}
-                  style={{
-                    stroke: palette().borderSubtle,
-                    strokeWidth: 1,
-                    strokeDasharray: "3 3",
-                  }}
-                />
-                <PlotAxis
-                  placement="left"
-                  ticks={4}
-                  format={value => (value <= 0 ? "0" : formatTokens(value))}
-                  labelStyle={{
-                    ...textStyle("micro", { tabular: true }),
-                    paddingRight: space.sm,
-                  }}
-                />
-                <PlotAxis
-                  placement="bottom"
-                  ticks={Math.min(6, Math.max(1, trendBars().length))}
-                  format={value => {
-                    const row = trendBars()[Math.round(value)];
-                    return row ? row.shortLabel : "";
-                  }}
-                  labelStyle={{
-                    ...textStyle("micro", { tabular: true }),
-                    paddingTop: space.sm,
-                  }}
-                />
-                <Bar
-                  stack="tokens"
-                  value="inputTokens"
-                  cornerRadii={{ bottomLeft: radii.xs, bottomRight: radii.xs }}
-                  inactiveOpacity={0.42}
-                  style={{ fill: palette().accentBorder }}
-                />
-                <Bar
-                  stack="tokens"
-                  value="outputTokens"
-                  cornerRadii={{ topLeft: radii.xs, topRight: radii.xs }}
-                  inactiveOpacity={0.42}
-                  style={{ fill: palette().accent }}
-                />
-              </Plot>
-            </View>
-          </View>
         </View>
       </If>
 
-      <If when={usageModels().length > 0 || usageGroups().length > 0}>
-        <View style={{ minWidth: 0, gap: 8 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+      <SettingsSection title={tr("settings.usage.overview")} flush
+        notice={usageNotice()} onDismissNotice={() => usageNotice.set("")}>
+        <SettingsRow label={tr("settings.usage.rangeLabel")} first>
+          <SelectDropdown
+            size="sm"
+            fullWidth
+            align="end"
+            testID="usage-range-select"
+            accessibilityLabel={tr("settings.usage.rangeLabel")}
+            value={usageRange()}
+            disabled={usageLoading() || usageUnsupported()}
+            options={USAGE_RANGES.map(range => ({
+              value: range.value,
+              label: USAGE_RANGE_KEYS[range.value] ? tr(USAGE_RANGE_KEYS[range.value]) : range.label,
+              accessibilityLabel: `usage-range-${range.value}`,
+            }))}
+            onChange={value => void chooseUsageRange(value)}
+          />
+        </SettingsRow>
+        <If when={usageUnsupported()}>
+          <SectionFootnote text={tr("settings.usage.unsupported")} />
+        </If>
+        <If when={usageLoading() && !usageTotals()}><UsageLoadingLine /></If>
+        <If when={usageTotals()}>
+          {totals => (
+            <If when={totals().requests > 0} else={
+              <EmptyStateCard
+                icon="bar-chart"
+                title={tr(usageRange() === "all" ? "settings.usage.emptyTitle" : "settings.usage.periodEmptyTitle")}
+                subtitle={tr(usageRange() === "all" ? "settings.usage.emptyHint" : "settings.usage.periodEmptyHint")}
+              />
+            }>
+              <UsageMetricRow testID="usage-total-tokens" label={tr("settings.usage.total")} value={formatTokens(totals().tokens)} />
+              <UsageMetricRow testID="usage-input-tokens" label={tr("settings.usage.inputTokens")} value={formatTokens(totals().inputTokens)} />
+              <UsageMetricRow testID="usage-output-tokens" label={tr("settings.usage.outputTokens")} value={formatTokens(totals().outputTokens)} />
+              <UsageMetricRow testID="usage-requests" label={tr("settings.usage.requests")} value={formatCount(totals().requests)}
+                description={totals().failedRequests > 0 || totals().unknownRequests > 0
+                  ? tr("settings.usage.failedUnknown", {
+                    failed: formatCount(totals().failedRequests),
+                    unknown: formatCount(totals().unknownRequests),
+                  })
+                  : undefined} />
+            </If>
+          )}
+        </If>
+      </SettingsSection>
+
+      <If when={hasUsage() && (usageModels().length > 0 || usageGroups().length > 0)}>
+        <SettingsSection title={tr("settings.usage.distribution")} flush extra={
             <SegmentedTabs
               size="sm"
               value={usageDistribution()}
@@ -5334,23 +4691,23 @@ function UsageSection() {
               }))}
               onChange={value => chooseUsageDistribution(value)}
             />
-            <View style={{ minWidth: 190, maxWidth: 240, flexShrink: 1 }}>
-              <SearchInput
-                size="sm"
-                value={usageEntryFilter()}
-                onChange={setUsageEntryFilter}
-                placeholder={tr("settings.usage.filterRows")}
-                accessibilityLabel="usage-entry-filter"
-              />
-            </View>
-          </View>
+        }>
+          <SettingsRow label={tr("common.filter")} first>
+            <SearchInput
+              size="sm"
+              value={usageEntryFilter()}
+              onChange={setUsageEntryFilter}
+              placeholder={tr("settings.usage.filterRows")}
+              accessibilityLabel="usage-entry-filter"
+            />
+          </SettingsRow>
           <If when={usageVisibleRows().total === 0}>
             <SectionFootnote text={tr("settings.usage.noMatchingRows")} />
           </If>
           <If when={usageVisibleRows().rows.length > 0}>
-            <View style={insetGroupStyle()}>
+            <View>
               <Each of={usageVisibleRows().rows} key="index">
-                {(entry, index) => (
+                {entry => (
                   <View
                     style={{
                       gap: 6,
@@ -5363,9 +4720,7 @@ function UsageSection() {
                     }}
                     hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
                   >
-                    <If when={index() !== 0}>
-                      <RowSeparator edge="top" />
-                    </If>
+                    <RowSeparator edge="top" />
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                       <Text
                         style={{
@@ -5432,7 +4787,7 @@ function UsageSection() {
             </View>
           </If>
           <If when={usageVisibleRows().hidden}>
-            <View style={{ alignItems: "flex-start" }}>
+            <SettingsRow label={tr("common.more")}>
               <Button
                 label={
                   usageExpanded()
@@ -5444,104 +4799,257 @@ function UsageSection() {
                 accessibilityLabel="usage-distribution-expand"
                 onPress={toggleUsageExpanded}
               />
+            </SettingsRow>
+          </If>
+        </SettingsSection>
+      </If>
+
+      <If when={hasUsage()}>
+        <View style={{ minWidth: 0, gap: space.lg }}>
+          <ConfigSectionHeader title={tr("settings.usage.details")} />
+          <If when={trendBars().length > 0}>
+            <View style={{ minWidth: 0 }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: space.sm,
+                  minHeight: space.xl,
+                  marginBottom: space.sm,
+                  paddingHorizontal: space.xs,
+                }}
+              >
+                <Text role="header" style={textStyle("label", { tabular: true, color: palette().textSecondary })}>
+                  {hourly()
+                    ? tr("settings.usage.trendHours", { count: trendBars().length })
+                    : tr("settings.usage.trendDays", { count: trendBars().length })}
+                </Text>
+                <If
+                  when={hoveredTrendRow()}
+                  else={
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                        <View
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: radii.xs,
+                            backgroundColor: palette().accent,
+                          }}
+                        />
+                        <Text style={textStyle("micro")}>{tr("settings.usage.output")}</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                        <View
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: radii.xs,
+                            backgroundColor: palette().accentBorder,
+                          }}
+                        />
+                        <Text style={textStyle("micro")}>{tr("settings.usage.input")}</Text>
+                      </View>
+                    </View>
+                  }
+                >
+                  {row => (
+                    <Text
+                      style={{
+                        ...textStyle("caption", { color: palette().text, tabular: true }),
+                        fontWeight: "600",
+                      }}
+                    >
+                      {tr("settings.usage.trendHover", {
+                        bucket: formatBucket(row().bucket, hourly()),
+                        input: formatTokens(row().inputTokens) || "0",
+                        output: formatTokens(row().outputTokens) || "0",
+                        total: formatTokens(row().totalTokens) || "0",
+                      })}
+                    </Text>
+                  )}
+                </If>
+              </View>
+              <View style={insetGroupStyle(space.md)}>
+                <View style={{ paddingLeft: 48, paddingRight: space.sm, paddingTop: space.sm, paddingBottom: space.xl }}>
+                  <Plot<UsageTrendPlotRow>
+                    data={trendBars()}
+                    xScale={{
+                      type: "band",
+                      paddingInner: 0.38,
+                      paddingOuter: 0.14,
+                      maxBandWidth: 40,
+                    }}
+                    yScale={{
+                      type: "linear",
+                      domain: trendBars().some(b => b.totalTokens > 0) ? undefined : [0, 1],
+                    }}
+                    crossLineStyle={{
+                      backgroundColor: palette().surfaceSubtle,
+                      borderRadius: radii.xs,
+                    }}
+                    accessibilityLabel="usage-trend-chart"
+                    onHoverChange={event => hoveredUsageTrendIdx.set(event.index)}
+                    style={{ width: "100%", height: 140 }}
+                  >
+                    <Grid
+                      ticks={4}
+                      style={{
+                        stroke: palette().borderSubtle,
+                        strokeWidth: 1,
+                        strokeDasharray: "3 3",
+                      }}
+                    />
+                    <PlotAxis
+                      placement="left"
+                      ticks={4}
+                      format={value => (value <= 0 ? "0" : formatTokens(value))}
+                      labelStyle={{
+                        ...textStyle("micro", { tabular: true }),
+                        paddingRight: space.sm,
+                      }}
+                    />
+                    <PlotAxis
+                      placement="bottom"
+                      ticks={Math.min(6, Math.max(1, trendBars().length))}
+                      format={value => {
+                        const row = trendBars()[Math.round(value)];
+                        return row ? row.shortLabel : "";
+                      }}
+                      labelStyle={{
+                        ...textStyle("micro", { tabular: true }),
+                        paddingTop: space.sm,
+                      }}
+                    />
+                    <Bar
+                      stack="tokens"
+                      value="inputTokens"
+                      cornerRadii={{ bottomLeft: radii.xs, bottomRight: radii.xs }}
+                      inactiveOpacity={0.42}
+                      style={{ fill: palette().accentBorder }}
+                    />
+                    <Bar
+                      stack="tokens"
+                      value="outputTokens"
+                      cornerRadii={{ topLeft: radii.xs, topRight: radii.xs }}
+                      inactiveOpacity={0.42}
+                      style={{ fill: palette().accent }}
+                    />
+                  </Plot>
+                </View>
+              </View>
             </View>
           </If>
-        </View>
-      </If>
 
-      <If when={usageEndpoints().length > 0}>
-        <View style={{ minWidth: 0 }}>
-          <SectionHeader title={tr("settings.usage.byEndpoint")} />
-          <View style={insetGroupStyle()}>
-            <Each of={usageEndpoints()} key="index">
-              {(endpoint, index) => (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 8,
-                    paddingHorizontal: SETTINGS_ROW_INSET,
-                    paddingVertical: 10,
-                    minHeight: SETTINGS_ROW_MIN,
-                    position: "relative",
-                  }}
-                >
-                  <If when={index() !== 0}>
-                    <RowSeparator edge="top" />
-                  </If>
-                  <Text
-                    style={{
-                      color: palette().text,
-                      fontSize: textSize(14),
-                      lineHeight: textLineHeight(14, 1.38),
-                      flex: 1,
-                      minWidth: 0,
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis-middle",
-                    }}
-                  >
-                    {`${endpoint().name}${endpoint().providerName ? ` · ${endpoint().providerName}` : ""}`}
-                  </Text>
-                  <Text style={textStyle("caption", { tabular: true })}>
-                    {tr("settings.usage.rowMetrics", {
-                      requests: formatCount(endpoint().requests),
-                      tokens: formatTokens(endpoint().tokens),
-                    })}
-                  </Text>
-                </View>
-              )}
-            </Each>
-          </View>
-        </View>
-      </If>
+          <If when={usageTotals()}>
+            {totals => (
+              <SettingsSection title={tr("settings.usage.cache")} flush>
+                <UsageMetricRow first testID="usage-cache-rate" label={tr("settings.usage.cacheHitRateLabel")}
+                  description={tr("settings.usage.cacheHint")}
+                  value={formatPercent(usageCacheHitRate(totals()), 1) || tr("settings.usage.cacheUnavailable")} />
+                <UsageMetricRow testID="usage-cache-tokens" label={tr("settings.usage.cachedTokens")} value={formatTokens(totals().cachedTokens)} />
+                <UsageMetricRow testID="usage-cache-writes" label={tr("settings.usage.cacheWrites")} value={formatTokens(totals().cacheWriteTokens)} />
+              </SettingsSection>
+            )}
+          </If>
 
-      <If when={usageBuckets().length > 0}>
-        <View style={{ minWidth: 0 }}>
-          <SectionHeader title={hourly() ? tr("settings.usage.byHour") : tr("settings.usage.byDay")} />
-          <View style={insetGroupStyle()}>
-            <Each of={usageBuckets().slice(-12)} key={bucket => bucket.bucket}>
-              {(bucket, index) => (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    gap: space.md,
-                    paddingHorizontal: SETTINGS_ROW_INSET,
-                    paddingVertical: space.md,
-                    minHeight: SETTINGS_ROW_MIN,
-                    position: "relative",
-                  }}
-                >
-                  <If when={index() !== 0}>
-                    <RowSeparator edge="top" />
-                  </If>
-                  <Text
-                    style={{
-                      ...textStyle("mono", { color: palette().textMuted, tabular: true }),
-                      minWidth: 112,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {formatBucket(bucket().bucket, hourly())}
-                  </Text>
-                  <Text
-                    style={{
-                      ...textStyle("caption", { color: palette().text, tabular: true }),
-                      flex: 1,
-                      minWidth: 160,
-                    }}
-                  >
-                    {tr("settings.usage.bucketBreakdown", {
-                      input: formatTokens(bucket().inputTokens),
-                      output: formatTokens(bucket().outputTokens),
-                      cached: formatTokens(bucket().cachedTokens),
-                    })}
-                  </Text>
-                </View>
-              )}
-            </Each>
-          </View>
+          <If when={usageEndpoints().length > 0}>
+            <View style={{ minWidth: 0 }}>
+              <SectionHeader title={tr("settings.usage.byEndpoint")} />
+              <View style={insetGroupStyle()}>
+                <Each of={usageEndpoints()} key="index">
+                  {(endpoint, index) => (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        paddingHorizontal: SETTINGS_ROW_INSET,
+                        paddingVertical: 10,
+                        minHeight: SETTINGS_ROW_MIN,
+                        position: "relative",
+                      }}
+                    >
+                      <If when={index() !== 0}>
+                        <RowSeparator edge="top" />
+                      </If>
+                      <Text
+                        style={{
+                          color: palette().text,
+                          fontSize: textSize(14),
+                          lineHeight: textLineHeight(14, 1.38),
+                          flex: 1,
+                          minWidth: 0,
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis-middle",
+                        }}
+                      >
+                        {`${endpoint().name}${endpoint().providerName ? ` · ${endpoint().providerName}` : ""}`}
+                      </Text>
+                      <Text style={textStyle("caption", { tabular: true })}>
+                        {tr("settings.usage.rowMetrics", {
+                          requests: formatCount(endpoint().requests),
+                          tokens: formatTokens(endpoint().tokens),
+                        })}
+                      </Text>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </View>
+          </If>
+
+          <If when={usageBuckets().length > 0}>
+            <View style={{ minWidth: 0 }}>
+              <SectionHeader title={hourly() ? tr("settings.usage.byHour") : tr("settings.usage.byDay")} />
+              <View style={insetGroupStyle()}>
+                <Each of={usageBuckets().slice(-12)} key={bucket => bucket.bucket}>
+                  {(bucket, index) => (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: space.md,
+                        paddingHorizontal: SETTINGS_ROW_INSET,
+                        paddingVertical: space.md,
+                        minHeight: SETTINGS_ROW_MIN,
+                        position: "relative",
+                      }}
+                    >
+                      <If when={index() !== 0}>
+                        <RowSeparator edge="top" />
+                      </If>
+                      <Text
+                        style={{
+                          ...textStyle("mono", { color: palette().textMuted, tabular: true }),
+                          minWidth: 112,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {formatBucket(bucket().bucket, hourly())}
+                      </Text>
+                      <Text
+                        style={{
+                          ...textStyle("caption", { color: palette().text, tabular: true }),
+                          flex: 1,
+                          minWidth: 160,
+                        }}
+                      >
+                        {tr("settings.usage.bucketBreakdown", {
+                          input: formatTokens(bucket().inputTokens),
+                          output: formatTokens(bucket().outputTokens),
+                          cached: formatTokens(bucket().cachedTokens),
+                        })}
+                      </Text>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </View>
+          </If>
         </View>
       </If>
     </View>
@@ -7622,9 +7130,9 @@ function AppearanceSwatchGallery() {
 function AppearanceSection() {
   const followSystem = () => appearanceMode() === "system" && appearanceId() === null;
   return (
-    <SettingsSection flush={true} title={tr("settings.appearance.title")}>
-      <View>
-        <SettingsConfigRow
+    <View style={{ gap: layout.sectionGap }}>
+      <SettingsSection flush title={tr("settings.appearance.themeSection")}>
+        <ConfigRow
           label={tr("settings.appearance.followSystem")}
           description={
             resolvedScheme() === "light"
@@ -7638,261 +7146,210 @@ function AppearanceSection() {
             accessibilityLabel="appearance-follow-system"
             onChange={next => setFollowSystemAppearance(next)}
           />
-        </SettingsConfigRow>
+        </ConfigRow>
         <If when={!followSystem()}>
           <View style={{ position: "relative" }}>
             <RowSeparator edge="top" />
             <AppearanceSwatchGallery />
           </View>
         </If>
-        <FontSizeRows />
-        <ContentWidthRow />
-      </View>
+      </SettingsSection>
+      <FontPreferencesSection />
+      <ContentWidthSection />
+      <SessionPanelLayoutSection />
+    </View>
+  );
+}
+
+function SessionPanelLayoutSection() {
+  return (
+    <SettingsSection title={tr("settings.appearance.sessionPanel")} flush>
+      <SettingsRow label={tr("settings.appearance.sessionPanelLayout")} first>
+        <SelectDropdown<AuxPaneDisplayMode>
+          size="sm"
+          align="end"
+          fullWidth
+          testID="session-panel-layout"
+          accessibilityLabel={tr("settings.appearance.sessionPanelLayout")}
+          value={auxPaneDisplayMode()}
+          options={[
+            { value: "split", label: tr("settings.appearance.sessionPanelSplit"), accessibilityLabel: "session-panel-split" },
+            { value: "overlay", label: tr("settings.appearance.sessionPanelOverlay"), accessibilityLabel: "session-panel-overlay" },
+          ]}
+          onChange={auxPaneDisplayMode.set}
+        />
+      </SettingsRow>
     </SettingsSection>
   );
 }
 
-function ContentWidthRow() {
-  const isCustomWidth = () => contentWidth() !== DEFAULT_CONTENT_WIDTH;
+/** Pixel preferences have a draft while typing and update the surface on commit. */
+function AppearancePixelStepper(props: {
+  id: string;
+  label: string;
+  value: number;
+  min: number;
+  max?: number;
+  step: number;
+  onCommit: (value: number) => void;
+}) {
+  const draft = signal<string | null>(null);
+  const text = () => draft() ?? String(props.value);
+  const clamp = (value: number) => Math.max(props.min, Math.min(props.max ?? Infinity, Math.round(value)));
+  const parsed = () => text().trim() ? Number(text()) : NaN;
+  const base = () => Number.isFinite(parsed()) ? clamp(parsed()) : props.value;
+  const commit = (delta = 0) => {
+    const next = clamp(base() + delta);
+    draft.set(null);
+    props.onCommit(next);
+  };
   return (
-    <View
-      style={{
-        position: "relative",
-        gap: space.sm,
-        minHeight: SETTINGS_ROW_MIN,
-        justifyContent: "center",
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-      }}
-    >
-      <RowSeparator edge="top" />
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: space.md }}>
-        <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
-          <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
-            {tr("settings.appearance.contentWidth")}
-          </Text>
-          <Text style={textStyle("caption", { tabular: true })}>
-            {tr("settings.appearance.contentWidthDesc", { px: contentWidth() })}
-          </Text>
-        </View>
-        <SettingsNumberStepper
-          id="content-width"
-          text={String(contentWidth())}
-          unit={tr("settings.unit.px")}
-          decreaseDisabled={contentWidth() <= MIN_CONTENT_WIDTH}
-          onDecrease={() => adjustContentWidth(-CONTENT_WIDTH_STEP)}
-          onIncrease={() => adjustContentWidth(CONTENT_WIDTH_STEP)}
-          leading={
-            <StepperSlot width={controlHeight.sm}>
-              <If when={isCustomWidth()}>
-                <StepperAccessory
-                  icon="undo"
-                  tooltip={tr("common.reset")}
-                  accessibilityLabel="content-width-reset"
-                  onPress={() => resetContentWidth()}
-                />
-              </If>
-            </StepperSlot>
-          }
-        />
-      </View>
-      <If when={contentWidthNotice().length > 0 ? contentWidthNotice() : ""}>
-        {notice => (
-          <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
-            {localizeHostError(notice())}
-          </Text>
-        )}
-      </If>
-    </View>
+    <SettingsNumberStepper
+      id={props.id}
+      label={props.label}
+      text={text()}
+      unit={tr("settings.unit.px")}
+      dirty={draft() !== null && draft() !== String(props.value)}
+      decreaseDisabled={base() <= props.min}
+      increaseDisabled={props.max !== undefined && base() >= props.max}
+      onDecrease={() => commit(-props.step)}
+      onIncrease={() => commit(props.step)}
+      onChangeText={draft.set}
+      onSubmit={() => commit()}
+      onCancelEdit={() => draft.set(null)}
+    />
   );
 }
 
-function FontSizeRows() {
+function ContentWidthSection() {
   return (
-    <View
-      style={{
-        position: "relative",
-        gap: space.md,
-        minHeight: SETTINGS_ROW_MIN,
-        justifyContent: "center",
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-      }}
-    >
-      <RowSeparator edge="top" />
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: space.md,
-        }}
-      >
-        <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
-          <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
-            {tr("settings.appearance.textSize")}
-          </Text>
-          <Text style={textStyle("caption", { tabular: true })}>
-            {tr("settings.appearance.fontBaseline", { px: fontPx() })}
-          </Text>
-        </View>
-        <SettingsNumberStepper
-          id="font-size"
-          text={String(fontPx())}
-          unit={tr("settings.unit.px")}
-          decreaseDisabled={fontPx() <= MIN_FONT_PX}
-          increaseDisabled={fontPx() >= MAX_FONT_PX}
-          onDecrease={() => void adjustFontPx(-1)}
-          onIncrease={() => void adjustFontPx(1)}
-          leading={
-            <StepperSlot width={controlHeight.sm}>
-              <If when={fontLevel() !== "default"}>
-                <StepperAccessory
-                  icon="undo"
-                  tooltip={tr("common.reset")}
-                  accessibilityLabel="font-size-reset"
-                  onPress={() => void resetFontPreference()}
-                />
-              </If>
-            </StepperSlot>
-          }
+    <SettingsSection title={tr("settings.appearance.conversationWidth")} flush
+      notice={contentWidthNotice()} onDismissNotice={() => contentWidthNotice.set("")}
+      extra={
+        <Button label={tr("common.reset")} variant="ghost" size="sm"
+          accessibilityLabel="content-width-reset" disabled={contentWidth() === DEFAULT_CONTENT_WIDTH}
+          onPress={() => resetContentWidth()} />
+      }>
+      <SettingsRow label={tr("settings.appearance.contentWidth")}
+        description={tr("settings.appearance.contentWidthMinimum", { min: MIN_CONTENT_WIDTH })} first>
+        <AppearancePixelStepper
+          id="content-width"
+          label={tr("settings.appearance.contentWidth")}
+          value={contentWidth()}
+          min={MIN_CONTENT_WIDTH}
+          step={CONTENT_WIDTH_STEP}
+          onCommit={setContentWidth}
         />
-      </View>
-      <Scroll smoothWheel horizontal style={{ maxWidth: "100%" }}>
-        <SegmentedTabs
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+function FontPreferencesSection() {
+  const preview = signal("");
+  return (
+    <SettingsSection title={tr("settings.appearance.textSize")} flush
+      notice={fontNotice()} onDismissNotice={() => fontNotice.set("")}
+      extra={
+        <Button label={tr("common.reset")} variant="ghost" size="sm"
+          accessibilityLabel="font-size-reset" disabled={fontLevel() === "default" && !fontNotice()}
+          onPress={() => void resetFontPreference()} />
+      }>
+      <SettingsRow label={tr("settings.appearance.interfaceSize")}
+        description={tr("settings.appearance.fontBaseline", { px: fontPx() })} first>
+        <SelectDropdown<FontLevel>
           size="sm"
+          align="end"
+          fullWidth
           value={fontLevel()}
+          testID="font-level-select"
+          accessibilityLabel={tr("settings.appearance.interfaceSize")}
           options={[
             ...FONT_LEVELS.map(entry => ({
-              value: entry.level as FontLevel,
+              value: entry.level,
               label: tr(FONT_LEVEL_KEYS[entry.level]),
               accessibilityLabel: `font-level-${entry.level}`,
             })),
-            {
-              value: "custom" as FontLevel,
-              label: tr("settings.appearance.fontCustom"),
-              accessibilityLabel: "font-level-custom",
-            },
+            { value: "custom", label: tr(FONT_LEVEL_KEYS.custom), accessibilityLabel: "font-level-custom" },
           ]}
           onChange={level => void chooseFontLevel(level)}
         />
-      </Scroll>
-      <If when={fontNotice()}>
-        {notice => (
-          <Text style={textStyle("caption", { color: stateColor("failed") })}>
-            {localizeHostError(notice())}
-          </Text>
-        )}
+      </SettingsRow>
+      <If when={fontLevel() === "custom"}>
+        <SettingsRow label={tr("settings.appearance.customFontSize")}>
+          <AppearancePixelStepper
+            id="font-size"
+            label={tr("settings.appearance.customFontSize")}
+            value={fontPx()}
+            min={MIN_FONT_PX}
+            max={MAX_FONT_PX}
+            step={1}
+            onCommit={px => void setCustomFontPx(px)}
+          />
+        </SettingsRow>
       </If>
-    </View>
+      <SettingsRow label={tr("settings.appearance.fontPreview")} stacked>
+        <TextField
+          size="sm"
+          testID="font-size-preview"
+          accessibilityLabel={tr("settings.appearance.fontPreview")}
+          placeholder={tr("settings.appearance.textSizePreview")}
+          fontSize={fontPx()}
+          value={preview()}
+          onChange={preview.set}
+        />
+      </SettingsRow>
+    </SettingsSection>
   );
 }
 
 function PoolsSection() {
-  useDeviceScopedLoad("pools", ensurePools, () => void loadPools());
   const poolModalOpen = usePresenceFlag(() => poolDraft() !== null);
+  const busy = () => poolBusy() || poolsLoading();
+  const close = () => { if (!poolBusy()) closePoolDraft(); };
   return (
     <If when={poolsSupported() !== false}>
-      <SettingsSection
-        flush={true}
-        title={tr("settings.pools.title")}
-        subtitle={tr("settings.pools.subtitle")}
-        notice={poolsNotice()}
-        onDismissNotice={() => poolsNotice.set("")}
+      <SettingsSection flush title={tr("settings.pools.title")} subtitle={tr("settings.pools.subtitle")}
+        notice={poolDraft() ? "" : poolsNotice()} onDismissNotice={() => poolsNotice.set("")}
         extra={
-          <If when={pools().length > 0}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-              <Button
-                label={tr("settings.pools.addPool")}
-                leadingIcon="plus"
-                variant="secondary"
-                size="sm"
-                accessibilityLabel="add-pool"
-                onPress={() => openPoolDraft()}
-              />
-            </View>
+          <If when={poolsSupported() === true && pools().length > 0}>
+            <Button label={tr("settings.pools.addPool")} leadingIcon="plus" variant="secondary" size="sm"
+              accessibilityLabel="add-pool" disabled={busy()} onPress={() => openPoolDraft()} />
           </If>
-        }
-      >
+        }>
         <View>
-          <If when={poolsSupported() === null}>
+          <If when={poolsLoading()}>
             <View style={{ padding: space.lg }}>
               <Text style={textStyle("caption")}>{tr("settings.pools.reading")}</Text>
             </View>
           </If>
+          <If when={poolsSupported() === null && !poolsLoading()}>
+            <ConfigRow label={tr("settings.pools.loadingFailed")} divider={false}>
+              <Button label={tr("common.retry")} variant="secondary" size="sm" onPress={() => void loadPools()} />
+            </ConfigRow>
+          </If>
           <If when={poolsSupported() === true && pools().length === 0 && !poolDraft()}>
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: space.md,
-                paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: space.md,
-                minHeight: SETTINGS_ROW_MIN,
-              }}
-            >
-              <Icon name="layers" size={16} color={palette().textMuted} />
-              <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
-                <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
-                  {tr("settings.pools.emptyLegacy")}
-                </Text>
-                <Text style={textStyle("caption")}>
-                  {tr("settings.pools.emptyHint")}
-                </Text>
-              </View>
-              <Button
-                label={tr("settings.pools.createPool")}
-                leadingIcon="plus"
-                variant="secondary"
-                size="sm"
-                accessibilityLabel="add-pool"
-                onPress={() => openPoolDraft()}
-              />
-            </View>
+            <ConfigRow label={tr("settings.pools.emptyLegacy")} description={tr("settings.pools.emptyHint")} divider={false}>
+              <Button label={tr("settings.pools.createPool")} leadingIcon="plus" variant="secondary" size="sm"
+                accessibilityLabel="add-pool" disabled={busy()} onPress={() => openPoolDraft()} />
+            </ConfigRow>
           </If>
           <Each of={pools()} key={pool => pool.id}>
-            {(pool, index) => <PoolRow pool={pool} first={() => index() === 0} />}
+            {(pool, index) => <PoolRow pool={pool} first={index() === 0} />}
           </Each>
-          <ModalDialog
-            open={poolModalOpen()}
-            title={
-              poolDraft()?.id
-                ? tr("settings.pools.editModalTitle")
-                : tr("settings.pools.createModalTitle")
-            }
-            subtitle={tr("settings.pools.modalSubtitle")}
-            size="md"
-            accessibilityLabel="pool-editor-modal"
-            onClose={() => closePoolDraft()}
+          <ModalDialog open={poolModalOpen()}
+            title={tr(poolDraft()?.id ? "settings.pools.editModalTitle" : "settings.pools.createModalTitle")}
+            size="md" accessibilityLabel="pool-editor-modal" closeOnBackdropPress={false} onClose={close}
             footer={
-              <If when={poolDraft() !== null}>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-                  <Button
-                    label={tr("common.cancel")}
-                    variant="secondary"
-                    size="md"
-                    onPress={() => closePoolDraft()}
-                  />
-                  <Button
-                    label={
-                      poolDraft()?.id
-                        ? tr("settings.pools.savePool")
-                        : tr("settings.pools.createPool")
-                    }
-                    variant="primary"
-                    size="md"
-                    accessibilityLabel="save-pool"
-                    onPress={() => void savePoolDraft()}
-                  />
-                </View>
-              </If>
-            }
-          >
-            <If when={poolDraft() !== null}>
-              <PoolEditor />
-            </If>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                <Button label={tr("common.cancel")} variant="secondary" size="md" accessibilityLabel="pool-cancel"
+                  disabled={poolBusy()} onPress={close} />
+                <Button label={tr(poolDraft()?.id ? "settings.pools.savePool" : "settings.pools.createPool")} variant="primary" size="md"
+                  accessibilityLabel="save-pool" loading={poolBusy()} disabled={!canSavePoolDraft()}
+                  onPress={() => void savePoolDraft()} />
+              </View>
+            }>
+            <If when={poolDraft() !== null}><ModelPoolEditor /></If>
           </ModalDialog>
         </View>
       </SettingsSection>
@@ -7900,290 +7357,55 @@ function PoolsSection() {
   );
 }
 
-function PoolRow(props: { pool: () => ModelPool; first?: () => boolean }) {
-  const labelOf = (modelId: string): string => {
-    const found = storedModels().find(model => model.id === modelId);
-    return found ? modelOptionText(found) : modelId;
+function PoolRow(props: { pool: () => ModelPool; first: boolean }) {
+  const confirmOpen = signal(false);
+  const pool = props.pool;
+  const busy = () => poolBusy() || poolsLoading();
+  const close = () => { if (!poolBusy()) confirmOpen.set(false); };
+  const remove = async () => {
+    if (await deletePool(pool().id)) confirmOpen.set(false);
   };
-  const statusesOf = () => poolStatuses()[props.pool().id] ?? [];
-  const strategyLabel = () => {
-    const strategy = props.pool().strategy;
-    const mapped = POOL_STRATEGY_KEYS[strategy];
-    if (mapped) return tr(mapped.labelKey);
-    return POOL_STRATEGIES.find(entry => entry.value === strategy)?.label ?? strategy;
-  };
-  const menuKey = () => `pool-${props.pool().id}`;
-  return (
-    <View
-      style={{
-        gap: space.sm,
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-        minHeight: SETTINGS_ROW_MIN,
-        justifyContent: "center",
-        position: "relative",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-    >
-      <If when={!props.first?.()}>
-        <RowSeparator edge="top" />
-      </If>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.md }}>
-        <Text
-          style={{
-            ...textStyle("body"),
-            flex: 1,
-            minWidth: 140,
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.pool().name}
-        </Text>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm, marginLeft: "auto" }}>
-          <Text style={textStyle("caption", { color: palette().textSecondary })}>
-            {tr("settings.pools.membersSummary", {
-              strategy: strategyLabel(),
-              count: props.pool().memberModelIds.length,
-            })}
-          </Text>
-          <Button
-            label={tr("common.check")}
-            variant="secondary"
-            size="sm"
-            accessibilityLabel={`check-pool-${props.pool().id}`}
-            onPress={() => void loadPoolStatus(props.pool().id)}
-          />
-          <View ref={el => setRowAnchor(menuKey(), el)} style={{ flexShrink: 0 }}>
-            <IconButton
-              icon="more"
-              size="sm"
-              tooltip={tr("settings.pools.options")}
-              accessibilityLabel={`pool-actions-${props.pool().id}`}
-              onPress={() => rowMenuId.set(rowMenuId() === menuKey() ? null : menuKey())}
-            />
-          </View>
-        </View>
-        <DropdownMenu
-          open={rowMenuId() === menuKey()}
-          anchor={rowMenuAnchors()[menuKey()] ?? null}
-          onClose={() => rowMenuId.set(null)}
-          items={[
-            {
-              id: "edit",
-              label: tr("settings.pools.editPool"),
-              icon: "edit",
-              accessibilityLabel: `edit-pool-${props.pool().id}`,
-              onSelect: () => {
-                rowMenuId.set(null);
-                openPoolDraft(props.pool());
-              },
-            },
-            {
-              id: "delete",
-              label: tr("settings.pools.deletePool"),
-              icon: "trash",
-              danger: true,
-              accessibilityLabel: `delete-pool-${props.pool().id}`,
-              onSelect: () => {
-                rowMenuId.set(null);
-                void deletePool(props.pool().id);
-              },
-            },
-          ]}
-        />
-      </View>
-      <Text style={textStyle("caption")}>
-        {props.pool().memberModelIds.length === 0
-          ? tr("settings.pools.noMemberYet")
-          : props.pool().memberModelIds.map(labelOf).join(" → ")}
-      </Text>
-      <If when={statusesOf().length > 0}>
-        <View style={{ gap: space.xs, paddingTop: space.hair }}>
-          <Each of={statusesOf()} key={entry => entry.modelId}>
-            {entry => {
-              const tone = () => poolMemberTone(entry().status);
-              return (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                  <If when={tone() === "danger"}>
-                    <StateMark state="failed" size={12} />
-                  </If>
-                  <If when={tone() === "warning"}>
-                    <StateMark state="needs_you" size={12} />
-                  </If>
-                  <Text
-                    style={{
-                      ...textStyle("caption", {
-                        color:
-                          tone() === "danger"
-                            ? stateColor("failed")
-                            : tone() === "warning"
-                              ? stateColor("needs_you")
-                              : palette().textSecondary,
-                      }),
-                      flex: 1,
-                      minWidth: 0,
-                    }}
-                  >
-                    {`${entry().modelId}: ${entry().status}${entry().reason ? ` (${entry().reason})` : ""}`}
-                  </Text>
-                </View>
-              );
-            }}
-          </Each>
-        </View>
-      </If>
-    </View>
-  );
-}
-
-function PoolEditor() {
-  const membersOf = () => poolDraft()?.members ?? [];
-  const strategyOf = () => poolDraft()?.strategy ?? "ordered";
-  const hasMember = (modelId: string) => membersOf().includes(modelId);
-  const memberName = (modelId: string) => {
-    const found = storedModels().find(m => m.id === modelId);
-    return found ? modelOptionText(found) : modelId;
-  };
-  const strategyHint = () => {
-    const mapped = POOL_STRATEGY_KEYS[strategyOf()];
-    if (mapped) return tr(mapped.hintKey);
-    return POOL_STRATEGIES.find(entry => entry.value === strategyOf())?.hint ?? "";
-  };
-  return (
-    <View style={{ gap: space.md }}>
-      <ModelFormField
-        label={tr("settings.pools.poolName")}
-        value={poolDraft()?.name ?? ""}
-        placeholder={tr("settings.pools.namePlaceholder")}
-        accessibilityLabel="model-pool-name"
-        onChange={value => updatePoolDraft({ name: value })}
-      />
+  return <>
+    <ConfigRow label={pool().name} topDivider={!props.first} divider={false}
+      style={{ paddingHorizontal: space.lg }} controlStyle={{ gap: space.xs }}>
+      <Badge label={tr("settings.pools.membersSummary", { strategy: poolStrategyLabel(pool().strategy),
+        count: formatCount(pool().memberModelIds.length) })} pill size="xs" />
+      <IconButton icon="edit" size="sm" tooltip={tr("settings.pools.editPool")} disabled={busy()}
+        accessibilityLabel={"edit-pool-" + pool().id} onPress={() => openPoolDraft(pool())} />
+      <IconButton icon="trash" size="sm" tone="danger" tooltip={tr("settings.pools.deletePool")} disabled={busy()}
+        accessibilityLabel={"delete-pool-" + pool().id} onPress={() => {
+          poolsNotice.set("");
+          confirmOpen.set(true);
+        }} />
+    </ConfigRow>
+    <ModalDialog open={confirmOpen()} title={tr("settings.pools.deleteTitle", { name: pool().name })}
+      size="sm" accessibilityLabel="pool-delete-dialog" onClose={close} closeOnBackdropPress={false}
+      footer={<View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <Button label={tr("common.cancel")} variant="secondary" size="md" accessibilityLabel="pool-delete-cancel"
+          disabled={poolBusy()} onPress={close} />
+        <Button label={tr("common.delete")} variant="danger" size="md" accessibilityLabel="pool-delete-confirm"
+          loading={poolBusy()} disabled={busy()} onPress={() => void remove()} />
+      </View>}>
       <View style={{ gap: space.sm }}>
-        <Text style={textStyle("label", { color: palette().textSecondary })}>
-          {tr("settings.pools.routingStrategy")}
-        </Text>
-        <SegmentedTabs
-          size="sm"
-          value={strategyOf()}
-          options={POOL_STRATEGIES.map(entry => ({
-            value: entry.value,
-            label: POOL_STRATEGY_KEYS[entry.value]
-              ? tr(POOL_STRATEGY_KEYS[entry.value].labelKey)
-              : entry.label,
-            accessibilityLabel: `pool-strategy-${entry.value}`,
-          }))}
-          onChange={strategy => updatePoolDraft({ strategy })}
-        />
-        <Text style={textStyle("caption")}>{strategyHint()}</Text>
+        <Text style={textStyle("body")}>{tr("settings.pools.deleteHint")}</Text>
+        <If when={poolsNotice()}>{notice => <InlineBanner tone="danger" message={localizeHostError(notice())} />}</If>
       </View>
-      <View style={{ gap: space.sm }}>
-        <Text style={textStyle("label", { color: palette().textSecondary, tabular: true })}>
-          {membersOf().length === 0
-            ? tr("settings.pools.membersInOrderEmpty")
-            : tr("settings.pools.membersInOrder", { count: membersOf().length })}
-        </Text>
-        <If when={membersOf().length > 0}>
-          <View
-            style={{
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceTertiary,
-              overflow: "hidden",
-            }}
-          >
-            <Each of={membersOf()} key={modelId => modelId}>
-              {(modelId, index) => (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.sm,
-                    paddingHorizontal: space.md,
-                    paddingVertical: space.sm,
-                    position: "relative",
-                  }}
-                >
-                  <If when={index() !== 0}>
-                    <RowSeparator edge="top" />
-                  </If>
-                  <Badge label={`#${index() + 1}`} tone="neutral" />
-                  <Text
-                    style={{
-                      ...textStyle("mono", { color: palette().text }),
-                      flex: 1,
-                      minWidth: 0,
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {memberName(modelId())}
-                  </Text>
-                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
-                    <IconButton
-                      icon="arrow-up"
-                      size="xs"
-                      tooltip={tr("common.up")}
-                      disabled={index() === 0}
-                      accessibilityLabel={`pool-member-up-${modelId()}`}
-                      onPress={() => movePoolMember(modelId(), -1)}
-                    />
-                    <IconButton
-                      icon="chevron-down"
-                      size="xs"
-                      tooltip={tr("common.down")}
-                      disabled={index() >= membersOf().length - 1}
-                      accessibilityLabel={`pool-member-down-${modelId()}`}
-                      onPress={() => movePoolMember(modelId(), 1)}
-                    />
-                    <IconButton
-                      icon="trash"
-                      size="xs"
-                      tone="danger"
-                      tooltip={tr("common.remove")}
-                      accessibilityLabel={`pool-member-remove-${modelId()}`}
-                      onPress={() => togglePoolMember(modelId())}
-                    />
-                  </View>
-                </View>
-              )}
-            </Each>
-          </View>
-        </If>
-      </View>
-      <View style={{ gap: space.sm }}>
-        <Text style={textStyle("label", { color: palette().textSecondary })}>
-          {tr("settings.pools.availableModels")}
-        </Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
-          <Each of={storedModels()} key={model => model.id}>
-            {model => (
-              <SelectableChip
-                label={`${hasMember(model().id) ? "✓ " : "+ "}${modelOptionText(model())}`}
-                active={hasMember(model().id)}
-                accessibilityLabel={`pool-toggle-${model().id}`}
-                onPress={() => togglePoolMember(model().id)}
-              />
-            )}
-          </Each>
-          <If when={storedModels().length === 0}>
-            <Text style={textStyle("caption")}>{tr("settings.pools.noModels")}</Text>
-          </If>
-        </View>
-      </View>
-    </View>
-  );
+    </ModalDialog>
+  </>;
 }
 
 function LanguageRow() {
   return (
-    <SettingsRow label={tr("settings.language.title")} description={tr("settings.language.hint")} first={true}>
-      <SegmentedTabs
+    <SettingsRow label={tr("settings.language.title")} first={true}>
+      <SelectDropdown
         size="sm"
-        value={appLanguageValue()}
+        testID="app-language-select"
+        accessibilityLabel={tr("settings.language.title")}
+        accessibilityDescription={tr("settings.language.hint")}
+        value={currentLocale()}
+        disabled={appLocaleSaving()}
+        fullWidth
+        align="end"
         options={SUPPORTED_LOCALES.map(entry => ({
           value: entry.id,
           label: entry.nativeName,
@@ -8235,15 +7457,10 @@ function AccountRow() {
  */
 function DefaultShellRow() {
   useDeviceScopedLoad("terminal-shells", () => void loadTerminalShells(), () => void loadTerminalShells(true));
-  const stored = (): string => {
-    const value = settingsValues()["terminal.default_shell"];
-    return typeof value === "string" ? value : "";
-  };
+  useDeviceScopedLoad("terminal-preferences", () => void loadTerminalPreferences(), () => void loadTerminalPreferences(true));
   const selected = (): string => {
-    const value = stored();
-    if (!value) return "";
-    const match = terminalShells().find(shell => shell.path === value || shell.type === value);
-    return match ? match.path : value;
+    const value = terminalPreferences()?.defaultShell ?? "";
+    return findConfiguredTerminalShell(value)?.path || value;
   };
   const options = () => {
     const rows = [
@@ -8268,13 +7485,16 @@ function DefaultShellRow() {
   };
   const saving = signal(false);
   const choose = async (value: string): Promise<void> => {
+    const device = deviceContext();
     saving.set(true);
     try {
-      await setConfig("terminal.default_shell", value);
-      settingsValues.update(values => ({ ...values, "terminal.default_shell": value }));
+      await setConfig("terminal.default_shell", value, device ? { target: device } : undefined);
+      if (device !== deviceContext()) return;
+      await loadTerminalPreferences(true);
+      if (device !== deviceContext()) return;
       setSectionNotice("terminal", tr("settings.notice.savedField", { label: tr("settings.terminal.defaultShell") }));
     } catch (error) {
-      setSectionNotice("terminal", error instanceof Error ? error.message : String(error));
+      if (device === deviceContext()) setSectionNotice("terminal", error instanceof Error ? error.message : String(error));
     } finally {
       saving.set(false);
     }
@@ -8615,40 +7835,136 @@ function DesktopCompanionRow() {
   );
 }
 
-/**
- * The memory folder and the reset the desktop's memory section offers. The
- * folder opens in the file manager of the machine that stores it; a reset asks
- * first.
- */
-function MemoryActionsRow() {
-  return (
-    <View>
+const memoryFields = SETTINGS_SECTIONS.find(section => section.id === "memory")!.fields;
+const memoryBasicFields = memoryFields.filter(field => field.kind === "boolean" || field.kind === "select");
+const memoryModelFields = memoryFields.filter(field => field.kind === "model");
+const memoryAdvancedFields = SETTINGS_SECTIONS.find(section => section.id === "memory-processing")!.fields;
+
+function MemorySettingsSection() {
+  const advanced = memoryProcessingOpen;
+  const menuOpen = signal(false);
+  const confirm = signal<"settings" | "memories" | null>(null);
+  let menuAnchor: ViewRef | null = null;
+  effect(() => {
+    deviceContext();
+    untracked(() => { menuOpen.set(false); confirm.set(null); setSectionNotice("memory", ""); });
+  });
+  const disabled = () => memoryEnabledValue() !== true || memoryActionBusy() !== null;
+  const actionsDisabled = () => !memoryConfigLoaded() || memorySettingsBusy();
+  const isResetSettings = () => confirm() === "settings";
+  const resetLabel = () => tr(isResetSettings() ? "settings.memory.resetSettings" : "settings.memory.reset");
+  const advancedLabel = () => tr(advanced() ? "settings.memory.collapseAdvanced" : "settings.memory.expandAdvanced");
+  const toggleAdvanced = () => {
+    if (advanced() && activeSettingsAnchor() === "memory-processing") activeSettingsAnchor.set(null);
+    advanced.set(!advanced());
+  };
+  async function confirmReset() {
+    if (actionsDisabled() || !confirm()) return;
+    const settings = isResetSettings();
+    confirm.set(null);
+    if (!settings) {
+      await resetMemory();
+      return;
+    }
+    if (await resetMemorySettings()) [...memoryFields, ...memoryAdvancedFields].forEach(clearDraft);
+  }
+  return <View style={{ gap: layout.sectionGap }}>
+    <SettingsGroup id="memory" title={tr("settings.section.memory")} notice={sectionNotice("memory")}
+      onDismissNotice={() => setSectionNotice("memory", "")}>
+      <Anchor id="memory-enabled">
+        <SettingsRow first label={tr("settings.memory.enabled")} description={tr("settings.memory.enabledDesc")}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <FieldStatus saving={memoryActionBusy() === "enabled"} saved={fieldJustSaved("memory-enabled")} />
+            <ToggleSwitch value={memoryEnabledValue() === true} testID="memory-enabled"
+              accessibilityLabel={tr("settings.memory.enabled")}
+              disabled={memoryEnabledValue() === undefined || memorySettingsBusy()}
+              onChange={value => void setMemoryEnabled(value)} />
+          </View>
+        </SettingsRow>
+      </Anchor>
+      <If when={!memoryConfigLoaded()}>
+        <SettingsRow label={tr("settings.loading")}><Spinner size={13} color={palette().accent} /></SettingsRow>
+      </If>
+      <If when={memoryConfigLoaded() && memoryEnabledValue() === undefined}>
+        <SettingsRow label={tr("settings.memory.configUnavailable")}>
+          <Button size="sm" variant="outline" label={tr("common.retry")} onPress={() => void loadSettingsValues()} />
+        </SettingsRow>
+      </If>
+      <Each of={memoryBasicFields} key={field => field.id}>
+        {field => <FieldRow spec={field()} disabled={disabled()} />}
+      </Each>
       <SettingsRow label={tr("settings.memory.actions")} description={tr("settings.memory.actionsDesc")}>
-        <Button
-          label={tr("settings.memory.openFolder")}
-          variant="secondary"
-          size="sm"
-          leadingIcon="folder-open"
-          loading={memoryActionBusy() === "open"}
-          disabled={memoryActionBusy() !== null}
-          accessibilityLabel="memory-open-folder"
-          onPress={() => void openMemoryFolder()}
-        />
-        <InlineDeleteConfirm
-          confirming={memoryResetPending()}
-          onConfirmingChange={next => memoryResetPending.set(next)}
-          label={tr("settings.memory.reset")}
-          variant="danger"
-          size="sm"
-          loading={memoryActionBusy() === "reset"}
-          disabled={memoryActionBusy() !== null}
-          accessibilityLabel="memory-reset"
-          confirmAccessibilityLabel="memory-reset-confirm"
-          onConfirm={() => void resetMemory()}
-        />
+        <View ref={node => { menuAnchor = node; }}>
+          <Button label={tr("common.manage")} variant="outline" size="sm" trailingIcon="chevron-down"
+            accessibilityLabel="memory-manage" loading={memoryActionBusy() !== null && memoryActionBusy() !== "enabled"}
+            disabled={actionsDisabled()} onPress={() => menuOpen.set(!menuOpen())} />
+        </View>
+        <DropdownMenu open={menuOpen()} anchor={menuAnchor} align="end" onClose={() => menuOpen.set(false)} items={[
+          { id: "memory-open-folder", label: tr("settings.memory.openFolder"), icon: "folder-open",
+            accessibilityLabel: "memory-open-folder", disabled: isRemotePeerContext(),
+            hint: isRemotePeerContext() ? tr("settings.memory.folderLocalOnly") : undefined, onSelect: () => void openMemoryFolder() },
+          { id: "memory-reset-settings", label: tr("settings.memory.resetSettings"), icon: "undo",
+            accessibilityLabel: "memory-reset-settings", onSelect: () => confirm.set("settings") },
+          { id: "memory-reset", label: tr("settings.memory.reset"), icon: "trash", danger: true,
+            separator: true, accessibilityLabel: "memory-reset", onSelect: () => confirm.set("memories") },
+        ]} />
       </SettingsRow>
+    </SettingsGroup>
+    <SettingsGroup id="memory-models" title={tr("settings.memory.models")}>
+      <Each of={memoryModelFields} key={field => field.id}>
+        {(field, index) => <FieldRow spec={field()} first={index() === 0} disabled={disabled()} />}
+      </Each>
+    </SettingsGroup>
+    <Anchor id="memory-processing">
+      <View style={{ minWidth: 0, gap: space.md }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Text role="header" style={{ ...textStyle("sectionTitle"), flex: 1, minWidth: 0 }}>
+            {tr("settings.memory.advanced")}
+          </Text>
+          <IconButton size="sm" icon={advanced() ? "chevron-down" : "chevron-right"}
+            tooltip={advancedLabel()} accessibilityLabel={advancedLabel()}
+            testID="memory-advanced-toggle" expanded={advanced()} onPress={toggleAdvanced} />
+        </View>
+        <If when={advanced()}>
+          <SettingsSection title="" flush notice={sectionNotice("memory-processing")}
+            onDismissNotice={() => setSectionNotice("memory-processing", "")}>
+            <Each of={memoryAdvancedFields} key={field => field.id}>
+              {(field, index) => <FieldRow spec={field()} first={index() === 0} disabled={disabled()} />}
+            </Each>
+          </SettingsSection>
+        </If>
+      </View>
+    </Anchor>
+    <ModalDialog open={confirm() !== null} size="sm" title={resetLabel()}
+      subtitle={tr(isResetSettings() ? "settings.memory.resetSettingsConfirm" : "settings.memory.resetConfirm")}
+      onClose={() => confirm.set(null)} footer={<>
+        <Button label={tr("common.cancel")} variant="ghost" onPress={() => confirm.set(null)} />
+        <Button label={resetLabel()} variant={isResetSettings() ? "primary" : "danger"}
+          accessibilityLabel={isResetSettings() ? "memory-reset-settings-confirm" : "memory-reset-confirm"}
+          disabled={actionsDisabled()} onPress={() => void confirmReset()} />
+      </>} />
+  </View>;
+}
+
+function ExecutionSettingsPage() {
+  effect(() => { if (executionModelPoolsSupported()) untracked(ensurePools); });
+  const unavailable = (spec: FieldSpec) => spec.kind === "model-target" ? !modelTargetForField(spec)
+    : Boolean(spec.capability && !supportsExecutionCapability(spec.capability)) || typeof fieldDisplay(spec) !== "boolean";
+  const subagentFieldUnavailable = (spec: FieldSpec) =>
+    spec.kind === "model-target" || spec.capability ? unavailable(spec) : false;
+  return <If when={settingsValuesCurrent()} else={<Text style={textStyle("caption")}>{tr("settings.loading")}</Text>}>
+    <View style={{ gap: layout.sectionGap }}>
+      <FieldSection sectionId="ai-execution" />
+      <FieldSection sectionId="tool-presentation" />
+      <FieldSection sectionId="tool-execution" />
+      <FieldSection sectionId="subagent-execution" unavailable={subagentFieldUnavailable}
+        extra={<Button size="sm" variant="outline" leadingIcon="settings" label={tr("settings.execution.manageSubagents")}
+          accessibilityLabel="execution-manage-subagents" onPress={() => openLibrary("agents")} />} />
+      <FieldSection sectionId="tool-json-repair" unavailable={unavailable} />
+      <Anchor id="quick-actions"><QuickActionsSection /></Anchor>
+      <FieldSection sectionId="agent-hooks" />
     </View>
-  );
+  </If>;
 }
 
 /** States why a section is missing, instead of leaving a page silently empty. */
@@ -9769,7 +9085,7 @@ function ExternalDiscoveryRow() {
       </If>
       <ToggleSwitch
         value={discovery()?.enabled ?? false}
-        disabled={!discovery()?.canChange || externalDiscoverySaving()}
+        disabled={!discovery()?.canChange || externalDiscoverySaving() || Boolean(externalSourceControlBusy())}
         accessibilityLabel="external-discovery-toggle"
         onChange={next => void setAutomaticDiscovery(next)}
       />
@@ -9779,12 +9095,15 @@ function ExternalDiscoveryRow() {
 
 /** One source another application exposes, with its scope and health. */
 function ExternalSourceRowView(props: { row: () => ExternalSourceRow; first: () => boolean }) {
+  const control = () => externalSourceControl()?.sources.get(props.row().stableKey);
+  const locked = () => externalLoadState() !== "ready" || externalDiscoverySaving() || Boolean(externalSourceControlBusy());
   return (
     <View
       accessibilityLabel={`external-source-${props.row().stableKey}`}
       style={{
         position: "relative",
         flexDirection: "row",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: space.md,
         minHeight: SETTINGS_ROW_MIN,
@@ -9816,20 +9135,39 @@ function ExternalSourceRowView(props: { row: () => ExternalSourceRow; first: () 
           {[externalScopeLabel(props.row().scope), props.row().location].filter(Boolean).join(" · ")}
         </Text>
       </View>
-      <Text
-        style={{
+      <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: space.sm }}>
+        <Text style={{
           ...textStyle("caption", { color: externalHealthColor(props.row().health, props.row().lifecycle) }),
           flexShrink: 0,
-        }}
-      >
-        {externalHealthLabel(props.row().health, props.row().lifecycle)}
-      </Text>
+        }}>
+          {control()?.effectiveStatus === "disabled" ? tr("common.disabled") : externalHealthLabel(props.row().health, props.row().lifecycle)}
+        </Text>
+        <If when={canRevealExternalSource() && props.row().location && Boolean(control())}>
+          <Button label={tr("settings.externalImports.sourceControls.reveal")} variant="ghost" size="sm"
+            disabled={locked()} accessibilityLabel={`external-source-reveal-${props.row().stableKey}`}
+            onPress={() => void revealExternalSource(props.row().stableKey)} />
+        </If>
+        <If when={externalSourceControl()?.canManageSources && control()?.effectiveStatus !== "removed" ? control() : undefined}>
+          {state => <ToggleSwitch value={state().enabled} disabled={locked()}
+            accessibilityLabel={`external-source-enabled-${props.row().stableKey}`}
+            onChange={enabled => void changeExternalSourceControl({ type: "set_source_enabled", sourceKey: props.row().stableKey, enabled })} />}
+        </If>
+      </View>
     </View>
   );
 }
 
+function ExternalSourceControlNotice() {
+  const messages = { changed: "settings.externalImports.sourceControls.changed", saveFailed: "settings.externalImports.sourceControls.saveFailed",
+    revealFailed: "settings.externalImports.sourceControls.revealFailed" } as const;
+  return <If when={externalSourceControlError()}>{error => <InlineBanner tone={error().key === "changed" ? "warning" : "danger"}
+    message={[tr(messages[error().key]),
+      error().key === "changed" || !error().detail ? "" : localizeHostError(error().detail)].filter(Boolean).join(" ")}
+    onDismiss={() => externalSourceControlError.set(null)} />}</If>;
+}
+
 /** The sources and what they expose, or why the host could not be read. */
-function ExternalSourcesGroup() {
+function ExternalSourcesGroup(props: { ecosystemId: string; onSelect: (id: string) => void; onRefresh: () => void }) {
   const snapshot = () => externalSnapshot();
   const summary = () => {
     const counts = snapshot()?.counts;
@@ -9854,26 +9192,35 @@ function ExternalSourcesGroup() {
   return (
     <SettingsGroup
       id="external-import-sources"
-      title={tr("settings.externalImports.sourcesTitle")}
+      title={tr("settings.externalImports.applications")}
       description={summary()}
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <If when={externalLoadState() === "loading"}>
             <Spinner size={13} color={palette().accent} />
           </If>
-          <Button
+          <If when={!props.ecosystemId}><Button
             label={tr("settings.externalImports.refresh")}
             variant="ghost"
             size="sm"
             leadingIcon="refresh"
-            disabled={externalLoadState() === "loading" || snapshot()?.canRefresh === false}
+            disabled={externalLoadState() === "loading" || snapshot()?.canRefresh === false || mcpImportBusy() !== null}
             accessibilityLabel="external-import-refresh"
-            onPress={() => void loadExternalImport(true)}
-          />
+            onPress={props.onRefresh}
+          /></If>
         </View>
       }
     >
       <ExternalDiscoveryRow />
+      <If when={externalSourceControl()}>{control => (
+        <SettingsRow label={tr("settings.externalImports.sourceControls.safeMode")}
+          description={tr(control().safeMode ? "settings.externalImports.sourceControls.safeModeOn" : "settings.externalImports.sourceControls.safeModeOff")}>
+          <ToggleSwitch value={control().safeMode} accessibilityLabel="external-source-safe-mode"
+            disabled={!control().canSetSafeMode || externalLoadState() !== "ready" || externalDiscoverySaving() || Boolean(externalSourceControlBusy())}
+            onChange={enabled => void changeExternalSourceControl({ type: "set_safe_mode", enabled })} />
+        </SettingsRow>
+      )}</If>
+      <ExternalSourceControlNotice />
       <If when={externalDiscoveryError()}>
         {err => (
           <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
@@ -9886,7 +9233,7 @@ function ExternalSourcesGroup() {
         )}
       </If>
       <If
-        when={(snapshot()?.sources.length ?? 0) > 0}
+        when={(snapshot()?.ecosystems.length ?? 0) > 0}
         else={
           <SettingsRow
             label={tr("settings.externalImports.sourcesTitle")}
@@ -9894,160 +9241,80 @@ function ExternalSourcesGroup() {
           />
         }
       >
-        <View style={{ position: "relative" }}>
-          <RowSeparator edge="top" />
-          <Each of={snapshot()?.sources ?? []} key={row => row.stableKey}>
-            {(row, index) => <ExternalSourceRowView row={row} first={() => index() === 0} />}
-          </Each>
-        </View>
+        <Scroll horizontal smoothWheel scrollbar={false} style={{ minWidth: 0, maxWidth: "100%" }}
+          contentStyle={{ paddingHorizontal: space.xs, paddingVertical: space.sm }}>
+          <TabGroup accessibilityLabel={tr("settings.externalImports.applications")} size="sm"
+            items={(snapshot()?.ecosystems ?? []).map(app => ({
+              value: app.id, label: app.displayName, testID: `external-app-${app.id}`, icon: <ProductBrandIcon productId={app.id} />,
+            }))} value={props.ecosystemId} onChange={props.onSelect} />
+        </Scroll>
       </If>
     </SettingsGroup>
   );
 }
 
-/** One MCP server another application declares, with what importing it would do. */
-function McpImportRow(props: { item: () => McpImportItem; first: () => boolean }) {
-  const selectable = () => mcpItemSelectable(props.item());
-  const stateTextColor = (): string => {
-    if (props.item().disposition === "already_imported") return palette().textMuted;
-    if (selectable()) return palette().textSecondary;
-    return stateColor("needs_you");
-  };
-  return (
-    <View
-      accessibilityLabel={`external-mcp-${props.item().candidateId}`}
-      style={{
-        position: "relative",
-        flexDirection: "row",
-        flexWrap: "wrap",
-        alignItems: "center",
-        gap: space.md,
-        minHeight: SETTINGS_ROW_MIN,
-        paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: space.md,
-      }}
-    >
-      <If when={!props.first()}>
-        <RowSeparator edge="top" />
-      </If>
-      <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
-        <Text
-          style={{
-            ...textStyle("body"),
-            fontWeight: "500",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.item().displayName}
-        </Text>
-        <Text
-          style={{
-            ...textStyle("caption"),
-            numberOfLines: 2,
-          }}
-        >
-          {[
-            props.item().transport === "streamable_http"
-              ? tr("settings.externalImports.transportHttp")
-              : tr("settings.externalImports.transportStdio"),
-            props.item().disposition === "automatic_rename" && props.item().proposedNativeId
-              ? tr("settings.externalImports.renameTo", { name: props.item().proposedNativeId })
-              : "",
-            props.item().reasonCode === "external_mcp.import_setup_required"
-              ? tr("settings.externalImports.setupRequired")
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </Text>
-      </View>
-      <Text style={{ ...textStyle("caption", { color: stateTextColor() }), flexShrink: 0 }}>
-        {tr(mcpItemStateKey(props.item()) as MessageKey)}
-      </Text>
-      <If when={selectable()}>
-        <Button
-          label={tr("settings.externalImports.import")}
-          variant="secondary"
-          size="sm"
-          loading={mcpImportBusy() === props.item().candidateId}
-          disabled={Boolean(mcpImportBusy())}
-          accessibilityLabel={`external-mcp-import-${props.item().candidateId}`}
-          onPress={() => void applyMcpImport(props.item().candidateId)}
-        />
-      </If>
-    </View>
-  );
-}
-
-/** The MCP servers that can be copied into OpenBitFun's own configuration. */
-function ExternalMcpImportGroup() {
-  const plan = () => mcpImportPlan();
-  const readyCount = () => (plan()?.items ?? []).filter(mcpItemSelectable).length;
-  const stateText = () => {
-    switch (mcpPlanState()) {
-      case "loading":
-        return tr("common.loading");
-      case "unsupported":
-        return tr("settings.externalImports.unsupportedContext");
-      case "error":
-        return tr("settings.externalImports.previewFailed");
-      default:
-        return externalSnapshot()?.discovery?.enabled === false
-          ? tr("settings.externalImports.mcpDiscoveryOff")
-          : tr("settings.externalImports.mcpEmpty");
+function ExternalApplicationSources(props: { ecosystemId: string }) {
+  const sources = computed(() => {
+    const rows = new Map<string, ExternalSourceRow>();
+    for (const row of [...(externalSnapshot()?.sources ?? []), ...(externalSourceControl()?.catalogSources ?? [])]) {
+      if (row.stableKey && row.ecosystemId === props.ecosystemId) rows.set(row.stableKey, row);
     }
-  };
-  const notice = () => {
-    const value = externalMcpNotice();
-    if (!value) return "";
-    return value.name !== undefined ? tr(value.key as MessageKey, { name: value.name }) : tr(value.key as MessageKey);
-  };
+    return [...rows.values()];
+  });
+  const detected = () => externalSnapshot()?.discoveryPending ? tr("settings.externalImports.scanning")
+    : externalSnapshot()?.discovery?.hasScanned === false ? tr("settings.externalImports.notScanned")
+    : tr("settings.externalImports.notDetected");
   return (
-    <SettingsGroup
-      id="external-import-mcp"
-      title={tr("settings.externalImports.mcpTitle")}
-      description={tr("settings.externalImports.mcpDescription")}
-      extra={
-        <If when={readyCount() > 0}>
-          <Button
-            label={tr("settings.externalImports.importAll", { count: formatCount(readyCount()) })}
-            variant="primary"
-            size="sm"
-            loading={mcpImportBusy() === "*"}
-            disabled={Boolean(mcpImportBusy())}
-            accessibilityLabel="external-mcp-import-all"
-            onPress={() => void applyMcpImport()}
-          />
-        </If>
-      }
-    >
-      <If when={notice()}>
-        {message => (
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingTop: space.md }}>
-            <InlineBanner
-              tone={externalMcpNotice()?.tone ?? "info"}
-              accessibilityLabel="external-mcp-notice"
-              message={message()}
-              onDismiss={() => externalMcpNotice.set(null)}
-            />
-          </View>
-        )}
-      </If>
-      <If
-        when={mcpPlanState() === "ready" && (plan()?.items.length ?? 0) > 0}
-        else={<SettingsRow label={tr("settings.externalImports.mcpTitle")} description={stateText()} first={true} />}
-      >
-        <Each of={plan()?.items ?? []} key={item => item.candidateId}>
-          {(item, index) => <McpImportRow item={item} first={() => index() === 0} />}
+    <SettingsGroup id="external-import-application" title={tr("settings.externalImports.sourceLocations")} extra={
+      <Button label={tr("settings.externalImports.openAgents")} variant="secondary" size="sm"
+        accessibilityLabel="external-import-open-agents" onPress={() => requestSettingsPage("external-agents")} />
+    }>
+      <If when={sources().length > 0} else={<SettingsRow label={detected()} first />}>
+        <Each of={sources()} key={row => row.stableKey}>
+          {(row, index) => <ExternalSourceRowView row={row} first={() => index() === 0} />}
         </Each>
       </If>
     </SettingsGroup>
   );
 }
 
+function ExternalApplicationCommands(props: { ecosystemId: string }) {
+  const commands = computed(() => externalSnapshot()?.items.filter(item =>
+    item.kind === "command" && item.ecosystemIds.includes(props.ecosystemId)) ?? []);
+  return <If when={commands().length > 0}>
+    <SettingsGroup id="external-import-command" title={tr("settings.externalImports.catalog.commands")}>
+      <Each of={commands()} key={item => item.id}>
+        {(item, index) => <SettingsRow label={item().name} first={index() === 0}
+          description={[item().description, ...item().sources.filter(row => row.ecosystemId === props.ecosystemId)
+            .map(row => row.location || row.displayName)].filter(Boolean).join(" · ")} />}
+      </Each>
+    </SettingsGroup>
+  </If>;
+}
+
+function ExternalApplicationSessions(props: { ecosystemId: string; name: string }) {
+  const available = () => canSetSessionDiscovery(props.ecosystemId);
+  const description = () => {
+    if (sessionDiscoveryLoad() === "loading" || removedSessionsState() === "loading") return tr("common.loading");
+    return available() ? tr("settings.externalImports.sessionDiscoveryDescription", { name: props.name })
+      : tr("settings.externalImports.sessionDiscoveryUnavailable");
+  };
+  return <SettingsGroup id="external-import-sessions" title={tr("settings.externalImports.sessionsTitle")}>
+    <SettingsRow label={tr("settings.externalImports.sessionDiscovery", { name: props.name })} description={description()} first>
+      <ToggleSwitch value={sessionDiscoveryConfig()?.[props.ecosystemId] === true}
+        disabled={!available() || Boolean(sessionDiscoveryBusy())}
+        accessibilityLabel={`external-session-discovery-${props.ecosystemId}`}
+        onChange={next => void setSessionDiscovery(props.ecosystemId, next)} />
+    </SettingsRow>
+    <If when={sessionDiscoveryError()}>
+      {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
+    </If>
+  </SettingsGroup>;
+}
+
 /** Source sessions the user removed from the list, which can be added again. */
-function RemovedExternalSessionsGroup() {
+function RemovedExternalSessionsGroup(props: { ecosystemId?: string }) {
+  const rows = () => removedSessions().filter(row => !props.ecosystemId || row.ecosystemId === props.ecosystemId);
   const stateText = () => {
     switch (removedSessionsState()) {
       case "idle":
@@ -10079,10 +9346,10 @@ function RemovedExternalSessionsGroup() {
       }
     >
       <If
-        when={removedSessionsState() === "ready" && removedSessions().length > 0}
+        when={removedSessionsState() === "ready" && rows().length > 0}
         else={<SettingsRow label={tr("settings.externalImports.removedTitle")} description={stateText()} first={true} />}
       >
-        <Each of={removedSessions()} key={row => removedSessionKey(row)}>
+        <Each of={rows()} key={row => removedSessionKey(row)}>
           {(row, index) => (
             <View
               accessibilityLabel={`external-removed-${row().sessionId}`}
@@ -10153,11 +9420,40 @@ function RemovedExternalSessionsGroup() {
  * page, and the External agents page stays one press away.
  */
 function ExternalImportSection() {
+  const selectedAppId = signal("");
+  const assetsRefreshVersion = signal(0);
+  const appBatchBusy = signal(false);
+  const hookBatchState = signal<ExternalAppHookBatchState | null>(null);
+  const refresh = () => {
+    assetsRefreshVersion.update(version => version + 1);
+    void loadExternalImport(true);
+  };
   effect(() => {
     void deviceContext();
     void activeWorkspace()?.id;
-    untracked(() => syncExternalImportScope());
+    untracked(() => { selectedAppId.set(""); syncExternalImportScope(); });
   });
+  effect(() => {
+    if (!externalSourceControl()?.discoveryPending || externalLoadState() !== "ready"
+      || externalSourceControlBusy() || externalDiscoverySaving()) return;
+    const timer = setTimeout(() => void readExternalSourceControl(), 1000);
+    cleanup(() => clearTimeout(timer));
+  });
+  const app = computed(() => {
+    const choices = externalSnapshot()?.ecosystems ?? [];
+    return choices.find(choice => choice.id === selectedAppId()) ?? choices[0] ?? null;
+  });
+  const mcpOwners = computed(() => new Map((externalSnapshot()?.items ?? [])
+    .filter(item => item.kind === "mcp" && item.ecosystemIds.length > 0).map(item => [item.id, item.ecosystemIds])));
+  const appMcpIds = () => [...mcpOwners()].filter(([, ids]) => ids.includes(app()?.id ?? "")).map(([id]) => id);
+  const unassignedMcpIds = () => mcpImportPlan()?.items.filter(item => !mcpOwners().has(item.candidateId))
+    .map(item => item.candidateId) ?? [];
+  const notice = () => {
+    const value = externalMcpNotice();
+    if (!value) return "";
+    return value.name !== undefined ? tr(value.key, { name: value.name }) : tr(value.key);
+  };
+  const manageMcp = () => requestSettingsPage("mcp");
   const openAgents = () => (
     <Button
       label={tr("settings.externalImports.openAgents")}
@@ -10195,10 +9491,49 @@ function ExternalImportSection() {
         />
       </If>
       <If when={externalBlock() === "" && externalLoadState() !== "error"}>
-        <ExternalSourcesGroup />
-        <ExternalMcpImportGroup />
+        <ExternalSourcesGroup ecosystemId={app()?.id ?? ""} onSelect={id => {
+          if (appBatchBusy()) return;
+          externalMcpNotice.set(null);
+          selectedAppId.set(id);
+        }} onRefresh={refresh} />
+        <If when={app()}>{selected => <ExternalAppBatchHeader appId={selected().id} name={selected().displayName}
+          mcpIds={appMcpIds()} hooks={hookBatchState()} onBusyChange={appBatchBusy.set} onRefresh={refresh} />}</If>
+        <ExternalRuntimePolicySection ecosystemId={app()?.id ?? ""} />
+        <If when={app()}>
+          {selected => <>
+            <ExternalApplicationSources ecosystemId={selected().id} />
+            <If when={selected().id === "codex" || selected().id === "opencode" ? selected().id as "codex" | "opencode" : undefined}>
+              {provider => <ExternalAppAccount provider={provider()} refreshVersion={assetsRefreshVersion()}
+                onManage={() => requestSettingsPage("models", "subscriptions")} />}
+            </If>
+            <If when={Object.hasOwn(EXTERNAL_SESSION_NAMES, selected().id)}>
+              <ExternalApplicationSessions ecosystemId={selected().id} name={selected().displayName} />
+            </If>
+            <ExternalApplicationCommands ecosystemId={selected().id} />
+            <ExternalRuntimeReviewSections ecosystemId={selected().id} />
+            <ExternalRuntimeInventory ecosystemId={selected().id} />
+            <ExternalAppInstructions ecosystemId={selected().id} refreshVersion={assetsRefreshVersion()} />
+            <ExternalAppSkills ecosystemId={selected().id} refreshVersion={assetsRefreshVersion()} />
+            <ExternalAppHooks ecosystemId={selected().id} refreshVersion={assetsRefreshVersion()}
+              automaticDiscovery={externalSnapshot()?.discovery?.enabled !== false}
+              externalBatchBusy={appBatchBusy()} onBatchStateChange={hookBatchState.set} />
+            <If when={selected().id === "codex"}>
+              <ExternalAppPets refreshVersion={assetsRefreshVersion()} onManage={() => requestSettingsPage("pet")} />
+            </If>
+          </>}
+        </If>
+        <If when={notice()}>
+          {message => <InlineBanner tone={externalMcpNotice()?.tone ?? "info"}
+            accessibilityLabel="external-mcp-notice" message={message()} onDismiss={() => externalMcpNotice.set(null)} />}
+        </If>
+        <If when={mcpOwners().size > 0} else={<ExternalMcpImportGroup ownerId="" externalBatchBusy={appBatchBusy()} onManage={manageMcp} />}>
+          <ExternalMcpImportGroup ownerId={app()?.id ?? ""} candidateIds={appMcpIds()} externalBatchBusy={appBatchBusy()} onManage={manageMcp} />
+          <If when={unassignedMcpIds().length > 0}>
+            <ExternalMcpImportGroup ownerId={app()?.id ?? ""} candidateIds={unassignedMcpIds()} unassigned externalBatchBusy={appBatchBusy()} onManage={manageMcp} />
+          </If>
+        </If>
       </If>
-      <RemovedExternalSessionsGroup />
+      <RemovedExternalSessionsGroup ecosystemId={app()?.id} />
     </View>
   );
 }
@@ -10210,7 +9545,7 @@ function Anchor(props: { id: string; children?: JSX.Element }) {
 
 function ModelsPage() {
   useDeviceScopedLoad("models-subscriptions-preload", () => void loadSubscriptions(), () => void loadSubscriptions(true));
-  useDeviceScopedLoad("models-pools-preload", ensurePools, () => void loadPools());
+  useDeviceScopedLoad("models-pools-preload", ensurePools, ensurePools);
 
   let tabMounts = 0;
   const activeTab = (): ModelsPageTab => {
@@ -10274,7 +9609,7 @@ function ModelsPage() {
       value={activeTab()}
       scrollable={scrollTabs()}
       options={tabOptions()}
-      onChange={tab => modelsPageTab.set(tab)}
+      onChange={tab => requestSettingsTransition({ kind: "models-tab", tab })}
     />
   );
 
@@ -10348,6 +9683,9 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
         <Anchor id="send-policy">
           <SendPolicySection />
         </Anchor>
+        <Anchor id="btw-close-confirmation">
+          <BtwCloseSettingsSection />
+        </Anchor>
       </View>
     );
   }
@@ -10393,29 +9731,11 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
         <Anchor id="task-models">
           <TaskModelsSection />
         </Anchor>
-        <FieldSection sectionId="memory">
-          <MemoryActionsRow />
-        </FieldSection>
-        <FieldSection sectionId="memory-models" />
-        <FieldSection
-          sectionId="memory-processing"
-          expanded={memoryProcessingOpen()}
-          onToggle={() => memoryProcessingOpen.update(open => !open)}
-        />
+        <MemorySettingsSection />
       </View>
     );
   }
-  if (page === "execution") {
-    return (
-      <View style={{ gap: layout.sectionGap }}>
-        <FieldSection sectionId="ai-execution" />
-        <Anchor id="quick-actions">
-          <QuickActionsSection />
-        </Anchor>
-        <FieldSection sectionId="agent-hooks" />
-      </View>
-    );
-  }
+  if (page === "execution") return <ExecutionSettingsPage />;
   if (page === "permissions") {
     return (
       <View style={{ gap: layout.sectionGap }}>
@@ -10427,7 +9747,17 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
       </View>
     );
   }
-  if (page === "editor") return <FieldSection sectionId="editor" />;
+  if (page === "editor") return (
+    <View style={{ gap: layout.sectionGap }}>
+      <FieldSection sectionId="editor" />
+      <FieldSection sectionId="editor-behavior" />
+      <FieldSection sectionId="editor-display">
+        <SettingsRow label={tr("settings.field.editorMinimap")} description={tr("settings.editor.nativeUnavailable")}>
+          <Text style={{ ...textStyle("label"), color: palette().textMuted }}>{tr("common.unavailable")}</Text>
+        </SettingsRow>
+      </FieldSection>
+    </View>
+  );
   if (page === "terminal") return <FieldSection sectionId="terminal" leading={<DefaultShellRow />} />;
   if (page === "workspace") {
     return (
@@ -10481,20 +9811,33 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   );
 }
 
-/** Save / Discard / Keep editing, when a page or device change would drop typed text. */
+/** Save / Discard / Keep editing, shared by Settings text fields and the MCP JSON editor. */
 function UnsavedChangesDialog() {
   const saving = signal(false);
+  const fields = () => {
+    const target = pendingNavigation();
+    return target ? transitionFields(target) : [];
+  };
+  const canSave = () => !saving() && (!mcpJsonDirty() || canSaveMcpJson()) && (!mcpDraftDirty() || canSaveMcpDraft())
+    && (!mcpImportDirty() || canImportMcpServers()) && (!poolDraftDirty() || canSavePoolDraft());
+  const keepEditing = () => { if (!saving()) pendingNavigation.set(null); };
   const saveAll = async (): Promise<void> => {
     const target = pendingNavigation();
-    if (!target) return;
+    if (!target || !canSave()) return;
     saving.set(true);
     try {
       let ok = true;
-      for (const spec of dirtyFields()) {
+      for (const spec of fields()) {
         if (!(await commitDraft(spec))) ok = false;
       }
-      if (ok) applyPendingNavigation(target);
-      else pendingNavigation.set(null);
+      if (ok && mcpJsonDirty()) ok = await commitMcpJson();
+      if (ok && mcpDraftDirty()) ok = await commitMcpDraft();
+      if (ok && mcpImportDirty()) ok = await commitMcpImport();
+      if (ok && poolDraftDirty()) ok = await savePoolDraft();
+      if (pendingNavigation() === target) {
+        if (ok) applyPendingNavigation(target);
+        else pendingNavigation.set(null);
+      }
     } finally {
       saving.set(false);
     }
@@ -10503,10 +9846,12 @@ function UnsavedChangesDialog() {
     <ModalDialog
       open={pendingNavigation() !== null}
       title={tr("settings.unsaved.title")}
-      subtitle={tr("settings.unsaved.subtitle", { count: dirtyFields().length })}
+      subtitle={tr("settings.unsaved.subtitle")}
       size="sm"
       accessibilityLabel="settings-unsaved-dialog"
-      onClose={() => pendingNavigation.set(null)}
+      onClose={keepEditing}
+      closeOnEscape={!saving()}
+      closeOnBackdropPress={!saving()}
       footer={
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
           <Button
@@ -10514,17 +9859,20 @@ function UnsavedChangesDialog() {
             variant="ghost"
             size="md"
             accessibilityLabel="settings-unsaved-keep"
-            onPress={() => pendingNavigation.set(null)}
+            disabled={saving()}
+            onPress={keepEditing}
           />
           <Button
             label={tr("settings.unsaved.discard")}
             variant="secondary"
             size="md"
             accessibilityLabel="settings-unsaved-discard"
+            disabled={saving()}
             onPress={() => {
               const target = pendingNavigation();
-              drafts.set({});
-              if (target) applyPendingNavigation(target);
+              if (!target || saving()) return;
+              for (const spec of fields()) clearDraft(spec);
+              applyPendingNavigation(target);
             }}
           />
           <Button
@@ -10532,6 +9880,7 @@ function UnsavedChangesDialog() {
             variant="primary"
             size="md"
             loading={saving()}
+            disabled={!canSave()}
             accessibilityLabel="settings-unsaved-save"
             onPress={() => void saveAll()}
           />
@@ -10539,21 +9888,127 @@ function UnsavedChangesDialog() {
       }
     >
       <View style={{ gap: space.sm }}>
-        <Each of={dirtyFields()} key={spec => spec.id}>
+        <Each of={fields()} key={spec => spec.id}>
           {spec => (
             <Text style={textStyle("caption")}>
               {`${fieldLabel(spec())}: ${spec().masked ? tr("settings.account.maskedValue") : draftOf(spec())}`}
             </Text>
           )}
         </Each>
+        <If when={mcpJsonDirty()}>
+          <Text style={textStyle("caption")}>{tr("settings.mcp.jsonEditorTitle")}</Text>
+        </If>
+        <If when={mcpDraftDirty()}>
+          <Text style={textStyle("caption")}>{mcpDraft()?.originalId
+            ? tr("settings.mcp.editServerTitle", { id: mcpDraft()!.originalId! }) : tr("settings.mcp.newServerTitle")}</Text>
+        </If>
+        <If when={mcpImportDirty()}>
+          <Text style={textStyle("caption")}>{tr("settings.mcp.importTitle")}</Text>
+        </If>
+        <If when={poolDraftDirty()}>
+          <Text style={textStyle("caption")}>{tr("settings.pools.title")}</Text>
+        </If>
       </View>
     </ModalDialog>
   );
 }
 
+const settingsPageOffsets = new Map<SettingsPageId, number>();
+let settingsScrollDevice: string | null = null;
 let lastSettingsLocale: AppLocale | null = null;
 
+function SettingsPageViewport(props: { pageId: SettingsPageId; deviceId: string }) {
+  // The parent keys this viewport by page and device. Save offsets only in the
+  // active device context, and let an explicit section request win over an offset.
+  const { pageId, deviceId } = props;
+  if (settingsScrollDevice !== deviceId) {
+    settingsScrollDevice = deviceId;
+    settingsPageOffsets.clear();
+  }
+  const saved = activeSettingsAnchor() ? 0 : settingsPageOffsets.get(pageId) ?? 0;
+  let restoring = saved > 0;
+  let viewport: ScrollRef | null = null;
+  let viewportHeight = 0;
+  let contentHeight = 0;
+  const formViewportWidth = signal(0);
+  const compactForm = () => formViewportWidth() > 0
+    ? formViewportWidth() <= SETTINGS_FORM_STACK_WIDTH
+    : settingsCompact();
+  let lastRestoration = 0;
+  const page = () => settingsPageEntry(pageId);
+  const stopRestoring = () => { restoring = false; };
+  const restore = () => {
+    if (activeSettingsAnchor()) stopRestoring();
+    if (!restoring || !settingsLoaded() || !viewport || viewportHeight <= 0) return;
+    const y = Math.min(saved, Math.max(0, contentHeight - viewportHeight));
+    if (y <= 0 || y === lastRestoration) return;
+    lastRestoration = y;
+    viewport.scrollTo({ y, animated: false });
+  };
+  return (
+    <Scroll smoothWheel ref={node => { viewport = node; }} testID="settings-page-scroll"
+      style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}
+      onLayout={event => {
+        viewportHeight = event.bounds.size.height;
+        formViewportWidth.set(event.bounds.size.width);
+        queueMicrotask(restore);
+      }}
+      onWheel={stopRestoring} onTouchStart={stopRestoring} onKeyDown={stopRestoring}
+      onScrollDragStart={stopRestoring}
+      onScroll={event => {
+        if (activeSettingsAnchor() || Math.abs(event.offset.y - saved) < 1) stopRestoring();
+        if (!restoring && settingsLoaded() && settingsScrollDevice === deviceId) {
+          settingsPageOffsets.set(pageId, Math.max(0, event.offset.y));
+        }
+      }}>
+      <View onLayout={event => { contentHeight = event.bounds.size.height; queueMicrotask(restore); }} style={{
+        width: "100%", maxWidth: SETTINGS_CONTENT_MAX + settingsGutter() * 2, minWidth: 0,
+        paddingHorizontal: settingsGutter(), paddingTop: settingsCompact() ? space.lg : space.xl,
+        paddingBottom: space.x5l, gap: settingsCompact() ? space.x3l : space.x3l + space.xs,
+      }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+            <Text role="header" testID="settings-page-title" style={textStyle("pageTitle")}>{tr(page().labelKey)}</Text>
+            <If when={settingsScopeOf(pageId) === "preferences" && accountSyncCaptionShown()}>
+              <Text accessibilityLabel="settings-synced" style={textStyle("caption", { color: palette().textMuted })}>
+                {tr("settings.synced")}
+              </Text>
+            </If>
+          </View>
+          <If when={pageId === "usage"}>
+            <IconButton
+              icon="refresh"
+              size="sm"
+              tooltip={tr("settings.usage.reload")}
+              accessibilityLabel="usage-reload"
+              disabled={usageLoading() || usageActivityLoading()}
+              onPress={() => void loadUsage(true)}
+            />
+          </If>
+          <If when={settingsCompact()}>
+            <Button label={tr("common.all")} variant="secondary" size="md" leadingIcon="list"
+              accessibilityLabel="settings-compact-pages" style={{ minHeight: layout.touchTarget, flexShrink: 0 }}
+              onPress={() => requestSettingsTransition({ kind: "compact-list" })} />
+          </If>
+        </View>
+        <If when={settingsNotice()}>
+          {notice => <InlineBanner tone={settingsNoticeTone(notice())} message={localizeHostError(notice())}
+            onDismiss={() => settingsNotice.set("")} />}
+        </If>
+        <If when={settingsLoaded()} else={<Text style={textStyle("caption")}>{tr("settings.loading")}</Text>}>
+          <View style={subtleCrossfadeMotion().style}>
+            <ConfigFormCompactContext.Provider value={compactForm}>
+              <SettingsPageBody pageId={pageId} />
+            </ConfigFormCompactContext.Provider>
+          </View>
+        </If>
+      </View>
+    </Scroll>
+  );
+}
+
 export function SettingsScene() {
+  cleanup(registerSettingsExitGuard(proceed => requestSettingsTransition({ kind: "scene", proceed })));
   void loadAccountState();
   // Whether Preferences say "Synced with your account" is the backend's answer.
   void loadAccountSync();
@@ -10597,13 +10052,15 @@ export function SettingsScene() {
   // Leaving Settings resets compact state, search filter, OAuth pollers, and per-device load markers.
   cleanup(() => {
     closeMcpAuth();
+    closePoolDraft();
+    pendingNavigation.set(null);
     compactPageOpen.set(false);
     settingsSearchQuery.set("");
     memoryProcessingOpen.set(false);
     loadedDeviceForSection.clear();
     deviceScopeSwitchedInSettings = false;
   });
-  const page = () => settingsPageEntry(selectedSettingsPage());
+  const currentPage = () => ({ pageId: selectedSettingsPage(), deviceId: deviceContext() });
   const showList = (): boolean => settingsCompact() && !compactPageOpen();
   return (
     <View
@@ -10620,289 +10077,118 @@ export function SettingsScene() {
             backgroundColor: palette().canvasSubtle,
           }}
         >
-          <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
-            <View style={{ paddingHorizontal: space.md, paddingTop: space.lg, paddingBottom: space.x3l }}>
-              <SettingsNavigationList />
-            </View>
-          </Scroll>
+          <SettingsNavigationPanel />
         </View>
       </If>
       {/* The page clips to its own column so a long unbroken value never draws over the list. */}
       <View style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
-      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}>
-        <View
-          style={{
-            width: "100%",
-            maxWidth: SETTINGS_CONTENT_MAX + settingsGutter() * 2,
-            paddingHorizontal: settingsGutter(),
-            paddingTop: settingsCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
-            paddingBottom: space.x6l,
-            gap: layout.titleToSection,
-          }}
-        >
-          <If when={showList()}>
-            <CompactSettingsList />
-          </If>
-          <If when={!showList()}>
-            <View style={{ gap: layout.titleToSection }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
-                  <Text role="header" testID="settings-page-title" style={textStyle("pageTitle")}>
-                    {tr(page().labelKey)}
-                  </Text>
-                  <If when={settingsScopeOf(selectedSettingsPage()) === "preferences" && accountSyncCaptionShown()}>
-                    <Text accessibilityLabel="settings-synced" style={textStyle("caption", { color: palette().textMuted })}>
-                      {tr("settings.synced")}
-                    </Text>
-                  </If>
-                </View>
-                <If when={settingsCompact()}>
-                  <Button
-                    label={tr("common.all")}
-                    variant="secondary"
-                    size="md"
-                    leadingIcon="list"
-                    accessibilityLabel="settings-compact-pages"
-                    style={{ minHeight: layout.touchTarget, flexShrink: 0 }}
-                    onPress={() => compactPageOpen.set(false)}
-                  />
-                </If>
-              </View>
-              <If when={settingsNotice() && settingsNoticeTone(settingsNotice()) !== "success" ? settingsNotice() : ""}>
-                {notice => (
-                  <InlineBanner
-                    tone={settingsNoticeTone(notice())}
-                    message={localizeHostError(notice())}
-                    onDismiss={() => settingsNotice.set("")}
-                  />
-                )}
-              </If>
-              <If when={!settingsLoaded()}>
-                <Text style={textStyle("caption")}>{tr("settings.loading")}</Text>
-              </If>
-              <If when={settingsLoaded()}>
-                <View style={{ gap: layout.sectionGap }}>
-                  <Each of={ALL_SETTINGS_PAGES.map(entry => entry.id)} key={id => id}>
-                    {id => (
-                      <If when={selectedSettingsPage() === id()}>
-                        <View style={subtleCrossfadeMotion().style}>
-                          <SettingsPageBody pageId={id()} />
-                        </View>
-                      </If>
-                    )}
-                  </Each>
-                </View>
-              </If>
-            </View>
-          </If>
-        </View>
-      </Scroll>
+        <If when={showList()} else={
+          <Each of={[currentPage()]} key={entry => JSON.stringify([entry.deviceId, entry.pageId])}>
+            {entry => <SettingsPageViewport pageId={entry().pageId} deviceId={entry().deviceId} />}
+          </Each>
+        }>
+          <SettingsNavigationPanel compact />
+        </If>
       </View>
       <UnsavedChangesDialog />
     </View>
   );
 }
 
-/** One page in the compact page list: a 44 pt row with its label and a chevron. */
-function CompactListRow(props: {
-  label: string;
-  detail?: string;
-  first: boolean;
-  accessibilityLabel: string;
-  onPress: () => void;
-}) {
+function SettingsNavText(props: { text: string; query?: string; primary: boolean }) {
+  const match = computed(() => {
+    const query = props.query?.trim() ?? "";
+    const at = query ? props.text.toLowerCase().indexOf(query.toLowerCase()) : -1;
+    return at < 0 ? null : { before: props.text.slice(0, at),
+      word: props.text.slice(at, at + query.length), after: props.text.slice(at + query.length) };
+  });
   return (
-    <View
-      role="button"
-      accessibilityLabel={props.accessibilityLabel}
-      onPress={props.onPress}
-      style={{
-        position: "relative",
-        minHeight: layout.touchTarget,
-        paddingLeft: SETTINGS_ROW_INSET,
-        paddingRight: space.md,
-        paddingVertical: space.sm,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.md,
-        cursor: "pointer",
-        userSelect: "none",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: palette().panelHover }}
-      activeStyle={{ ...tactileActiveStyle(0.985), backgroundColor: palette().panelHover }}
-      focusVisibleStyle={focusRingStyle()}
-    >
-      <If when={!props.first}>
-        <RowSeparator edge="top" inset={SETTINGS_ROW_INSET} />
+    <Text style={{ ...textStyle(props.primary ? "label" : "caption",
+      { color: props.primary ? palette().text : palette().textMuted }),
+      numberOfLines: 1, textOverflow: "ellipsis" }}>
+      <If when={match()} else={props.text}>
+        {parts => <>{parts().before}<Text style={{
+          backgroundColor: designControlColors()?.settingsSearchMatch ?? palette().accentSoft,
+        }}>{parts().word}</Text>{parts().after}</>}
       </If>
-      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-        <Text style={{ ...textStyle("body"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.label}</Text>
-        <If when={props.detail ?? ""}>
-          {detail => (
-            <Text
-              style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1, textOverflow: "ellipsis" }}
-            >
-              {detail()}
-            </Text>
-          )}
-        </If>
-      </View>
-      <Icon name="chevron-right" size={12} color={palette().textMuted} />
-    </View>
+    </Text>
   );
 }
 
-/** The search hits, for either list. */
-function settingsHitLabel(hit: SettingsSearchHit, prefix: string): string {
-  return `${prefix}-${hit.key.replace(/:/g, "-")}`;
-}
-
-/**
- * The compact (phone) entry: search, then the three scopes as grouped lists; a
- * row pushes its page full width with a pages switcher.
- */
-function CompactSettingsList() {
-  return (
-    <View style={{ gap: layout.titleToSection }}>
-      <SearchInput
-        value={settingsSearchQuery()}
-        onChange={value => settingsSearchQuery.set(value)}
-        onSubmit={() => {
-          const first = settingsSearchResults()[0];
-          if (first) openSettingsSearchHit(first);
-        }}
-        placeholder={tr("settings.search.placeholder")}
-        size="lg"
-        style={{ height: layout.touchTarget, minHeight: layout.touchTarget }}
-        accessibilityLabel="settings-compact-search"
-      />
-      <If when={settingsSearchQuery().trim() !== ""}>
-        <View>
-          <SectionHeader title={tr("settings.search.results")} />
-          <If
-            when={settingsSearchResults().length > 0}
-            else={<SectionFootnote text={tr("settings.search.empty")} />}
-          >
-            <View style={insetGroupStyle()}>
-              <Each of={settingsSearchResults()} key={hit => hit.key}>
-                {(hit, index) => (
-                  <CompactListRow
-                    label={hit().label}
-                    detail={hit().context}
-                    first={index() === 0}
-                    accessibilityLabel={settingsHitLabel(hit(), "settings-compact-hit")}
-                    onPress={() => openSettingsSearchHit(hit())}
-                  />
-                )}
-              </Each>
-            </View>
-          </If>
-        </View>
-      </If>
-      <If when={settingsSearchQuery().trim() === ""}>
-        <View style={{ gap: layout.sectionGap }}>
-          <Each of={SETTINGS_PAGE_GROUPS} key={group => group.id}>
-            {group => (
-              <View>
-                <SectionHeader
-                  title={tr(group().labelKey)}
-                  extra={group().id === "device" ? <DeviceScopeChip /> : undefined}
-                />
-                <View style={insetGroupStyle()}>
-                  <Each of={visibleSettingsPages(group())} key={entry => entry.id}>
-                    {(entry, index) => (
-                      <CompactListRow
-                        label={tr(entry().labelKey)}
-                        first={index() === 0}
-                        accessibilityLabel={`settings-compact-page-${entry().id}`}
-                        onPress={() => requestSettingsPage(entry().id)}
-                      />
-                    )}
-                  </Each>
-                </View>
-              </View>
-            )}
-          </Each>
-        </View>
-      </If>
-    </View>
-  );
-}
-
-/** One row of the left list: 30 high, 13/500, no icon; uses canvas-plane neutral selection fill. */
 function SettingsNavRow(props: {
   label: string;
+  icon: IconName;
   active: boolean;
+  highlighted?: boolean;
+  dirty?: boolean;
+  compact?: boolean;
+  first?: boolean;
   secondary?: string;
+  query?: string;
   accessibilityLabel: string;
   onPress: () => void;
+  onHighlight?: () => void;
+  rowRef?: (ref: ViewRef | null) => void;
 }) {
+  const colors = designControlColors;
+  const metrics = settingsNavigationMetrics;
   return (
-    <View
-      role="button"
-      accessibilityLabel={props.accessibilityLabel}
-      accessibilityState={{ selected: props.active }}
-      onPress={props.onPress}
-      style={{
-        minHeight: SETTINGS_LIST_ROW,
-        paddingHorizontal: space.sm,
-        paddingVertical: props.secondary ? space.xs : 0,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        backgroundColor: props.active ? palette().buttonSecondaryHover : "transparent",
-        justifyContent: "center",
-        gap: space.hair,
-        cursor: "pointer",
-        userSelect: "none",
+    <View role="button" ref={node => props.rowRef?.(node)}
+      accessibilityLabel={props.accessibilityLabel} accessibilityState={{ selected: props.active }}
+      onPress={props.onPress} onMouseEnter={props.onHighlight}
+      style={{ position: "relative", flexDirection: "row", alignItems: "center",
+        minHeight: props.compact ? layout.touchTarget : metrics.itemHeight,
+        paddingHorizontal: props.compact ? SETTINGS_ROW_INSET : metrics.itemPadding,
+        paddingVertical: props.secondary ? space.xs + space.hair : 0,
+        borderRadius: props.compact ? 0 : metrics.itemRadius, borderCurve: "continuous",
+        backgroundColor: props.active ? colors()?.rowSelection ?? palette().chromeActive
+          : props.highlighted ? colors()?.navigationHover ?? palette().surfaceSubtle : "transparent",
+        gap: metrics.itemGap, cursor: "pointer", userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: props.active ? palette().buttonSecondaryHover : palette().surfaceSubtle }}
-      activeStyle={{ ...tactileActiveStyle(0.985), backgroundColor: palette().buttonSecondaryPressed }}
-      focusVisibleStyle={focusRingStyle()}
-    >
-      <Text
-        style={{
-          ...textStyle("label", { color: props.active ? palette().text : palette().textSecondary }),
-          fontWeight: props.active ? "500" : "400",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.label}
-      </Text>
-      <If when={props.secondary ?? ""}>
-        {secondary => (
-          <Text
-            style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1, textOverflow: "ellipsis" }}
-          >
-            {secondary()}
-          </Text>
-        )}
+      hoverStyle={{ backgroundColor: props.active ? colors()?.rowSelection ?? palette().chromeActive
+        : colors()?.navigationHover ?? palette().surfaceSubtle }}
+      activeStyle={tactileActiveStyle(0.985, { backgroundColor: colors()?.navigationPressed ?? palette().buttonSecondaryPressed })}
+      focusVisibleStyle={focusRingStyle()}>
+      <If when={props.compact && !props.first}><RowSeparator edge="top" /></If>
+      <Icon name={props.icon} size={metrics.iconSize} color={props.active ? palette().text : palette().textSecondary} />
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+        <SettingsNavText text={props.label} query={props.query} primary />
+        <If when={props.secondary ?? ""}>
+          {detail => <SettingsNavText text={detail()} query={props.query} primary={false} />}
+        </If>
+      </View>
+      <If when={props.dirty}>
+        <View accessibilityLabel={tr("settings.unsaved.title")} style={{
+          width: space.chip, height: space.chip, flexShrink: 0, borderRadius: radii.pill,
+          backgroundColor: palette().warning,
+        }} />
+      </If>
+      <If when={props.compact}>
+        <Icon name="chevron-right" size={metrics.iconSize} color={palette().textMuted} />
       </If>
     </View>
   );
 }
 
-/** A scope's header in the left list: 12/500 muted, a label above its pages rather than a page of its own. */
 function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
+  const metrics = settingsNavigationMetrics;
   return (
     <View
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: space.sm,
-        minHeight: SETTINGS_LIST_ROW,
-        paddingLeft: space.sm,
-        paddingRight: props.extra ? 0 : space.sm,
-        marginTop: space.lg,
+        gap: metrics.headingGap,
+        minHeight: metrics.headingHeight,
+        paddingLeft: metrics.headingPadding,
+        paddingRight: props.extra ? 0 : metrics.headingPadding,
       }}
     >
       <Text
         role="header"
         style={{
-          ...textStyle("caption", { color: palette().textMuted }),
-          fontWeight: "500",
+          ...textStyle("caption", { color: designControlColors()?.navigationCaption ?? palette().textMuted }),
+          fontWeight: metrics.selectedWeight,
           flexShrink: 0,
           numberOfLines: 1,
         }}
@@ -10992,79 +10278,126 @@ function DeviceScopeChip() {
   );
 }
 
-/**
- * The left list of the Settings canvas: search, then Preferences, Account and
- * Device (with its scope chip). Rows carry no icons.
- */
-function SettingsNavigationList() {
+function SettingsNavigationPanel(props: { compact?: boolean }) {
+  const metrics = settingsNavigationMetrics;
+  const highlighted = signal<string | null>(null);
+  const activeNode = signal<ViewRef | null>(null);
+  const focused = signal(false);
+  const composing = signal(false);
+  const dirtyPages = computed(() => {
+    const pages = new Set(dirtyFields().flatMap(field => {
+      const section = sectionOfField(field);
+      return section ? [resolveSettingsPage(section.page)] : [];
+    }));
+    if (mcpJsonDirty() || mcpDraftDirty() || mcpImportDirty()) pages.add("mcp");
+    return pages;
+  });
+  const searchMode = () => settingsSearchQuery().trim().length > 0;
+  const inset = () => props.compact ? layout.phoneGutter : metrics.padding;
+  const rowRefs = new Map<string, ViewRef>();
+  let input: InputRef | null = null;
+  let viewport: ScrollRef | null = null;
+
+  const highlight = (hit: SettingsSearchHit | undefined, reveal = false) => {
+    const node = hit ? rowRefs.get(hit.key) ?? null : null;
+    highlighted.set(hit?.key ?? null);
+    activeNode.set(node);
+    if (reveal) node?.reveal({ vertical: "nearest", animated: false });
+  };
+  const edit = (value: string) => {
+    settingsSearchQuery.set(value);
+    highlight(undefined);
+    viewport?.scrollTo({ y: 0, animated: false });
+  };
+  const clear = () => { edit(""); input?.focus(); };
+  const submit = () => {
+    if (composing()) return;
+    const hits = settingsSearchResults();
+    const hit = hits.find(entry => entry.key === highlighted()) ?? (hits.length === 1 ? hits[0] : undefined);
+    if (hit) openSettingsSearchHit(hit);
+  };
+
+  effect(() => {
+    if (!focused() || composing() || !searchMode() || pendingNavigation()) return;
+    const move = ({ keystroke }: { keystroke: string }) => {
+      const hits = settingsSearchResults();
+      if (!hits.length) return;
+      const at = hits.findIndex(hit => hit.key === highlighted());
+      if (keystroke === "home") highlight(hits[0], true);
+      else if (keystroke === "end") highlight(hits.at(-1), true);
+      else if (keystroke === "down") highlight(hits[Math.min(hits.length - 1, at + 1)], true);
+      else highlight(at > 0 ? hits[at - 1] : undefined, true);
+    };
+    return keymap.bind({ up: move, down: move, home: move, end: move, escape: clear },
+      { when: "always", overFocused: true });
+  });
+
   return (
-    <View style={{ gap: space.hair }}>
-      <SearchInput
-        value={settingsSearchQuery()}
-        onChange={value => settingsSearchQuery.set(value)}
-        onSubmit={() => {
-          const first = settingsSearchResults()[0];
-          if (first) openSettingsSearchHit(first);
-        }}
-        placeholder={tr("settings.search.placeholder")}
-        size="md"
-        accessibilityLabel="settings-search"
-      />
-      <If when={settingsSearchQuery().trim() !== ""}>
-        <View style={{ gap: space.hair }}>
-          <SettingsNavGroupLabel label={tr("settings.search.results")} />
-          <Each of={settingsSearchResults()} key={hit => hit.key}>
-            {hit => (
-              <SettingsNavRow
-                label={hit().label}
-                secondary={hit().context}
-                active={false}
-                accessibilityLabel={settingsHitLabel(hit(), "settings-search-hit")}
-                onPress={() => openSettingsSearchHit(hit())}
-              />
-            )}
-          </Each>
-          <If when={settingsSearchResults().length === 0}>
-            <Text style={{ ...textStyle("caption", { color: palette().textMuted }), paddingHorizontal: space.sm }}>
+    <View style={{ flex: 1, minHeight: 0, minWidth: 0, gap: metrics.gap, paddingTop: inset() }}>
+      <View style={{ flexShrink: 0, paddingHorizontal: inset() }}>
+        <SearchInput value={settingsSearchQuery()} onChange={edit} onSubmit={submit} onClear={clear}
+          inputRef={node => { input = node; }}
+          onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
+          onCompositionChange={value => composing.set(value)}
+          accessibilityExpanded={searchMode()} accessibilityActiveDescendant={activeNode()}
+          placeholder={tr("settings.search.placeholder")} size={props.compact ? "lg" : "sm"}
+          style={props.compact ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+          accessibilityLabel={props.compact ? "settings-compact-search" : "settings-search"} />
+      </View>
+      <Scroll smoothWheel ref={node => { viewport = node; }} testID="settings-navigation-scroll"
+        style={{ flex: 1, minHeight: 0 }} keyboardShouldPersistTaps="handled"
+        contentStyle={{ paddingHorizontal: inset(), paddingBottom: space.x3l }}>
+        <If when={searchMode()} else={
+          <View style={{ gap: metrics.sectionGap }}>
+            <Each of={SETTINGS_PAGE_GROUPS} key={group => group.id}>
+              {group => {
+                const heading = () => tr(group().labelKey);
+                const extra = () => group().id === "device" ? <DeviceScopeChip /> : undefined;
+                return <View>
+                  <If when={props.compact} else={<SettingsNavGroupLabel label={heading()} extra={extra()} />}>
+                    <SectionHeader title={heading()} extra={extra()} />
+                  </If>
+                  <View style={props.compact ? insetGroupStyle() : { gap: space.hair }}>
+                    <Each of={visibleSettingsPages(group())} key={entry => entry.id}>
+                      {(entry, index) => <SettingsNavRow
+                        label={tr(entry().labelKey)} icon={entry().icon} compact={props.compact} first={index() === 0}
+                        active={selectedSettingsPage() === entry().id} dirty={dirtyPages().has(entry().id)}
+                        accessibilityLabel={(props.compact ? "settings-compact-page-" : "nav-settings-page-") + entry().id}
+                        onPress={() => requestSettingsPage(entry().id)} /> }
+                    </Each>
+                  </View>
+                </View>;
+              }}
+            </Each>
+          </View>
+        }>
+          <If when={settingsSearchResults().length > 0} else={
+            <Text style={{ ...textStyle("caption"), textAlign: "center", padding: space.md }}>
               {tr("settings.search.empty")}
             </Text>
+          }>
+            <View role="listbox" style={props.compact ? insetGroupStyle() : { gap: space.hair }}>
+              <Each of={settingsSearchResults()} key={hit => hit.key}>
+                {(hit, index) => <SettingsNavRow
+                  label={hit().anchor ? hit().context + " › " + hit().label : hit().context}
+                  secondary={hit().detail} icon={hit().icon} query={settingsSearchQuery()}
+                  compact={props.compact} first={index() === 0}
+                  active={selectedSettingsPage() === hit().pageId && (hit().anchor ?? null) === activeSettingsAnchor()}
+                  dirty={dirtyPages().has(hit().pageId)} highlighted={highlighted() === hit().key}
+                  accessibilityLabel={(props.compact ? "settings-compact-hit-" : "settings-search-hit-") + hit().key.replace(/:/g, "-")}
+                  onHighlight={() => highlight(hit())} onPress={() => openSettingsSearchHit(hit())}
+                  rowRef={node => {
+                    const key = hit().key;
+                    if (node) rowRefs.set(key, node); else rowRefs.delete(key);
+                    if (highlighted() === key) activeNode.set(node);
+                  }} /> }
+              </Each>
+            </View>
           </If>
-        </View>
-      </If>
-      <If when={settingsSearchQuery().trim() === ""}>
-        <View style={{ gap: space.hair }}>
-          <Each of={SETTINGS_PAGE_GROUPS} key={group => group.id}>
-            {group => (
-              <View style={{ gap: space.hair }}>
-                <SettingsNavGroupLabel
-                  label={tr(group().labelKey)}
-                  extra={group().id === "device" ? <DeviceScopeChip /> : undefined}
-                />
-                <Each of={visibleSettingsPages(group())} key={page => page.id}>
-                  {page => (
-                    <SettingsNavRow
-                      label={tr(page().labelKey)}
-                      active={selectedSettingsPage() === page().id}
-                      accessibilityLabel={`nav-settings-page-${page().id}`}
-                      onPress={() => requestSettingsPage(page().id)}
-                    />
-                  )}
-                </Each>
-              </View>
-            )}
-          </Each>
-        </View>
-      </If>
+        </If>
+      </Scroll>
     </View>
   );
-}
-
-/**
- * Kept for the shell's import: the settings list now lives on the Settings
- * canvas itself (visual spec §4.9), so the side panel draws nothing for it.
- */
-export function SettingsNavigation() {
-  return <View />;
 }
 
 // ── wave22-p5: Preferences › Shortcuts ────────────────────────────────────────

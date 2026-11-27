@@ -7,6 +7,7 @@ import { computed, signal } from "nsh";
 import {
   closeTerminal,
   createTerminal,
+  getConfig,
   getTerminalHistory,
   listTerminalShells,
   resizeTerminal,
@@ -15,9 +16,10 @@ import {
 } from "./api";
 import { invokeCommand, listenEvent, setFleetOwnerLookup } from "./bridge";
 import { Storage } from "nsh";
-import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { currentDeviceScopeKey, isDeviceOnThisMachine } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { errorMessageOf } from "./shared/errorUtils";
-import { activeWorkspaceId, deviceContext } from "./state";
+import { activeWorkspace, activeWorkspaceId, deviceContext } from "./state";
 
 /**
  * The host emits `terminal_event` with `{ type, payload }`: `Data` carries the
@@ -205,8 +207,58 @@ export const activeTerminalTab = computed<TerminalTab | null>(() => {
     null
   );
 });
-/** The shells this host reports; a host without shell detection answers with none. */
-export const terminalShells = signal<TerminalShell[]>([]);
+interface TerminalPreferences {
+  defaultShell: string;
+  fontSize?: number;
+  fontFamily?: string;
+  cursor: "block" | "bar" | "underline";
+  scrollback?: number;
+}
+
+const terminalConfig = signal<{ device: string; preferences: TerminalPreferences } | null>(null);
+export const terminalPreferences = computed(() => {
+  const config = terminalConfig();
+  return config?.device === currentDeviceScopeKey() ? config.preferences : null;
+});
+const configReads = new Map<string, Promise<void>>();
+
+export function loadTerminalPreferences(force = false): Promise<void> {
+  const key = currentDeviceScopeKey();
+  const existing = configReads.get(key);
+  if (existing && !force) return existing;
+  const device = deviceContext();
+  const flight = getConfig("terminal", true, device ? { target: device } : undefined).then(raw => {
+    if (configReads.get(key) !== flight) return configReads.get(key);
+    if (currentDeviceScopeKey() !== key) return;
+    const config = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const { default_shell, font_size, font_family, cursor_style, scrollback } = config;
+    terminalConfig.set({
+      device: key,
+      preferences: {
+        defaultShell: typeof default_shell === "string" ? default_shell.trim() : "",
+        fontSize: typeof font_size === "number" && font_size >= 8 && font_size <= 72 ? font_size : undefined,
+        fontFamily: typeof font_family === "string" ? font_family.split(",")[0]?.trim().replace(/^(['"])(.*)\1$/, "$2") || undefined : undefined,
+        cursor: cursor_style === "bar" || cursor_style === "underline" ? cursor_style : "block",
+        scrollback: typeof scrollback === "number" && Number.isInteger(scrollback) && scrollback >= 0 && scrollback <= 100_000
+          ? scrollback : undefined,
+      },
+    });
+  }).catch(() => {
+    // A runtime without terminal settings can still draw and open shells.
+  }).finally(() => {
+    if (configReads.get(key) === flight) configReads.delete(key);
+  });
+  configReads.set(key, flight);
+  return flight;
+}
+
+/** The shells the current workspace device reports. */
+const shellInventory = signal<{ device: string; shells: TerminalShell[] } | null>(null);
+export const terminalShells = computed(() => {
+  const inventory = shellInventory();
+  return inventory?.device === currentDeviceScopeKey() ? inventory.shells : [];
+});
+
 /** Older hosts can launch only the preferred executable of each shell type. */
 export const shellChoices = computed(() => {
   const shells = terminalShells();
@@ -218,8 +270,21 @@ export const shellChoices = computed(() => {
     .map(shell => ({ ...shell, key: shell.id || shell.type }));
 });
 /** The shell the next `New shell` starts, by the discovered shell's own id. */
-export const selectedShellId = signal<string | null>(null);
+const selectedShellByDevice = signal<Record<string, string | null>>({});
+export const selectedShellId = computed(() => selectedShellByDevice()[currentDeviceScopeKey()] ?? null);
 export const shellPickerOpen = signal(false);
+
+/** Resolve a stored label only against shells the device actually reports. */
+export function findConfiguredTerminalShell(preference: string): TerminalShell | undefined {
+  if (!preference) return undefined;
+  const shells = terminalShells();
+  return shells.find(shell => shell.path === preference || shell.id === preference)
+    ?? shells.find(shell => {
+      const name = shell.path.split(/[\\/]/).at(-1)?.replace(/\.exe$/i, "").toLowerCase();
+      const value = preference.toLowerCase();
+      return shell.type.toLowerCase() === value || name === value;
+    });
+}
 
 /**
  * The chosen shell is a preference of this surface, kept on the device: the host
@@ -229,7 +294,7 @@ const SHELL_STORAGE_KEY = "openbitfun.nsh.terminal-shell.v1";
 
 let outputWriter: ((data: string) => void) | null = null;
 let resetter: (() => void) | null = null;
-let starting = false;
+const startingWorkspaces = new Set<string>();
 let subscribed = false;
 
 /** Pending PTY data coalesced per animation frame, keyed by `(deviceId, id)`. */
@@ -436,29 +501,40 @@ export async function openProfile(
 export async function openTerminal(
   workspaceId: string | null,
   workingDirectory: string,
-  override?: { shellId?: string; shellType?: string; title?: string },
+  override?: {
+    shellId?: string; shellType?: string; title?: string;
+    hostWorkspace?: { rootPath: string; connectionId?: string; deviceId: string; isCurrent: () => boolean };
+  },
 ): Promise<string | null> {
-  if (starting) return null;
-  starting = true;
+  const host = override?.hostWorkspace;
+  const device = host?.deviceId ?? deviceContext();
+  const launchKey = JSON.stringify([device, workspaceId, Boolean(host)]);
+  if (startingWorkspaces.has(launchKey) || (host && (!workspaceId || !host.isCurrent()))) return null;
+  startingWorkspaces.add(launchKey);
   subscribeOutput();
-  const device = deviceContext();
   const index = visibleTerminalTabs().length + 1;
-  if (!terminalShells().length || shellsLoadedForDevice !== currentDeviceScopeKey()) {
-    await loadTerminalShells();
-  }
-  const shellId = override?.shellId ?? selectedShellId() ?? "";
-  const shell = findShell(shellId);
+  const workspace = activeWorkspace();
+  const remote = !host && workspace?.id === workspaceId && isRemoteWorkspace(workspace);
+  const isCurrent = () => host ? host.isCurrent()
+    : device === deviceContext() && (!workspaceId || workspaceId === activeWorkspaceId());
   try {
+    if (!host && !remote) await Promise.all([loadTerminalShells(), loadTerminalPreferences()]);
+    if (!isCurrent()) return null;
+    const chosen = override?.shellId ?? (override?.shellType ? null : selectedShellId());
+    const shell = host || remote ? undefined
+      : findShell(chosen ?? null)
+        ?? (override?.shellType ? undefined : findConfiguredTerminalShell(terminalPreferences()?.defaultShell ?? ""));
     const session = await createTerminal({
       ...(workspaceId ? { workspaceId } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
+      ...(host ? { hostWorkspaceTarget: { rootPath: host.rootPath, connectionId: host.connectionId }, name: override?.title } : {}),
       ...(shell ? shellRequestFor(shell) : {}),
       // A profile names a shell the host may no longer report; the plain type is
       // what the host still accepts then.
-      ...(!shell && override?.shellType ? { shellType: override.shellType } : {}),
+      ...(!remote && !shell && override?.shellType ? { shellType: override.shellType } : {}),
       cols: lastSize.cols,
       rows: lastSize.rows,
-    });
+    }, device ? { target: device } : undefined);
     terminalTabs.update(current => [
       ...current,
       {
@@ -471,15 +547,19 @@ export async function openTerminal(
         deviceId: device,
       },
     ]);
-    selectTerminal(session.id);
-    await replayHistory(session.id, device);
+    if (isCurrent()) {
+      selectTerminal(session.id);
+      await replayHistory(session.id, device);
+    }
     return session.id;
   } catch (error) {
-    terminalMessage.set(errorMessageOf(error));
-    if (!terminalTabs().length) terminalStatus.set("failed");
+    if (isCurrent()) {
+      terminalMessage.set(errorMessageOf(error));
+      if (!visibleTerminalTabs().length) terminalStatus.set("failed");
+    }
     return null;
   } finally {
-    starting = false;
+    startingWorkspaces.delete(launchKey);
   }
 }
 
@@ -502,47 +582,44 @@ export function shellRequestFor(shell: TerminalShell): { shellId?: string; shell
  * reusing a stale global promise from another OS/host.
  */
 const shellsLoadByDevice = new Map<string, Promise<void>>();
-let shellsLoadedForDevice: string | null = null;
 
 export function loadTerminalShells(force = false): Promise<void> {
   const deviceKey = currentDeviceScopeKey();
-  if (force) {
-    shellsLoadByDevice.delete(deviceKey);
-  }
+  if (!force && shellInventory()?.device === deviceKey) return Promise.resolve();
   let flight = shellsLoadByDevice.get(deviceKey);
   if (!flight) {
-    flight = readShells(deviceKey).finally(() => {
-      if (shellsLoadByDevice.get(deviceKey) === flight && shellsLoadedForDevice !== deviceKey) {
-        shellsLoadByDevice.delete(deviceKey);
-      }
+    flight = readShells(deviceKey, deviceContext(), shellStorageKey(deviceKey)).finally(() => {
+      shellsLoadByDevice.delete(deviceKey);
     });
     shellsLoadByDevice.set(deviceKey, flight);
   }
   return flight;
 }
 
-async function readShells(deviceKey: string): Promise<void> {
-  const saved = await readStoredShellId();
-  if (saved && currentDeviceScopeKey() === deviceKey) selectedShellId.set(saved);
+async function readShells(deviceKey: string, device: string, storageKey: string): Promise<void> {
+  const saved = await readStoredShellId(storageKey);
+  if (currentDeviceScopeKey() !== deviceKey) return;
+  if (!Object.hasOwn(selectedShellByDevice(), deviceKey)) selectedShellByDevice.update(choices => ({ ...choices, [deviceKey]: saved }));
   try {
-    const shells = await listTerminalShells();
+    const shells = await listTerminalShells(device ? { target: device } : undefined);
     if (currentDeviceScopeKey() !== deviceKey) return;
     // A shell the host reports as unavailable is not offered, and a stored choice
     // that no longer exists falls back to the host's default.
-    terminalShells.set(shells.filter(shell => shell.available !== false));
-    if (!findShell(selectedShellId())) selectedShellId.set(null);
-    shellsLoadedForDevice = deviceKey;
+    shellInventory.set({ device: deviceKey, shells: shells.filter(shell => shell.available !== false) });
   } catch {
     if (currentDeviceScopeKey() !== deviceKey) return;
     // Shell detection is not required to run a shell: the host's default works.
-    terminalShells.set([]);
-    shellsLoadedForDevice = deviceKey;
+    shellInventory.set({ device: deviceKey, shells: [] });
   }
 }
 
-async function readStoredShellId(): Promise<string | null> {
+function shellStorageKey(deviceKey: string): string {
+  return isDeviceOnThisMachine() ? SHELL_STORAGE_KEY : `${SHELL_STORAGE_KEY}:${deviceKey}`;
+}
+
+async function readStoredShellId(key: string): Promise<string | null> {
   try {
-    const raw = await Storage.getItem(SHELL_STORAGE_KEY);
+    const raw = await Storage.getItem(key);
     return raw && raw.trim() ? raw.trim() : null;
   } catch {
     return null;
@@ -550,13 +627,15 @@ async function readStoredShellId(): Promise<string | null> {
 }
 
 export function chooseShell(shellId: string | null): void {
-  selectedShellId.set(shellId);
+  const device = currentDeviceScopeKey();
+  const key = shellStorageKey(device);
+  selectedShellByDevice.update(choices => ({ ...choices, [device]: shellId }));
   shellPickerOpen.set(false);
   if (!shellId) {
-    void Storage.removeItem(SHELL_STORAGE_KEY).catch(() => undefined);
+    void Storage.removeItem(key).catch(() => undefined);
     return;
   }
-  void Storage.setItem(SHELL_STORAGE_KEY, shellId).catch(() => undefined);
+  void Storage.setItem(key, shellId).catch(() => undefined);
 }
 
 export function selectedShellLabel(): string {
@@ -586,8 +665,10 @@ export function selectTerminal(id: string): void {
 
 /** One shell for the workspace, created on first use. */
 export async function ensureTerminal(workspaceId: string | null, workingDirectory: string): Promise<void> {
-  if (starting) return;
+  const device = deviceContext();
+  if (startingWorkspaces.has(JSON.stringify([device, workspaceId, false]))) return;
   await reattachTerminals(workspaceId);
+  if (device !== deviceContext() || workspaceId !== activeWorkspaceId()) return;
   const visible = visibleTerminalTabs();
   if (visible.length) {
     if (!visible.some(tab => tab.id === terminalId())) selectTerminal(visible[visible.length - 1].id);
@@ -776,7 +857,7 @@ export function forgetTerminals(): void {
 
 export function sendTerminalInput(data: string): void {
   const id = terminalId();
-  if (!id) return;
+  if (!id || !visibleTerminalTabs().some(tab => tab.id === id)) return;
   void writeTerminal(id, data).catch(error => {
     terminalMessage.set(error instanceof Error ? error.message : String(error));
   });
@@ -788,7 +869,7 @@ export function sendTerminalResize(cols: number, rows: number): void {
     lastSizeKnown = true;
   }
   const id = terminalId();
-  if (!id) return;
+  if (!id || !visibleTerminalTabs().some(tab => tab.id === id)) return;
   void resizeTerminal(id, cols, rows).catch(() => undefined);
 }
 

@@ -12,7 +12,7 @@ import { currentDeviceScopeKey, isRemotePeerContext } from "./shared/deviceScope
 import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot } from "./state";
 
-export type SkillTab = "installed" | "marketplace";
+export type SkillTab = "installed" | "groups" | "marketplace";
 export type SkillScopeFilter = "all" | "builtin" | "user" | "project";
 export type SkillScopeLevel = "user" | "project";
 
@@ -29,6 +29,7 @@ export interface SkillRecord {
   installationSource?: string;
   dirName: string;
   isBuiltin: boolean;
+  groupKey: string;
   isShadowed: boolean;
   shadowedByKey?: string;
   argumentHint?: string;
@@ -153,6 +154,7 @@ function normalizeSkillRow(raw: unknown): SkillRecord | null {
     installationSource: readOptionalString(record, ["installationSource", "installation_source"]),
     dirName: readString(record, ["dirName", "dir_name"]),
     isBuiltin: readBoolean(record, ["isBuiltin", "is_builtin"], false),
+    groupKey: readString(record, ["groupKey", "group_key"]),
     isShadowed: readBoolean(record, ["isShadowed", "is_shadowed"], false),
     shadowedByKey: readOptionalString(record, ["shadowedByKey", "shadowed_by_key"]),
     argumentHint: readOptionalString(record, ["argumentHint", "argument_hint"]),
@@ -214,8 +216,10 @@ export const skillsError = signal<string | null>(null);
 export const skillsNotice = signal<string | null>(null);
 export const installedSkills = signal<SkillRecord[]>([]);
 export const skillDiagnostics = signal<SkillDiagnostic[]>([]);
+export const skillCatalogHasDiagnostics = signal(false);
 export const disabledSkillKeys = signal<string[]>([]);
 export const directSkillManagementSupported = signal(true);
+export const directSkillManagementVersion = signal<number | undefined>(undefined);
 export const togglingSkillKey = signal<string | null>(null);
 export const confirmDeleteSkillKey = signal<string | null>(null);
 export const skillsLoadedKey = signal<string | null>(null);
@@ -330,6 +334,7 @@ export function canToggleInstalledSkill(skill: SkillRecord): boolean {
 }
 
 let skillsLoadTicket = 0;
+let skillSettingsRevision = 0;
 let inspectTicket = 0;
 let marketLoadTicket = 0;
 
@@ -349,13 +354,19 @@ function extractDisabledKeys(settings: Record<string, unknown> | null | undefine
   );
 }
 
-export async function loadSkillsCatalog(forceRefresh = false, contextKey?: string): Promise<void> {
+export function skillsCatalogContextKey(): string {
+  const workspace = activeWorkspace();
+  return `${currentDeviceScopeKey()}:${workspace?.id ?? activeWorkspaceId() ?? "none"}:${workspace?.rootPath || activeWorkspaceRoot() || ""}`;
+}
+
+export async function loadSkillsCatalog(forceRefresh = false): Promise<void> {
   const ticket = ++skillsLoadTicket;
+  const settingsRevision = skillSettingsRevision;
   const workspace = activeWorkspace();
   const workspaceId = workspace?.id ?? activeWorkspaceId() ?? null;
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || null;
   const isRemote = isRemoteWorkspace(workspace);
-  const key = contextKey ?? `${currentDeviceScopeKey()}:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
+  const key = skillsCatalogContextKey();
 
   skillsLoading.set(true);
   skillsError.set(null);
@@ -374,8 +385,9 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
     ),
   ]);
 
-  if (ticket !== skillsLoadTicket) return;
+  if (ticket !== skillsLoadTicket || key !== skillsCatalogContextKey()) return;
 
+  skillCatalogHasDiagnostics.set(false);
   if (configsRes.status === "fulfilled") {
     const raw = configsRes.value;
     if (Array.isArray(raw)) {
@@ -387,6 +399,7 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
       const obj = raw as Record<string, unknown>;
       const rawSkills = Array.isArray(obj.skills) ? obj.skills : [];
       const rawDiagnostics = Array.isArray(obj.diagnostics) ? obj.diagnostics : [];
+      skillCatalogHasDiagnostics.set(Array.isArray(obj.skills) && Array.isArray(obj.diagnostics));
       installedSkills.set(
         rawSkills.map(normalizeSkillRow).filter((item): item is SkillRecord => item !== null),
       );
@@ -405,14 +418,12 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
     );
   }
 
-  if (settingsRes.status === "fulfilled") {
-    const rawSettings = settingsRes.value;
-    disabledSkillKeys.set(extractDisabledKeys(rawSettings));
+  if (settingsRevision === skillSettingsRevision || skillsLoadedKey() !== key) {
+    const rawSettings = settingsRes.status === "fulfilled" ? settingsRes.value : null;
     const version = rawSettings?.directSkillManagementVersion;
-    directSkillManagementSupported.set(version !== 0);
-  } else {
-    disabledSkillKeys.set([]);
-    directSkillManagementSupported.set(false);
+    disabledSkillKeys.set(extractDisabledKeys(rawSettings));
+    directSkillManagementVersion.set(typeof version === "number" ? version : undefined);
+    directSkillManagementSupported.set(settingsRes.status === "fulfilled" && version !== 0);
   }
 
   skillsLoadedKey.set(key);
@@ -420,7 +431,9 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
 }
 
 export async function toggleSkillGlobalDisabled(skill: SkillRecord, nextEnabled: boolean): Promise<void> {
-  if (!canToggleInstalledSkill(skill)) return;
+  if (togglingSkillKey() || !canToggleInstalledSkill(skill)) return;
+  const scope = skillsCatalogContextKey();
+  const current = () => scope === skillsCatalogContextKey();
   const workspace = activeWorkspace();
   const workspaceId = workspace?.id ?? activeWorkspaceId() ?? undefined;
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || undefined;
@@ -434,6 +447,8 @@ export async function toggleSkillGlobalDisabled(skill: SkillRecord, nextEnabled:
       disabled,
       ...(workspaceId ? { workspaceId, workspacePath } : {}),
     });
+    if (!current()) return;
+    skillSettingsRevision += 1;
     if (response && typeof response === "object" && (
       Array.isArray(response.disabledSkills)
       || Array.isArray(response.disabled_skills)
@@ -457,7 +472,7 @@ export async function toggleSkillGlobalDisabled(skill: SkillRecord, nextEnabled:
         : tr("skills.store.enabled", { name: skill.name }),
     );
   } catch (error) {
-    skillsNotice.set(error instanceof Error ? error.message : String(error));
+    if (current()) skillsNotice.set(error instanceof Error ? error.message : String(error));
   } finally {
     togglingSkillKey.set(null);
   }

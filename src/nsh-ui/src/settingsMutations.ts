@@ -7,7 +7,7 @@
 // says the host needs an update instead of falling back to the whole-document
 // write the command replaced.
 
-import { invokeCommand } from "./bridge";
+import { invokeCommand, type InvokeCommandOptions } from "./bridge";
 import { tr } from "./i18n";
 
 /** Whether `error` says the host has no `command` at all (an older build or peer). */
@@ -18,9 +18,9 @@ export function isMissingCommand(error: unknown, command: string): boolean {
 }
 
 /** Runs one typed settings command; a missing command becomes the "update the host" sentence. */
-export async function invokeSettingsMutation<T>(command: string, request: Record<string, unknown>): Promise<T> {
+export async function invokeSettingsMutation<T>(command: string, request: Record<string, unknown>, route?: InvokeCommandOptions): Promise<T> {
   try {
-    return await invokeCommand<T>(command, request);
+    return await invokeCommand<T>(command, request, route);
   } catch (error) {
     if (isMissingCommand(error, command)) {
       throw new Error(tr("settings.notice.hostUpdateRequired"));

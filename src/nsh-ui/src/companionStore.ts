@@ -20,6 +20,7 @@ import { fleetDevices, fleetTotals } from "./fleetStore";
 import { tr } from "./i18n";
 import { acknowledgedAt, statusOfSession } from "./sessionStatusStore";
 import { deviceContext, isSessionArchived, runningTurns, sessionKey, sessionLastActivityMs, sessions } from "./state";
+import { isDeviceOnThisMachine } from "./shared/deviceScope";
 import type { MarkState } from "./ui/fleet";
 
 export const COMPANION_ENABLED_PATH = "app.ai_experience.enable_agent_companion";
@@ -37,6 +38,22 @@ export interface CompanionPet {
   spritesheetPath: string;
   spritesheetMimeType: string;
   spriteVersionNumber?: number | null;
+}
+
+export interface ExternalCompanionPet {
+  sourceKey: string;
+  fingerprint: string;
+  pet: CompanionPet;
+  previewDataUrl: string;
+  imported: CompanionPet | null;
+  copyModified: boolean;
+  sourceChanged: boolean;
+  builtinId?: string;
+}
+
+export interface ExternalCompanionPetCatalog {
+  candidates: ExternalCompanionPet[];
+  diagnostics: string[];
 }
 
 /** Petdex keeps the first nine animation rows stable across sprite v1 and v2. */
@@ -76,6 +93,10 @@ export const companionBusy = signal<string | null>(null);
 /** The pet and cards live in the native desktop app only. */
 export function companionAvailableHere(): boolean {
   return windowShellId() === "nsh-desktop";
+}
+
+export function externalCompanionAvailableHere(): boolean {
+  return companionAvailableHere() && isDeviceOnThisMachine();
 }
 
 function readPet(value: unknown): CompanionPet | null {
@@ -129,6 +150,49 @@ export async function loadCompanionPets(): Promise<void> {
   }
 }
 
+/** The reviewed-import version is required before the UI offers a copy action. */
+export async function loadExternalCompanionPets(): Promise<ExternalCompanionPetCatalog | null> {
+  if (!externalCompanionAvailableHere()) return null;
+  const response = await invokeCommand<{
+    importOperationsVersion?: number;
+    builtinImportVersion?: number;
+    external?: { candidates: unknown[]; diagnostics: unknown[] };
+  }>("list_agent_companion_pets", { includeExternal: true, builtinImportVersion: 1 }, localTarget());
+  if (response?.importOperationsVersion !== 1 || !response.external) return null;
+  const { candidates, diagnostics } = response.external;
+  if (!Array.isArray(candidates) || !Array.isArray(diagnostics) || !diagnostics.every(value => typeof value === "string")) {
+    throw new Error("invalid_response");
+  }
+  return {
+    candidates: candidates.map(candidate => {
+      const entry = candidate as Partial<ExternalCompanionPet> | null;
+      const pet = readPet(entry?.pet);
+      const imported = readPet(entry?.imported);
+      if (!entry || !pet?.packagePath || typeof entry.sourceKey !== "string" || !entry.sourceKey
+        || typeof entry.fingerprint !== "string" || !entry.fingerprint
+        || typeof entry.previewDataUrl !== "string" || !entry.previewDataUrl.startsWith("data:image/png;base64,")
+        || (entry.imported != null && !imported?.packagePath)
+        || (entry.builtinId != null && (typeof entry.builtinId !== "string" || !entry.builtinId || response.builtinImportVersion !== 1))) {
+        throw new Error("invalid_response");
+      }
+      return { sourceKey: entry.sourceKey, fingerprint: entry.fingerprint, pet, imported,
+        previewDataUrl: entry.previewDataUrl, copyModified: entry.copyModified === true,
+        sourceChanged: entry.sourceChanged === true, builtinId: entry.builtinId };
+    }),
+    diagnostics,
+  };
+}
+
+export async function importReviewedCompanionPet(candidate: ExternalCompanionPet): Promise<void> {
+  if (!externalCompanionAvailableHere()) throw new Error("unsupported_context");
+  const result = await invokeCommand<unknown>("import_agent_companion_pet_package", {
+    path: candidate.pet.packagePath, expectedFingerprint: candidate.fingerprint,
+    ...(candidate.builtinId ? { builtinId: candidate.builtinId } : {}),
+  }, localTarget());
+  if (!readPet(result)?.packagePath) throw new Error("invalid_response");
+  await loadCompanionPets();
+}
+
 async function write(path: string, value: unknown, busy: string): Promise<boolean> {
   companionBusy.set(busy);
   companionNotice.set("");
@@ -143,15 +207,17 @@ async function write(path: string, value: unknown, busy: string): Promise<boolea
   }
 }
 
-export async function setCompanionEnabled(enabled: boolean): Promise<void> {
-  if (await write(COMPANION_ENABLED_PATH, enabled, "enabled")) companionEnabled.set(enabled);
+export async function setCompanionEnabled(enabled: boolean): Promise<boolean> {
+  const saved = await write(COMPANION_ENABLED_PATH, enabled, "enabled");
+  if (saved) companionEnabled.set(enabled);
+  return saved;
 }
 
 export async function setDesktopCardsEnabled(enabled: boolean): Promise<void> {
   if (await write(DESKTOP_CARDS_ENABLED_PATH, enabled, "cards")) desktopCardsEnabled.set(enabled);
 }
 
-export async function selectCompanionPet(pet: CompanionPet): Promise<void> {
+export async function selectCompanionPet(pet: CompanionPet): Promise<boolean> {
   const selection = {
     id: pet.id,
     displayName: pet.displayName,
@@ -162,7 +228,9 @@ export async function selectCompanionPet(pet: CompanionPet): Promise<void> {
     spritesheetMimeType: pet.spritesheetMimeType,
     ...(typeof pet.spriteVersionNumber === "number" ? { spriteVersionNumber: pet.spriteVersionNumber } : {}),
   };
-  if (await write(COMPANION_PET_PATH, selection, `select:${pet.id}`)) selectedPet.set(pet);
+  const saved = await write(COMPANION_PET_PATH, selection, `select:${pet.id}`);
+  if (saved) selectedPet.set(pet);
+  return saved;
 }
 
 /** Imports a `.zip` pack the user picked (its bytes, base64). */

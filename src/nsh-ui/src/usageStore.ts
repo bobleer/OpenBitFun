@@ -1,15 +1,12 @@
 // Token usage over a time range: what the desktop's Data > Usage page shows.
 //
-// One read-only command answers the whole dashboard, so nothing here is cached
-// beyond the last answer and nothing is derived on the host's behalf. The
-// range read answers the totals and distributions; the six-month heatmap is the
-// host's own day-keyed view model (`get_token_usage_activity`, shared with Home
-// through `usageActivity.ts`), so this page never re-keys trend buckets into days.
+// The period read supplies the totals and distributions. The activity panel
+// stays on the host's independent, day-keyed six-month view shared with Home.
 
 import { signal } from "nsh";
-import { invokeCommand } from "./bridge";
+import { backendConnection, invokeCommand } from "./bridge";
 import { tr } from "./i18n";
-import { runStep } from "./state";
+import { deviceContext } from "./state";
 import {
   fetchUsageActivity,
   localTimeZone,
@@ -72,6 +69,8 @@ export const USAGE_DISTRIBUTIONS: ReadonlyArray<{ value: string; label: string }
 const DISTRIBUTION_ROWS = 5;
 
 export const usageRange = signal("thisMonth");
+export const usageLoading = signal(false);
+export const usageActivityLoading = signal(false);
 export const usageTotals = signal<UsageTotals | null>(null);
 export const usageModels = signal<UsageEntry[]>([]);
 export const usageGroups = signal<UsageEntry[]>([]);
@@ -93,7 +92,22 @@ export const usageActivity = signal<UsageActivity | null>(null);
 /** Why the heatmap has no data, when the range above still does. */
 export const usageActivityNotice = signal("");
 
-let loaded = false;
+function usageScope() {
+  return { connection: backendConnection(), target: deviceContext(), timeZone: localTimeZone() };
+}
+
+type UsageScope = ReturnType<typeof usageScope>;
+let loadedScope: UsageScope | null = null;
+let rangeRequest = 0;
+let activityRequest = 0;
+
+function sameUsageScope(left: UsageScope, right: UsageScope | null): boolean {
+  return left.connection === right?.connection && left.target === right.target && left.timeZone === right.timeZone;
+}
+
+function isCurrentUsageDevice(scope: UsageScope): boolean {
+  return backendConnection() === scope.connection && deviceContext() === scope.target;
+}
 
 function number(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -141,23 +155,32 @@ function granularityFor(range: string): string {
   return range === "last24Hours" || range === "today" ? "hour" : "day";
 }
 
-/** Reads the statistics for the selected range. */
-export async function loadUsage(force = false): Promise<void> {
-  if (loaded && !force) return;
-  loaded = true;
-  await runStep(async () => {
-    usageNotice.set("");
-    usageUnsupported.set(false);
-    const range = usageRange();
-    const timeZone = localTimeZone();
-    let rangeRead = false;
-    try {
-      const stats = await invokeCommand<Record<string, unknown>>("get_token_usage_statistics", {
-        timeRange: range,
-        granularity: granularityFor(range),
-        includeSubagent: true,
-        ...(timeZone ? { timeZone } : {}),
-      });
+function clearUsageRange(): void {
+  usageTotals.set(null);
+  usageModels.set([]);
+  usageGroups.set([]);
+  usageEndpoints.set([]);
+  usageBuckets.set([]);
+  usageGranularity.set("");
+}
+
+async function readUsageRange(scope: UsageScope, keepContent: boolean): Promise<void> {
+  const request = ++rangeRequest;
+  const range = usageRange();
+  const { target, timeZone } = scope;
+  const current = () => request === rangeRequest && isCurrentUsageDevice(scope);
+  usageLoading.set(true);
+  usageNotice.set("");
+  usageUnsupported.set(false);
+  if (!keepContent) clearUsageRange();
+  try {
+    const stats = await invokeCommand<Record<string, unknown>>("get_token_usage_statistics", {
+      timeRange: range,
+      granularity: granularityFor(range),
+      includeSubagent: true,
+      ...(timeZone ? { timeZone } : {}),
+    }, { target });
+    if (current()) {
       usageTotals.set({
         requests: number(stats.totalRequests),
         unknownRequests: number(stats.unknownUsageRequests),
@@ -174,46 +197,62 @@ export async function loadUsage(force = false): Promise<void> {
       usageEndpoints.set(readEntries(stats.byEndpoint));
       usageBuckets.set(readBuckets(stats.trend));
       usageGranularity.set(typeof stats.granularity === "string" ? stats.granularity : "");
-      rangeRead = true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      usageTotals.set(null);
-      usageModels.set([]);
-      usageGroups.set([]);
-      usageEndpoints.set([]);
-      usageBuckets.set([]);
-      // A Peer host older than the command says so explicitly; every other
-      // failure is reported as it came.
-      if (message.includes("token_usage_statistics_unsupported")) {
-        usageUnsupported.set(true);
-        usageNotice.set("The host this surface is reading does not support usage statistics.");
-      } else {
-        usageNotice.set(message);
-      }
     }
-    // The heatmap is the host's own view model. It runs after a successful
-    // range read, so an unsupported host loses both; a host older than the
-    // activity command says so instead of drawing a grid this surface keyed.
-    usageActivity.set(null);
-    usageActivityNotice.set("");
-    if (!rangeRead) return;
-    try {
-      usageActivity.set(await fetchUsageActivity());
-    } catch (error) {
-      usageActivityNotice.set(
-        error instanceof UsageActivityUnavailable && error.reason === "host_outdated"
-          ? tr("usage.activityHostOutdated")
-          : "This host would not answer the six-month activity window.",
-      );
+  } catch (error) {
+    if (!current()) return;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("token_usage_statistics_unsupported")) {
+      clearUsageRange();
+      usageUnsupported.set(true);
+    } else {
+      usageNotice.set(message);
     }
-  });
+  } finally {
+    if (request === rangeRequest) {
+      if (!isCurrentUsageDevice(scope)) loadedScope = null;
+      usageLoading.set(false);
+    }
+  }
+}
+
+async function readActivity(scope: UsageScope, keepContent: boolean): Promise<void> {
+  const request = ++activityRequest;
+  const current = () => request === activityRequest && isCurrentUsageDevice(scope);
+  usageActivityLoading.set(true);
+  usageActivityNotice.set("");
+  if (!keepContent) usageActivity.set(null);
+  try {
+    const activity = await fetchUsageActivity(undefined, { target: scope.target }, scope.timeZone);
+    if (current()) usageActivity.set(activity);
+  } catch (error) {
+    if (!current()) return;
+    usageActivityNotice.set(
+      error instanceof UsageActivityUnavailable && error.reason === "host_outdated"
+        ? tr("usage.activityHostOutdated")
+        : tr("settings.usage.activityFailed"),
+    );
+  } finally {
+    if (request === activityRequest) {
+      if (!isCurrentUsageDevice(scope)) loadedScope = null;
+      usageActivityLoading.set(false);
+    }
+  }
+}
+
+/** Entering a device's usage page and refreshing read both sections. */
+export async function loadUsage(force = false): Promise<void> {
+  const scope = usageScope();
+  const keepContent = sameUsageScope(scope, loadedScope);
+  if (keepContent && !force) return;
+  loadedScope = scope;
+  await Promise.all([readUsageRange(scope, keepContent), readActivity(scope, keepContent)]);
 }
 
 /** Switches the range and reads it again. */
 export async function chooseUsageRange(range: string): Promise<void> {
-  if (usageRange() === range) return;
+  if (usageRange() === range || usageLoading()) return;
   usageRange.set(range);
-  await loadUsage(true);
+  await readUsageRange(usageScope(), false);
 }
 
 /**

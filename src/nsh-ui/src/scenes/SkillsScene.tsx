@@ -45,6 +45,7 @@ import {
   skillScopeFilter,
   skillSearchQuery,
   skillsError,
+  skillsCatalogContextKey,
   skillsLoadedKey,
   skillsLoading,
   skillsNotice,
@@ -56,6 +57,7 @@ import {
   type SkillMarketRecord,
   type SkillRecord,
   type SkillScopeFilter,
+  type SkillTab,
 } from "../skillsCatalogStore";
 import { activeWorkspace, activeWorkspaceId, deviceContext } from "../state";
 import {
@@ -71,9 +73,11 @@ import {
   touchSlop,
 } from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
+import { SkillGroupsView } from "./SkillGroupsView";
 import { stateColor } from "../ui/fleet";
 import { Icon, type IconName } from "../ui/icons";
 import { MarkdownPreview } from "../ui/markdownEditor";
+import { TabGroup } from "../ui/TabGroup";
 import {
   GallerySkeleton,
   InsetGroup,
@@ -535,7 +539,7 @@ function InstalledSkillRow(props: { skill: SkillRecord; first: boolean }) {
 
       <ToggleSwitch
         value={isEnabled()}
-        disabled={!canToggleInstalledSkill(props.skill) || togglingSkillKey() === props.skill.key}
+        disabled={!canToggleInstalledSkill(props.skill) || Boolean(togglingSkillKey())}
         accessibilityLabel={`skill-toggle-${props.skill.key}`}
         onChange={next => void toggleSkillGlobalDisabled(props.skill, next)}
       />
@@ -1041,13 +1045,13 @@ export function SkillsScene(props: { embedded?: boolean }) {
   // entries without one, as the desktop asks). It reloads on every scene entry,
   // when the selected device or workspace changes, and when the window regains focus.
   let enteredScene = false;
+  const groupSearch = signal("");
+  const groupsActive = () => skillsTab() === "groups";
   effect(() => {
-    const dev = deviceContext() || "local";
-    const workspace = activeWorkspace();
-    const key = `${dev}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = skillsCatalogContextKey();
     if (!enteredScene || untracked(() => skillsLoadedKey()) !== key) {
       enteredScene = true;
-      void loadSkillsCatalog(false, key);
+      untracked(() => { void loadSkillsCatalog(); });
     }
   });
   let lastLifecycle = untracked(() => lifecycle());
@@ -1056,10 +1060,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
     const regained = state === "active" && lastLifecycle !== "active";
     lastLifecycle = state;
     if (!regained) return;
-    const dev = untracked(() => deviceContext()) || "local";
-    const workspace = untracked(() => activeWorkspace());
-    const key = `${dev}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
-    void loadSkillsCatalog(false, key);
+    untracked(() => { void loadSkillsCatalog(); });
   });
 
   let lastMarketDevice = "";
@@ -1075,7 +1076,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
     }
   });
 
-  const chooseTab = (next: "installed" | "marketplace") => {
+  const chooseTab = (next: SkillTab) => {
     skillsTab.set(next);
     if (next === "marketplace" && marketLoadedKey() === null && !marketLoading()) {
       void loadSkillMarketCatalog();
@@ -1083,15 +1084,23 @@ export function SkillsScene(props: { embedded?: boolean }) {
   };
 
   const viewTabs = () => (
-    <SegmentedTabs
+    <TabGroup
       size="sm"
-      options={[
-        { value: "installed", label: tr("skills.installed"), accessibilityLabel: "skills-tab-installed" },
-        { value: "marketplace", label: tr("skills.marketplace"), accessibilityLabel: "skills-tab-marketplace" },
+      items={[
+        { value: "installed", label: tr("skills.installed"), testID: "skills-tab-installed" },
+        { value: "groups", label: tr("skills.groups.title"), testID: "skills-tab-groups" },
+        { value: "marketplace", label: tr("skills.marketplace"), testID: "skills-tab-marketplace" },
       ]}
       value={skillsTab()}
       onChange={chooseTab}
     />
+  );
+  const groupFilter = () => (
+    <SearchInput size={compactLayout() ? "lg" : "md"}
+      value={groupSearch()} placeholder={tr("skills.groups.search")}
+      accessibilityLabel="skills-groups-search-input"
+      style={{ flex: 1, minWidth: 140, maxWidth: studioCompact() ? undefined : 260 }}
+      onChange={value => groupSearch.set(value)} onClear={() => groupSearch.set("")} />
   );
   const filterControls = () => (
     <If
@@ -1220,13 +1229,14 @@ export function SkillsScene(props: { embedded?: boolean }) {
             <StudioHeader
               title={tr("skills.title")}
               subtitle={tr("skills.subtitle")}
-              actions={
+              actions={<If when={!groupsActive()}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                   {refreshButton()}
                   {installButton()}
                 </View>
-              }
-              extra={<StudioToolbar leading={viewTabs()} trailing={filterControls()} />}
+              </If>}
+              extra={<StudioToolbar leading={viewTabs()}
+                trailing={<If when={groupsActive()} else={filterControls()}>{groupFilter()}</If>} />}
             />
           }
         >
@@ -1235,14 +1245,18 @@ export function SkillsScene(props: { embedded?: boolean }) {
             leading={
               <>
                 {viewTabs()}
-                {filterControls()}
+                <If when={groupsActive()} else={filterControls()}>
+                  {groupFilter()}
+                </If>
               </>
             }
             primary={
-              <>
-                {refreshButton()}
-                {installButton()}
-              </>
+              <If when={!groupsActive()}>
+                <>
+                  {refreshButton()}
+                  {installButton()}
+                </>
+              </If>
             }
           />
         </If>
@@ -1250,16 +1264,16 @@ export function SkillsScene(props: { embedded?: boolean }) {
         <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
           <If
             when={
-              isRemoteWorkspace(activeWorkspace())
-              || (!directSkillManagementSupported() && !skillsLoading())
+              (!groupsActive() && (isRemoteWorkspace(activeWorkspace())
+                || (!directSkillManagementSupported() && !skillsLoading())))
               || Boolean(skillsNotice())
             }
           >
             <View style={{ gap: 8 }}>
-              <If when={isRemoteWorkspace(activeWorkspace()) ? (folderInstallUnsupportedReason() ?? "") : ""}>
+              <If when={!groupsActive() && isRemoteWorkspace(activeWorkspace()) ? (folderInstallUnsupportedReason() ?? "") : ""}>
                 {warning => <InlineBanner tone="warning" message={warning()} />}
               </If>
-              <If when={!directSkillManagementSupported() && !skillsLoading()}>
+              <If when={!groupsActive() && !directSkillManagementSupported() && !skillsLoading()}>
                 <InlineBanner tone="neutral" icon="lock" message={tr("skills.togglesReadOnly")} />
               </If>
               <If when={skillsNotice() ?? ""}>
@@ -1275,6 +1289,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
             </View>
           </If>
 
+          <If when={groupsActive()}><SkillGroupsView search={groupSearch()} /></If>
           <If when={skillsTab() === "installed"}>
             <View style={{ gap: studioCompact() ? 28 : STUDIO_SECTION_GAP }}>
               <If when={skillsError() ?? ""}>

@@ -10,15 +10,15 @@
 // surface changed since (the quick-action list in `app.ai_experience`, the
 // interface language in `app`).
 
-import { signal } from "nsh";
+import { batch, signal } from "nsh";
 import { getConfig, setConfig } from "./api";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { backendConnection, fleetDeviceContext, invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { fleetDeviceById } from "./fleetStore";
 import {
-  SUPPORTED_LOCALES,
+  appLocaleSaving,
   currentLocale,
   localeMeta,
   normalizeLocale,
-  onAppLocalePersisted,
   setAppLocale,
   tr,
   type AppLocale,
@@ -26,16 +26,23 @@ import {
 } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { setPromptSuggestionsEnabled } from "./promptSuggestionStore";
-import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { currentDeviceScopeKey, isDeviceOnThisMachine } from "./shared/deviceScope";
 import { runStep } from "./state";
 import { superAgentUi } from "./productGates"; // wave23-E
 
-export type FieldKind = "boolean" | "select" | "number" | "text" | "model";
+export type FieldKind = "boolean" | "select" | "number" | "text" | "model" | "model-target";
+
+type ExecutionCapability = "model_routing_v1" | "model_pool_selection_v1" | "subagent_model_override_policy_v1";
+export type AgentModelTarget =
+  | { kind: "inherit" }
+  | { kind: "model"; model_ref: string }
+  | { kind: "pool"; pool_id: string };
 
 export interface FieldOption {
   value: string;
   label: string;
   labelKey?: MessageKey;
+  disabledReason?: MessageKey;
 }
 
 export interface FieldSpec {
@@ -52,12 +59,17 @@ export interface FieldSpec {
    * `${path}.${field}`, never by patching the parent object.
    */
   field?: string;
+  /** The scalar or typed leaf used by a host predating model routing. */
+  legacyPath?: string;
+  capability?: ExecutionCapability;
   kind: FieldKind;
   options?: FieldOption[];
   /** Keep a select's control consistent across locales instead of sizing it from translated labels. */
   selectPresentation?: "segmented" | "dropdown";
   min?: number;
   max?: number;
+  /** Decimal places for a fractional stepper. Other numeric controls stay integer. */
+  precision?: number;
   /**
    * A number the host keeps as `Option`: an empty field or 0 stores `null`
    * ("no limit"), and the stepper offers to clear it.
@@ -137,27 +149,6 @@ export interface SettingsSection {
   fields: FieldSpec[];
 }
 
-/**
- * Writable `app.language` field spec. Writing this field updates `currentLocale`,
- * persists to `Storage`, syncs native NSH widgets, and merges `language` into
- * the host's `app` config object so sibling keys survive.
- */
-export const APP_LANGUAGE_FIELD: FieldSpec = {
-  id: "app-language",
-  label: "Interface language",
-  labelKey: "settings.language.title",
-  path: "app",
-  field: "language",
-  kind: "select",
-  options: SUPPORTED_LOCALES.map(entry => ({
-    value: entry.id,
-    label: entry.nativeName,
-  })),
-  hint: "Switch the display language immediately across all scenes and save to your app settings.",
-  hintKey: "settings.language.hint",
-  optional: true,
-  defaultValue: "en-US",
-};
 
 // wave23-E: this device's Super Agent switches only make sense next to the
 // Super Agent entry, so they are hidden while it is gated off (`productGates.ts`).
@@ -197,6 +188,8 @@ const SUPER_AGENT_DEVICE_SECTIONS: SettingsSection[] = [
     ],
   },
 ];
+
+const MEMORY_ENABLE_PATHS = ["memories.generate_memories", "memories.use_memories"] as const;
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   ...(superAgentUi() ? SUPER_AGENT_DEVICE_SECTIONS : []),
@@ -314,8 +307,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "editor",
-    title: "Editor",
-    titleKey: "settings.section.editor",
+    title: "Appearance",
+    titleKey: "settings.editor.appearance",
     page: "editor",
     fields: [
       {
@@ -325,10 +318,33 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.editorFontSizeDesc",
         path: "editor.font_size",
         kind: "number",
+        min: 10,
+        max: 32,
         optional: true,
         unit: "px",
         unitKey: "settings.unit.px",
       },
+      {
+        id: "editor-line-height",
+        label: "Line height",
+        labelKey: "settings.editor.lineHeight",
+        descriptionKey: "settings.editor.lineHeightDesc",
+        path: "editor.line_height",
+        kind: "number",
+        min: 1,
+        max: 3,
+        precision: 1,
+        optional: true,
+        unit: "em",
+      },
+    ],
+  },
+  {
+    id: "editor-behavior",
+    title: "Editing behavior",
+    titleKey: "settings.editor.behavior",
+    page: "editor",
+    fields: [
       {
         id: "editor-tab-size",
         label: "Tab size",
@@ -336,10 +352,30 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.editorTabSizeDesc",
         path: "editor.tab_size",
         kind: "number",
+        min: 1,
+        max: 8,
         optional: true,
         unit: "spaces",
         unitKey: "settings.unit.spaces",
         keywords: ["indent"],
+      },
+      {
+        id: "editor-insert-spaces",
+        label: "Insert spaces",
+        labelKey: "settings.field.editorInsertSpaces",
+        descriptionKey: "settings.field.editorInsertSpacesDesc",
+        path: "editor.insert_spaces",
+        kind: "boolean",
+        optional: true,
+      },
+      {
+        id: "editor-detect-indentation",
+        label: "Detect indentation",
+        labelKey: "settings.field.editorDetectIndentation",
+        descriptionKey: "settings.field.editorDetectIndentationDesc",
+        path: "editor.detect_indentation",
+        kind: "boolean",
+        optional: true,
       },
       {
         id: "editor-word-wrap",
@@ -352,9 +388,27 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         options: [
           { value: "off", label: "Off", labelKey: "settings.opt.off" },
           { value: "on", label: "On", labelKey: "settings.opt.on" },
-          { value: "bounded", label: "Bounded", labelKey: "settings.opt.bounded" },
+          { value: "wordWrapColumn", label: "At column", labelKey: "settings.editor.wrapColumn", disabledReason: "settings.editor.wrapFallback" },
+          { value: "bounded", label: "Bounded", labelKey: "settings.opt.bounded", disabledReason: "settings.editor.wrapFallback" },
         ],
       },
+      {
+        id: "editor-scroll-beyond-last-line",
+        label: "Scroll beyond last line",
+        labelKey: "settings.editor.scrollBeyondLastLine",
+        descriptionKey: "settings.editor.scrollBeyondLastLineDesc",
+        path: "editor.scroll_beyond_last_line",
+        kind: "boolean",
+        optional: true,
+      },
+    ],
+  },
+  {
+    id: "editor-display",
+    title: "Display settings",
+    titleKey: "settings.editor.display",
+    page: "editor",
+    fields: [
       {
         id: "editor-line-numbers",
         label: "Line numbers",
@@ -366,17 +420,40 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         options: [
           { value: "on", label: "On", labelKey: "settings.opt.on" },
           { value: "off", label: "Off", labelKey: "settings.opt.off" },
-          { value: "relative", label: "Relative", labelKey: "settings.opt.relative" },
+          { value: "relative", label: "Relative", labelKey: "settings.opt.relative", disabledReason: "settings.editor.lineNumbersFallback" },
+          { value: "interval", label: "Interval", labelKey: "settings.editor.interval", disabledReason: "settings.editor.lineNumbersFallback" },
         ],
       },
       {
-        id: "editor-minimap",
-        label: "Minimap",
-        labelKey: "settings.field.editorMinimap",
-        descriptionKey: "settings.field.editorMinimapDesc",
-        path: "editor.minimap.enabled",
-        kind: "boolean",
+        id: "editor-active-line",
+        label: "Active line highlight",
+        labelKey: "settings.editor.activeLine",
+        descriptionKey: "settings.editor.activeLineDesc",
+        path: "editor.render_line_highlight",
+        kind: "select",
         optional: true,
+        options: [
+          { value: "none", label: "Off", labelKey: "settings.opt.off" },
+          { value: "line", label: "Line", labelKey: "settings.opt.line" },
+          { value: "gutter", label: "Gutter", labelKey: "settings.editor.gutter", disabledReason: "settings.editor.nativeUnavailable" },
+          { value: "all", label: "Line and gutter", labelKey: "settings.editor.lineAndGutter", disabledReason: "settings.editor.nativeUnavailable" },
+        ],
+      },
+      {
+        id: "editor-whitespace",
+        label: "Render whitespace",
+        labelKey: "settings.editor.renderWhitespace",
+        descriptionKey: "settings.editor.renderWhitespaceDesc",
+        path: "editor.render_whitespace",
+        kind: "select",
+        optional: true,
+        options: [
+          { value: "none", label: "Off", labelKey: "settings.opt.off" },
+          { value: "all", label: "All", labelKey: "settings.editor.allWhitespace" },
+          { value: "boundary", label: "Boundary", labelKey: "settings.editor.boundaryWhitespace", disabledReason: "settings.editor.nativeUnavailable" },
+          { value: "selection", label: "Selection", labelKey: "settings.editor.selectedWhitespace", disabledReason: "settings.editor.nativeUnavailable" },
+          { value: "trailing", label: "Trailing", labelKey: "settings.editor.trailingWhitespace", disabledReason: "settings.editor.nativeUnavailable" },
+        ],
       },
     ],
   },
@@ -535,8 +612,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "ai-execution",
-    title: "AI execution",
-    titleKey: "settings.section.aiExecution",
+    title: "Tool schema loading",
+    titleKey: "settings.execution.schemaLoading",
     page: "execution",
     fields: [
       {
@@ -548,42 +625,37 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         kind: "boolean",
         optional: true,
       },
+    ],
+  },
+  {
+    id: "tool-presentation",
+    title: "Tool calls",
+    titleKey: "settings.execution.toolCalls",
+    page: "execution",
+    fields: [
       {
-        id: "subagent-concurrency",
-        label: "Parallel subagents",
-        labelKey: "settings.field.subagentConcurrency",
-        descriptionKey: "settings.field.subagentConcurrencyDesc",
-        path: "ai.subagent_max_concurrency",
-        kind: "number",
-        optional: true,
-        unit: "max",
-        unitKey: "settings.unit.concurrent",
-      },
-      {
-        id: "swarm-concurrency",
-        label: "Parallel swarm members",
-        labelKey: "settings.field.swarmConcurrency",
-        descriptionKey: "settings.field.swarmConcurrencyDesc",
-        path: "ai.swarm_max_concurrency",
-        kind: "number",
-        optional: true,
-        unit: "max",
-        unitKey: "settings.unit.concurrent",
-      },
-      {
-        id: "subagent-batch-policy",
-        label: "Subagent batch",
-        labelKey: "settings.field.subagentBatchPolicy",
-        descriptionKey: "settings.field.subagentBatchPolicyDesc",
-        path: "ai.subagent_batch_execution_policy",
+        id: "tool-presentation-mode",
+        label: "Tool presentation",
+        labelKey: "settings.field.toolPresentationMode",
+        path: "ai.tool_presentation_mode",
         kind: "select",
         options: [
-          { value: "force_parallel", label: "Force parallel", labelKey: "settings.opt.forceParallel" },
-          { value: "safe_only", label: "Only when read-only", labelKey: "settings.opt.safeOnly" },
-          { value: "serial", label: "Serial", labelKey: "settings.opt.serial" },
+          { value: "native", label: "Native calls", labelKey: "settings.opt.nativeCalls" },
+          { value: "ptc", label: "Program (TypeScript)", labelKey: "settings.opt.ptcTs" },
+          { value: "ptc_python", label: "Program (Python)", labelKey: "settings.opt.ptcPy" },
         ],
+        hint: "A session keeps the mode it was created with",
+        hintKey: "settings.field.toolPresentationModeHint",
         optional: true,
       },
+    ],
+  },
+  {
+    id: "tool-execution",
+    title: "Tool execution",
+    titleKey: "settings.execution.toolExecution",
+    page: "execution",
+    fields: [
       {
         // `Option<u64>` on the host: `None` (the default) waits indefinitely.
         id: "tool-execution-timeout",
@@ -615,19 +687,95 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         unit: "s",
         unitKey: "settings.unit.seconds",
       },
+    ],
+  },
+  {
+    id: "subagent-execution",
+    title: "Subagents",
+    titleKey: "settings.execution.subagents",
+    page: "execution",
+    fields: [
       {
-        id: "tool-presentation-mode",
-        label: "Tool presentation",
-        labelKey: "settings.field.toolPresentationMode",
-        path: "ai.tool_presentation_mode",
+        id: "subagent-default-model",
+        label: "Default subagent model",
+        labelKey: "settings.execution.defaultModel",
+        descriptionKey: "settings.execution.defaultModelDesc",
+        kind: "model-target",
+        path: "ai.agent_model_selections.subagents.default",
+        legacyPath: "ai.agent_model_defaults.subagents.default",
+        optional: true,
+      },
+      {
+        id: "subagent-fork-model",
+        label: "Default model for forked subagents",
+        labelKey: "settings.execution.forkModel",
+        descriptionKey: "settings.execution.forkModelDesc",
+        kind: "model-target",
+        path: "ai.agent_model_selections.subagents.fork",
+        legacyPath: "ai.agent_model_defaults.subagents.fork",
+        optional: true,
+      },
+      {
+        id: "subagent-model-override",
+        label: "Allow subagents to choose a different model",
+        labelKey: "settings.execution.modelOverride",
+        descriptionKey: "settings.execution.modelOverrideDesc",
+        path: "ai.allow_subagent_model_override",
+        kind: "boolean",
+        optional: true,
+        capability: "subagent_model_override_policy_v1",
+      },
+      {
+        id: "subagent-batch-policy",
+        label: "Subagent batch",
+        labelKey: "settings.field.subagentBatchPolicy",
+        descriptionKey: "settings.field.subagentBatchPolicyDesc",
+        path: "ai.subagent_batch_execution_policy",
         kind: "select",
         options: [
-          { value: "native", label: "Native calls", labelKey: "settings.opt.nativeCalls" },
-          { value: "ptc", label: "Program (TypeScript)", labelKey: "settings.opt.ptcTs" },
-          { value: "ptc_python", label: "Program (Python)", labelKey: "settings.opt.ptcPy" },
+          { value: "force_parallel", label: "Force parallel", labelKey: "settings.opt.forceParallel" },
+          { value: "safe_only", label: "Only when read-only", labelKey: "settings.opt.safeOnly" },
+          { value: "serial", label: "Serial", labelKey: "settings.opt.serial" },
         ],
-        hint: "A session keeps the mode it was created with",
-        hintKey: "settings.field.toolPresentationModeHint",
+        optional: true,
+      },
+      {
+        id: "subagent-concurrency",
+        label: "Parallel subagents",
+        labelKey: "settings.field.subagentConcurrency",
+        descriptionKey: "settings.field.subagentConcurrencyDesc",
+        path: "ai.subagent_max_concurrency",
+        kind: "number",
+        optional: true,
+        unit: "max",
+        unitKey: "settings.unit.concurrent",
+      },
+      {
+        id: "swarm-concurrency",
+        label: "Parallel swarm members",
+        labelKey: "settings.field.swarmConcurrency",
+        descriptionKey: "settings.field.swarmConcurrencyDesc",
+        path: "ai.swarm_max_concurrency",
+        kind: "number",
+        optional: true,
+        unit: "max",
+        unitKey: "settings.unit.concurrent",
+      },
+    ],
+  },
+  {
+    id: "tool-json-repair",
+    title: "Tool arguments",
+    titleKey: "settings.execution.toolArguments",
+    page: "execution",
+    fields: [
+      {
+        id: "tool-json-repair",
+        label: "Repair malformed JSON arguments",
+        labelKey: "settings.execution.toolJsonRepair",
+        descriptionKey: "settings.execution.toolJsonRepairDesc",
+        path: "ai.allow_tool_json_repair",
+        kind: "boolean",
         optional: true,
       },
     ],
@@ -748,20 +896,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     page: "session-memory",
     fields: [
       {
-        id: "memory-enabled",
-        label: "Enable memory",
-        labelKey: "settings.field.memoryEnabled",
-        descriptionKey: "settings.field.memoryEnabledDesc",
-        path: "memories.generate_memories",
-        linkedBooleanPath: "memories.use_memories",
+        id: "memory-btw-sessions",
+        label: "Learn from background sessions",
+        labelKey: "settings.field.memoryBtwSessions",
+        descriptionKey: "settings.field.memoryBtwSessionsDesc",
+        path: "memories.generate_for_btw_sessions",
         kind: "boolean",
-        mutation: {
-          command: "product_control_invoke",
-          requestKey: "value",
-          request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled" },
-        },
         optional: true,
-        keywords: ["memory", "remember", "recall"],
       },
       {
         id: "memory-external-context",
@@ -777,14 +918,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         ],
         optional: true,
       },
-    ],
-  },
-  {
-    id: "memory-models",
-    title: "Memory models",
-    titleKey: "settings.section.memoryModels",
-    page: "session-memory",
-    fields: [
       {
         id: "memory-extract-model",
         label: "Model that extracts memories",
@@ -1057,6 +1190,7 @@ export function fieldUnit(spec: FieldSpec): string | undefined {
 
 /** Values by config path; `undefined` means the host does not have that path. */
 export const settingsValues = signal<Record<string, unknown>>({});
+const settingsValuesDevice = signal<string | null>(null);
 export const settingsLoaded = signal(false);
 /** A page-level message (the interface language); field notices go to their section. */
 export const settingsNotice = signal("");
@@ -1112,27 +1246,44 @@ function noticeFor(spec: FieldSpec, message: string): void {
   else settingsNotice.set(message);
 }
 
-// Keep cached `settingsValues()["app"]` in sync whenever `setAppLocale(...)`
-// switches language from any surface (Settings, Sidebar, TopBar).
-onAppLocalePersisted((locale, persistedApp) => {
-  settingsValues.update(values => {
-    if (persistedApp) {
-      return { ...values, app: persistedApp };
-    }
-    const existing = values["app"];
-    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
-      return values;
-    }
-    return {
-      ...values,
-      app: { ...(existing as Record<string, unknown>), language: locale },
-    };
-  });
-});
-
 /** The current value of a field, or `undefined` when the host lacks it. */
 export function fieldValue(spec: FieldSpec): unknown {
   return settingsValues()[leafPath(spec)];
+}
+
+export function settingsValuesCurrent(): boolean {
+  return settingsValuesDevice() === currentDeviceScopeKey();
+}
+
+export function supportsExecutionCapability(capability: ExecutionCapability): boolean {
+  const device = fleetDeviceContext();
+  return isDeviceOnThisMachine() || (device !== null && fleetDeviceById(device)?.hostCapabilities.includes(capability) === true);
+}
+
+function modelTargetPath(spec: FieldSpec): string {
+  return spec.legacyPath && !supportsExecutionCapability("model_routing_v1") ? spec.legacyPath : leafPath(spec);
+}
+
+function readModelTarget(value: unknown, legacy: boolean): AgentModelTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (row.kind === "inherit") return { kind: "inherit" };
+  if (legacy && row.kind === "fixed" && typeof row.model_id === "string" && row.model_id.trim()) {
+    return { kind: "model", model_ref: row.model_id };
+  }
+  if (!legacy && row.kind === "model" && typeof row.model_ref === "string" && row.model_ref.trim()) {
+    return { kind: "model", model_ref: row.model_ref };
+  }
+  if (!legacy && row.kind === "pool" && typeof row.pool_id === "string" && row.pool_id.trim()) {
+    return { kind: "pool", pool_id: row.pool_id };
+  }
+  return null;
+}
+
+export function modelTargetForField(spec: FieldSpec): AgentModelTarget | null {
+  if (!settingsValuesCurrent()) return null;
+  const path = modelTargetPath(spec);
+  return readModelTarget(settingsValues()[path], path === spec.legacyPath);
 }
 
 /** Whether the host stores no value for this field at all. */
@@ -1149,23 +1300,17 @@ export function fieldDisplay(spec: FieldSpec): unknown {
   return displayed === true && linked === true;
 }
 
-/**
- * Active canonical interface language. Reflects `currentLocale()` reactively so
- * switching language updates the Settings control immediately.
- */
-export function appLanguageValue(): AppLocale {
-  return currentLocale();
-}
+let unsavedLanguage: AppLocale | null = null;
 
-/**
- * Persists a new interface language via `setAppLocale(...)`, merging into the
- * host's `app` config cleanly and updating `settingsNotice`.
- */
 export async function writeAppLanguage(locale: string): Promise<void> {
   const canonical = normalizeLocale(locale);
-  if (!canonical) return;
+  if (!canonical || appLocaleSaving() || (canonical === currentLocale() && canonical !== unsavedLanguage)) return;
+  const connection = backendConnection();
+  settingsNotice.set("");
   await runStep(async () => {
     const persisted = await setAppLocale(canonical, { persistHost: true });
+    if (backendConnection() !== connection || currentLocale() !== canonical) return;
+    unsavedLanguage = persisted ? null : canonical;
     settingsNotice.set(
       persisted
         ? tr("settings.notice.languageSaved", { label: localeMeta(canonical).nativeName })
@@ -1206,8 +1351,8 @@ async function runLoadSettingsValues(deviceKey: string): Promise<void> {
   // documents once resolves all nested leaves on real hosts (instead of 63
   // individual `get_config` RPCs); only leaves absent from a parent document
   // fall back to a leaf read (e.g. flat mock fixtures or sparse legacy configs).
-  const leafPaths = new Set<string>();
-  const optional = new Set<string>();
+  const leafPaths = new Set<string>(MEMORY_ENABLE_PATHS);
+  const optional = new Set<string>(MEMORY_ENABLE_PATHS);
   const rootSections = new Set<string>(["app"]);
   for (const section of SETTINGS_SECTIONS) {
     for (const field of section.fields) {
@@ -1217,6 +1362,10 @@ async function runLoadSettingsValues(deviceKey: string): Promise<void> {
       if (field.linkedBooleanPath) {
         leafPaths.add(field.linkedBooleanPath);
         if (field.optional) optional.add(field.linkedBooleanPath);
+      }
+      if (field.legacyPath) {
+        leafPaths.add(field.legacyPath);
+        optional.add(field.legacyPath);
       }
       const root = path.split(".")[0];
       if (root) rootSections.add(root);
@@ -1265,7 +1414,10 @@ async function runLoadSettingsValues(deviceKey: string): Promise<void> {
 
     // Drop stale results if the user switched device scope while this read was in flight.
     if (currentDeviceScopeKey() !== deviceKey) return;
-    settingsValues.set(entries);
+    batch(() => {
+      settingsValues.set(entries);
+      settingsValuesDevice.set(deviceKey);
+    });
     await loadSettingsDescriptor([...leafPaths], deviceKey);
     if (currentDeviceScopeKey() !== deviceKey) return;
     settingsLoaded.set(true);
@@ -1383,7 +1535,19 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
     await writeAppLanguage(String(value ?? ""));
     return true;
   }
-  const path = leafPath(spec);
+  const path = spec.kind === "model-target" ? modelTargetPath(spec) : leafPath(spec);
+  let storedValue = value;
+  if (spec.kind === "model-target") {
+    if (!modelTargetForField(spec)) return false;
+    const selection = readModelTarget(value, false);
+    if (!selection) return false;
+    const legacy = path === spec.legacyPath;
+    if (selection.kind === "pool" && (legacy || !supportsExecutionCapability("model_pool_selection_v1"))) return false;
+    storedValue = legacy && selection.kind === "model" ? { kind: "fixed", model_id: selection.model_ref } : selection;
+  }
+  if (spec.capability && (!settingsValuesCurrent() || !supportsExecutionCapability(spec.capability))) return false;
+  const device = currentDeviceScopeKey();
+  const route = { target: fleetDeviceContext() };
   let ok = false;
   savingFields.update(current => ({ ...current, [spec.id]: true }));
   try {
@@ -1394,15 +1558,13 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
           await invokeSettingsMutation(spec.mutation.command, {
             ...spec.mutation.request,
             [spec.mutation.requestKey]: value,
-          });
+          }, route);
         } else {
-          await setConfig(path, value);
+          await setConfig(path, storedValue, route);
         }
-        settingsValues.update(values => ({
-          ...values,
-          [path]: value,
-          ...(spec.linkedBooleanPath ? { [spec.linkedBooleanPath]: value } : {}),
-        }));
+        ok = true;
+        if (currentDeviceScopeKey() !== device) return;
+        settingsValues.update(values => ({ ...values, [path]: storedValue, ...(spec.linkedBooleanPath ? { [spec.linkedBooleanPath]: storedValue } : {}) }));
         if (path === "app.ai_experience.enable_prompt_suggestion" && typeof value === "boolean") {
           setPromptSuggestionsEnabled(value);
         }
@@ -1410,9 +1572,8 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
         // this section is answered, so its banner goes.
         noticeFor(spec, "");
         flashFieldSaved(spec.id);
-        ok = true;
       } catch (error) {
-        noticeFor(spec, localizedWriteError(error));
+        if (currentDeviceScopeKey() === device) noticeFor(spec, localizedWriteError(error));
       }
     });
   } finally {
@@ -1484,39 +1645,126 @@ export async function setGeneralControl(option: GeneralControlOption, value: boo
   }
 }
 
-/** The memory actions the desktop's memory section offers beside its fields. */
-export const memoryActionBusy = signal<"open" | "reset" | null>(null);
-export const memoryResetPending = signal(false);
+const memoryFields = SETTINGS_SECTIONS
+  .filter(section => section.id === "memory" || section.id === "memory-processing")
+  .flatMap(section => section.fields);
+const memoryConfigPaths = [...MEMORY_ENABLE_PATHS, ...memoryFields.map(leafPath)];
+type MemoryAction = "enabled" | "open" | "reset" | "reset-settings";
+export const memoryActionBusy = signal<MemoryAction | null>(null);
+
+export function memoryConfigLoaded(): boolean {
+  return settingsValuesCurrent();
+}
+
+/** Legacy mixed values stay on disk until the user makes an explicit choice. */
+export function memoryEnabledValue(): boolean | undefined {
+  if (!memoryConfigLoaded()) return undefined;
+  const values = settingsValues();
+  const descriptor = deviceDescriptors()[currentDeviceScopeKey()];
+  const [generate, use] = MEMORY_ENABLE_PATHS.map(path =>
+    values[path] === undefined ? descriptor?.[path]?.default : values[path]);
+  return typeof generate === "boolean" && typeof use === "boolean" ? generate && use : undefined;
+}
+
+export function memorySettingsBusy(): boolean {
+  return memoryActionBusy() !== null || memoryFields.some(fieldSaving);
+}
+
+function memoryOperation(action: MemoryAction) {
+  if (memorySettingsBusy() || !memoryConfigLoaded()) return null;
+  const device = currentDeviceScopeKey();
+  const route = { target: fleetDeviceContext() };
+  memoryActionBusy.set(action);
+  setSectionNotice("memory", "");
+  const current = () => device === currentDeviceScopeKey() && memoryConfigLoaded();
+  return {
+    route,
+    current,
+    fail: (error: unknown) => { if (current()) setSectionNotice("memory", localizedWriteError(error)); },
+    finish: () => memoryActionBusy.set(null),
+  };
+}
+
+async function reloadMemoryConfig(op: NonNullable<ReturnType<typeof memoryOperation>>): Promise<void> {
+  const document = await getConfig("memories", false, op.route);
+  if (!op.current()) return;
+  const leaves = memoryConfigPaths.map(path => [path, readNestedPath(document, path.split(".").slice(1))]);
+  settingsValues.update(values => ({ ...values, ...Object.fromEntries(leaves) }));
+}
+
+/** The host persists both switches together and acknowledges their effective value. */
+export async function setMemoryEnabled(value: boolean): Promise<void> {
+  if (memoryEnabledValue() === undefined) return;
+  const op = memoryOperation("enabled");
+  if (!op) return;
+  try {
+    const result = await invokeSettingsMutation<{ effectiveValue?: unknown }>("product_control_invoke", {
+      action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value,
+    }, op.route);
+    if (!op.current()) return;
+    const effective = result?.effectiveValue;
+    if (typeof effective === "boolean") {
+      settingsValues.update(values => ({ ...values, [MEMORY_ENABLE_PATHS[0]]: effective, [MEMORY_ENABLE_PATHS[1]]: effective }));
+    } else {
+      await reloadMemoryConfig(op);
+    }
+    if (op.current()) flashFieldSaved("memory-enabled");
+  } catch (error) {
+    op.fail(error);
+  } finally {
+    op.finish();
+  }
+}
 
 /** Shows the memory folder in the host's file manager (`get_memory_paths`). */
 export async function openMemoryFolder(): Promise<void> {
-  memoryActionBusy.set("open");
+  if (!isDeviceOnThisMachine()) return;
+  const op = memoryOperation("open");
+  if (!op) return;
   try {
     const paths = await invokeRawCommand<{ memoriesRootDir?: string; memories_root_dir?: string }>(
       "get_memory_paths",
-      {},
+      {}, op.route,
     );
+    if (!op.current() || !isDeviceOnThisMachine()) return;
     const folder = paths?.memoriesRootDir ?? paths?.memories_root_dir ?? "";
     if (!folder) throw new Error(tr("settings.memory.noFolder"));
-    await invokeCommand("reveal_in_explorer", { path: folder });
+    await invokeCommand("reveal_in_explorer", { path: folder }, op.route);
   } catch (error) {
-    setSectionNotice("memory", error instanceof Error ? error.message : String(error));
+    op.fail(error);
   } finally {
-    memoryActionBusy.set(null);
+    op.finish();
   }
 }
 
 /** Clears every stored memory and the extraction state (`reset_memory`); settings stay. */
 export async function resetMemory(): Promise<void> {
-  memoryResetPending.set(false);
-  memoryActionBusy.set("reset");
+  const op = memoryOperation("reset");
+  if (!op) return;
   try {
-    await invokeRawCommand("reset_memory", {});
-    setSectionNotice("memory", tr("settings.memory.resetDone"));
+    await invokeRawCommand("reset_memory", {}, op.route);
+    if (op.current()) setSectionNotice("memory", tr("settings.memory.resetDone"));
   } catch (error) {
-    setSectionNotice("memory", error instanceof Error ? error.message : String(error));
+    op.fail(error);
   } finally {
-    memoryActionBusy.set(null);
+    op.finish();
+  }
+}
+
+export async function resetMemorySettings(): Promise<boolean> {
+  const op = memoryOperation("reset-settings");
+  if (!op) return false;
+  try {
+    await invokeSettingsMutation("reset_config", { path: "memories" }, op.route);
+    await reloadMemoryConfig(op);
+    if (!op.current()) return false;
+    setSectionNotice("memory", tr("settings.memory.settingsResetDone"));
+    return true;
+  } catch (error) {
+    op.fail(error);
+    return false;
+  } finally {
+    op.finish();
   }
 }
 

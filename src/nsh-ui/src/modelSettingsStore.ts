@@ -6,10 +6,10 @@
 
 import { signal } from "nsh";
 import { getConfig, getModelCatalog, setConfig } from "./api";
-import { invokeCommand } from "./bridge";
+import { invokeCommand, type InvokeCommandOptions } from "./bridge";
 import { tr } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
-import { runStep } from "./state";
+import { deviceContext, runStep } from "./state";
 
 /** The persisted shape `AIModelConfig` stores; fields this surface does not edit are kept. */
 export interface StoredModel {
@@ -76,13 +76,17 @@ export function selectableChatModels(): StoredModel[] {
 export const modelLabels = signal<Record<string, { label: string; detail: string }>>({});
 
 let modelLabelsTicket = 0;
+let modelListTicket = 0;
+let modelListDevice: string | undefined;
 
 /** Re-reads the host's labels; follows every change of the stored list. */
 export async function refreshModelLabels(): Promise<void> {
   const ticket = ++modelLabelsTicket;
+  const device = deviceContext();
+  const current = () => ticket === modelLabelsTicket && device === deviceContext();
   try {
-    const catalog = await getModelCatalog();
-    if (ticket !== modelLabelsTicket) return;
+    const catalog = await getModelCatalog({ target: device || undefined });
+    if (!current()) return;
     const next: Record<string, { label: string; detail: string }> = {};
     for (const entry of catalog?.models ?? []) {
       if (entry?.id && entry.label) next[entry.id] = { label: entry.label, detail: entry.detail ?? "" };
@@ -90,11 +94,12 @@ export async function refreshModelLabels(): Promise<void> {
     modelLabels.set(next);
   } catch {
     // A host without the catalog keeps the entries' own names below.
-    if (ticket === modelLabelsTicket) modelLabels.set({});
+    if (current()) modelLabels.set({});
   }
 }
 
 function setStoredModels(list: StoredModel[]): void {
+  modelListTicket += 1;
   storedModels.set(list);
   void refreshModelLabels();
 }
@@ -344,12 +349,25 @@ export function chooseCatalogModel(modelId: string): void {
 }
 
 export async function loadModels(): Promise<void> {
+  const device = deviceContext();
+  const ticket = ++modelListTicket;
+  const current = () => ticket === modelListTicket && device === deviceContext();
+  if (modelListDevice !== device) {
+    modelListDevice = device;
+    modelLabelsTicket += 1;
+    modelSettingsLoaded.set(false);
+    modelSettingsNotice.set("");
+    storedModels.set([]);
+    modelLabels.set({});
+  }
   await runStep(async () => {
     try {
-      const list = await getConfig("ai.models");
+      const list = await getConfig("ai.models", false, { target: device || undefined });
+      if (!current()) return;
       setStoredModels(normalizeModels(list));
       modelSettingsLoaded.set(true);
     } catch (error) {
+      if (!current()) return;
       storedModels.set([]);
       modelSettingsLoaded.set(true);
       modelSettingsNotice.set(error instanceof Error ? error.message : String(error));
@@ -386,28 +404,40 @@ export interface ModelUpsertResult {
   clampedIds: string[];
 }
 
+async function saveModelIntents(models: ModelUpsert[], route?: InvokeCommandOptions): Promise<ModelUpsertResult> {
+  const reply = await invokeSettingsMutation<{ models?: unknown; ids?: unknown; clampedIds?: unknown }>("ai_model_upsert", { models }, route);
+  return {
+    models: normalizeModels(reply?.models),
+    ids: Array.isArray(reply?.ids) ? reply.ids.map(String) : [],
+    clampedIds: Array.isArray(reply?.clampedIds) ? reply.clampedIds.map(String) : [],
+  };
+}
+
+/** Patches one configured window on the model owner's current config. */
+export async function saveModelContextWindow(deviceId: string, id: string, contextWindow: number) {
+  const result = await saveModelIntents([{ id, contextWindow }], { target: deviceId || undefined });
+  const saved = result.models.find(model => model.id === id)?.context_window;
+  if (typeof saved !== "number" || saved <= 0) throw new Error(tr("sessions.modelContextSaveFailed"));
+  if (deviceId === deviceContext()) setStoredModels(result.models);
+  return { contextWindow: saved, outputClamped: result.clampedIds.includes(id) };
+}
+
 /**
  * Sends model intents and publishes the list the host stored. The host owns ids,
  * the output-limit ceiling, the request URL and capability defaults; a limit it
  * lowered is reported next to `done`.
  */
 export async function upsertModels(models: ModelUpsert[], done: (result: ModelUpsertResult) => string): Promise<ModelUpsertResult | null> {
+  const device = deviceContext();
   try {
-    const raw = await invokeSettingsMutation<{ models?: unknown; ids?: unknown; clampedIds?: unknown }>(
-      "ai_model_upsert",
-      { models },
-    );
-    const result: ModelUpsertResult = {
-      models: normalizeModels(raw?.models),
-      ids: Array.isArray(raw?.ids) ? raw.ids.map(String) : [],
-      clampedIds: Array.isArray(raw?.clampedIds) ? raw.clampedIds.map(String) : [],
-    };
+    const result = await saveModelIntents(models, { target: device || undefined });
+    if (device !== deviceContext()) return null;
     setStoredModels(result.models);
     const clamped = result.clampedIds.length > 0 ? ` ${tr("settings.models.outputClamped")}` : "";
     modelSettingsNotice.set(`${done(result)}${clamped}`);
     return result;
   } catch (error) {
-    modelSettingsNotice.set(errorText(error));
+    if (device === deviceContext()) modelSettingsNotice.set(errorText(error));
     return null;
   }
 }
@@ -584,16 +614,18 @@ export function requestModelDelete(id: string | null): void {
  * carries both lists as they are now stored.
  */
 export async function deleteModel(id: string): Promise<void> {
+  const device = deviceContext();
   modelDeletePending.set(null);
   await runStep(async () => {
     try {
       const target = storedModels().find(entry => entry.id === id);
-      const raw = await invokeSettingsMutation<{ models?: unknown; defaultModels?: unknown }>("ai_model_delete", { id });
+      const raw = await invokeSettingsMutation<{ models?: unknown; defaultModels?: unknown }>("ai_model_delete", { id }, { target: device || undefined });
+      if (device !== deviceContext()) return;
       setStoredModels(normalizeModels(raw?.models));
       if (raw && raw.defaultModels !== undefined) defaultModels.set(readDefaultModels(raw.defaultModels));
       modelSettingsNotice.set(`Removed ${target?.name ?? id}`);
     } catch (error) {
-      modelSettingsNotice.set(errorText(error));
+      if (device === deviceContext()) modelSettingsNotice.set(errorText(error));
     }
   });
 }

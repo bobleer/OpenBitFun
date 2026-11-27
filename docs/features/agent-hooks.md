@@ -102,13 +102,20 @@ OpenBitFun can take a reviewed local snapshot of compatible `type: "command"`
 hooks discovered from Claude Code or Codex. This is an explicit copy, not a
 live mount of another product's configuration:
 
-1. Open **Settings → Agent Hooks** or run `/hooks` in the TUI. Use
-   `openbitfun hooks list` from the root CLI for a scriptable view.
+1. In the NSH app, open **Settings → Import from other tools** and select
+   Claude Code or Codex. The TUI offers `/hooks`, and the root CLI offers
+   `openbitfun hooks list`.
 2. Choose a source and review every effective command, Windows override,
    timeout, copied or external dependency, skipped item, and the plan
    fingerprint.
 3. Confirm that exact plan. If the source changed after review, OpenBitFun writes
    nothing and returns a refreshed plan for another confirmation.
+
+In NSH, **Review hook imports** shows the command plans and results for each
+selected source. Review and select a changed plan again before confirming it.
+**Review hook removals** confirms the selected managed copies together. If
+another client edits the imports during removal, review the remaining copies
+against the refreshed list.
 
 User sources are copied to OpenBitFun's user-managed data. Project sources are
 copied to workspace-isolated data under OpenBitFun's project runtime area. Safe

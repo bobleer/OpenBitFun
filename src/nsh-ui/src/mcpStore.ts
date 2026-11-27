@@ -9,10 +9,14 @@
 // does not draw) is not guessed at: the row points at the JSON editor, which is the
 // one place a whole document can be edited without losing fields.
 
-import { Clipboard, lifecycle as appLifecycle, openUrl, signal } from "nsh";
-import { invokeCommand, invokeRawCommand } from "./bridge";
-
-export type McpTransport = "stdio" | "streamable-http" | "sse";
+import { Clipboard, computed, lifecycle as appLifecycle, openUrl, Picker, signal } from "nsh";
+import { fleetDeviceContext, invokeCommand, invokeRawCommand } from "./bridge";
+import { tr, type MessageKey } from "./i18n";
+import { mcpConfigSavedWithRuntimeError, readMcpConfig, writeMcpConfig, type McpConfigSnapshot } from "./mcpConfigAccess";
+import {
+  draftFromEntry, entryFromDraft, isMcpEntry as isEntry, McpFormError, newMcpDraft,
+  type McpDraft, type McpEntry,
+} from "./mcpServerForm";
 
 /** One server as the host reports it, before its status settles. */
 export interface McpServerRow {
@@ -20,74 +24,105 @@ export interface McpServerRow {
   name: string;
   status: string;
   statusMessage?: string;
+  serverType?: string;
   transport: string;
   enabled: boolean;
   autoStart: boolean;
   url?: string;
   command?: string;
   commandAvailable?: boolean;
+  commandSource?: string;
+  commandResolvedPath?: string;
   authConfigured?: boolean;
+  authSource?: string;
   oauthEnabled?: boolean;
+  xaaEnabled?: boolean;
+  importOrigin?: { sourceId?: string };
   startSupported: boolean;
   startDisabledReason?: string;
 }
 
-export interface McpKeyValue {
-  key: string;
-  value: string;
+export function isRemoteMcpServer(row: McpServerRow): boolean {
+  return Boolean(row.url || row.serverType?.toLowerCase() === "remote");
 }
 
-export interface McpDraft {
-  /** Set when the draft edits an entry that already exists. */
-  originalId?: string;
-  id: string;
-  name: string;
-  transport: McpTransport;
-  command: string;
-  /** One argument per line. */
-  args: string;
-  /** `KEY=VALUE` per line. */
-  env: string;
-  workingDirectory: string;
-  url: string;
-  /** `KEY=VALUE` per line. */
-  headers: string;
-  enabled: boolean;
-  autoStart: boolean;
-  startupSeconds: string;
-}
-
-type McpEntry = Record<string, unknown>;
-
-interface McpDocument {
-  /** The document as the host stored it, so a write starts from that text. */
-  text: string;
-  fingerprint: string;
+interface McpDocument extends McpConfigSnapshot {
   servers: Record<string, McpEntry>;
 }
 
-/** Raised when an entry cannot be drawn as a form. */
-export class McpAdvancedEntry extends Error {
-  constructor() {
-    super("This entry has fields the form does not draw");
-    this.name = "McpAdvancedEntry";
-  }
+interface McpDraftSession {
+  document: McpDocument;
+  initial: McpDraft;
+  entryBase?: McpEntry;
+  formAvailable: boolean;
+  idEdited: boolean;
+  editedJson: boolean;
+  json?: { text: string; baseline: string };
 }
 
 export const mcpAvailable = signal<boolean | null>(null);
 export const mcpLoading = signal(false);
+export const mcpListError = signal("");
 export const mcpDocumentLoaded = signal(false);
 export const mcpServerRows = signal<McpServerRow[]>([]);
 export const mcpBusy = signal<string | null>(null);
 export const mcpNotice = signal("");
 export const mcpDocument = signal<McpDocument | null>(null);
+const mcpRawDocument = signal<McpConfigSnapshot | null>(null);
+const mcpJsonBase = signal<McpConfigSnapshot | null>(null);
 export const mcpDraft = signal<McpDraft | null>(null);
+const mcpDraftSession = signal<McpDraftSession | null>(null);
+const mcpDraftRejected = signal(false);
+export const mcpDraftIssue = signal<McpFormError | string | null>(null);
+export const mcpDraftJson = computed(() => mcpDraftSession()?.json?.text ?? null);
+export const mcpDraftIsLegacySse = computed(() => mcpDraftSession()?.initial.transport === "sse" || mcpDraft()?.transport === "sse");
+export const mcpDraftDirty = computed(() => {
+  const session = mcpDraftSession();
+  return Boolean(session && (session.editedJson || (session.json && session.json.text !== session.json.baseline)
+    || JSON.stringify(mcpDraft()) !== JSON.stringify(session.initial)));
+});
+export const mcpDraftConflict = computed(() => mcpDraftRejected() || fingerprintMoved(mcpDraftSession()?.document));
 export const mcpJsonOpen = signal(false);
 export const mcpJsonText = signal("");
-export const mcpJsonSaved = signal("");
 export const mcpJsonNotice = signal("");
-/** What the editor last did, so a refused save is not reported as saved. */
-export const mcpJsonState = signal("Saved");
+const mcpJsonRejected = signal(false);
+
+export const mcpJsonDirty = computed(() => mcpJsonOpen() && mcpJsonText() !== (mcpJsonBase()?.text ?? ""));
+export const mcpJsonWritable = computed(() => Boolean(mcpJsonBase()?.fingerprint));
+function fingerprintMoved(base: McpConfigSnapshot | null | undefined): boolean {
+  const latest = mcpRawDocument();
+  return Boolean(base && latest && base.fingerprint !== latest.fingerprint);
+}
+
+export const mcpJsonConflict = computed(() => mcpJsonRejected() || fingerprintMoved(mcpJsonBase()));
+export const mcpJsonValidation = computed((): { syntax: string } | { structure: true } | null => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(mcpJsonText()); }
+  catch (error) { return { syntax: error instanceof Error ? error.message : String(error) }; }
+  return isEntry(parsed) && isEntry(parsed.mcpServers) ? null : { structure: true };
+});
+
+export function canSaveMcpJson(): boolean {
+  return mcpJsonDirty() && mcpJsonWritable() && !mcpJsonConflict() && !mcpJsonValidation() && !mcpBusy();
+}
+
+let mcpScopeRevision = 0;
+let mcpListRequest = 0;
+let mcpDocumentRequest = 0;
+let mcpAuthPanelRevision = 0;
+let loadedMcpDevice: string | null | undefined;
+
+function mcpRequestScope() {
+  const target = fleetDeviceContext();
+  const revision = mcpScopeRevision;
+  return { target, current: () => revision === mcpScopeRevision && target === fleetDeviceContext() };
+}
+
+function mcpAuthRequestScope() {
+  const scope = mcpRequestScope();
+  const revision = mcpAuthPanelRevision;
+  return { target: scope.target, current: () => scope.current() && revision === mcpAuthPanelRevision };
+}
 
 /**
  * The remote OAuth flow for one server. The browser half and the callback
@@ -114,6 +149,13 @@ export const mcpOAuthUrlUnopened = signal(false);
 
 /** The statuses the host no longer changes once it reports them. */
 const OAUTH_FINISHED = ["authorized", "failed", "cancelled"];
+export const mcpOAuthPending = computed(() => {
+  const session = mcpOAuthSession();
+  return Boolean(session && !OAUTH_FINISHED.includes(session.status));
+});
+export const mcpOAuthBrowserAvailable = computed(() => (
+  mcpServerRows().find(row => row.id === mcpOAuthServer())?.oauthEnabled === true
+));
 /** How often the session is re-read while the flow runs, as the desktop polls. */
 const OAUTH_POLL_MS = 1000;
 
@@ -130,14 +172,14 @@ function stopOAuthPolling(): void {
 
 /** What each status means in words, the way the desktop labels it. */
 export function mcpOAuthStatusLabel(session: McpOAuthSession | null): string {
-  if (!session) return "not started";
+  if (!session) return tr("settings.mcp.oauthNotStarted");
   switch (session.status) {
-    case "awaitingBrowser": return "waiting for the browser";
-    case "awaitingCallback": return "waiting for the provider to redirect back";
-    case "exchangingToken": return "exchanging the code for a token";
-    case "authorized": return "authorized";
-    case "failed": return "failed";
-    case "cancelled": return "cancelled";
+    case "awaitingBrowser": return tr("settings.mcp.oauthAwaitingBrowser");
+    case "awaitingCallback": return tr("settings.mcp.oauthAwaitingCallback");
+    case "exchangingToken": return tr("settings.mcp.oauthExchangingToken");
+    case "authorized": return tr("settings.mcp.oauthAuthorized");
+    case "failed": return tr("settings.mcp.oauthFailed");
+    case "cancelled": return tr("settings.mcp.oauthCancelled");
     default: return session.status;
   }
 }
@@ -157,32 +199,33 @@ function readOAuthSession(raw: unknown): McpOAuthSession | null {
   };
 }
 
-/**
- * Reads the session once. A host that reports a finished status stops the poll
- * and, after an authorization, re-reads the servers so the row shows the auth it
- * now has.
- */
-async function readOAuthOnce(serverId: string): Promise<void> {
+async function readOAuthOnce(serverId: string, observing: boolean): Promise<void> {
+  const scope = mcpAuthRequestScope();
+  const generation = oauthPollGen;
+  const current = () => scope.current() && generation === oauthPollGen && mcpOAuthServer() === serverId;
   let raw: unknown;
   try {
-    raw = await invokeCommand<unknown>("get_mcp_remote_oauth_session", { serverId });
+    raw = await invokeCommand<unknown>("get_mcp_remote_oauth_session", { serverId }, scope);
   } catch (error) {
+    if (!current()) return;
     stopOAuthPolling();
     mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
     return;
   }
-  if (mcpOAuthServer() !== serverId) return;
+  if (!current()) return;
   const session = readOAuthSession(raw);
   mcpOAuthSession.set(session);
-  if (!session || !OAUTH_FINISHED.includes(session.status)) return;
+  if (mcpOAuthPending()) {
+    if (!observing) startOAuthPolling(serverId);
+    return;
+  }
   stopOAuthPolling();
-  if (session.status === "authorized") {
-    mcpOAuthNotice.set(session.message || `${serverId} is authorized`);
+  if (session?.status === "authorized" && observing) {
+    closeMcpAuth();
+    mcpNotice.set(session.message || tr("settings.mcp.oauthFinishedFor", { server: serverId }));
     await refreshMcpServers();
-    // The panel stays open: the row's status and the auth value it holds both
-    // changed, and closing the panel would hide the outcome it just reported.
-  } else if (session.status === "failed") {
-    mcpOAuthNotice.set(session.message || `Authorization failed for ${serverId}`);
+  } else if (session?.status === "failed") {
+    mcpOAuthNotice.set(session.message ? "" : tr("settings.mcp.oauthFailedFor", { server: serverId }));
   }
 }
 
@@ -195,11 +238,11 @@ function startOAuthPolling(serverId: string): void {
     if (gen !== oauthPollGen || mcpOAuthServer() !== serverId) return;
     if (Date.now() > deadline) {
       stopOAuthPolling();
-      mcpOAuthNotice.set(`Authorization timed out for ${serverId}`);
+      mcpOAuthNotice.set(tr("settings.mcp.oauthTimedOutFor", { server: serverId }));
       return;
     }
     if (appLifecycle() !== "background") {
-      await readOAuthOnce(serverId);
+      await readOAuthOnce(serverId, true);
     }
     if (gen !== oauthPollGen || mcpOAuthServer() !== serverId) return;
     oauthTimer = setTimeout(() => void step(), OAUTH_POLL_MS);
@@ -208,22 +251,33 @@ function startOAuthPolling(serverId: string): void {
 }
 
 /** Opens the authorization panel for one server and reads any session it already has. */
-export function openMcpAuth(id: string): void {
+export function openMcpAuth(id: string, options: { start?: boolean } = {}): void {
+  mcpAuthPanelRevision += 1;
+  stopOAuthPolling();
   mcpOAuthNotice.set("");
   mcpAuthValue.set("");
   mcpOAuthUrlUnopened.set(false);
   mcpOAuthServer.set(id);
   mcpOAuthSession.set(null);
-  void readOAuthOnce(id);
+  if (options.start) void startMcpRemoteOAuth();
+  else if (mcpOAuthBrowserAvailable()) {
+    const scope = mcpAuthRequestScope();
+    mcpOAuthBusy.set(true);
+    void readOAuthOnce(id, false).finally(() => {
+      if (scope.current()) mcpOAuthBusy.set(false);
+    });
+  }
 }
 
-/** Closes the panel. A running flow is left running: the host owns it. */
+/** Drops local panel state when the surface or its device scope goes away. */
 export function closeMcpAuth(): void {
+  mcpAuthPanelRevision += 1;
   mcpOAuthServer.set(null);
   mcpOAuthSession.set(null);
   mcpOAuthNotice.set("");
   mcpAuthValue.set("");
   mcpOAuthUrlUnopened.set(false);
+  mcpOAuthBusy.set(false);
   stopOAuthPolling();
 }
 
@@ -239,12 +293,17 @@ export function setMcpAuthValue(text: string): void {
  */
 export async function startMcpRemoteOAuth(): Promise<void> {
   const serverId = mcpOAuthServer();
-  if (!serverId || mcpOAuthBusy()) return;
+  if (!serverId || mcpOAuthBusy() || mcpOAuthPending() || !mcpOAuthBrowserAvailable()) return;
+  stopOAuthPolling();
+  const scope = mcpAuthRequestScope();
+  const generation = oauthPollGen;
+  const current = () => scope.current() && generation === oauthPollGen && mcpOAuthServer() === serverId;
   mcpOAuthBusy.set(true);
   mcpOAuthNotice.set("");
   mcpOAuthUrlUnopened.set(false);
   try {
-    const raw = await invokeCommand<unknown>("start_mcp_remote_oauth", { serverId });
+    const raw = await invokeCommand<unknown>("start_mcp_remote_oauth", { serverId }, scope);
+    if (!current()) return;
     const session = readOAuthSession(raw);
     mcpOAuthSession.set(session);
     if (session?.authorizationUrl) {
@@ -252,44 +311,60 @@ export async function startMcpRemoteOAuth(): Promise<void> {
         await openUrl(session.authorizationUrl);
       } catch {
         // No browser, no grant for the scheme, or a host that routed it nowhere.
-        mcpOAuthUrlUnopened.set(true);
+        if (current()) mcpOAuthUrlUnopened.set(true);
       }
     } else {
       mcpOAuthUrlUnopened.set(true);
     }
-    mcpOAuthNotice.set(session?.message || `Started authorization for ${serverId}`);
+    if (!current()) return;
+    if (!session?.message) mcpOAuthNotice.set(tr("settings.mcp.oauthStartedFor", { server: serverId }));
     startOAuthPolling(serverId);
   } catch (error) {
-    mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
+    if (current()) mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
   } finally {
-    mcpOAuthBusy.set(false);
+    if (scope.current()) mcpOAuthBusy.set(false);
   }
 }
 
-/** Stops the flow on the host and stops reading it. */
-export async function cancelMcpRemoteOAuth(): Promise<void> {
+/** Stops the flow on the selected host, optionally dismissing the panel. */
+export async function cancelMcpRemoteOAuth(options: { close?: boolean } = {}): Promise<void> {
   const serverId = mcpOAuthServer();
-  if (!serverId || mcpOAuthBusy()) return;
+  if (!serverId || mcpOAuthBusy() || !mcpOAuthPending()) return;
+  const scope = mcpAuthRequestScope();
+  stopOAuthPolling();
   mcpOAuthBusy.set(true);
   try {
-    await invokeCommand("cancel_mcp_remote_oauth", { serverId });
-    stopOAuthPolling();
-    mcpOAuthNotice.set(`Cancelled authorization for ${serverId}`);
-    await readOAuthOnce(serverId);
+    await invokeCommand("cancel_mcp_remote_oauth", { serverId }, scope);
+    if (!scope.current()) return;
+    if (options.close) closeMcpAuth();
+    else {
+      mcpOAuthSession.set({ serverId, status: "cancelled" });
+      mcpOAuthUrlUnopened.set(false);
+      mcpOAuthNotice.set(tr("settings.mcp.oauthCancelledFor", { server: serverId }));
+    }
   } catch (error) {
+    if (!scope.current()) return;
     mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
+    startOAuthPolling(serverId);
   } finally {
-    mcpOAuthBusy.set(false);
+    if (scope.current()) mcpOAuthBusy.set(false);
   }
+}
+
+export function requestCloseMcpAuth(): void {
+  if (mcpOAuthBusy()) return;
+  if (mcpOAuthPending()) void cancelMcpRemoteOAuth({ close: true });
+  else closeMcpAuth();
 }
 
 /** Copies the address the panel could not open, so it can be pasted in a browser. */
 export function copyMcpOAuthUrl(): void {
   const url = mcpOAuthSession()?.authorizationUrl;
   if (!url) return;
+  const scope = mcpAuthRequestScope();
   void Clipboard.writeText(url).then(
-    () => mcpOAuthNotice.set("Copied the authorization address"),
-    () => mcpOAuthNotice.set("The clipboard refused the address; select it instead"),
+    () => { if (scope.current()) mcpOAuthNotice.set(tr("settings.mcp.oauthAddressCopied")); },
+    () => { if (scope.current()) mcpOAuthNotice.set(tr("settings.mcp.oauthAddressCopyFailed")); },
   );
 }
 
@@ -299,19 +374,24 @@ export async function saveMcpRemoteAuth(): Promise<void> {
   const value = mcpAuthValue().trim();
   if (!serverId || mcpOAuthBusy()) return;
   if (!value) {
-    mcpOAuthNotice.set("A token or authorization value is required");
+    mcpOAuthNotice.set(tr("settings.mcp.authValueRequired"));
     return;
   }
+  const scope = mcpAuthRequestScope();
+  stopOAuthPolling();
   mcpOAuthBusy.set(true);
   try {
-    await invokeCommand("update_mcp_remote_auth", { serverId, authorizationValue: value });
-    mcpAuthValue.set("");
-    mcpOAuthNotice.set(`Saved the authorization value for ${serverId}`);
+    await invokeCommand("update_mcp_remote_auth", { serverId, authorizationValue: value }, scope);
+    if (!scope.current()) return;
+    closeMcpAuth();
+    mcpNotice.set(tr("settings.mcp.authValueSavedFor", { server: serverId }));
     await refreshMcpServers();
   } catch (error) {
+    if (!scope.current()) return;
     mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
+    if (mcpOAuthPending()) startOAuthPolling(serverId);
   } finally {
-    mcpOAuthBusy.set(false);
+    if (scope.current()) mcpOAuthBusy.set(false);
   }
 }
 
@@ -319,202 +399,23 @@ export async function saveMcpRemoteAuth(): Promise<void> {
 export async function clearMcpRemoteAuth(): Promise<void> {
   const serverId = mcpOAuthServer();
   if (!serverId || mcpOAuthBusy()) return;
+  const scope = mcpAuthRequestScope();
+  stopOAuthPolling();
   mcpOAuthBusy.set(true);
   try {
-    await invokeCommand("clear_mcp_remote_auth", { serverId });
-    mcpOAuthNotice.set(`Cleared the authorization for ${serverId}`);
+    await invokeCommand("clear_mcp_remote_auth", { serverId }, scope);
+    if (!scope.current()) return;
+    mcpOAuthSession.set(null);
+    mcpOAuthUrlUnopened.set(false);
+    mcpOAuthNotice.set(tr("settings.mcp.authClearedFor", { server: serverId }));
     await refreshMcpServers();
   } catch (error) {
+    if (!scope.current()) return;
     mcpOAuthNotice.set(error instanceof Error ? error.message : String(error));
+    if (mcpOAuthPending()) startOAuthPolling(serverId);
   } finally {
-    mcpOAuthBusy.set(false);
+    if (scope.current()) mcpOAuthBusy.set(false);
   }
-}
-
-const TRANSPORT_ALIASES: Record<string, McpTransport> = {
-  local: "stdio",
-  stdio: "stdio",
-  remote: "streamable-http",
-  http: "streamable-http",
-  "streamable-http": "streamable-http",
-  streamable_http: "streamable-http",
-  streamablehttp: "streamable-http",
-  sse: "sse",
-};
-
-export const MCP_TRANSPORTS: ReadonlyArray<{ value: McpTransport; label: string }> = [
-  { value: "stdio", label: "Local command" },
-  { value: "streamable-http", label: "HTTP" },
-  { value: "sse", label: "SSE" },
-];
-
-let probeStarted = false;
-
-function isEntry(value: unknown): value is McpEntry {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function optionalText(entry: McpEntry, key: string): string {
-  const value = entry[key];
-  if (value === undefined) return "";
-  if (typeof value !== "string") throw new McpAdvancedEntry();
-  return value;
-}
-
-function optionalFlag(entry: McpEntry, key: string, fallback: boolean): boolean {
-  const value = entry[key];
-  if (value === undefined) return fallback;
-  if (typeof value !== "boolean") throw new McpAdvancedEntry();
-  return value;
-}
-
-function keyValueText(value: unknown): string {
-  if (value === undefined) return "";
-  if (!isEntry(value)) throw new McpAdvancedEntry();
-  const lines: string[] = [];
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item !== "string") throw new McpAdvancedEntry();
-    lines.push(`${key}=${item}`);
-  }
-  return lines.join("\n");
-}
-
-function parseKeyValues(text: string, field: "env" | "headers"): Record<string, string> {
-  const result: Record<string, string> = {};
-  const seen = new Set<string>();
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    const split = line.indexOf("=");
-    if (split <= 0) throw new Error(`A ${field} line needs KEY=VALUE: ${line}`);
-    const key = line.slice(0, split).trim();
-    const value = line.slice(split + 1).trim();
-    if (!key || (field === "env" && /[=\0]/.test(key))) {
-      throw new Error(`Not a valid ${field} name: ${key}`);
-    }
-    const identity = field === "headers" ? key.toLowerCase() : key;
-    if (seen.has(identity)) throw new Error(`Duplicate ${field} key: ${key}`);
-    seen.add(identity);
-    result[key] = value;
-  }
-  return result;
-}
-
-function transportOf(entry: McpEntry): McpTransport {
-  const type = optionalText(entry, "type").trim().toLowerCase();
-  const declared = optionalText(entry, "transport").trim().toLowerCase();
-  const name = declared || type;
-  if (name) {
-    const transport = TRANSPORT_ALIASES[name];
-    if (!transport) throw new McpAdvancedEntry();
-    return transport;
-  }
-  // No declaration: a URL means a remote server, a command means a local one.
-  return optionalText(entry, "url").trim() ? "streamable-http" : "stdio";
-}
-
-/** Turns a stored entry into the fields the form draws. */
-export function draftFromEntry(id: string, entry: McpEntry): McpDraft {
-  const args = entry.args ?? [];
-  if (!Array.isArray(args) || args.some(arg => typeof arg !== "string")) throw new McpAdvancedEntry();
-  const timeouts = entry.timeouts;
-  if (timeouts !== undefined && !isEntry(timeouts)) throw new McpAdvancedEntry();
-  const startupMs = isEntry(timeouts) ? timeouts.startupMs : undefined;
-  if (startupMs !== undefined && (typeof startupMs !== "number" || !Number.isFinite(startupMs) || startupMs <= 0)) {
-    throw new McpAdvancedEntry();
-  }
-  return {
-    originalId: id,
-    id,
-    name: optionalText(entry, "name") || id,
-    transport: transportOf(entry),
-    command: optionalText(entry, "command"),
-    args: (args as string[]).join("\n"),
-    env: keyValueText(entry.env),
-    workingDirectory: optionalText(entry, "workingDirectory"),
-    url: optionalText(entry, "url"),
-    headers: keyValueText(entry.headers),
-    // The desktop treats an entry without `enabled` as enabled.
-    enabled: optionalFlag(entry, "enabled", true),
-    autoStart: optionalFlag(entry, "autoStart", optionalFlag(entry, "auto_start", true)),
-    startupSeconds: startupMs === undefined ? "" : String(startupMs / 1000),
-  };
-}
-
-function startupMsOf(draft: McpDraft): number | undefined {
-  const text = draft.startupSeconds.trim();
-  if (!text) return undefined;
-  const seconds = Number(text);
-  const milliseconds = Math.round(seconds * 1000);
-  if (!Number.isFinite(seconds) || seconds <= 0 || milliseconds / 1000 !== seconds) {
-    throw new Error("Startup seconds must be a positive number with at most millisecond precision");
-  }
-  return milliseconds;
-}
-
-/**
- * Writes only the fields the form owns into a copy of the stored entry, so a
- * field this surface does not draw survives an edit.
- */
-function entryFromDraft(base: McpEntry | undefined, draft: McpDraft): McpEntry {
-  const name = draft.name.trim();
-  if (!name) throw new Error("A server needs a name");
-  const entry: McpEntry = { ...(base ?? {}) };
-  const local = draft.transport === "stdio";
-  if (local && !draft.command.trim()) throw new Error("A local server needs a command");
-  if (!local) {
-    let url: URL;
-    try {
-      url = new URL(draft.url.trim());
-    } catch {
-      throw new Error("A remote server needs an http or https URL");
-    }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("A remote server needs an http or https URL");
-    }
-  }
-
-  const previousTransport = base ? transportOf(base) : undefined;
-  entry.name = name;
-  entry.enabled = draft.enabled;
-  entry.autoStart = draft.autoStart;
-  if (previousTransport !== draft.transport) {
-    delete entry.type;
-    delete entry.source;
-    entry.transport = draft.transport;
-    const dropped = local
-      ? ["url", "headers", "oauth", "oauthEnabled", "xaa"]
-      : ["command", "args", "env", "workingDirectory", "inheritParentEnvironment"];
-    for (const key of dropped) delete entry[key];
-  }
-
-  if (local) {
-    entry.command = draft.command.trim();
-    const args = draft.args
-      .split("\n")
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
-    entry.args = args;
-    const env = parseKeyValues(draft.env, "env");
-    if (Object.keys(env).length) entry.env = env;
-    else delete entry.env;
-    const cwd = draft.workingDirectory.trim();
-    if (cwd) entry.workingDirectory = cwd;
-    else delete entry.workingDirectory;
-  } else {
-    entry.url = draft.url.trim();
-    const headers = parseKeyValues(draft.headers, "headers");
-    if (Object.keys(headers).length) entry.headers = headers;
-    else delete entry.headers;
-  }
-
-  const startupMs = startupMsOf(draft);
-  const timeouts: McpEntry = isEntry(entry.timeouts) ? { ...entry.timeouts } : {};
-  if (startupMs === undefined) delete timeouts.startupMs;
-  else timeouts.startupMs = startupMs;
-  if (Object.keys(timeouts).length) entry.timeouts = timeouts;
-  else delete entry.timeouts;
-  return entry;
 }
 
 /** The ids an import or another surface may already have created. */
@@ -527,37 +428,26 @@ export function mcpEntryOf(id: string): McpEntry | undefined {
   return isEntry(entry) ? entry : undefined;
 }
 
-/** Whether the row can open the form instead of sending the user to the JSON. */
-export function mcpRowIsSimple(id: string): boolean {
-  const entry = mcpEntryOf(id);
-  if (!entry) return false;
-  try {
-    draftFromEntry(id, entry);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function ensureMcp(): void {
-  if (probeStarted) return;
-  probeStarted = true;
-  void refreshMcpServers();
-  void loadMcpDocument();
+  if (loadedMcpDevice !== fleetDeviceContext()) reloadMcpForDevice();
 }
 
 /** Resets MCP state and re-reads servers and config document for the newly selected device scope. */
 export function reloadMcpForDevice(): void {
-  probeStarted = true;
+  mcpScopeRevision += 1;
+  loadedMcpDevice = fleetDeviceContext();
   mcpAvailable.set(null);
   mcpLoading.set(true);
+  mcpListError.set("");
   mcpDocumentLoaded.set(false);
   mcpServerRows.set([]);
   mcpDocument.set(null);
+  mcpRawDocument.set(null);
+  mcpBusy.set(null);
   mcpNotice.set("");
-  mcpDraft.set(null);
-  mcpJsonOpen.set(false);
-  mcpImportOpen.set(false);
+  closeMcpDraft();
+  closeMcpJson();
+  closeMcpImport();
   closeMcpAuth();
   void refreshMcpServers();
   void loadMcpDocument();
@@ -568,56 +458,74 @@ export function reloadMcpForDevice(): void {
  * surface at all, and the section stays hidden rather than showing an error.
  */
 export async function refreshMcpServers(): Promise<void> {
+  const scope = mcpRequestScope();
+  const request = ++mcpListRequest;
+  const current = () => request === mcpListRequest && scope.current();
   mcpLoading.set(true);
   try {
-    const rows = await invokeCommand<McpServerRow[]>("get_mcp_servers");
+    const rows = await invokeCommand<McpServerRow[]>("get_mcp_servers", undefined, scope);
+    if (!current()) return;
     mcpServerRows.set(Array.isArray(rows) ? rows : []);
     mcpAvailable.set(true);
+    mcpListError.set("");
   } catch (error) {
-    if (mcpAvailable() === null) {
+    if (!current()) return;
+    const detail = error instanceof Error ? error.message : String(error);
+    const unsupported = /unknown command|not registered|not available on this host|not supported on cli peer host|(?:command|method) .*not found/i;
+    if (mcpAvailable() !== true && unsupported.test(detail)) {
       mcpAvailable.set(false);
       return;
     }
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    mcpAvailable.set(true);
+    mcpListError.set(detail);
   } finally {
-    mcpLoading.set(false);
+    if (current()) mcpLoading.set(false);
   }
 }
 
 export async function loadMcpDocument(): Promise<void> {
+  const scope = mcpRequestScope();
+  const request = ++mcpDocumentRequest;
+  const current = () => request === mcpDocumentRequest && scope.current();
   try {
-    const snapshot = await invokeCommand<{ jsonConfig: string; fingerprint: string }>(
-      "load_mcp_json_config",
-    );
-    if (!snapshot || typeof snapshot.jsonConfig !== "string") {
+    const raw = await readMcpConfig(scope);
+    if (!current()) return;
+    if (!raw) {
       mcpDocument.set(null);
+      mcpRawDocument.set(null);
       return;
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(snapshot.jsonConfig);
+      parsed = JSON.parse(raw.text);
     } catch {
       parsed = null;
     }
     const servers = isEntry(parsed) && isEntry((parsed as McpEntry).mcpServers)
       ? ((parsed as McpEntry).mcpServers as Record<string, McpEntry>)
       : null;
-    mcpDocument.set(
-      servers ? { text: snapshot.jsonConfig, fingerprint: snapshot.fingerprint ?? "", servers } : null,
-    );
-    // The editor shows the stored text until the user types in it.
-    if (!mcpJsonOpen()) {
-      mcpJsonText.set(snapshot.jsonConfig);
-      mcpJsonSaved.set(snapshot.jsonConfig);
+    mcpDocument.set(servers ? { ...raw, servers } : null);
+    mcpRawDocument.set(raw);
+    if (mcpJsonOpen() && !mcpJsonDirty() && mcpBusy() !== "mcp-json") {
+      loadMcpJsonSnapshot(raw);
     }
   } catch (error) {
+    if (!current()) return;
     mcpDocument.set(null);
+    mcpRawDocument.set(null);
     if (mcpAvailable() !== false) {
       mcpNotice.set(error instanceof Error ? error.message : String(error));
     }
   } finally {
-    mcpDocumentLoaded.set(true);
+    if (current()) mcpDocumentLoaded.set(true);
   }
+}
+
+/** Keeps an already loaded MCP settings page in sync with a write from External import. */
+export function refreshLoadedMcpConfig(): void {
+  if (loadedMcpDevice !== fleetDeviceContext()) return;
+  void loadMcpDocument();
+  void refreshMcpServers();
 }
 
 async function saveDocument(document: McpDocument, nextServers: Record<string, McpEntry>): Promise<boolean> {
@@ -628,6 +536,7 @@ async function saveDocument(document: McpDocument, nextServers: Record<string, M
 
 /** Writes the document back, refusing a stale fingerprint. Reports where it failed. */
 async function saveMcpText(text: string, fingerprint: string): Promise<boolean> {
+  const scope = mcpRequestScope();
   if (!fingerprint) {
     mcpNotice.set("The stored configuration is unavailable; reload before saving");
     return false;
@@ -635,8 +544,9 @@ async function saveMcpText(text: string, fingerprint: string): Promise<boolean> 
   try {
     // Rust `save_mcp_json_config(state, json_config, expected_fingerprint)` takes
     // positional camelCase args, NOT a `{ request }` wrapper.
-    await invokeRawCommand("save_mcp_json_config", { jsonConfig: text, expectedFingerprint: fingerprint });
+    await writeMcpConfig({ text, fingerprint }, scope);
   } catch (error) {
+    if (!scope.current()) return false;
     const message = error instanceof Error ? error.message : String(error);
     // A refused fingerprint means the file moved under us: re-read, so the next
     // save starts from what is actually stored instead of overwriting it.
@@ -648,9 +558,11 @@ async function saveMcpText(text: string, fingerprint: string): Promise<boolean> 
     await loadMcpDocument();
     return false;
   }
+  if (!scope.current()) return false;
   await loadMcpDocument();
+  if (!scope.current()) return false;
   await refreshMcpServers();
-  return true;
+  return scope.current();
 }
 
 function serverIdFrom(name: string, taken: readonly string[]): string {
@@ -667,116 +579,170 @@ function serverIdFrom(name: string, taken: readonly string[]): string {
 }
 
 export function openMcpDraft(id?: string): void {
-  mcpNotice.set("");
-  if (!id) {
-    mcpDraft.set({
-      id: "",
-      name: "",
-      transport: "streamable-http",
-      command: "",
-      args: "",
-      env: "",
-      workingDirectory: "",
-      url: "",
-      headers: "",
-      enabled: false,
-      autoStart: false,
-      startupSeconds: "",
-    });
-    return;
-  }
-  const entry = mcpEntryOf(id);
-  if (!entry) {
+  const document = mcpDocument();
+  if (!document || !document.fingerprint || mcpBusy() || mcpDraft()) return;
+  const entry = id !== undefined && Object.hasOwn(document.servers, id) ? document.servers[id] : undefined;
+  if (id !== undefined && !isEntry(entry)) {
     mcpNotice.set("This server has no stored entry; reload the page");
     return;
   }
-  try {
-    mcpDraft.set(draftFromEntry(id, entry));
-  } catch {
-    mcpNotice.set(`${id} has fields the form does not draw; edit it as JSON`);
+  let draft = newMcpDraft();
+  let json: McpDraftSession["json"];
+  if (id !== undefined && entry) {
+    try { draft = draftFromEntry(id, entry); }
+    catch {
+      draft = { ...draft, id, originalId: id };
+      const text = JSON.stringify(entry, null, 2);
+      json = { text, baseline: text };
+    }
   }
+  mcpNotice.set("");
+  mcpDraftIssue.set(null);
+  mcpDraftRejected.set(false);
+  mcpDraftSession.set({ document, initial: draft, entryBase: entry, formAvailable: !json, idEdited: false, editedJson: false, json });
+  mcpDraft.set(draft);
 }
 
 export function closeMcpDraft(): void {
   mcpDraft.set(null);
+  mcpDraftSession.set(null);
+  mcpDraftIssue.set(null);
+  mcpDraftRejected.set(false);
 }
 
 export function updateMcpDraft(patch: Partial<McpDraft>): void {
-  mcpDraft.update(current => (current ? { ...current, ...patch } : current));
+  const draft = mcpDraft();
+  const session = mcpDraftSession();
+  if (!draft || !session || mcpBusy()) return;
+  const next = { ...draft, ...patch };
+  if (patch.id !== undefined) mcpDraftSession.set({ ...session, idEdited: true });
+  if (!draft.originalId && !session.idEdited && patch.id === undefined && patch.name !== undefined) {
+    next.id = patch.name.trim() ? serverIdFrom(patch.name, Object.keys(session.document.servers)) : "";
+  }
+  mcpDraft.set(next);
+  mcpDraftIssue.set(null);
 }
 
-export async function saveMcpDraft(): Promise<void> {
+export function updateMcpDraftJson(text: string): void {
+  const session = mcpDraftSession();
+  if (!session?.json || mcpBusy()) return;
+  mcpDraftSession.set({ ...session, json: { ...session.json, text } });
+  mcpDraftIssue.set(null);
+}
+
+function parseMcpDraftEntry(text: string): McpEntry {
+  let entry: unknown;
+  try { entry = JSON.parse(text); }
+  catch { throw new McpFormError("settings.mcp.formInvalidJson"); }
+  if (!isEntry(entry)) throw new McpFormError("settings.mcp.formInvalidJson");
+  return entry;
+}
+
+export function switchMcpDraftEditor(): void {
   const draft = mcpDraft();
-  const document = mcpDocument();
-  if (!draft) return;
-  if (!document) {
-    mcpNotice.set("The stored configuration is unavailable; reload before saving");
-    return;
+  const session = mcpDraftSession();
+  if (!draft || !session || mcpBusy()) return;
+  mcpDraftIssue.set(null);
+  try {
+    if (!session.json) {
+      const text = JSON.stringify(entryFromDraft(session.entryBase, draft, false), null, 2);
+      mcpDraftSession.set({ ...session, json: { text, baseline: text } });
+      return;
+    }
+    const editedJson = session.json.text !== session.json.baseline;
+    if (!editedJson && session.formAvailable) {
+      mcpDraftSession.set({ ...session, json: undefined });
+      return;
+    }
+    const entry = parseMcpDraftEntry(session.json.text);
+    const next = draftFromEntry(draft.id, entry);
+    mcpDraft.set({ ...next, originalId: draft.originalId, enabled: draft.originalId === undefined ? false : next.enabled });
+    mcpDraftSession.set({ ...session, entryBase: entry, formAvailable: true, editedJson: session.editedJson || editedJson, json: undefined });
+  } catch (error) {
+    mcpDraftIssue.set(error instanceof McpFormError ? error : new McpFormError("settings.mcp.formNeedsJson"));
   }
-  const taken = Object.keys(document.servers);
-  const id = draft.originalId ?? (draft.id.trim() || serverIdFrom(draft.name, taken));
-  if (!/^[a-z0-9_.-]{1,128}$/i.test(id)) {
-    mcpNotice.set("A server id is 1-128 letters, digits, dot, dash or underscore");
-    return;
-  }
-  if (!draft.originalId && taken.includes(id)) {
-    mcpNotice.set(`${id} already exists`);
-    return;
-  }
+}
+
+export function canSaveMcpDraft(): boolean {
+  const draft = mcpDraft();
+  return Boolean(draft && (draft.originalId === undefined || mcpDraftDirty()) && !mcpDraftConflict() && !mcpBusy());
+}
+
+export async function saveMcpDraft(): Promise<boolean> {
+  const draft = mcpDraft();
+  const session = mcpDraftSession();
+  if (!draft || !session || !canSaveMcpDraft()) return false;
+  const { document } = session;
+  const id = draft.originalId ?? (draft.id.trim() || serverIdFrom(draft.name, Object.keys(document.servers)));
   let entry: McpEntry;
   try {
-    const base = draft.originalId ? document.servers[draft.originalId] : undefined;
-    entry = entryFromDraft(base, draft);
+    if (draft.originalId === undefined && !MCP_ID_PATTERN.test(id)) throw new McpFormError("settings.mcp.formInvalidId", "id");
+    if (draft.originalId === undefined && Object.hasOwn(document.servers, id)) throw new McpFormError("settings.mcp.formDuplicateId", "id");
+    entry = session.json ? parseMcpDraftEntry(session.json.text) : entryFromDraft(session.entryBase, draft);
   } catch (error) {
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
-    return;
+    mcpDraftIssue.set(error instanceof McpFormError ? error : new McpFormError("settings.mcp.formNeedsJson"));
+    return false;
   }
-  mcpBusy.set("mcp-save");
-  try {
-    const servers = { ...document.servers };
-    // A new server is always stored disabled: writing a configuration is not
-    // permission to launch the program it names.
-    servers[id] = draft.originalId ? entry : { ...entry, enabled: false };
-    if (await saveDocument(document, servers)) {
-      mcpNotice.set(draft.originalId ? `Saved ${id}` : `Added ${id}, stopped`);
-      mcpDraft.set(null);
-    }
-  } finally {
-    mcpBusy.set(null);
-  }
+  const parsed = JSON.parse(document.text) as McpEntry;
+  parsed.mcpServers = { ...document.servers, [id]: draft.originalId === undefined ? { ...entry, enabled: false } : entry };
+  return savePinnedMcpEditor({ text: JSON.stringify(parsed, null, 2), fingerprint: document.fingerprint, busy: "mcp-save",
+    notice: mcpDraftIssue.set, reject: () => mcpDraftRejected.set(true), close: closeMcpDraft });
 }
 
 /** Removes a server from the runtime and from the stored configuration. */
 export async function deleteMcpServer(id: string): Promise<void> {
+  if (mcpBusy()) return;
+  const scope = mcpRequestScope();
   mcpBusy.set(id);
   try {
     // `delete_mcp_server` is one of the few MCP commands that takes a request
     // struct; `invokeCommand` already wraps the body in `{ request }`.
-    await invokeCommand("delete_mcp_server", { serverId: id });
+    await invokeCommand("delete_mcp_server", { serverId: id }, scope);
+    if (!scope.current()) return;
     mcpNotice.set(`Deleted ${id}`);
     await refreshMcpServers();
-    await loadMcpDocument();
+    if (scope.current()) await loadMcpDocument();
   } catch (error) {
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    if (scope.current()) mcpNotice.set(error instanceof Error ? error.message : String(error));
   } finally {
-    mcpBusy.set(null);
+    if (scope.current()) mcpBusy.set(null);
   }
 }
 
 async function lifecycle(id: string, action: "start" | "stop" | "restart"): Promise<void> {
+  if (mcpBusy()) return;
+  const scope = mcpRequestScope();
+  const authScope = mcpAuthRequestScope();
   mcpBusy.set(id);
   try {
     // The lifecycle commands take the server id as a positional argument, so
     // they go through the raw path instead of the `request` envelope.
-    await invokeRawCommand(`${action}_mcp_server`, { serverId: id });
+    await invokeRawCommand(`${action}_mcp_server`, { serverId: id }, scope);
+    if (!scope.current()) return;
     const verb = action === "start" ? "Started" : action === "stop" ? "Stopped" : "Restarted";
     mcpNotice.set(`${verb} ${id}`);
     await refreshMcpServers();
   } catch (error) {
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    if (!scope.current()) return;
+    const message = error instanceof Error ? error.message : String(error);
+    const row = mcpServerRows().find(server => server.id === id);
+    if (action !== "stop" && authScope.current() && row && isRemoteMcpServer(row) && isRemoteAuthError(message)) {
+      mcpNotice.set("");
+      openMcpAuth(id, { start: row.oauthEnabled === true });
+      if (!row.oauthEnabled) mcpOAuthNotice.set(tr("settings.mcp.remoteAuthRequired"));
+      await refreshMcpServers();
+    } else {
+      mcpNotice.set(message);
+    }
   } finally {
-    mcpBusy.set(null);
+    if (scope.current()) mcpBusy.set(null);
   }
+}
+
+// Lifecycle failures from older and current hosts carry an error string.
+function isRemoteAuthError(message: string): boolean {
+  return /\b(?:unauthorized|forbidden|(?:auth|authorization|authentication) required|authentication failed|www-authenticate|(?:invalid|expired) token|(?:token|session) expired|token refresh failed)\b/i.test(message)
+    || /\b(?:https?(?: status)?|status(?: code)?)[\s:]+(?:401|403)\b/i.test(message);
 }
 
 export function startMcpServer(id: string): Promise<void> {
@@ -790,9 +756,12 @@ export function startMcpServer(id: string): Promise<void> {
  * "Enable and start" must run this first; `start` then launches it.
  */
 export async function enableMcpServer(id: string, options: { start?: boolean } = {}): Promise<boolean> {
+  if (mcpBusy()) return false;
+  const scope = mcpRequestScope();
   mcpBusy.set(id);
   try {
     await loadMcpDocument();
+    if (!scope.current()) return false;
     const document = mcpDocument();
     const entry = document ? document.servers[id] : undefined;
     if (!document || !isEntry(entry)) {
@@ -805,12 +774,12 @@ export async function enableMcpServer(id: string, options: { start?: boolean } =
     }
     mcpNotice.set(`Enabled ${id}`);
   } catch (error) {
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    if (scope.current()) mcpNotice.set(error instanceof Error ? error.message : String(error));
     return false;
   } finally {
-    mcpBusy.set(null);
+    if (scope.current()) mcpBusy.set(null);
   }
-  if (options.start) await lifecycle(id, "start");
+  if (options.start && scope.current()) await lifecycle(id, "start");
   return true;
 }
 
@@ -824,69 +793,77 @@ export function restartMcpServer(id: string): Promise<void> {
 
 /** The whole document as text, for the fields no form draws. */
 export function openMcpJson(): void {
-  const document = mcpDocument();
-  mcpJsonNotice.set("");
-  mcpJsonText.set(document?.text ?? "");
-  mcpJsonSaved.set(document?.text ?? "");
-  mcpJsonState.set("Saved");
+  if (mcpJsonOpen()) return;
+  loadMcpJsonSnapshot(mcpRawDocument());
   mcpJsonOpen.set(true);
 }
 
 export function closeMcpJson(): void {
   mcpJsonOpen.set(false);
+  loadMcpJsonSnapshot(null);
+}
+
+function loadMcpJsonSnapshot(snapshot: McpConfigSnapshot | null): void {
+  mcpJsonBase.set(snapshot);
+  mcpJsonText.set(snapshot?.text ?? "");
   mcpJsonNotice.set("");
-  const document = mcpDocument();
-  if (document) {
-    mcpJsonText.set(document.text);
-    mcpJsonSaved.set(document.text);
-  }
+  mcpJsonRejected.set(false);
 }
 
 export function updateMcpJson(text: string): void {
   mcpJsonText.set(text);
   mcpJsonNotice.set("");
-  mcpJsonState.set("Unsaved changes");
 }
 
-export async function saveMcpJson(): Promise<void> {
-  const document = mcpDocument();
-  const text = mcpJsonText();
-  if (!document) {
-    mcpJsonNotice.set("The stored configuration is unavailable; reload before saving");
-    mcpJsonState.set("Not saved");
-    return;
-  }
-  let parsed: unknown;
+export async function saveMcpJson(): Promise<boolean> {
+  const base = mcpJsonBase();
+  if (!base || !canSaveMcpJson()) return false;
+  return savePinnedMcpEditor({ text: mcpJsonText(), fingerprint: base.fingerprint, busy: "mcp-json",
+    notice: mcpJsonNotice.set, reject: () => mcpJsonRejected.set(true), close: closeMcpJson });
+}
+
+/** Configuration editors and import write against the document their draft was reviewed with. */
+async function savePinnedMcpEditor(options: {
+  text: string; fingerprint: string; busy: "mcp-json" | "mcp-save" | "mcp-import";
+  notice: (message: string) => void; reject: () => void; close: () => void;
+}): Promise<boolean> {
+  if (loadedMcpDevice !== fleetDeviceContext() || mcpBusy()) return false;
+  const scope = mcpRequestScope();
+  mcpBusy.set(options.busy);
+  options.notice("");
   try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    mcpJsonNotice.set(error instanceof Error ? error.message : String(error));
-    mcpJsonState.set("Not saved");
-    return;
-  }
-  if (!isEntry(parsed) || !isEntry((parsed as McpEntry).mcpServers)) {
-    mcpJsonNotice.set("The document needs an mcpServers object");
-    mcpJsonState.set("Not saved");
-    return;
-  }
-  mcpBusy.set("mcp-json");
-  try {
-    if (await saveMcpText(text, document.fingerprint)) {
-      mcpJsonSaved.set(text);
-      mcpJsonNotice.set("");
-      mcpJsonState.set("Saved");
-    } else {
-      // The store's notice carries the reason; mirror it where the editor shows it.
-      mcpJsonNotice.set(mcpNotice());
-      mcpJsonState.set("Not saved");
+    let savedWarning = "";
+    try {
+      await writeMcpConfig({ text: options.text, fingerprint: options.fingerprint }, scope);
+    } catch (error) {
+      if (!scope.current()) return false;
+      const message = error instanceof Error ? error.message : String(error);
+      if (mcpConfigSavedWithRuntimeError(message)) {
+        savedWarning = message;
+      } else {
+        if (message.includes("MCP configuration changed")) {
+          options.reject();
+          await loadMcpDocument();
+        } else {
+          options.notice(message);
+        }
+        return false;
+      }
     }
+    if (!scope.current()) return false;
+    options.close();
+    mcpNotice.set("");
+    await loadMcpDocument();
+    if (scope.current()) await refreshMcpServers();
+    if (scope.current() && savedWarning) mcpNotice.set(savedWarning);
+    return scope.current();
   } finally {
-    mcpBusy.set(null);
+    if (scope.current()) mcpBusy.set(null);
   }
 }
 
 /**
- * One server read out of a pasted configuration, before it is written.
+ * One server read out of a picked or pasted configuration, before it is written.
  * `unsupported` names why this surface's form cannot express the entry; such a
  * row is shown and stays out of the write instead of being silently dropped.
  */
@@ -895,40 +872,136 @@ export interface McpImportCandidate {
   targetId: string;
   selected: boolean;
   entry: McpEntry;
-  unsupported: string;
+  unsupported: MessageKey | null;
 }
 
 export const mcpImportOpen = signal(false);
 export const mcpImportText = signal("");
 export const mcpImportCandidates = signal<McpImportCandidate[] | null>(null);
 export const mcpImportNotice = signal("");
+export const mcpImportIssue = signal<MessageKey | null>(null);
+export const mcpImportFileName = signal("");
+export const mcpImportReading = signal(false);
+const mcpImportBase = signal<McpDocument | null>(null);
+const mcpImportRejected = signal(false);
+let mcpImportTicket = 0;
 
 const MCP_ID_PATTERN = /^[a-z0-9_.-]{1,128}$/i;
 
+export const mcpImportDirty = computed(() => mcpImportOpen() && mcpImportText().length > 0);
+export const mcpImportConflict = computed(() => mcpImportRejected() || fingerprintMoved(mcpImportBase()));
+export const mcpImportTargetIssues = computed(() => {
+  const stored = documentServers(mcpImportBase());
+  const rows = mcpImportCandidates() ?? [];
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.selected) continue;
+    const id = row.targetId.trim();
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const issues = new Map<string, MessageKey>();
+  for (const row of rows) {
+    if (row.unsupported) continue;
+    const id = row.targetId.trim();
+    if (!MCP_ID_PATTERN.test(id)) issues.set(row.sourceId, "settings.mcp.formInvalidId");
+    else if (Object.hasOwn(stored, id) || (row.selected && (counts.get(id) ?? 0) > 1)) {
+      issues.set(row.sourceId, "settings.mcp.formDuplicateId");
+    }
+  }
+  return issues;
+});
+
+export function canImportMcpServers(): boolean {
+  const selected = mcpImportCandidates()?.filter(row => row.selected) ?? [];
+  return mcpImportOpen() && Boolean(mcpImportBase()?.fingerprint) && !mcpImportConflict() && !mcpImportReading() && !mcpBusy()
+    && selected.length > 0 && selected.every(row => !row.unsupported && !mcpImportTargetIssues().has(row.sourceId));
+}
+
 export function openMcpImport(): void {
+  const document = mcpDocument();
+  if (!document?.fingerprint || mcpImportOpen()) return;
+  mcpImportBase.set(document);
   mcpImportOpen.set(true);
-  mcpImportText.set("");
-  mcpImportCandidates.set(null);
-  mcpImportNotice.set("");
 }
 
 export function closeMcpImport(): void {
+  mcpImportTicket += 1;
   mcpImportOpen.set(false);
-  mcpImportCandidates.set(null);
-  mcpImportNotice.set("");
+  mcpImportReading.set(false);
+  mcpImportBase.set(null);
+  mcpImportRejected.set(false);
+  replaceMcpImportText("");
 }
 
 /** Editing the text invalidates the parsed list, because it described other text. */
 export function setMcpImportText(text: string): void {
+  if (!mcpImportReading() && !mcpBusy()) replaceMcpImportText(text);
+}
+
+function replaceMcpImportText(text: string, fileName = ""): void {
   mcpImportText.set(text);
+  mcpImportFileName.set(fileName);
   mcpImportCandidates.set(null);
   mcpImportNotice.set("");
+  mcpImportIssue.set(null);
+}
+
+function startMcpImportRead(): (() => boolean) | null {
+  if (!mcpImportOpen() || mcpImportReading() || mcpBusy()) return null;
+  const scope = mcpRequestScope();
+  const ticket = ++mcpImportTicket;
+  mcpImportReading.set(true);
+  return () => scope.current() && ticket === mcpImportTicket && mcpImportOpen();
+}
+
+/** The file belongs to the controller. Only the reviewed document goes to the selected device. */
+export async function pickMcpImportFile(): Promise<void> {
+  const current = startMcpImportRead();
+  if (!current) return;
+  try {
+    const [picked] = await Picker.pickFiles({ multiple: false, filters: [{ name: "JSON", extensions: ["json"] }], maxSize: 8 * 1024 * 1024 });
+    if (!current() || !picked) return;
+    if (picked.status === "tooLarge") {
+      mcpImportIssue.set("settings.mcp.importFileTooLarge");
+      return;
+    }
+    if (!picked.file) throw new Error("MCP import file was not readable");
+    const text = await picked.file.text();
+    if (current()) replaceMcpImportText(text, picked.name);
+  } catch {
+    if (current()) mcpImportIssue.set("settings.mcp.importFileFailed");
+  } finally {
+    if (current()) mcpImportReading.set(false);
+  }
+}
+
+/** Refreshes the target and rechecks IDs without throwing away the user's selections or renames. */
+export async function reloadMcpImportTarget(): Promise<void> {
+  const current = startMcpImportRead();
+  if (!current) return;
+  try {
+    await loadMcpDocument();
+    if (!current()) return;
+    const document = mcpDocument();
+    if (!document?.fingerprint) {
+      mcpImportIssue.set("settings.mcp.jsonUnavailable");
+      return;
+    }
+    mcpImportBase.set(document);
+    mcpImportRejected.set(false);
+    mcpImportIssue.set(null);
+    mcpImportNotice.set("");
+  } finally {
+    if (current()) mcpImportReading.set(false);
+  }
 }
 
 export function updateMcpImportCandidate(
   sourceId: string,
   patch: Partial<Pick<McpImportCandidate, "targetId" | "selected">>,
 ): void {
+  if (mcpImportReading() || mcpBusy()) return;
+  mcpImportNotice.set("");
   mcpImportCandidates.update(list =>
     list
       ? list.map(candidate => (candidate.sourceId === sourceId ? { ...candidate, ...patch } : candidate))
@@ -937,24 +1010,23 @@ export function updateMcpImportCandidate(
 }
 
 /**
- * Reads a pasted Cursor-format document and marks what can be imported here.
- * The entry shape is checked by the same reader the edit form uses, so an entry
- * this surface could not show is refused at preview time rather than stored and
- * then reported as un-editable.
+ * Checks the Cursor-format document and the connection fields covered by the server editor.
  */
 export function previewMcpImport(): void {
+  if (mcpImportReading() || mcpBusy()) return;
   mcpImportNotice.set("");
+  mcpImportIssue.set(null);
   mcpImportCandidates.set(null);
   const text = mcpImportText().trim();
   if (!text) {
-    mcpImportNotice.set("Paste a configuration first");
+    mcpImportIssue.set("settings.mcp.importNeedsText");
     return;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    mcpImportNotice.set("That is not valid JSON");
+    mcpImportIssue.set("settings.mcp.importInvalidJson");
     return;
   }
   const servers =
@@ -962,39 +1034,33 @@ export function previewMcpImport(): void {
       ? ((parsed as McpEntry).mcpServers as Record<string, McpEntry>)
       : null;
   if (!servers) {
-    mcpImportNotice.set("A configuration is an object whose mcpServers holds one entry per server");
+    mcpImportIssue.set("settings.mcp.jsonMissingServers");
     return;
   }
   const entries = Object.entries(servers);
   if (!entries.length) {
-    mcpImportNotice.set("That configuration holds no server");
+    mcpImportIssue.set("settings.mcp.importEmpty");
     return;
   }
-  const taken = Object.keys(documentServers(mcpDocument()));
+  const taken = documentServers(mcpImportBase());
   const candidates: McpImportCandidate[] = entries.map(([sourceId, entry]) => {
-    let unsupported = "";
+    let unsupported: MessageKey | null = null;
     try {
-      draftFromEntry(sourceId, entry);
+      entryFromDraft(entry, draftFromEntry(sourceId, entry));
     } catch (error) {
-      unsupported = error instanceof Error ? error.message : String(error);
+      unsupported = error instanceof McpFormError ? error.label : "settings.mcp.formNeedsJson";
     }
     return {
       sourceId,
       targetId: sourceId,
       // A name already in the document starts unchecked: the id is taken, and an
       // import that renamed it without being asked would be a different server.
-      selected: !unsupported && !taken.includes(sourceId),
+      selected: !unsupported && !Object.hasOwn(taken, sourceId),
       entry,
       unsupported,
     };
   });
   mcpImportCandidates.set(candidates);
-  const blocked = candidates.filter(candidate => candidate.unsupported).length;
-  mcpImportNotice.set(
-    blocked
-      ? `${entries.length} server${entries.length === 1 ? "" : "s"} read; ${blocked} cannot be imported by this form`
-      : `${entries.length} server${entries.length === 1 ? "" : "s"} read`,
-  );
 }
 
 /**
@@ -1003,46 +1069,17 @@ export function previewMcpImport(): void {
  * what it names, and `_openbitfunImport` (the origin marker an external import
  * carries) is not part of a server entry.
  */
-export async function importMcpServers(): Promise<void> {
-  const document = mcpDocument();
-  const candidates = mcpImportCandidates() ?? [];
-  if (!document) {
-    mcpImportNotice.set("The stored configuration is unavailable; reload before importing");
-    return;
-  }
-  const selected = candidates.filter(candidate => candidate.selected && !candidate.unsupported);
-  if (!selected.length) {
-    mcpImportNotice.set("Select at least one server to import");
-    return;
-  }
-  const servers = { ...document.servers };
-  for (const candidate of selected) {
-    const id = candidate.targetId.trim();
-    if (!MCP_ID_PATTERN.test(id)) {
-      mcpImportNotice.set(`${id || "A blank id"} is not a usable server id`);
-      return;
-    }
-    if (Object.prototype.hasOwnProperty.call(servers, id)) {
-      mcpImportNotice.set(`${id} already exists`);
-      return;
-    }
+export async function importMcpServers(): Promise<boolean> {
+  const document = mcpImportBase();
+  if (!document || !canImportMcpServers()) return false;
+  const selected = (mcpImportCandidates() ?? []).filter(candidate => candidate.selected);
+  const entries = selected.map(candidate => {
     const entry: McpEntry = { ...candidate.entry };
     delete entry._openbitfunImport;
-    servers[id] = { ...entry, enabled: false };
-  }
-  mcpBusy.set("mcp-import");
-  try {
-    if (await saveDocument(document, servers)) {
-      // The panel closes on success, so the result goes where the section shows
-      // the outcome of every other MCP write.
-      mcpNotice.set(
-        `Imported ${selected.length} server${selected.length === 1 ? "" : "s"}; each is stored disabled`,
-      );
-      mcpImportOpen.set(false);
-      mcpImportCandidates.set(null);
-      mcpImportNotice.set("");
-    }
-  } finally {
-    mcpBusy.set(null);
-  }
+    return [candidate.targetId.trim(), { ...entry, enabled: false }] as const;
+  });
+  const parsed = JSON.parse(document.text) as McpEntry;
+  parsed.mcpServers = { ...document.servers, ...Object.fromEntries(entries) };
+  return savePinnedMcpEditor({ text: JSON.stringify(parsed, null, 2), fingerprint: document.fingerprint, busy: "mcp-import",
+    notice: mcpImportNotice.set, reject: () => mcpImportRejected.set(true), close: closeMcpImport });
 }

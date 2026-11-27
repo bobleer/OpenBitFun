@@ -7,7 +7,7 @@
 // the command keeps the local list exactly as before.
 
 import { expect, open, test } from "nsh/test";
-import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, openSession } from "./support";
+import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, openSession, type BackendOptions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const ENTRY = { protocol: 1, cursorState: {}, deviceId: "dev-a" };
@@ -63,8 +63,8 @@ const CATALOG: Record<string, Record<string, unknown>> = {
   },
 };
 
-async function openFleet(fleetModels?: Record<string, Record<string, unknown>>) {
-  const backend = createBackend();
+async function openFleet(fleetModels?: Record<string, Record<string, unknown>>, options?: BackendOptions) {
+  const backend = createBackend(options);
   const host = fleetObpHost(backend, { fleet: ENTRY, navigator: navigator(), ...(fleetModels ? { fleetModels } : {}) });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitFor("nav-library");
@@ -123,6 +123,45 @@ test("a session on another device reads the catalog relative to that device", as
   expect(app.shows("id:model-device-dev-a >> text:MacBook")).toBe(true);
 });
 
+test("the reasoning settings in a remote session model menu update the session's owner", async () => {
+  const { app, host } = await openFleet(CATALOG);
+  await openSession(app, "Build release");
+  await app.waitFor("reasoning-picker");
+  await app.press("bot-capsule-trigger");
+  await app.press("model-picker-reasoning");
+  await app.press("reasoning-option-high");
+  await app.waitFor("label:model-picker-reasoning >> text:High");
+  const reads = host.fleetCalls.filter(call => call.command === "get_session_model_target"
+    && (call.args.request as { sessionId?: string })?.sessionId === "session-5");
+  expect(reads).toHaveLength(1);
+  expect(reads[0].target).toBe("dev-b");
+  expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{
+    target: "dev-b", args: { request: { sessionId: "session-5", workspaceId: "workspace-2", reasoningPreset: "high" } },
+  }]);
+});
+
+test("editing the context window of a fleet model writes to the model owner instead of the session owner", async () => {
+  const { app, host } = await openFleet(CATALOG, { configs: { "ai.models": [{
+    id: "big", name: "Big model", provider: "openai", model_name: "big",
+    base_url: "https://fixture.invalid/v1", enabled: true, capabilities: ["text_chat"],
+  }] } });
+  await openSession(app, "Fix flaky test");
+  await app.press("bot-capsule-trigger");
+  await app.press("label:model-option-fleet:dev-b/big");
+  await app.waitFor("label:bot-capsule-trigger >> text:Big model · linux-box");
+  await app.press("bot-capsule-trigger");
+  await app.press("model-picker-context");
+  await app.clear("model-picker-context-input");
+  await app.type("model-picker-context-input", "96000");
+  await app.press("model-picker-context-save");
+  await app.waitFor("label:model-picker-context >> text:96.0K");
+
+  expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{ target: "dev-a" }]);
+  expect(host.fleetCalls.filter(call => call.command === "ai_model_upsert")).toEqual([{
+    target: "dev-b", command: "ai_model_upsert", args: { request: { models: [{ id: "big", contextWindow: 96_000 }] } },
+  }]);
+});
+
 test("an entry without fleet_models keeps the local model list", async () => {
   const { app } = await openFleet();
   await openSession(app, "Fix flaky test");
@@ -132,6 +171,92 @@ test("an entry without fleet_models keeps the local model list", async () => {
   expect(app.shows("text:Primary model")).toBe(true);
   expect(app.shows("text:openai")).toBe(true);
   expect(app.shows("text:MacBook · This device")).toBe(false);
+});
+
+test("model search combines device and model terms, filters providers and selects a qualified result with the keyboard", async () => {
+  const catalog = { "": { revision: 4, devices: [
+    { deviceId: "dev-a", name: "MacBook", state: "online", online: true, isThisDevice: true,
+      models: [{ ...model("cfg-primary", "OpenAI", "cfg-primary", true, true), label: "gpt-5", detail: "OpenAI" }] },
+    { deviceId: "dev-b", name: "linux-box", state: "online", online: true, isThisDevice: false,
+      models: [
+        { ...model("sonnet", "Remote Anthropic", "fleet:dev-b/sonnet"), label: "claude-sonnet", detail: "Anthropic", provider: "anthropic" },
+        { ...model("haiku", "Lightweight coding", "fleet:dev-b/haiku"), label: "claude-haiku", detail: "Anthropic", provider: "anthropic" },
+      ] },
+    { deviceId: "dev-c", name: "old-laptop", state: "offline", online: false, isThisDevice: false, unavailableReason: "device_offline",
+      models: [{ ...model("opus", "Archived model", "fleet:dev-c/opus", false), label: "claude-opus", detail: "Anthropic", provider: "anthropic" }] },
+  ] } };
+  const { app, host } = await openFleet(catalog);
+  await openSession(app, "Fix flaky test");
+  await app.press("bot-capsule-trigger");
+  await app.press("model-picker-search-open");
+  await app.type("model-picker-search-input", "old-laptop opus");
+  await app.waitFor("label:model-option-fleet:dev-c/opus");
+  expect(app.enabled("label:model-option-fleet:dev-c/opus")).toBe(false);
+  await app.keyboard.press("enter");
+  expect(host.fleetCalls.some(call => call.command === "update_session_model")).toBe(false);
+
+  await app.clear("model-picker-search-input");
+  await app.press("model-picker-provider-filter");
+  await app.press("model-provider-openai");
+  await app.waitFor("id:model-device-dev-b", { state: "gone" });
+  await app.type("model-picker-search-input", "LINUX-BOX claude");
+  await app.waitFor("No models match your search.");
+  await app.press("model-picker-provider-filter");
+  await app.press("model-provider-anthropic");
+  await app.waitFor("label:model-option-fleet:dev-b/sonnet");
+  expect(app.shows("label:model-option-fleet:dev-b/haiku")).toBe(true);
+  expect(app.shows("id:model-device-dev-c")).toBe(false);
+  await app.keyboard.press("down");
+  await app.keyboard.press("down");
+  await app.keyboard.press("enter");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
+  const write = host.fleetCalls.filter(call => call.command === "update_session_model");
+  expect(write).toMatchObject([{ target: "dev-a", args: { request: { modelName: "fleet:dev-b/haiku" } } }]);
+});
+
+test("the split composer searches the catalog relative to its own device", async () => {
+  const { app, host } = await openFleet(CATALOG);
+  await openSession(app, "Fix flaky test");
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await openSession(app, "Build release");
+  if (!app.shows("secondary-bot-capsule-trigger")) await app.press("secondary-composer-plus");
+  await app.press("secondary-bot-capsule-trigger");
+  await app.waitFor("model-option-big");
+  expect(app.shows("label:model-option-fleet:dev-a/cfg-primary")).toBe(true);
+  expect(app.shows("label:model-option-fleet:dev-b/big")).toBe(false);
+  expect(fleetModelsRequests(host)).toContainEqual({ deviceId: "dev-b" });
+  await app.press("model-picker-search-open");
+  await app.type("model-picker-search-input", "big linux-box");
+  await app.keyboard.press("enter");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
+  expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{
+    target: "dev-b", args: { request: { sessionId: "session-5", modelName: "big" } },
+  }]);
+});
+
+test("escaping model search clears the query and the provider filter on an older host", async () => {
+  const { app } = await openFleet();
+  await openSession(app, "Fix flaky test");
+  await app.press("bot-capsule-trigger");
+  await app.press("model-picker-search-open");
+  await app.type("model-picker-search-input", "cfg-fast small");
+  await app.waitFor("model-option-fast-small");
+  expect(app.shows("model-option-gpt-4.1-mini")).toBe(false);
+  await app.press("model-picker-provider-filter");
+  await app.waitFor("model-provider-openai");
+  await app.keyboard.press("escape");
+  await app.waitFor("model-provider-openai", { state: "gone" });
+  expect(app.value("model-picker-search-input")).toBe("cfg-fast small");
+  await app.press("model-picker-provider-filter");
+  await app.press("model-provider-openai");
+  await app.wait(200);
+  await app.keyboard.press("escape");
+  await app.waitFor("model-picker-search-open");
+  await app.waitFor("model-option-gpt-4.1-mini");
+  await app.press("model-picker-search-open");
+  expect(app.value("model-picker-search-input")).toBe("");
+  expect(app.shows("model-option-fast-small")).toBe(true);
 });
 
 test("rows show the host's label and provider, and two models that read the same stay distinguishable", async () => {
