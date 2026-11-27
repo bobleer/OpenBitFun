@@ -214,8 +214,26 @@ test("a device's ⋯ removes it only after a confirmation", async () => {
   await app.waitUntil(() => backend.actions().includes("account_delete_device"));
 });
 
-test("Rename sets the account alias of the device", async () => {
-  const { app, backend } = await openFleet();
+test("Rename sets the account alias of the device and refreshes the sidebar name", async () => {
+  const nav = navigator();
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"]!;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = (data ?? {}) as { action?: string; request?: { device_id?: string; device_alias?: string | null } };
+    if (req.action === "account_update_device_alias" && req.request?.device_id) {
+      nav.revision += 1;
+      for (const device of nav.devices) {
+        if ((device as { deviceId?: string }).deviceId === req.request.device_id) {
+          (device as { name: string }).name = req.request.device_alias || "linux-box";
+        }
+      }
+    }
+    return baseInvoke(data);
+  };
+  const host = fleetObpHost(backend, { fleet: ENTRY, navigator: nav });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await showDevices(app);
+
   await deviceMenu(app, "dev-b");
   await app.press("device-menu-rename-dev-b");
   await app.waitFor("device-rename-field");
@@ -227,6 +245,31 @@ test("Rename sets the account alias of the device", async () => {
     device_id: "dev-b",
     device_alias: "gpu-box",
   });
+  await app.waitFor("text:GPU-BOX");
+});
+
+test("Rename surfaces backend failures as a toast instead of failing silently", async () => {
+  const nav = navigator();
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"]!;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = (data ?? {}) as { action?: string };
+    if (req.action === "account_update_device_alias") {
+      return { ok: false, error: "directory unavailable" };
+    }
+    return baseInvoke(data);
+  };
+  const host = fleetObpHost(backend, { fleet: ENTRY, navigator: nav });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await showDevices(app);
+
+  await deviceMenu(app, "dev-b");
+  await app.press("device-menu-rename-dev-b");
+  await app.waitFor("device-rename-field");
+  await app.clear("device-rename-field");
+  await app.type("device-rename-field", "gpu-box");
+  await app.press("device-rename-save");
+  await app.waitFor("text:directory unavailable");
 });
 
 test("an outdated device's ⋯ says what it needs", async () => {

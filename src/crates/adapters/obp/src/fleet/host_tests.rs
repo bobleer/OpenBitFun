@@ -257,3 +257,133 @@ async fn devices_leave_the_index_only_when_the_directory_drops_them() {
         .iter()
         .all(|device| device.device_id != "gone"));
 }
+
+#[test]
+fn self_directory_name_overrides_local_facts_and_survives_refresh() {
+    let index = FleetIndex::new("self-dev".into(), None, None);
+    let own = FleetDeviceFacts {
+        device_id: "self-dev".into(),
+        name: "MacBook-Pro.local".into(),
+        host_kind: FleetHostKind::Desktop,
+        is_client_device: true,
+        state: FleetDeviceState::Online,
+        ..FleetDeviceFacts::default()
+    };
+    index.set_self_facts(own.clone());
+    assert_eq!(
+        index.device_facts("self-dev").unwrap().name,
+        "MacBook-Pro.local"
+    );
+
+    let rev_before = index.revision();
+    index.set_self_display_name(Some("My Studio".into()));
+    assert!(index.revision() > rev_before);
+    assert_eq!(index.device_facts("self-dev").unwrap().name, "My Studio");
+    assert_eq!(
+        index
+            .navigator(None)
+            .devices
+            .iter()
+            .find(|d| d.device_id == "self-dev")
+            .unwrap()
+            .name,
+        "My Studio"
+    );
+
+    // Subsequent local facts updates must not clobber the directory alias.
+    let mut updated_own = own.clone();
+    updated_own.version = Some("2.0.1".into());
+    index.set_self_facts(updated_own);
+    assert_eq!(index.device_facts("self-dev").unwrap().name, "My Studio");
+
+    // Resetting the alias back to the machine name bumps revision and updates immediately.
+    let rev_before_reset = index.revision();
+    index.set_self_display_name(Some("MacBook-Pro.local".into()));
+    assert!(index.revision() > rev_before_reset);
+    assert_eq!(
+        index.device_facts("self-dev").unwrap().name,
+        "MacBook-Pro.local"
+    );
+}
+
+struct MutableDirectory {
+    rows: Mutex<Vec<FleetDirectoryDevice>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl FleetDirectory for MutableDirectory {
+    fn devices(&self) -> FleetFuture<'_, Result<Vec<FleetDirectoryDevice>, String>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let rows = self.rows.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        Box::pin(async move { Ok(rows) })
+    }
+}
+
+struct SignedOutSession;
+
+impl openbitfun_link::session::AccountSession for SignedOutSession {
+    fn identity(
+        &self,
+    ) -> openbitfun_link::session::BoxFuture<'_, Option<openbitfun_link::session::AccountIdentity>>
+    {
+        Box::pin(async { None })
+    }
+
+    fn access_token(
+        &self,
+    ) -> openbitfun_link::session::BoxFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+#[tokio::test]
+async fn link_presence_exposes_self_name_and_refreshes_after_invalidation() {
+    let dir = Arc::new(MutableDirectory {
+        rows: Mutex::new(vec![
+            row("self-dev", "My Mac", Some("desktop"), true),
+            row("peer-1", "ecs-box", Some("cli"), true),
+        ]),
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let link = Link::start(
+        openbitfun_link::session::LinkOptions::from_environment(temp.path().to_path_buf(), "test"),
+        Arc::new(SignedOutSession),
+    );
+    let presence = LinkPresence::new(Arc::clone(&link), "self-dev".into(), Arc::clone(&dir) as _);
+
+    let first = presence.presence().await;
+    assert_eq!(presence.self_display_name().as_deref(), Some("My Mac"));
+    assert_eq!(
+        first.iter().find(|p| p.device_id == "peer-1").unwrap().name,
+        "ecs-box"
+    );
+    assert_eq!(dir.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Mutate directory rows: cached reads still serve the old names until invalidated.
+    *dir.rows.lock().unwrap() = vec![
+        row("self-dev", "Renamed Mac", Some("desktop"), true),
+        row("peer-1", "Renamed ECS", Some("cli"), true),
+    ];
+    let cached = presence.presence().await;
+    assert_eq!(dir.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        cached
+            .iter()
+            .find(|p| p.device_id == "peer-1")
+            .unwrap()
+            .name,
+        "ecs-box"
+    );
+
+    // Invalidating the directory cache forces the next read to pick up both aliases immediately.
+    presence.invalidate_directory();
+    let fresh = presence.presence().await;
+    assert_eq!(dir.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(presence.self_display_name().as_deref(), Some("Renamed Mac"));
+    assert_eq!(
+        fresh.iter().find(|p| p.device_id == "peer-1").unwrap().name,
+        "Renamed ECS"
+    );
+    link.shutdown().await;
+}

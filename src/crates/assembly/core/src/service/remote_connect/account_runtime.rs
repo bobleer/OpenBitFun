@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use openbitfun_services_integrations::remote_connect::account::{
-    AccountClient, AccountSession, RoutingIntent,
+    error_indicates_expired_token, AccountClient, AccountSession, RoutingIntent,
 };
 use openbitfun_services_integrations::remote_connect::directory_session::DirectorySessions;
 use openbitfun_services_integrations::remote_connect::{session_store, DeviceIdentity};
@@ -817,15 +817,21 @@ impl AccountRuntime {
         device_id: &str,
         device_alias: Option<&str>,
     ) -> Result<()> {
-        let generation = self.account_context_generation();
-        let (session, relay_url) = self.read_account_context_for_generation(generation).await?;
-        AccountClient::new()
-            .update_device_alias(&relay_url, &session, device_id, device_alias)
-            .await?;
-        if !self.account_context_is_current(generation) {
-            return Err(anyhow!("account context changed"));
+        let (session, directory_url) = self.read_directory_context().await?;
+        let token = session.token.clone();
+        match AccountClient::new()
+            .update_device_alias(&directory_url, &session, device_id, device_alias)
+            .await
+        {
+            Err(error) if error_indicates_expired_token(&format!("{error:#}")) => {
+                self.invalidate_directory_session(&token).await;
+                let (session, directory_url) = self.read_directory_context().await?;
+                AccountClient::new()
+                    .update_device_alias(&directory_url, &session, device_id, device_alias)
+                    .await
+            }
+            other => other,
         }
-        Ok(())
     }
 
     pub async fn list_devices(&self) -> Result<Vec<AccountDevice>> {

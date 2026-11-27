@@ -199,8 +199,9 @@ function RenameDialog(): JSX.Element {
   const submit = () => {
     const target = renameTarget();
     if (!target || !canSave()) return;
+    const nextName = renameDraft().trim();
     renameTarget.set(null);
-    void saveDeviceAlias(target.deviceId, renameDraft().trim());
+    void saveDeviceAlias(target.deviceId, nextName);
   };
   return (
     <ModalDialog

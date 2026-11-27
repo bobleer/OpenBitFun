@@ -308,6 +308,14 @@ pub trait FleetPresenceSource: Send + Sync + 'static {
     fn lists_every_device(&self) -> bool {
         false
     }
+    /// This host's own display name from the account directory (alias first,
+    /// else reported name), if the last [`Self::presence`] read one.
+    fn self_display_name(&self) -> Option<String> {
+        None
+    }
+    /// Drops any cached directory snapshot so the next [`Self::presence`]
+    /// reads fresh names and membership from the account directory.
+    fn invalidate_directory(&self) {}
 }
 
 /// Drops from the index the devices that left the account: after a
@@ -345,6 +353,14 @@ impl FleetPresenceSource for DepartedDevices {
 
     fn lists_every_device(&self) -> bool {
         self.inner.lists_every_device()
+    }
+
+    fn self_display_name(&self) -> Option<String> {
+        self.inner.self_display_name()
+    }
+
+    fn invalidate_directory(&self) {
+        self.inner.invalidate_directory();
     }
 }
 
@@ -535,6 +551,8 @@ pub struct LinkPresence {
     /// The host's links can reach the account's cloud node.
     dials_cloud_node: bool,
     cache: Mutex<Option<(Instant, Vec<FleetDirectoryDevice>)>>,
+    /// This host's own display name from the latest successful directory read.
+    self_name: Mutex<Option<String>>,
     /// The last read had a directory (fresh or the last good one).
     complete: std::sync::atomic::AtomicBool,
 }
@@ -558,6 +576,7 @@ impl LinkPresence {
             directory,
             dials_cloud_node,
             cache: Mutex::new(None),
+            self_name: Mutex::new(None),
             complete: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -597,6 +616,14 @@ impl FleetPresenceSource for LinkPresence {
         Box::pin(async move {
             let status = self.link.status();
             let directory = self.directory().await;
+            if let Some(rows) = directory.as_deref() {
+                let own_name = rows
+                    .iter()
+                    .find(|row| row.device_id == self.self_id)
+                    .map(|row| row.name.trim().to_string())
+                    .filter(|name| !name.is_empty());
+                *self.self_name.lock().unwrap_or_else(|p| p.into_inner()) = own_name;
+            }
             self.complete
                 .store(directory.is_some(), std::sync::atomic::Ordering::SeqCst);
             merge_presence_with(
@@ -611,6 +638,17 @@ impl FleetPresenceSource for LinkPresence {
 
     fn lists_every_device(&self) -> bool {
         self.complete.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn self_display_name(&self) -> Option<String> {
+        self.self_name
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn invalidate_directory(&self) {
+        *self.cache.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 }
 
@@ -770,6 +808,14 @@ impl FleetPeerTransport for LinksPeerTransport {
                 .await
                 .map_err(FleetCallError::from)
         })
+    }
+
+    fn self_display_name(&self) -> Option<String> {
+        self.presence.self_display_name()
+    }
+
+    fn invalidate_directory(&self) {
+        self.presence.invalidate_directory();
     }
 }
 
@@ -1181,6 +1227,13 @@ impl FleetHost {
         if let Some(replica) = self.replica_sync() {
             replica.wake();
         }
+    }
+
+    /// Drops cached account-directory metadata and refreshes presence now so
+    /// subsequent `fleet_navigator` reads see device renames and removals right away.
+    pub async fn refresh_directory_now(&self) {
+        self.transport.invalidate_directory();
+        self.sync.refresh_presence().await;
     }
 
     /// Attaches the account replica (`fleet::replica`) and starts its

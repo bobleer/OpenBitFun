@@ -109,6 +109,14 @@ pub trait FleetPeerTransport: Send + Sync + 'static {
         command: &str,
         args: Value,
     ) -> FleetFuture<'_, Result<Value, FleetCallError>>;
+    /// This host's own display name from the account directory (alias first,
+    /// else reported name), if the latest presence read saw one.
+    fn self_display_name(&self) -> Option<String> {
+        None
+    }
+    /// Drops any cached directory snapshot so the next [`Self::presence`]
+    /// reads fresh names and membership from the account directory.
+    fn invalidate_directory(&self) {}
 }
 
 /// Timers of the replication.
@@ -268,6 +276,9 @@ impl FleetSync {
     /// Re-read presence and start or stop the per-device links.
     pub async fn refresh_presence(self: &Arc<Self>) {
         let presence = self.peers.presence().await;
+        if let Some(self_name) = self.peers.self_display_name() {
+            self.index.set_self_display_name(Some(self_name));
+        }
         let self_id = self.index.self_device_id().to_string();
         let presence: Vec<FleetPeerPresence> = presence
             .into_iter()

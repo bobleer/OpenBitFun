@@ -584,6 +584,14 @@ pub fn presence_changed() {
     }
 }
 
+/// Drops cached account-directory metadata and synchronously refreshes fleet
+/// presence so `fleet_navigator` reflects device renames/removals immediately.
+pub(crate) async fn refresh_directory_now() {
+    if let Some(host) = current() {
+        host.refresh_directory_now().await;
+    }
+}
+
 /// The `fleet` member of the native host's ready answer: the fleet protocol
 /// this build speaks and this device's id, so the native UI keys its own
 /// device before the first fleet call.

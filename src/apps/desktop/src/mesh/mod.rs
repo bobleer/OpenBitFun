@@ -439,6 +439,12 @@ impl MeshRuntime {
         entry
     }
 
+    /// Drops cached account-directory device names so the next `list_devices`
+    /// reads fresh aliases.
+    pub fn invalidate_directory_cache(&self) {
+        *lock(&self.directory) = None;
+    }
+
     async fn directory_names(&self) -> HashMap<String, String> {
         if let Some((at, names)) = lock(&self.directory).as_ref() {
             if at.elapsed() < DIRECTORY_CACHE_TTL {

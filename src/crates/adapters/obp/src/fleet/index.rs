@@ -79,6 +79,9 @@ struct DeviceEntry {
     legacy: bool,
     /// Self facts the host reported (fleet protocol, capabilities).
     self_facts: Option<FleetDeviceFacts>,
+    /// Display name from the account directory for `self_device_id` (alias first,
+    /// else reported name), overriding the machine hostname when present.
+    self_directory_name: Option<String>,
     cached_fleet_protocol: Option<u32>,
     cached_capabilities: Vec<String>,
     partition: Option<FleetDigest>,
@@ -91,13 +94,21 @@ struct DeviceEntry {
 impl DeviceEntry {
     fn facts(&self, device_id: &str) -> FleetDeviceFacts {
         if let Some(own) = self.self_facts.as_ref().filter(|_| self.is_self) {
-            return FleetDeviceFacts {
+            let mut facts = FleetDeviceFacts {
                 device_id: device_id.to_string(),
                 state: FleetDeviceState::Online,
                 state_reason: None,
                 as_of_ms: crate::now_ms(),
                 ..own.clone()
             };
+            if let Some(name) = self
+                .self_directory_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+            {
+                facts.name = name.to_string();
+            }
+            return facts;
         }
         let (state, reason) = self.state();
         let fleet_protocol = match &self.link {
@@ -335,11 +346,40 @@ impl FleetIndex {
             if entry.self_facts == next {
                 return;
             }
-            entry.name = facts.name.clone();
+            entry.name = entry
+                .self_directory_name
+                .clone()
+                .unwrap_or_else(|| facts.name.clone());
             entry.host_kind = facts.host_kind;
             entry.is_client_device = facts.is_client_device;
             entry.self_facts = next;
             Self::bump(state, &self_id, pending, false);
+        });
+    }
+
+    /// Applies this host's display name from the account directory (alias first,
+    /// else reported name) so renaming this device updates its own navigator row.
+    pub fn set_self_display_name(&self, name: Option<String>) {
+        let next = name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let self_id = self.self_device_id.clone();
+        self.change(|state, pending| {
+            let entry = state.devices.entry(self_id.clone()).or_default();
+            if entry.self_directory_name == next {
+                return;
+            }
+            let before_name = entry.facts(&self_id).name;
+            entry.self_directory_name = next;
+            entry.name = entry
+                .self_directory_name
+                .clone()
+                .or_else(|| entry.self_facts.as_ref().map(|own| own.name.clone()))
+                .unwrap_or_default();
+            let after_name = entry.facts(&self_id).name;
+            if before_name != after_name {
+                Self::bump(state, &self_id, pending, false);
+            }
         });
     }
 

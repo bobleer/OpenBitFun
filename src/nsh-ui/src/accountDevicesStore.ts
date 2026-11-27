@@ -9,13 +9,13 @@ import { localDeviceId } from "./devicePrefsStore";
 import { refreshFleetNavigator } from "./fleetStore";
 import { loadAccountState } from "./homeStore";
 import { localizeHostError, tr } from "./i18n";
-import { runStep } from "./state";
 import { pushToast } from "./ui/overlays";
 
 const removeDeviceBusy = signal(false);
+const saveAliasBusy = signal(false);
 
-function afterAccountChange(): void {
-  if (fleetActive()) void refreshFleetNavigator();
+async function afterAccountChange(): Promise<void> {
+  if (fleetActive()) await refreshFleetNavigator({ full: true });
 }
 
 /**
@@ -31,7 +31,7 @@ export async function removeAccountDevice(deviceId: string, label?: string): Pro
     await invokeRawCommand<unknown>("account_delete_device", { targetDeviceId: deviceId });
     pushToast(isLocal ? tr("devices.currentDeviceRemoved") : tr("devices.deviceRemoved", { name }), "success");
     if (isLocal) await loadAccountState();
-    afterAccountChange();
+    await afterAccountChange();
   } catch (error) {
     pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
   } finally {
@@ -40,13 +40,21 @@ export async function removeAccountDevice(deviceId: string, label?: string): Pro
 }
 
 /** Persists a device alias; an empty alias clears it and the account falls back to the name. */
-export async function saveDeviceAlias(deviceId: string, alias: string): Promise<void> {
+export async function saveDeviceAlias(deviceId: string, alias: string): Promise<boolean> {
+  if (saveAliasBusy()) return false;
   const trimmed = alias.trim();
-  await runStep(async () => {
+  saveAliasBusy.set(true);
+  try {
     await invokeCommand<unknown>("account_update_device_alias", {
       device_id: deviceId,
       device_alias: trimmed || null,
     });
-    afterAccountChange();
-  });
+    await afterAccountChange();
+    return true;
+  } catch (error) {
+    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+    return false;
+  } finally {
+    saveAliasBusy.set(false);
+  }
 }

@@ -1393,18 +1393,29 @@ pub struct AccountUpdateDeviceAliasRequest {
 pub async fn account_update_device_alias(
     request: AccountUpdateDeviceAliasRequest,
 ) -> Result<(), String> {
-    let generation = account_context_generation();
-    let _operation = lock_account_operation(generation).await?;
-    let (session, relay_url) = read_account_context_for_generation(generation).await?;
-    AccountClient::new()
-        .update_device_alias(
-            &relay_url,
-            &session,
-            &request.device_id,
-            request.device_alias.as_deref(),
-        )
-        .await
-        .map_err(|error| error.to_string())
+    let device_id = request.device_id;
+    let device_alias = request.device_alias;
+    super::account_directory::with_directory_session(|session, directory_url| {
+        let device_id = device_id.clone();
+        let device_alias = device_alias.clone();
+        async move {
+            AccountClient::new()
+                .update_device_alias(
+                    &directory_url,
+                    &session,
+                    &device_id,
+                    device_alias.as_deref(),
+                )
+                .await
+                .map_err(|error| error.to_string())
+        }
+    })
+    .await?;
+    if let Some(mesh) = crate::mesh::global() {
+        mesh.invalidate_directory_cache();
+    }
+    crate::fleet::refresh_directory_now().await;
+    Ok(())
 }
 
 /// Remove a device from the account.

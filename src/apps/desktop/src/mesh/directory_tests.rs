@@ -135,5 +135,31 @@ async fn pair_keys_and_kinds_come_from_the_directory_session() {
         .as_deref(),
         Some(format!("ws://127.0.0.1:{port}/agent/obp").as_str())
     );
+    // Device rename uses the 2.0 directory session (never needing the legacy relay context)
+    // and persists aliases for both peer and local devices.
+    crate::api::remote_connect_api::account_update_device_alias(
+        crate::api::remote_connect_api::AccountUpdateDeviceAliasRequest {
+            device_id: PEER.into(),
+            device_alias: Some("Build Box".into()),
+        },
+    )
+    .await
+    .unwrap();
+    crate::api::remote_connect_api::account_update_device_alias(
+        crate::api::remote_connect_api::AccountUpdateDeviceAliasRequest {
+            device_id: LOCAL.into(),
+            device_alias: Some("Work Mac".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let rows = db::DeviceRow::list_by_user(&database, "42").await.unwrap();
+    let alias_of = |id: &str| {
+        rows.iter()
+            .find(|r| r.device_id == id)
+            .and_then(|r| r.device_alias.as_deref())
+    };
+    assert_eq!(alias_of(PEER), Some("Build Box"));
+    assert_eq!(alias_of(LOCAL), Some("Work Mac"));
     server.abort();
 }
