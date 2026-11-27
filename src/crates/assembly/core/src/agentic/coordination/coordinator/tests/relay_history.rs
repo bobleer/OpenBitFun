@@ -292,6 +292,116 @@ async fn load_relay_session_turns_streams_and_replays_a_temporary_btw_child() {
 }
 
 #[tokio::test]
+async fn btw_transcript_pages_read_memory_without_history_writes_or_writer_waits() {
+    let (workspace, coordinator, manager, parent, storage, parent_turn) =
+        relay_observer_fixture("btw-transcript-pages").await;
+    let child_id = format!("btw-{parent}");
+    coordinator
+        .ensure_btw_session(
+            &parent,
+            &child_id,
+            None,
+            "question",
+            Some(&parent_turn),
+            Some(0),
+        )
+        .await
+        .unwrap();
+    let coordinator = Arc::new(coordinator);
+    let compatibility = crate::product_runtime::CoreAgentRuntimeCompatibility::build(
+        coordinator.clone(),
+        super::super::DialogScheduler::new(coordinator.clone(), manager.clone()),
+    );
+    assert!(compatibility
+        .load_persisted_session_turns_page(&storage, &child_id, None, Some(10))
+        .await
+        .unwrap()
+        .turns
+        .is_empty());
+    for index in 0..3 {
+        let id = format!("btw-turn-{index}");
+        manager
+            .start_dialog_turn(
+                &child_id,
+                "Standard".into(),
+                format!("Question {index}"),
+                Some(id.clone()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let answer = Message::assistant(format!("Answer {index}"))
+            .with_turn_id(id.clone())
+            .with_round_id(format!("round-{index}"));
+        complete_observed_turn(&coordinator, &manager, &child_id, &id, answer).await;
+    }
+    let events = coordinator.event_queue.dequeue_batch(100).await;
+    assert!(
+        events.iter().any(|envelope| matches!(
+            &envelope.event,
+            openbitfun_events::AgenticEvent::SessionHistoryChanged {
+                session_id,
+                settled_turn_id: Some(turn_id),
+            } if session_id == &child_id && turn_id == "btw-turn-2"
+        )),
+        "temporary history needs the same settlement fence as durable history"
+    );
+    let _writer = manager.acquire_session_mutation(&child_id).await.unwrap();
+    let latest = tokio::time::timeout(
+        Duration::from_secs(1),
+        compatibility.load_persisted_session_turns_page(&storage, &child_id, None, Some(2)),
+    )
+    .await
+    .expect("a BTW transcript read must not wait on its running writer")
+    .unwrap();
+    assert!(latest.has_earlier);
+    assert_eq!(
+        latest
+            .turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        ["btw-turn-1", "btw-turn-2"]
+    );
+    assert!(latest
+        .turns
+        .iter()
+        .all(|turn| turn.status == TurnStatus::Completed));
+    assert_eq!(latest.turns[1].user_message.content, "Question 2");
+    assert_eq!(
+        latest.turns[1].model_rounds[0].text_items[0].content,
+        "Answer 2"
+    );
+    let older = compatibility
+        .load_persisted_session_turns_page(&storage, &child_id, Some(1), Some(2))
+        .await
+        .unwrap();
+    assert!(!older.has_earlier);
+    assert_eq!(older.turns.len(), 1);
+    assert_eq!(older.turns[0].turn_id, "btw-turn-0");
+    let empty = compatibility
+        .load_persisted_session_turns_page(&storage, &child_id, None, Some(0))
+        .await
+        .unwrap();
+    assert!(empty.turns.is_empty());
+    assert!(empty.has_earlier);
+    assert!(compatibility
+        .load_persisted_session_turns_page(&workspace.path().join("wrong"), &child_id, None, None)
+        .await
+        .is_err());
+    assert!(
+        manager
+            .persistence_manager()
+            .load_visible_session_turns(&storage, &child_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "reading BTW must not create durable turn records"
+    );
+}
+
+#[tokio::test]
 async fn load_relay_session_turns_projects_history_while_a_turn_holds_the_mutation_lease() {
     let (_workspace, coordinator, session_manager, session_id, storage, turn_id) =
         relay_observer_fixture("lease-held-observer").await;

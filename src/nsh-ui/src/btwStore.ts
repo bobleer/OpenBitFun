@@ -12,6 +12,11 @@ import {
   type FileAttachment,
   type ImageAttachment,
 } from "./attachmentStore";
+import type { LiveModelRound } from "./agentEvents";
+import type { SessionTranscriptView, TranscriptTurnView } from "./api";
+import { admitRuntimeEvent, type RuntimeReplayFloor } from "./runtimeEventReplay";
+import { reduceSideQuestionRounds, SIDE_QUESTION_EVENTS } from "./sideQuestionEvents";
+import { noteTranscriptSource } from "./toolDetailStore";
 import { fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { isMissingCommand } from "./settingsMutations";
 
@@ -23,6 +28,11 @@ export interface SideQuestion {
   parentSessionId: string;
   deviceId: string;
   question: string;
+  workspaceId?: string;
+  turnId?: string;
+  rounds: LiveModelRound[];
+  transcript?: TranscriptTurnView;
+  startedAt: number;
   images?: ImageAttachment[];
   answer: string;
   state: SideQuestionState;
@@ -176,6 +186,10 @@ export function openSideQuestion(target: SideQuestionTarget, question: string): 
 
 /** Starts a fresh ephemeral side-question thread while keeping the split pane open. */
 function resetSideQuestionThread(): void {
+  replayFloor = undefined;
+  supersededAttempts.clear();
+  refreshRequested = false;
+  pendingRead = null;
   batch(() => {
     sideQuestion.set(null);
     sideQuestionHistory.set([]);
@@ -219,23 +233,29 @@ export async function askSideQuestion(
 
   // Reuse the ephemeral child session when continuing under the same parent session;
   // start a clean thread if the user switched parent sessions.
-  const sameParent = sideQuestionParentId() === target.sessionId && sideQuestionTarget()?.deviceId === target.deviceId
-    && Boolean(sideQuestionChildId());
+  const sameParent = sideQuestionParentId() === target.sessionId && previous?.deviceId === target.deviceId && Boolean(sideQuestionChildId());
   const childSessionId = sameParent ? sideQuestionChildId()! : newId("btw_session");
   const imageContexts = buildAttachmentContexts(outgoingImages);
   const modelId = target.modelId ?? sideQuestionModelOverride();
 
+  const requestId = newId("btw");
   const entry: SideQuestion = {
-    requestId: newId("btw"),
+    requestId,
+    turnId: `btw-turn-${requestId}`,
     childSessionId,
     parentSessionId: target.sessionId,
     deviceId: target.deviceId,
     question: text,
+    workspaceId: target.workspaceId ?? undefined,
+    rounds: [],
+    startedAt: Date.now(),
     ...(outgoingImages.length > 0 ? { images: outgoingImages } : {}),
     answer: "",
     state: "running",
   };
 
+  supersededAttempts.clear();
+  replayFloor = undefined;
   batch(() => {
     sideQuestionOpen.set(true);
     sideQuestionTarget.set(target);
@@ -307,6 +327,7 @@ export function cancelSideQuestion(): Promise<boolean> {
   }).finally(() => {
     cancellation = undefined;
     sideQuestionStopping.set(false);
+    if (sideQuestion()?.requestId === current.requestId && !stillRunning()) void refreshSideQuestionTranscript();
   });
   return cancellation;
 }
@@ -317,45 +338,120 @@ function matches(payload: unknown, origin: string): SideQuestion | null {
   const record = payload as Record<string, unknown>;
   const sessionId = record.sessionId ?? record.session_id;
   if (sessionId !== current.childSessionId) return null;
-  if (fleetActive() && current.deviceId && origin && origin !== current.deviceId) return null;
+  if (fleetActive() && current.deviceId && origin !== current.deviceId) return null;
+  const turnId = record.turnId ?? record.turn_id;
+  if (current.turnId && turnId && turnId !== current.turnId) return null;
   return current;
+}
+
+const supersededAttempts = new Set<string>();
+let replayFloor: RuntimeReplayFloor | undefined;
+let refreshRequested = false;
+let pendingRead: { childId: string; events: Array<{ event: string; payload: Record<string, unknown> }> } | null = null;
+
+function applyEvent(entry: SideQuestion, event: string, payload: Record<string, unknown>): SideQuestion {
+  const turnId = payload.turnId ?? payload.turn_id;
+  const diagnostic = payload.diagnostic as Record<string, unknown> | undefined;
+  if (event === "agentic://model-round-attempt-superseded") {
+    const attempt = diagnostic?.attemptId ?? diagnostic?.attempt_id;
+    if (typeof attempt === "string") supersededAttempts.add(attempt);
+  }
+  const rounds = reduceSideQuestionRounds(entry.rounds, event, payload, supersededAttempts);
+  const state: SideQuestionState = event === "agentic://dialog-turn-completed" ? "done"
+    : event === "agentic://dialog-turn-failed" ? "failed"
+    : event === "agentic://dialog-turn-cancelled" || event === "agentic://dialog-turn-interrupted" ? "cancelled"
+    : entry.state;
+  return { ...entry, rounds, state,
+    ...(typeof turnId === "string" && !entry.turnId ? { turnId } : {}),
+    ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+    answer: rounds.map(round => round.text).join("") };
+}
+
+/** Reads authoritative settled turns and replays a running journal after a gap. */
+export async function refreshSideQuestionTranscript(): Promise<void> {
+  const current = sideQuestion();
+  if (!current?.workspaceId) return;
+  if (pendingRead?.childId === current.childSessionId) {
+    refreshRequested = true;
+    return;
+  }
+  const read = { childId: current.childSessionId, events: [] as Array<{ event: string; payload: Record<string, unknown> }> };
+  pendingRead = read;
+  try {
+    const view = await invokeCommand<SessionTranscriptView>("get_session_transcript_view", {
+      session_id: current.childSessionId,
+      workspace_id: current.workspaceId,
+      limit: Math.max(1, sideQuestionHistory().length),
+      tool_detail: "summary",
+    }, fleetActive() && current.deviceId ? { target: current.deviceId } : undefined);
+    if (sideQuestionChildId() !== current.childSessionId || sideQuestion()?.deviceId !== current.deviceId) return;
+    noteTranscriptSource(view.turns, { sessionId: current.childSessionId, workspaceId: current.workspaceId, deviceId: current.deviceId });
+    batch(() => {
+      for (const turn of view.turns ?? []) {
+        if (!turn.settled) continue;
+        const entry = sideQuestionHistory().find(item => (item.turnId ?? `btw-turn-${item.requestId}`) === turn.turnId);
+        if (!entry) continue;
+        updateTurnEntry(entry.requestId, item => ({ ...item, transcript: turn,
+          answer: turn.items.filter(part => part.kind === "text").map(part => part.text).join(""),
+          state: turn.status === "failed" ? "failed" : turn.status === "cancelled" ? "cancelled" : "done",
+          ...(turn.error ? { error: turn.error } : {}) }));
+      }
+      const snapshot = view.runningTurn;
+      const active = sideQuestion();
+      if (snapshot?.activeTurnId && active?.requestId === current.requestId && active.state === "running" &&
+          (!active.turnId || active.turnId === snapshot.activeTurnId)) {
+        supersededAttempts.clear();
+        let restored: SideQuestion = { ...active, rounds: [], answer: "", turnId: snapshot.activeTurnId };
+        for (const event of snapshot.events ?? []) {
+          if (event.payload && typeof event.payload === "object") restored = applyEvent(restored, event.eventName, event.payload as Record<string, unknown>);
+        }
+        replayFloor = { streamId: snapshot.streamId, cursor: snapshot.cursor };
+        for (const event of read.events) {
+          const admitted = admitRuntimeEvent(event.event, event.payload, replayFloor);
+          if (admitted) restored = applyEvent(restored, event.event, admitted as Record<string, unknown>);
+        }
+        updateTurnEntry(active.requestId, () => restored);
+      }
+    });
+  } catch (error) {
+    // Keep already received work if a disconnected or older host cannot answer.
+    console.warn(`Side question transcript could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    if (pendingRead === read) {
+      pendingRead = null;
+      if (refreshRequested) {
+        refreshRequested = false;
+        void refreshSideQuestionTranscript();
+      }
+    }
+  }
 }
 
 let subscribed = false;
 
-/** Follows the child session's stream; other sessions' events are not this store's. */
+/** Follows all ordinary agent events for the ephemeral child, scoped by device and turn. */
 export function subscribeSideQuestionEvents(): void {
   if (subscribed) return;
   subscribed = true;
-  listenEvent<Record<string, unknown>>("agentic://text-chunk", (payload, meta) => {
-    const current = matches(payload, meta.origin);
-    if (!current || current.state !== "running") return;
-    if (payload.contentType === "thinking") return;
-    const chunk = payload.text ?? payload.delta ?? payload.content ?? payload.chunk;
-    if (typeof chunk !== "string" || !chunk) return;
-    updateTurnEntry(current.requestId, item => ({ ...item, answer: item.answer + chunk }));
-  });
-  listenEvent<Record<string, unknown>>("agentic://dialog-turn-completed", (payload, meta) => {
-    const current = matches(payload, meta.origin);
-    if (current && current.state === "running") {
-      updateTurnEntry(current.requestId, item => ({ ...item, state: "done" }));
-    }
-  });
-  listenEvent<Record<string, unknown>>("agentic://dialog-turn-failed", (payload, meta) => {
-    const current = matches(payload, meta.origin);
-    if (!current || current.state !== "running") return;
-    const error = typeof payload.error === "string" ? payload.error : "";
-    updateTurnEntry(current.requestId, item => ({
-      ...item,
-      state: "failed",
-      ...(error ? { error } : {}),
-    }));
-  });
-  listenEvent<Record<string, unknown>>("agentic://dialog-turn-cancelled", (payload, meta) => {
-    const current = matches(payload, meta.origin);
-    if (current && current.state === "running") {
-      updateTurnEntry(current.requestId, item => ({ ...item, state: "cancelled" }));
-    }
+  for (const event of SIDE_QUESTION_EVENTS) {
+    listenEvent<Record<string, unknown>>(event, (payload, meta) => {
+      const current = matches(payload, meta.origin);
+      if (!current) return;
+      if (current.state !== "running") {
+        if (["agentic://dialog-turn-completed", "agentic://dialog-turn-cancelled", "agentic://dialog-turn-interrupted", "agentic://dialog-turn-failed"].includes(event)) {
+          void refreshSideQuestionTranscript();
+        }
+        return;
+      }
+      const admitted = admitRuntimeEvent(event, payload, replayFloor) as Record<string, unknown> | null;
+      if (!admitted) return;
+      if (pendingRead?.childId === current.childSessionId) pendingRead.events.push({ event, payload: admitted });
+      updateTurnEntry(current.requestId, item => applyEvent(item, event, admitted));
+      if (sideQuestion()?.state !== "running") void refreshSideQuestionTranscript();
+    });
+  }
+  listenEvent<Record<string, unknown>>("agentic://session-history-changed", (payload, meta) => {
+    if (matches(payload, meta.origin)) void refreshSideQuestionTranscript();
   });
 }
 

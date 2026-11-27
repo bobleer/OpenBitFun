@@ -3558,12 +3558,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             }
         }
 
-        if persistence_succeeded && session_manager.should_persist_session_id(session_id) {
-            // Terminal chunks are a low-latency projection; this later event
-            // is the durable fence. Remote controllers use it to replace an
-            // equal-count partial assistant message with the completed
-            // persisted transcript instead of assuming message count is a
-            // content revision.
+        if persistence_succeeded {
+            // Terminal chunks can precede canonical history. This fence covers
+            // both persisted sessions and temporary children committed in memory,
+            // so controllers can read the final transcript and its usage facts.
             if let Err(error) = event_queue
                 .enqueue(
                     AgenticEvent::SessionHistoryChanged {
