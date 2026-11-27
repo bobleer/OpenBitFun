@@ -58,13 +58,13 @@ import {
   hasSecondaryLiveRoundText,
   hasSecondaryLiveRoundThinking,
   isStreamDraining,
+  liveToolToCallView,
   liveTurn,
   secondaryLiveTurn,
   secondaryStreamScrollTick,
   streamScrollTick,
   turnStartedAt,
   type LiveModelRound,
-  type LiveToolItem,
   hasVisibleTextFrom,
 } from "../agentEvents";
 import { recoverInterruptedDialogTurn, rollbackSessionToTurn, type ExternalCommandSubmission, type TranscriptTurnView, type WorkspaceRecord } from "../api";
@@ -3358,30 +3358,6 @@ function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean; prese
       </Each>
     </View>
   );
-}
-
-function liveToolToCallView(tool: LiveToolItem): ToolCallView {
-  return {
-    id: tool.toolId,
-    name: tool.effectiveToolName || tool.toolName,
-    detail: tool.progressMessage || tool.detail,
-    ...(tool.input !== undefined ? { input: tool.input } : {}),
-    ...(tool.planParameters ? { planParameters: tool.planParameters } : {}),
-    status: tool.status,
-    ...(tool.error ? { error: tool.error } : {}),
-    ...(tool.result !== undefined ? { result: tool.result } : {}),
-    ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
-    ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
-    ...(tool.genuiStream
-      ? {
-          genuiStream: {
-            source: tool.genuiStream.source,
-            format: tool.genuiStream.format,
-            ...(tool.genuiStream.title ? { title: tool.genuiStream.title } : {}),
-          },
-        }
-      : {}),
-  };
 }
 
 const liveRounds = computed<LiveModelRound[]>(() => liveTurn()?.rounds ?? []);
@@ -10800,11 +10776,10 @@ function ReviewProgressInPane(props: { pane: 0 | 1 }) {
   const turns = props.pane === 1 ? secondaryTurns : sessionTurns;
   const live = computed(() => {
     const current = props.pane === 1 ? secondaryLiveTurn() : liveTurn();
-    return current && sessionKey(current.sessionId, current.deviceId) === scope()
-      ? { turnId: current.turnId, calls: current.rounds.flatMap(round => round.tools.map(liveToolToCallView)) }
-      : null;
+    return current && sessionKey(current.sessionId, current.deviceId) === scope() ? current : null;
   });
-  return <ReviewProgress scope={scope} turns={turns} live={live} padding={sessionsPadX} width={contentWidth} />;
+  return <ReviewProgress scope={scope} turns={turns} liveTurnId={() => live()?.turnId}
+    liveTools={() => live()?.reviewTools} padding={sessionsPadX} width={contentWidth} />;
 }
 
 function SecondarySessionPane() {

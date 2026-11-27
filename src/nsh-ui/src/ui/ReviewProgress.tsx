@@ -4,12 +4,11 @@ import { formatCount, toolCallOf, type ToolCallView } from "../format";
 import { tr, type MessageKey } from "../i18n";
 import { space, textStyle } from "../theme";
 import { detailedToolCall, loadToolDetail, toolDetailState } from "../toolDetailStore";
-import { normalizeToolName, toolInputRecord } from "../toolPresentation";
+import { reviewProgressTool, toolInputRecord } from "../toolPresentation";
 import { ActionCard } from "./ActionCard";
 import { ModalDialog } from "./overlays";
 import { Button, InlineBanner } from "./primitives";
 
-const REVIEW_TOOLS = new Set(["launchreviewagent", "task", "agentspawn", "agentfork"]);
 type CheckState = "completed" | "partial" | "skipped" | "cancelled" | "failed" | "active" | "unknown";
 const STATE_LABEL: Record<CheckState, MessageKey> = {
   completed: "review.progress.completed", partial: "review.progress.partial",
@@ -33,15 +32,6 @@ function resultState(call: ToolCallView): CheckState {
     ? "active" : "unknown";
 }
 
-function checkOf(call: ToolCallView) {
-  const tool = normalizeToolName(call.name);
-  if (!call.id || !REVIEW_TOOLS.has(tool)) return null;
-  const args = toolInputRecord(call.input);
-  const reviewer = text(args.subagent_type ?? args.subagentType ?? args.agent_type ?? args.agentType);
-  if (tool !== "launchreviewagent" && !reviewer.startsWith("Review")) return null;
-  return { id: call.id, call, state: resultState(call), label: text(args.description) || reviewer };
-}
-
 function savedOutput(call: ToolCallView): string {
   const result = toolInputRecord(call.result);
   const output = text(result.partial_output ?? result.partialOutput ?? result.output ?? result.result ??
@@ -57,31 +47,49 @@ function savedOutput(call: ToolCallView): string {
 export function ReviewProgress(props: {
   scope: () => string;
   turns: () => readonly TranscriptTurnView[];
-  live: () => { turnId: string | null; calls: ToolCallView[] } | null;
+  liveTurnId: () => string | null | undefined;
+  liveTools: () => readonly ToolCallView[] | undefined;
   width: () => number;
   padding: () => number;
 }) {
+  const liveTurnId = computed(props.liveTurnId);
+  const liveTools = computed(props.liveTools);
   const latest = computed(() => props.turns().findLast(turn => turn.kind === "user_dialog") ?? null);
   const saved = computed(() => {
     const turn = latest();
-    return turn?.items.flatMap(item => item.kind === "tool" ? [toolCallOf(item.tool, turn)] : []) ?? [];
+    return turn?.items.flatMap(item => {
+      if (item.kind !== "tool") return [];
+      const call = toolCallOf(item.tool, turn);
+      return reviewProgressTool(call.name, call.input) ? [call] : [];
+    }) ?? [];
   });
   const current = computed(() => {
     if (!props.scope()) return null;
-    const live = props.live();
+    const liveId = liveTurnId();
     const turn = latest();
-    const calls = !live ? saved() : live.turnId !== turn?.turnId ? live.calls
-      : [...new Map([...saved(), ...live.calls].map(call => [call.id, call])).values()];
-    const reported = calls.some(call => normalizeToolName(call.name) === "submitcodereview" &&
-      resultState(call) === "completed");
-    const checks = calls.map(checkOf).filter(check => check !== null);
-    if (reported || !checks.length) return null;
-    const settled = !live && turn?.settled;
+    const live = liveTools() ?? [];
+    const calls = liveId === undefined ? saved() : liveId !== turn?.turnId ? live
+      : [...new Map([...saved(), ...live].map(call => [call.id, call])).values()];
+    const checks = [];
+    let handled = 0;
+    for (const call of calls) {
+      const tool = reviewProgressTool(call.name, call.input);
+      if (!tool) continue;
+      const state = resultState(call);
+      if (tool.kind === "report") {
+        if (state === "completed") return null;
+      } else if (call.id) {
+        checks.push({ id: call.id, call, state, label: tool.label });
+        if (state !== "active" && state !== "unknown") handled++;
+      }
+    }
+    if (!checks.length) return null;
+    const settled = liveId === undefined && turn?.settled;
     const interrupted = settled && (turn.status === "failed" || turn.status === "cancelled" ||
       turn.recovery?.status === "interrupted");
-    return { checks, settled, interrupted };
+    return { checks, handled, settled, interrupted };
   });
-  const key = computed(() => JSON.stringify([props.scope(), props.live()?.turnId ?? latest()?.turnId]));
+  const key = computed(() => JSON.stringify([props.scope(), liveTurnId() ?? latest()?.turnId]));
   const open = signal(false);
   const selected = signal("");
   effect(() => { key(); open.set(false); selected.set(""); });
@@ -95,7 +103,7 @@ export function ReviewProgress(props: {
 
   return <If when={current()}>{state => {
     const summary = () => tr("review.progress.count", {
-      handled: formatCount(state().checks.filter(check => check.state !== "active" && check.state !== "unknown").length),
+      handled: formatCount(state().handled),
       total: formatCount(state().checks.length),
     });
     return <>

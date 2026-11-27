@@ -85,7 +85,7 @@ test("interrupted strict review keeps separate reviewer outcomes and reads exact
   expect(host.pageHostCalls).toHaveLength(0);
 });
 
-test("live reviewer progress counts launches separately and yields to a submitted report", async () => {
+test("live review ignores unrelated tools, drops superseded checks and yields to a submitted report", async () => {
   const host = fixture(false);
   const app = await open("./fixtures/obpApp.tsx", { ...DISPLAY, host: { handlers: host.handlers } });
   await openSession(app, "Strict Review", { deviceId: OWNER });
@@ -95,16 +95,29 @@ test("live reviewer progress counts launches separately and yields to a submitte
       seq: ++seq, origin: OWNER, originInstance: OWNER + "-1", event,
       payload: { sessionId: REVIEW, turnId: TURN, roundId: "strict-round", ...payload },
     } })]);
-  const toolEvent = (toolEvent: Record<string, unknown>) => publish("agentic://tool-event", { toolEvent });
+  const toolEvent = (toolEvent: Record<string, unknown>, scope: Record<string, unknown> = {}) =>
+    publish("agentic://tool-event", { ...scope, toolEvent });
   await publish("agentic://dialog-turn-started", { userInput: "Review concurrent changes.", turnIndex: 0 });
-  for (const id of ["first-check", "second-check"]) {
-    await toolEvent({ event_type: "Started", tool_id: id, tool_name: "LaunchReviewAgent",
-      params: { subagent_type: "ReviewWorker", description: id } });
-  }
+  await toolEvent({ event_type: "Started", tool_id: "first-check", tool_name: "LaunchReviewAgent",
+    params: { subagent_type: "ReviewWorker", description: "First reviewer" } });
+  const retry = { roundId: "retry-round", attemptId: "failed-attempt" };
+  await toolEvent({ event_type: "Started", tool_id: "second-check", tool_name: "Task",
+    params: { subagentType: "ReviewWorker", description: "Second reviewer" } }, retry);
   await app.waitFor("0 of 2 launched checks handled");
+  await toolEvent({ event_type: "Started", tool_id: "unrelated", tool_name: "Task",
+    params: { subagentType: "Explore", description: "Unrelated task" } }, retry);
+  await toolEvent({ event_type: "Progress", tool_id: "unrelated", tool_name: "Task", message: "Still exploring" }, retry);
+  expect(app.shows("0 of 2 launched checks handled")).toBe(true);
   await toolEvent({ event_type: "Completed", tool_id: "first-check", tool_name: "LaunchReviewAgent",
     result: { status: "completed" } });
   await app.waitFor("1 of 2 launched checks handled");
+  await publish("agentic://model-round-attempt-superseded", {
+    roundId: retry.roundId, diagnostic: { attemptId: retry.attemptId },
+  });
+  await app.waitFor("1 of 1 launched checks handled");
+  await toolEvent({ event_type: "Completed", tool_id: "second-check", tool_name: "Task",
+    result: { status: "completed" } }, retry);
+  expect(app.shows("1 of 1 launched checks handled")).toBe(true);
   await toolEvent({ event_type: "Started", tool_id: "report", tool_name: "submit_code_review" });
   await toolEvent({ event_type: "Completed", tool_id: "report", tool_name: "submit_code_review",
     result: { summary: { overall_assessment: "Authoritative assessment" }, issues: [] } });

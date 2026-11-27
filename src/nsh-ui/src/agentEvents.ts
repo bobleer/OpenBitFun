@@ -34,6 +34,7 @@ import {
 import type { RunningTurnSnapshot } from "./api";
 import { backendConnection, listenEvent, windowShellId } from "./bridge";
 import { forgetComposerDraft } from "./composerDraftStore";
+import type { ToolCallView } from "./format";
 import { recordPlanBuildTurn } from "./planBuildStore";
 import { appendPlanParameters, isPlanWritingTool } from "./planToolArtifact";
 import {
@@ -53,7 +54,7 @@ import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import { clearPermissionsForSession } from "./permissionStore";
 import { clearPromptSuggestion, setPromptSuggestion } from "./promptSuggestionStore";
 import { clearQuestionsForSession, dropQuestionByToolId } from "./userQuestionStore";
-import { effectiveToolInvocation } from "./toolPresentation";
+import { effectiveToolInvocation, reviewProgressTool } from "./toolPresentation";
 import {
   activeSessionDevice,
   activeSessionId,
@@ -113,6 +114,30 @@ export interface LiveToolItem {
   textOffset?: number;
 }
 
+export function liveToolToCallView(tool: LiveToolItem): ToolCallView {
+  return {
+    id: tool.toolId,
+    name: tool.effectiveToolName || tool.toolName,
+    detail: tool.progressMessage || tool.detail,
+    ...(tool.input !== undefined ? { input: tool.input } : {}),
+    ...(tool.planParameters ? { planParameters: tool.planParameters } : {}),
+    status: tool.status,
+    ...(tool.error ? { error: tool.error } : {}),
+    ...(tool.result !== undefined ? { result: tool.result } : {}),
+    ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
+    ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
+    ...(tool.genuiStream
+      ? {
+          genuiStream: {
+            source: tool.genuiStream.source,
+            format: tool.genuiStream.format,
+            ...(tool.genuiStream.title ? { title: tool.genuiStream.title } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 export interface LiveModelRound {
   roundId: string;
   roundIndex: number;
@@ -123,6 +148,7 @@ export interface LiveModelRound {
   thinkingEnded?: boolean;
   text: string;
   tools: LiveToolItem[];
+  reviewTools?: ReadonlyMap<string, ToolCallView>;
   completed: boolean;
   durationMs?: number;
 }
@@ -134,6 +160,8 @@ export interface LiveTurnState {
   turnId: string | null;
   userText: string;
   rounds: LiveModelRound[];
+  /** Already-projected review calls. Kept by reference across unrelated stream updates. */
+  reviewTools?: readonly ToolCallView[];
   /** True between `dialog-turn-completed` and the durable disk-persistence fence. */
   settling: boolean;
 }
@@ -146,6 +174,7 @@ interface LiveRoundMeta {
   reasoningKind?: "reasoning" | "summary";
   thinkingEnded?: boolean;
   tools: LiveToolItem[];
+  reviewTools?: ReadonlyMap<string, ToolCallView>;
   completed: boolean;
   durationMs?: number;
 }
@@ -913,6 +942,7 @@ function makeLiveRound(meta: LiveRoundMeta, entry: RoundStreamEntry): LiveModelR
     tools: meta.tools,
     completed: meta.completed,
   };
+  if (meta.reviewTools) round.reviewTools = meta.reviewTools;
   if (meta.attemptId !== undefined) round.attemptId = meta.attemptId;
   if (meta.effectiveModelName !== undefined) round.effectiveModelName = meta.effectiveModelName;
   if (meta.reasoningKind !== undefined) round.reasoningKind = meta.reasoningKind;
@@ -951,9 +981,23 @@ function extractRoundMeta(round: LiveModelRound): LiveRoundMeta {
     ...(round.reasoningKind !== undefined ? { reasoningKind: round.reasoningKind } : {}),
     ...(round.thinkingEnded !== undefined ? { thinkingEnded: round.thinkingEnded } : {}),
     tools: round.tools,
+    reviewTools: round.reviewTools,
     completed: round.completed,
     ...(round.durationMs !== undefined ? { durationMs: round.durationMs } : {}),
   };
+}
+
+function reviewToolsInRounds(rounds: readonly LiveModelRound[]): readonly ToolCallView[] | undefined {
+  const calls = rounds.flatMap(round => round.reviewTools ? [...round.reviewTools.values()] : []);
+  return calls.length ? calls : undefined;
+}
+
+function withLiveRound(state: LiveTurnState, index: number, round: LiveModelRound): LiveTurnState {
+  const rounds = [...state.rounds];
+  rounds[index < 0 ? rounds.length : index] = round;
+  const reviewTools = state.rounds[index]?.reviewTools === round.reviewTools
+    ? state.reviewTools : reviewToolsInRounds(rounds);
+  return { ...state, rounds, reviewTools };
 }
 
 interface TextChunkPayload {
@@ -1198,6 +1242,7 @@ function restoreParkedTurn(sessionId: string | null, key: string | null): void {
       turnId: parked.turnId,
       userText: parked.userText,
       rounds,
+      reviewTools: reviewToolsInRounds(rounds),
       settling: false,
     });
     if (parked.userText) {
@@ -1265,7 +1310,7 @@ function parkEvent(kind: "chunk" | "roundStarted" | "roundCompleted" | "supersed
       if (!round) return;
       round.text = "";
       round.thinking = "";
-      round.meta = { ...round.meta, tools: [], attemptId: undefined };
+      round.meta = { ...round.meta, tools: [], reviewTools: undefined, attemptId: undefined };
       return;
     }
     case "tool": {
@@ -1355,9 +1400,7 @@ function upsertSecondaryRoundMeta(
     const prevMeta = extractRoundMeta(state.rounds[index]);
     const updatedMeta = updater(prevMeta);
     if (updatedMeta === prevMeta) return state;
-    const rounds = [...state.rounds];
-    rounds[index] = makeLiveRound(updatedMeta, entry);
-    return { ...state, rounds };
+    return withLiveRound(state, index, makeLiveRound(updatedMeta, entry));
   }
   const createdMeta = updater({
     roundId,
@@ -1370,7 +1413,7 @@ function upsertSecondaryRoundMeta(
   if (!secondaryRoundOrder.includes(roundId)) {
     secondaryRoundOrder.push(roundId);
   }
-  return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
+  return withLiveRound(state, index, makeLiveRound(createdMeta, entry));
 }
 
 function parkSecondaryTurn(sessionId: string | null, key: string | null): void {
@@ -1432,6 +1475,7 @@ function restoreParkedSecondaryTurn(sessionId: string | null, key: string | null
       turnId: parked.turnId,
       userText: parked.userText,
       rounds,
+      reviewTools: reviewToolsInRounds(rounds),
       settling: false,
     });
     if (parked.userText) {
@@ -1490,9 +1534,7 @@ function upsertRoundMeta(
     const prevMeta = extractRoundMeta(state.rounds[index]);
     const updatedMeta = updater(prevMeta);
     if (updatedMeta === prevMeta) return state;
-    const rounds = [...state.rounds];
-    rounds[index] = makeLiveRound(updatedMeta, entry);
-    return { ...state, rounds };
+    return withLiveRound(state, index, makeLiveRound(updatedMeta, entry));
   }
   const createdMeta = updater({
     roundId,
@@ -1505,7 +1547,7 @@ function upsertRoundMeta(
   if (!roundOrder.includes(roundId)) {
     roundOrder.push(roundId);
   }
-  return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
+  return withLiveRound(state, index, makeLiveRound(createdMeta, entry));
 }
 
 /**
@@ -1905,7 +1947,16 @@ function applyToolEvent(
     existingIdx >= 0
       ? round.tools.map((item, idx) => (idx === existingIdx ? next : item))
       : [...round.tools, next];
-  return { ...round, tools };
+  const wasReviewTool = round.reviewTools?.has(key) ?? false;
+  const name = next.effectiveToolName || next.toolName;
+  const sameInvocation = existingIdx >= 0 && next.input === existing.input &&
+    name === (existing.effectiveToolName || existing.toolName);
+  const isReviewTool = sameInvocation ? wasReviewTool : reviewProgressTool(name, next.input) !== null;
+  if (!isReviewTool && !wasReviewTool) return { ...round, tools };
+  const reviewTools = new Map(round.reviewTools);
+  if (isReviewTool) reviewTools.set(key, liveToolToCallView(next));
+  else reviewTools.delete(key);
+  return { ...round, tools, reviewTools: reviewTools.size ? reviewTools : undefined };
 }
 
 /**
@@ -2433,6 +2484,7 @@ export function subscribeAgentEvents(): void {
         const updated = upsertSecondaryRoundMeta(current, roundId, meta => ({
           ...meta,
           tools: [],
+          reviewTools: undefined,
           attemptId: undefined,
           thinkingEnded: undefined,
         }));
@@ -2461,6 +2513,7 @@ export function subscribeAgentEvents(): void {
       const updated = upsertRoundMeta(current, roundId, meta => ({
         ...meta,
         tools: [],
+        reviewTools: undefined,
         attemptId: undefined,
         thinkingEnded: undefined,
       }));

@@ -19,6 +19,20 @@ export function toolInputRecord(input: unknown): Record<string, unknown> {
   return record(input) ?? {};
 }
 
+const reviewWorkerTools = new Set(["task", "agentspawn", "agentfork"]);
+
+export function reviewProgressTool(name: string, input: unknown): { kind: "report" } | { kind: "check"; label: string } | null {
+  const tool = normalizeToolName(name);
+  if (tool === "submitcodereview") return { kind: "report" };
+  if (tool !== "launchreviewagent" && !reviewWorkerTools.has(tool)) return null;
+  const args = toolInputRecord(input);
+  const role = args.subagent_type ?? args.subagentType ?? args.agent_type ?? args.agentType;
+  const reviewer = typeof role === "string" ? role.trim() : "";
+  if (tool !== "launchreviewagent" && !reviewer.startsWith("Review")) return null;
+  const description = typeof args.description === "string" ? args.description.trim() : "";
+  return { kind: "check", label: description || reviewer };
+}
+
 /** The gateway's target is a display identity. Keep the original call id for detail reads. */
 export function effectiveToolInvocation(name: string, input: unknown): { name: string; input: unknown } {
   if (name === "CallDeferredTool") {
