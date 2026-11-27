@@ -83,7 +83,7 @@ struct Args {
     #[arg(long, env = "SUPERAGENT_MAX_RESIDENT", default_value_t = 512)]
     max_resident: usize,
     /// Concurrent model rounds in the process.
-    #[arg(long, env = "SUPERAGENT_MODEL_ROUNDS", default_value_t = 64)]
+    #[arg(long, env = "SUPERAGENT_MODEL_ROUNDS", default_value_t = 256)]
     model_rounds: usize,
     /// Seconds between watcher passes.
     #[arg(long, env = "SUPERAGENT_WATCH_SECONDS", default_value_t = 5)]

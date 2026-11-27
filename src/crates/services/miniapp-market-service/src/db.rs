@@ -171,6 +171,69 @@ impl Database {
             .ok_or_else(|| MarketError::internal("GitHub user disappeared after upsert"))
     }
 
+    pub(crate) async fn upsert_email_user(
+        &self,
+        email: &str,
+        login: &str,
+        avatar_url: &str,
+    ) -> MarketResult<AuthenticatedUser> {
+        let email = email.trim().to_ascii_lowercase();
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await.map_err(MarketError::internal)?;
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT user_id FROM email_identities WHERE email = ?")
+                .bind(&email)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(MarketError::internal)?;
+        let user_id = if let Some((id,)) = existing {
+            sqlx::query("UPDATE users SET login = ?, avatar_url = ?, updated_at = ? WHERE id = ?")
+                .bind(login)
+                .bind(avatar_url)
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(MarketError::internal)?;
+            id
+        } else {
+            let user = sqlx::query(
+                "INSERT INTO users(github_id, login, avatar_url, created_at, updated_at)
+                 VALUES(NULL, ?, ?, ?, ?)",
+            )
+            .bind(login)
+            .bind(avatar_url)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(MarketError::internal)?;
+            let id = user.last_insert_rowid();
+            sqlx::query(
+                "INSERT INTO email_identities(email, user_id, verified_at) VALUES(?, ?, ?)",
+            )
+            .bind(&email)
+            .bind(id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(MarketError::internal)?;
+            id
+        };
+        let row = sqlx::query(
+            "SELECT u.id, u.github_id, u.login, u.avatar_url, e.email
+             FROM users u
+             LEFT JOIN email_identities e ON e.user_id = u.id AND u.github_id IS NULL
+             WHERE u.id = ?",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(MarketError::internal)?;
+        tx.commit().await.map_err(MarketError::internal)?;
+        Ok(user_from_row(row))
+    }
+
     pub(crate) async fn user_by_github_id(
         &self,
         github_id: i64,

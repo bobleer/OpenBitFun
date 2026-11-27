@@ -38,12 +38,70 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
+const MAX_JSON_BODY: usize = 256 * 1024;
+const MAX_UPLOAD_BODY: usize = 21 * 1024 * 1024;
+pub(crate) const DEFAULT_VALIDATION_CONCURRENCY: usize = 4;
+
 #[derive(Clone)]
 pub(crate) struct MarketState {
     pub config: MarketConfig,
     pub db: Database,
-    pub artifacts: ArtifactStore,
+    pub artifacts: Option<ArtifactStore>,
     pub auth: AuthService,
+    pub validation_slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl MarketState {
+    fn artifacts(&self) -> MarketResult<&ArtifactStore> {
+        self.artifacts.as_ref().ok_or_else(|| {
+            MarketError::service_unavailable(
+                "artifacts_unavailable",
+                "Artifact storage is disabled for this service profile.",
+            )
+        })
+    }
+}
+
+async fn validate_market_package_offloaded(
+    state: &MarketState,
+    bytes: Bytes,
+) -> MarketResult<crate::package::ValidatedMarketPackage> {
+    let _permit = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        Arc::clone(&state.validation_slots).acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        MarketError::service_unavailable(
+            "validation_busy",
+            "Package validation is busy. Please try again shortly.",
+        )
+    })?
+    .map_err(MarketError::internal)?;
+    tokio::task::spawn_blocking(move || validate_market_package(&bytes))
+        .await
+        .map_err(MarketError::internal)?
+}
+
+async fn validate_screenshot_offloaded(
+    state: &MarketState,
+    bytes: Bytes,
+) -> MarketResult<crate::package::ValidatedScreenshot> {
+    let _permit = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        Arc::clone(&state.validation_slots).acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        MarketError::service_unavailable(
+            "validation_busy",
+            "Image validation is busy. Please try again shortly.",
+        )
+    })?
+    .map_err(MarketError::internal)?;
+    tokio::task::spawn_blocking(move || validate_screenshot(&bytes))
+        .await
+        .map_err(MarketError::internal)?
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,8 +224,35 @@ struct AdminSubmissionDetail {
     screenshot_hashes: Vec<String>,
 }
 
-pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
-    let submission_policy_state = state.clone();
+fn auth_issuance_routes() -> Router<Arc<MarketState>> {
+    Router::new()
+        .route("/auth/github/start", get(start_github_oauth))
+        .route("/auth/github/callback", get(github_oauth_callback))
+        .route("/auth/desktop/start", post(start_desktop_auth))
+        .route("/auth/login/start", post(start_web_login))
+        .route("/auth/login/github", post(login_github))
+        .route("/auth/email/send", post(send_email_code))
+        .route("/auth/email/verify", post(verify_email_code))
+        .route("/auth/email/complete", get(complete_email_browser))
+        .route("/auth/desktop/poll", post(poll_desktop_auth))
+        .route("/auth/refresh", post(refresh_tokens))
+        .layer(DefaultBodyLimit::max(crate::auth_admission::MAX_AUTH_BODY))
+}
+
+fn market_upload_routes() -> Router<Arc<MarketState>> {
+    Router::new()
+        .route(
+            "/submissions/{submission_id}/package",
+            put(upload_submission_package),
+        )
+        .route(
+            "/submissions/{submission_id}/screenshots/{position}",
+            put(upload_submission_screenshot).delete(delete_submission_screenshot),
+        )
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY))
+}
+
+fn market_core_routes() -> Router<Arc<MarketState>> {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
@@ -189,16 +274,6 @@ pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
             put(put_favorite).delete(delete_favorite),
         )
         .route("/screenshots/{sha256}", get(get_screenshot))
-        .route("/auth/github/start", get(start_github_oauth))
-        .route("/auth/github/callback", get(github_oauth_callback))
-        .route("/auth/desktop/start", post(start_desktop_auth))
-        .route("/auth/login/start", post(start_web_login))
-        .route("/auth/login/github", post(login_github))
-        .route("/auth/email/send", post(send_email_code))
-        .route("/auth/email/verify", post(verify_email_code))
-        .route("/auth/email/complete", get(complete_email_browser))
-        .route("/auth/desktop/poll", post(poll_desktop_auth))
-        .route("/auth/refresh", post(refresh_tokens))
         .route("/auth/logout", post(logout))
         .route("/me", get(me).post(verify_write_identity))
         .route(
@@ -208,14 +283,6 @@ pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
         .route(
             "/submissions/{submission_id}",
             get(get_my_submission).delete(withdraw_submission),
-        )
-        .route(
-            "/submissions/{submission_id}/package",
-            put(upload_submission_package),
-        )
-        .route(
-            "/submissions/{submission_id}/screenshots/{position}",
-            put(upload_submission_screenshot).delete(delete_submission_screenshot),
         )
         .route(
             "/submissions/{submission_id}/submit",
@@ -235,16 +302,71 @@ pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
             "/admin/listings/{listing_id}/unpublish",
             post(unpublish_listing),
         )
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY))
+}
+
+pub(crate) fn auth_api_router(
+    state: Arc<MarketState>,
+    limiter: Arc<crate::auth_admission::AuthorizationLimiter>,
+) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/config", get(config))
+        .route("/auth/logout", post(logout))
+        .route("/me", get(me).post(verify_write_identity))
+        .merge(auth_issuance_routes())
+        // Unmatched API paths must return the versioned JSON error envelope.
+        .route("/{*rest}", any(api_not_found))
+        .layer(DefaultBodyLimit::max(crate::auth_admission::MAX_AUTH_BODY))
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            crate::auth_admission::admit_with_limiter,
+        ))
+        .with_state(state)
+}
+
+pub(crate) fn market_api_router(
+    state: Arc<MarketState>,
+    limiter: Arc<crate::auth_admission::AuthorizationLimiter>,
+) -> Router {
+    let submission_policy_state = state.clone();
+    Router::new()
+        .merge(market_core_routes())
+        .merge(market_upload_routes())
         // Unmatched API paths must return the versioned JSON error envelope.
         // A nested fallback would lose to the outer SPA catch-all, so this has
         // to be an explicit wildcard route that outranks `/miniapp/{*rest}`.
         .route("/{*rest}", any(api_not_found))
-        .layer(DefaultBodyLimit::max(21 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             submission_policy_state,
             enforce_submission_write_policy,
         ))
-        .layer(axum::middleware::from_fn(crate::auth_admission::admit))
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            crate::auth_admission::admit_with_limiter,
+        ))
+        .with_state(state)
+}
+
+pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
+    let submission_policy_state = state.clone();
+    let limiter = crate::auth_admission::AuthorizationLimiter::new();
+    Router::new()
+        .merge(market_core_routes())
+        .merge(market_upload_routes())
+        .merge(auth_issuance_routes())
+        // Unmatched API paths must return the versioned JSON error envelope.
+        // A nested fallback would lose to the outer SPA catch-all, so this has
+        // to be an explicit wildcard route that outranks `/miniapp/{*rest}`.
+        .route("/{*rest}", any(api_not_found))
+        .layer(axum::middleware::from_fn_with_state(
+            submission_policy_state,
+            enforce_submission_write_policy,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            crate::auth_admission::admit_with_limiter,
+        ))
         .with_state(state)
 }
 
@@ -294,6 +416,7 @@ async fn health(State(state): State<Arc<MarketState>>) -> impl IntoResponse {
         },
         Json(serde_json::json!({
             "status": if database_ready { "ok" } else { "degraded" },
+            "profile": state.config.profile.as_str(),
             "database": database_ready,
             "githubAuthConfigured": state.config.github_configured(),
             "emailAuthConfigured": state.auth.mailer.is_some(),
@@ -505,7 +628,7 @@ async fn download_release(
     .ok_or_else(|| MarketError::not_found("The requested MiniApp release is unavailable."))?;
     let listing_id: String = row.get("listing_id");
     let package_sha256: String = row.get("package_sha256");
-    let bytes = state.artifacts.read_package(&package_sha256).await?;
+    let bytes = state.artifacts()?.read_package(&package_sha256).await?;
     record_download(&state, &headers, &listing_id).await?;
 
     let mut response = Response::new(Body::from(bytes));
@@ -561,11 +684,11 @@ async fn get_screenshot(
     let bytes = match variant {
         Some(variant) => {
             state
-                .artifacts
+                .artifacts()?
                 .read_screenshot_variant(&sha256, variant)
                 .await?
         }
-        None => state.artifacts.read_screenshot(&sha256).await?,
+        None => state.artifacts()?.read_screenshot(&sha256).await?,
     };
     let content_length = bytes.len();
     let etag = match variant {
@@ -742,7 +865,7 @@ async fn logout(
 ) -> MarketResult<Response> {
     let auth = state.auth.require_auth(&headers).await?;
     state.auth.require_csrf(&headers, &auth)?;
-    state.auth.logout(&auth).await?;
+    state.auth.logout(&auth, &headers).await?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     state.auth.append_clear_cookies(response.headers_mut())?;
     Ok(response)
@@ -821,8 +944,11 @@ async fn upload_submission_package(
             "Only draft submissions may be edited.",
         ));
     }
-    let package = validate_market_package(&body)?;
-    state.artifacts.put_package(&package.sha256, &body).await?;
+    let package = validate_market_package_offloaded(&state, body.clone()).await?;
+    state
+        .artifacts()?
+        .put_package(&package.sha256, &body)
+        .await?;
     let row = sqlx::query("SELECT metadata_json FROM submissions WHERE id = ?")
         .bind(&submission_id)
         .fetch_one(state.db.pool())
@@ -870,9 +996,9 @@ async fn upload_submission_screenshot(
             "Only draft submissions may be edited.",
         ));
     }
-    let screenshot = validate_screenshot(&body)?;
+    let screenshot = validate_screenshot_offloaded(&state, body).await?;
     state
-        .artifacts
+        .artifacts()?
         .put_screenshot(&screenshot.sha256, &screenshot.bytes)
         .await?;
     sqlx::query(
@@ -1055,8 +1181,10 @@ async fn get_admin_submission(
         submitted_at,
     } = admin_submission_by_id(&state, &submission_id).await?;
     let source_files = if let Some(hash) = submission.package_sha256.as_deref() {
-        let package = state.artifacts.read_package(hash).await?;
-        validate_market_package(&package)?.source_files
+        let package = state.artifacts()?.read_package(hash).await?;
+        validate_market_package_offloaded(&state, Bytes::from(package))
+            .await?
+            .source_files
     } else {
         BTreeMap::new()
     };
@@ -1071,8 +1199,10 @@ async fn get_admin_submission(
         .await
         .map_err(MarketError::internal)?;
         if let Some(hash) = previous_hash {
-            let package = state.artifacts.read_package(&hash).await?;
-            validate_market_package(&package)?.source_files
+            let package = state.artifacts()?.read_package(&hash).await?;
+            validate_market_package_offloaded(&state, Bytes::from(package))
+                .await?
+                .source_files
         } else {
             BTreeMap::new()
         }
@@ -2419,8 +2549,10 @@ mod tests {
     async fn approval_browse_search_and_yank_form_one_atomic_market_flow() {
         let temporary = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: None,
             database_path: temporary.path().join("market.sqlite"),
             artifact_dir: temporary.path().join("artifacts"),
             web_dir: temporary.path().join("web"),
@@ -2441,8 +2573,9 @@ mod tests {
         let state = Arc::new(MarketState {
             config,
             db: db.clone(),
-            artifacts,
+            artifacts: Some(artifacts),
             auth,
+            validation_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_VALIDATION_CONCURRENCY)),
         });
         let owner = db
             .upsert_github_user(
@@ -2655,8 +2788,10 @@ mod tests {
     async fn administrator_can_publish_update_without_reassigning_listing_owner() {
         let temporary = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: None,
             database_path: temporary.path().join("market.sqlite"),
             artifact_dir: temporary.path().join("artifacts"),
             web_dir: temporary.path().join("web"),
@@ -2677,8 +2812,9 @@ mod tests {
         let state = Arc::new(MarketState {
             config,
             db: db.clone(),
-            artifacts,
+            artifacts: Some(artifacts),
             auth,
+            validation_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_VALIDATION_CONCURRENCY)),
         });
         let original_owner = db
             .upsert_github_user(1001, "original-owner", "https://example.com/owner.png")
@@ -2835,8 +2971,10 @@ mod tests {
         use std::io::{Cursor, Write};
         let temporary = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: None,
             database_path: temporary.path().join("market.sqlite"),
             artifact_dir: temporary.path().join("artifacts"),
             web_dir: temporary.path().join("web"),
@@ -2857,8 +2995,9 @@ mod tests {
         let state = Arc::new(MarketState {
             config,
             db: db.clone(),
-            artifacts,
+            artifacts: Some(artifacts),
             auth,
+            validation_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_VALIDATION_CONCURRENCY)),
         });
 
         let owner_id = sqlx::query("INSERT INTO users(github_id, login, avatar_url, created_at, updated_at) VALUES(NULL, 'user-legacy', '', 0, 0)")
@@ -3005,8 +3144,10 @@ mod tests {
 
         let temporary = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: None,
             database_path: temporary.path().join("market.sqlite"),
             artifact_dir: temporary.path().join("artifacts"),
             web_dir: temporary.path().join("web"),
@@ -3052,8 +3193,9 @@ mod tests {
         let state = Arc::new(MarketState {
             config,
             db,
-            artifacts,
+            artifacts: Some(artifacts),
             auth,
+            validation_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_VALIDATION_CONCURRENCY)),
         });
         let app = api_router(state.clone());
         let cookie =

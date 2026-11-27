@@ -38,7 +38,10 @@ use crate::conversation::{
 };
 use crate::device::{DeviceRpc, DeviceSnapshot, RpcError};
 use crate::ledger::{JobRecord, DEFAULT_QUEUE_TTL_MS};
-use crate::model::{DeltaSink, ModelError, ModelHolder, ModelReply, ModelRequest, ModelToolCall};
+use crate::model::{
+    DeltaSink, ModelError, ModelHolder, ModelReply, ModelRequest, ModelToolCall,
+    DEFAULT_MAX_TOOL_CALLS, MODEL_ROUND_TIMEOUT_CODE,
+};
 use crate::slots::{Slot, SlotState, Slots};
 use crate::wire;
 
@@ -74,7 +77,7 @@ impl Default for EngineConfig {
             max_rounds_per_turn: 64,
             max_dispatch_per_turn: 64,
             max_output_tokens: 8192,
-            model_rounds_global: 64,
+            model_rounds_global: 256,
             queue_ttl_ms: DEFAULT_QUEUE_TTL_MS,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
         }
@@ -97,6 +100,9 @@ const WATCH_ACCOUNT: &str = "openbitfun-superagent:watch";
 const WATCH_RECORD: &str = "watch";
 /// Maximum accounts ticked concurrently in one watcher pass.
 const TICK_CONCURRENCY: usize = 16;
+/// Cooldown applied to an account after its model holder times out without
+/// progress, preventing tight retry loops from monopolizing global slots.
+const MODEL_TIMEOUT_COOLDOWN_MS: u64 = 30_000;
 
 pub struct Engine {
     pub slots: Arc<Slots>,
@@ -105,6 +111,7 @@ pub struct Engine {
     pub clock: Arc<dyn Clock>,
     pub config: EngineConfig,
     global_rounds: Arc<Semaphore>,
+    round_cooldowns: std::sync::Mutex<HashMap<String, u64>>,
     watch: std::sync::Mutex<BTreeSet<String>>,
     submitting: std::sync::Mutex<BTreeSet<(String, String)>>,
     cancels: std::sync::Mutex<HashMap<(String, String, String), watch::Sender<bool>>>,
@@ -284,6 +291,7 @@ impl Engine {
             .unwrap_or_default();
         Arc::new_cyclic(|this| Self {
             global_rounds: Arc::new(Semaphore::new(config.model_rounds_global.max(1))),
+            round_cooldowns: std::sync::Mutex::new(HashMap::new()),
             slots,
             rpc,
             model,
@@ -298,6 +306,35 @@ impl Engine {
 
     pub fn now(&self) -> u64 {
         self.clock.now_ms()
+    }
+
+    fn round_cooldown_until(&self, account_id: &str) -> Option<u64> {
+        let mut cooldowns = self
+            .round_cooldowns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let now = self.now();
+        let until = cooldowns.get(account_id).copied()?;
+        if now >= until {
+            cooldowns.remove(account_id);
+            None
+        } else {
+            Some(until)
+        }
+    }
+
+    fn record_round_cooldown(&self, account_id: &str, now: u64) {
+        let mut cooldowns = self
+            .round_cooldowns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if cooldowns.len() >= 4096 {
+            cooldowns.retain(|_, until| *until > now);
+        }
+        cooldowns.insert(
+            account_id.to_string(),
+            now.saturating_add(MODEL_TIMEOUT_COOLDOWN_MS),
+        );
     }
 
     fn arc(&self) -> Arc<Self> {
@@ -960,15 +997,35 @@ impl Engine {
             tools: Self::tool_definitions(),
             max_output_tokens: self.config.max_output_tokens,
         };
-        let _global = tokio::select! {
-            biased;
-            _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
-            permit = Arc::clone(&self.global_rounds).acquire_owned() => permit.map_err(|e| e.to_string())?,
-        };
+        if let Some(until) = self.round_cooldown_until(&slot.account_id) {
+            let now = self.now();
+            if now < until {
+                let remaining_secs = until.saturating_sub(now).div_ceil(1000);
+                return self
+                    .apply_round(
+                        slot,
+                        conversation_id,
+                        &turn.id,
+                        &holder,
+                        Err(ModelError::Failed(format!(
+                            "fleet_model_cooldown: previous model round timed out; retry in {remaining_secs}s"
+                        ))),
+                    )
+                    .await;
+            }
+        }
+        // Acquire the per-account permit BEFORE the global permit so one
+        // account with many queued conversations can never hold multiple
+        // global permits while waiting on its own account cap.
         let _account = tokio::select! {
             biased;
             _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
             permit = Arc::clone(&slot.model_permits).acquire_owned() => permit.map_err(|e| e.to_string())?,
+        };
+        let _global = tokio::select! {
+            biased;
+            _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
+            permit = Arc::clone(&self.global_rounds).acquire_owned() => permit.map_err(|e| e.to_string())?,
         };
         if *cancel_rx.borrow() {
             return Ok(false);
@@ -1036,6 +1093,24 @@ impl Engine {
             return Ok(false);
         };
         let more = match outcome {
+            Ok(reply) if reply.tool_calls.len() > DEFAULT_MAX_TOOL_CALLS => {
+                turn.step = Step::Failed {
+                    reason: "model_failed".into(),
+                };
+                turn.updated_ms = now;
+                conversation.messages.push(Message {
+                    id: new_id("m"),
+                    role: Role::Card,
+                    text: format!(
+                        "Model reply returned {} tool calls, exceeding the {DEFAULT_MAX_TOOL_CALLS} limit.",
+                        reply.tool_calls.len()
+                    ),
+                    card: json!({ "kind": "model_failed", "holder": holder }),
+                    at_ms: now,
+                    ..Message::default()
+                });
+                false
+            }
             Ok(reply) => {
                 turn.rounds += 1;
                 turn.lost_holders.clear();
@@ -1078,6 +1153,9 @@ impl Engine {
                 true
             }
             Err(ModelError::Failed(message)) => {
+                if message.contains(MODEL_ROUND_TIMEOUT_CODE) {
+                    self.record_round_cooldown(&slot.account_id, now);
+                }
                 turn.step = Step::Failed {
                     reason: "model_failed".into(),
                 };

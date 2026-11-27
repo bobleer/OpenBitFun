@@ -15,7 +15,7 @@
 //! - `fleet_model_cancel {requestId}`.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +26,45 @@ use crate::device::{BoxFuture, DeviceRpc, RpcError};
 pub const POLL_WAIT_MS: u64 = 25_000;
 /// Consecutive transport failures before the holder counts as lost.
 const POLL_RETRIES: u32 = 3;
+/// Absolute wall-clock ceiling for one relayed model round.
+pub const DEFAULT_MAX_ROUND_DURATION: Duration = Duration::from_secs(600);
+/// Longest a round may run without receiving any non-empty chunk or completion.
+pub const DEFAULT_MAX_IDLE_POLL_DURATION: Duration = Duration::from_secs(120);
+/// Maximum cumulative streamed delta bytes accepted in one model round.
+pub const DEFAULT_MAX_DELTA_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum tool calls accepted from one model reply.
+pub const DEFAULT_MAX_TOOL_CALLS: usize = 32;
+/// Backoff when a holder answers an empty non-done poll in under one second,
+/// preventing CPU spin loops against a hostile or broken device.
+const DEFAULT_EMPTY_POLL_BACKOFF: Duration = Duration::from_millis(250);
+const FAST_EMPTY_POLL_THRESHOLD: Duration = Duration::from_secs(1);
+
+/// Error code prefix emitted when a round is aborted for exceeding its idle or
+/// total wall-clock ceiling (used by the engine to apply per-account cooldown).
+pub const MODEL_ROUND_TIMEOUT_CODE: &str = "fleet_model_round_timeout";
+
+/// Bounds enforced per relayed model round to prevent hostile or stalled
+/// holders from pinning global concurrency slots or flooding memory.
+#[derive(Debug, Clone)]
+pub struct RelayModelLimits {
+    pub max_round_duration: Duration,
+    pub max_idle_poll_duration: Duration,
+    pub max_delta_bytes: usize,
+    pub max_tool_calls: usize,
+    pub empty_poll_backoff: Duration,
+}
+
+impl Default for RelayModelLimits {
+    fn default() -> Self {
+        Self {
+            max_round_duration: DEFAULT_MAX_ROUND_DURATION,
+            max_idle_poll_duration: DEFAULT_MAX_IDLE_POLL_DURATION,
+            max_delta_bytes: DEFAULT_MAX_DELTA_BYTES,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            empty_poll_backoff: DEFAULT_EMPTY_POLL_BACKOFF,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,11 +135,16 @@ pub trait ModelHolder: Send + Sync + 'static {
 /// The real holder: `fleet_model_*` over the device RPC.
 pub struct RelayModel {
     rpc: Arc<dyn DeviceRpc>,
+    limits: RelayModelLimits,
 }
 
 impl RelayModel {
     pub fn new(rpc: Arc<dyn DeviceRpc>) -> Self {
-        Self { rpc }
+        Self::with_limits(rpc, RelayModelLimits::default())
+    }
+
+    pub fn with_limits(rpc: Arc<dyn DeviceRpc>, limits: RelayModelLimits) -> Self {
+        Self { rpc, limits }
     }
 }
 
@@ -225,50 +269,115 @@ impl ModelHolder for RelayModel {
                 .map_err(lost)?;
             let mut after = 0u64;
             let mut failures = 0u32;
+            let mut delta_bytes = 0usize;
+            let started = Instant::now();
+            let mut last_progress = started;
+            let round_deadline = started + self.limits.max_round_duration;
             loop {
-                let answer = self
-                    .rpc
-                    .call(
+                let now = Instant::now();
+                let idle_deadline = last_progress + self.limits.max_idle_poll_duration;
+                let effective_deadline = round_deadline.min(idle_deadline);
+                if now >= effective_deadline {
+                    self.cancel(account_id, holder, &request.request_id).await;
+                    let reason = if now >= round_deadline {
+                        "the model round exceeded its wall-clock time limit"
+                    } else {
+                        "the model holder made no progress before the idle poll limit"
+                    };
+                    return Err(ModelError::Failed(format!(
+                        "{MODEL_ROUND_TIMEOUT_CODE}: {reason}"
+                    )));
+                }
+                let remaining = effective_deadline.saturating_duration_since(now);
+                let wait_ms = (remaining.as_millis() as u64).clamp(1, POLL_WAIT_MS);
+                let poll_started = Instant::now();
+                let rpc_timeout = remaining.saturating_add(Duration::from_secs(5));
+                let answer = tokio::time::timeout(
+                    rpc_timeout,
+                    self.rpc.call(
                         account_id,
                         holder,
                         "fleet_model_poll",
                         json!({ "request": {
                             "requestId": request.request_id,
                             "afterSeq": after,
-                            "waitMs": POLL_WAIT_MS,
+                            "waitMs": wait_ms,
                         }}),
-                    )
-                    .await;
+                    ),
+                )
+                .await;
                 let answer = match answer {
-                    Ok(answer) => {
+                    Ok(Ok(answer)) => {
                         failures = 0;
                         answer
                     }
-                    Err(RpcError::Transport(message)) if failures + 1 < POLL_RETRIES => {
+                    Ok(Err(RpcError::Transport(message))) if failures + 1 < POLL_RETRIES => {
                         failures += 1;
                         log::debug!("Model poll retry: holder={}, error={}", holder, message);
                         tokio::time::sleep(Duration::from_millis(200)).await;
                         continue;
                     }
-                    Err(error) => return Err(lost(error)),
+                    Ok(Err(error)) => return Err(lost(error)),
+                    Err(_) => {
+                        self.cancel(account_id, holder, &request.request_id).await;
+                        return Err(ModelError::Failed(format!(
+                            "{MODEL_ROUND_TIMEOUT_CODE}: model poll exceeded round deadline"
+                        )));
+                    }
                 };
                 let answer: PollAnswer = serde_json::from_value(answer)
                     .map_err(|e| ModelError::HolderLost(format!("unreadable model poll: {e}")))?;
+                let mut progressed = false;
                 for chunk in answer.chunks {
                     if chunk.seq > after {
                         after = chunk.seq;
                         if let Some(text) = chunk.text.filter(|text| !text.is_empty()) {
+                            progressed = true;
+                            delta_bytes = delta_bytes.saturating_add(text.len());
+                            if delta_bytes > self.limits.max_delta_bytes {
+                                self.cancel(account_id, holder, &request.request_id).await;
+                                return Err(ModelError::Failed(
+                                    "fleet_model_output_too_large: model round exceeded streamed output limit"
+                                        .into(),
+                                ));
+                            }
                             deltas(&text);
                         }
                     }
                 }
+                if progressed {
+                    last_progress = Instant::now();
+                }
                 if answer.done {
-                    return answer
+                    let reply = answer
                         .result
                         .ok_or_else(|| {
                             ModelError::HolderLost("the model round ended without a result".into())
                         })?
-                        .into_reply();
+                        .into_reply()?;
+                    if reply.tool_calls.len() > self.limits.max_tool_calls {
+                        return Err(ModelError::Failed(format!(
+                            "fleet_model_too_many_tool_calls: model reply returned {} tool calls (max {})",
+                            reply.tool_calls.len(),
+                            self.limits.max_tool_calls
+                        )));
+                    }
+                    return Ok(reply);
+                }
+                if !progressed
+                    && poll_started.elapsed() < FAST_EMPTY_POLL_THRESHOLD
+                    && !self.limits.empty_poll_backoff.is_zero()
+                {
+                    let now = Instant::now();
+                    let next_deadline =
+                        round_deadline.min(last_progress + self.limits.max_idle_poll_duration);
+                    if now < next_deadline {
+                        let sleep_for = self
+                            .limits
+                            .empty_poll_backoff
+                            .min(next_deadline.saturating_duration_since(now));
+                        tokio::time::sleep(sleep_for).await;
+                    }
                 }
             }
         })
@@ -410,5 +519,143 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ModelError::HolderLost(_)), "{err:?}");
+    }
+
+    struct ScriptedRpc {
+        polls: std::sync::Mutex<std::collections::VecDeque<Value>>,
+        cancelled: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedRpc {
+        fn new(polls: Vec<Value>) -> Self {
+            Self {
+                polls: std::sync::Mutex::new(polls.into()),
+                cancelled: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl DeviceRpc for ScriptedRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            command: &'a str,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            match command {
+                "fleet_model_start" => Box::pin(async { Ok(json!({ "requestId": "r1" })) }),
+                "fleet_model_cancel" => {
+                    self.cancelled
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async { Ok(json!({ "cancelled": true })) })
+                }
+                "fleet_model_poll" => {
+                    let next = self
+                        .polls
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| json!({ "chunks": [], "done": false }));
+                    Box::pin(async move { Ok(next) })
+                }
+                other => {
+                    let msg = format!("unexpected command: {other}");
+                    Box::pin(async move { Err(RpcError::Refused(msg)) })
+                }
+            }
+        }
+    }
+
+    fn sample_request() -> ModelRequest {
+        ModelRequest {
+            request_id: "r1".into(),
+            model: None,
+            system: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_output_tokens: 128,
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_model_aborts_infinite_empty_polls_and_cancels_holder() {
+        let rpc = Arc::new(ScriptedRpc::new(Vec::new()));
+        let model = RelayModel::with_limits(
+            rpc.clone(),
+            RelayModelLimits {
+                max_round_duration: Duration::from_secs(5),
+                max_idle_poll_duration: Duration::from_millis(60),
+                empty_poll_backoff: Duration::from_millis(10),
+                ..RelayModelLimits::default()
+            },
+        );
+        let err = model
+            .run("acct", "dev-1", &sample_request(), Arc::new(|_| {}))
+            .await
+            .unwrap_err();
+        match err {
+            ModelError::Failed(message) => {
+                assert!(message.contains(MODEL_ROUND_TIMEOUT_CODE), "{message}");
+            }
+            other => panic!("expected Failed timeout, got {other:?}"),
+        }
+        assert_eq!(rpc.cancelled.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_model_aborts_when_streamed_deltas_exceed_cap() {
+        let rpc = Arc::new(ScriptedRpc::new(vec![json!({
+            "chunks": [{ "seq": 1, "text": "x".repeat(200) }],
+            "done": false
+        })]));
+        let model = RelayModel::with_limits(
+            rpc.clone(),
+            RelayModelLimits {
+                max_delta_bytes: 128,
+                ..RelayModelLimits::default()
+            },
+        );
+        let err = model
+            .run("acct", "dev-1", &sample_request(), Arc::new(|_| {}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ModelError::Failed(ref m) if m.contains("fleet_model_output_too_large"))
+        );
+        assert_eq!(rpc.cancelled.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_model_rejects_excessive_tool_calls() {
+        let calls: Vec<Value> = (0..5)
+            .map(|i| json!({ "id": format!("c{i}"), "name": "fleet_list_runtimes", "arguments": "{}" }))
+            .collect();
+        let rpc = Arc::new(ScriptedRpc::new(vec![json!({
+            "chunks": [],
+            "done": true,
+            "result": { "text": "", "toolCalls": calls }
+        })]));
+        let model = RelayModel::with_limits(
+            rpc,
+            RelayModelLimits {
+                max_tool_calls: 3,
+                ..RelayModelLimits::default()
+            },
+        );
+        let err = model
+            .run("acct", "dev-1", &sample_request(), Arc::new(|_| {}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ModelError::Failed(ref m) if m.contains("fleet_model_too_many_tool_calls"))
+        );
     }
 }

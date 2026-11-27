@@ -190,10 +190,15 @@ impl RecordCipher {
 }
 
 /// Reads one length-prefixed record of at most `max` bytes.
+///
+/// Allocates incrementally as bytes actually arrive instead of pre-allocating
+/// `vec![0u8; length]` from an untrusted 4-byte header, preventing low-bandwidth
+/// memory amplification before the payload is transmitted.
 pub async fn read_record<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
 ) -> std::io::Result<Vec<u8>> {
+    const READ_CHUNK_BYTES: usize = 64 * 1024;
     let mut length = [0u8; 4];
     reader.read_exact(&mut length).await?;
     let length = u32::from_be_bytes(length) as usize;
@@ -203,8 +208,21 @@ pub async fn read_record<R: AsyncRead + Unpin>(
             format!("record of {length} bytes exceeds {max}"),
         ));
     }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).await?;
+    let mut body = Vec::with_capacity(length.min(READ_CHUNK_BYTES));
+    let mut scratch = [0u8; READ_CHUNK_BYTES];
+    let mut remaining = length;
+    while remaining > 0 {
+        let want = remaining.min(scratch.len());
+        let n = reader.read(&mut scratch[..want]).await?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "unexpected EOF while reading record body",
+            ));
+        }
+        body.extend_from_slice(&scratch[..n]);
+        remaining -= n;
+    }
     Ok(body)
 }
 
@@ -535,4 +553,30 @@ pub(crate) async fn serve(server: Arc<ObpServer>, mut stream: Box<dyn MeshIo>, p
         received.load(Ordering::Relaxed),
         sent.load(Ordering::Relaxed)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_record_fails_on_truncated_large_length_without_full_payload() {
+        // Advertises RECORD_MAX (34 MiB) but provides only 4 header bytes + 16 body bytes.
+        let mut wire = Vec::with_capacity(20);
+        wire.extend_from_slice(&(RECORD_MAX as u32).to_be_bytes());
+        wire.extend_from_slice(&[0xAB; 16]);
+        let mut cursor = std::io::Cursor::new(wire);
+        let err = read_record(&mut cursor, RECORD_MAX).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn read_record_round_trips_multi_chunk_payload() {
+        let payload = vec![0x5Au8; 150 * 1024 + 7];
+        let mut wire = Vec::new();
+        write_record(&mut wire, &payload).await.unwrap();
+        let mut cursor = std::io::Cursor::new(wire);
+        let decoded = read_record(&mut cursor, RECORD_MAX).await.unwrap();
+        assert_eq!(decoded, payload);
+    }
 }

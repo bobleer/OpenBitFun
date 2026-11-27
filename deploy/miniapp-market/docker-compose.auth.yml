@@ -1,0 +1,59 @@
+# Standalone OpenBitFun 2.0 identity authority container (MARKET_PROFILE=auth).
+#
+# Physically isolates auth.openbitfun.com from MiniApp package/screenshot uploads,
+# ZIP decompression, image transcoding, and artifact storage. Shares the same
+# image as openbitfun-miniapp-market with zero extra build steps.
+#
+# To point openbitfun-miniapp-market at this auth container:
+#   - Launch both compose files under the same project (-p miniapp-market) so
+#     they share the internal bridge network, then set in market.env:
+#       MARKET_PROFILE=market
+#       MARKET_AUTH_API_URL=http://openbitfun-auth:9711/api/v1
+#   - Keep /etc/openbitfun-auth/auth.env with:
+#       MARKET_PUBLIC_BASE_URL=https://auth.openbitfun.com
+#       MARKET_GITHUB_CALLBACK_URL=https://auth.openbitfun.com/api/v1/auth/github/callback
+#       MARKET_GITHUB_CLIENT_ID=...
+#       MARKET_GITHUB_CLIENT_SECRET=...
+#       MARKET_SESSION_SECRET=<at least 24 random chars>
+services:
+  openbitfun-auth:
+    build:
+      context: ../..
+      dockerfile: src/apps/miniapp-market-server/Dockerfile
+      args:
+        CARGO_BUILD_JOBS: ${MARKET_CARGO_BUILD_JOBS:-}
+        MARKET_GIT_COMMIT: ${MARKET_GIT_COMMIT:?Set MARKET_GIT_COMMIT to the deployed commit}
+    image: openbitfun-miniapp-market:${MARKET_GIT_COMMIT}
+    container_name: openbitfun-auth
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    mem_limit: 256m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:9711:9711"
+    env_file:
+      - ${AUTH_ENV_DIR:-/etc/openbitfun-auth}/auth.env
+      - path: ${AUTH_ENV_DIR:-/etc/openbitfun-auth}/smtp.env
+        required: false
+    environment:
+      MARKET_PROFILE: auth
+      MARKET_BIND: 0.0.0.0:9711
+      MARKET_DATABASE_PATH: /app/data/auth.sqlite
+      MARKET_WEB_DIR: /app/web
+    volumes:
+      - ${AUTH_ROOT:-/srv/openbitfun-auth}/data:/app/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:9711/api/v1/health || exit 1
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

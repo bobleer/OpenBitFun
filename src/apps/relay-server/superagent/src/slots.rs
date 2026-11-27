@@ -44,7 +44,7 @@ impl Default for SlotLimits {
             max_slot_bytes: 4 * 1024 * 1024,
             max_index_bytes: 256 * 1024,
             idle_unload_ms: 10 * 60 * 1000,
-            model_rounds_per_account: 2,
+            model_rounds_per_account: 1,
             event_ring: 1024,
         }
     }

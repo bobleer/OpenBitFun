@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
+ARG RUST_IMAGE=rust:bookworm
+
 FROM node:22-bookworm-slim AS web-builder
 
 WORKDIR /build
@@ -28,7 +30,7 @@ RUN pnpm --dir design-system/packages/design-tokens build \
     && pnpm --dir design-system/packages/ui build \
     && pnpm --dir src/miniapp-market-web build
 
-FROM rust:1.96-bookworm AS rust-builder
+FROM ${RUST_IMAGE} AS rust-builder
 
 WORKDIR /build
 ARG CARGO_BUILD_JOBS=
@@ -45,12 +47,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
-COPY third_party/eioc/ third_party/eioc/
-# Cargo resolves `[patch.crates-io]` path entries from the root manifest even for
-# a service-only build, so the vendored engine patches must be present.
+# Cargo resolves workspace members and `[patch.crates-io]` path entries from the
+# root manifest even for a service-only build.
+COPY third_party/easytier/ third_party/easytier/
 COPY third_party/screenshots/ third_party/screenshots/
-COPY third_party/tao/ third_party/tao/
-COPY third_party/wry/ third_party/wry/
 COPY src/ src/
 
 RUN --mount=type=cache,id=openbitfun-market-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \

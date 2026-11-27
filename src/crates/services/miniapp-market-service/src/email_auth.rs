@@ -327,13 +327,16 @@ impl AuthService {
             .await
             .map_err(MarketError::internal)?;
         // INSERT is the first statement: serialize competing requests before quota evaluation.
-        let inserted = sqlx::query("INSERT INTO email_challenges(id, ticket_hash, email, code_hash, created_at, expires_at) SELECT ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM email_challenges WHERE email = ? AND created_at > ?) < 2 AND (SELECT COUNT(*) FROM email_challenges WHERE email = ? AND created_at > ?) < 20 AND (SELECT COUNT(*) FROM email_challenges WHERE created_at > ?) < 300")
-            .bind(&id).bind(token_hash(&request.ticket)).bind(&email).bind(code_digest(&self.config.session_secret, &id, &code)).bind(now).bind(now + 600)
-            .bind(&email).bind(now - 60).bind(&email).bind(now - 86400).bind(now - 60).execute(&mut *tx).await.map_err(MarketError::internal)?;
+        // Also cap sends per login_flows ticket (max 5) so one ticket cannot spray 300 emails/min
+        // across distinct addresses.
+        let ticket_hash = token_hash(&request.ticket);
+        let inserted = sqlx::query("INSERT INTO email_challenges(id, ticket_hash, email, code_hash, created_at, expires_at) SELECT ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM email_challenges WHERE ticket_hash = ?) < 5 AND (SELECT COUNT(*) FROM email_challenges WHERE email = ? AND created_at > ?) < 2 AND (SELECT COUNT(*) FROM email_challenges WHERE email = ? AND created_at > ?) < 20 AND (SELECT COUNT(*) FROM email_challenges WHERE created_at > ?) < 300")
+            .bind(&id).bind(&ticket_hash).bind(&email).bind(code_digest(&self.config.session_secret, &id, &code)).bind(now).bind(now + 600)
+            .bind(&ticket_hash).bind(&email).bind(now - 60).bind(&email).bind(now - 86400).bind(now - 60).execute(&mut *tx).await.map_err(MarketError::internal)?;
         if inserted.rows_affected() != 1 {
             return Err(rate_limit());
         }
-        sqlx::query("UPDATE email_challenges SET consumed_at = ? WHERE ticket_hash = ? AND id != ? AND consumed_at IS NULL").bind(now).bind(token_hash(&request.ticket)).bind(&id).execute(&mut *tx).await.map_err(MarketError::internal)?;
+        sqlx::query("UPDATE email_challenges SET consumed_at = ? WHERE ticket_hash = ? AND id != ? AND consumed_at IS NULL").bind(now).bind(&ticket_hash).bind(&id).execute(&mut *tx).await.map_err(MarketError::internal)?;
         tx.commit().await.map_err(MarketError::internal)?;
         Ok((
             (
@@ -486,8 +489,10 @@ mod tests {
     async fn setup() -> (tempfile::TempDir, AuthService) {
         let dir = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".into(),
+            auth_api_url: None,
             database_path: dir.path().join("db"),
             artifact_dir: dir.path().join("artifacts"),
             web_dir: dir.path().into(),
@@ -816,6 +821,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_login_ticket_cannot_spray_email_codes_across_distinct_addresses() {
+        let (_dir, service) = setup().await;
+        let ticket = service.start_web_login("/miniapp/").await.unwrap();
+        for i in 0..5 {
+            service
+                .prepare_email_code(EmailSendRequest {
+                    ticket: ticket.clone(),
+                    email: format!("victim-{i}@example.com"),
+                    locale: None,
+                })
+                .await
+                .unwrap();
+        }
+        let err = service
+            .prepare_email_code(EmailSendRequest {
+                ticket,
+                email: "victim-5@example.com".into(),
+                locale: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "email_rate_limit");
+    }
+
+    #[tokio::test]
     async fn email_send_quota_reopens_one_slot_when_oldest_send_expires() {
         let (_dir, service) = setup().await;
         let a = service.start_web_login("/miniapp/").await.unwrap();
@@ -847,26 +877,28 @@ mod tests {
     #[tokio::test]
     async fn global_send_quota_allows_300_per_minute_without_a_daily_cap() {
         let (_dir, service) = setup().await;
-        let ticket = service.start_web_login("/miniapp/").await.unwrap();
+        let history_ticket = service.start_web_login("/miniapp/").await.unwrap();
         let now = Utc::now().timestamp();
         // Yesterday's old cap would reject all new sends after these 1,000 records.
         sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 1000) INSERT INTO email_challenges(id, ticket_hash, email, code_hash, created_at, expires_at) SELECT 'history-' || n, ?, 'history-' || n || '@example.com', 'unused', ?, ? FROM numbers")
-            .bind(token_hash(&ticket)).bind(now - 120).bind(now - 1)
+            .bind(token_hash(&history_ticket)).bind(now - 120).bind(now - 1)
             .execute(service.db.pool()).await.unwrap();
         for index in 0..300 {
+            let ticket = service.start_web_login("/miniapp/").await.unwrap();
             service
                 .prepare_email_code(EmailSendRequest {
-                    ticket: ticket.clone(),
+                    ticket,
                     email: format!("recipient-{index}@example.com"),
                     locale: None,
                 })
                 .await
                 .unwrap();
         }
+        let over_limit_ticket = service.start_web_login("/miniapp/").await.unwrap();
         assert_eq!(
             service
                 .prepare_email_code(EmailSendRequest {
-                    ticket: ticket.clone(),
+                    ticket: over_limit_ticket.clone(),
                     email: "over-minute-limit@example.com".into(),
                     locale: None,
                 })
@@ -881,7 +913,7 @@ mod tests {
             .unwrap();
         service
             .prepare_email_code(EmailSendRequest {
-                ticket,
+                ticket: over_limit_ticket,
                 email: "next-minute@example.com".into(),
                 locale: None,
             })
@@ -959,10 +991,15 @@ mod tests {
         let state = Arc::new(crate::routes::MarketState {
             config: auth.config.clone(),
             db: auth.db.clone(),
-            artifacts: crate::artifacts::ArtifactStore::open(auth.config.artifact_dir.clone())
-                .await
-                .unwrap(),
+            artifacts: Some(
+                crate::artifacts::ArtifactStore::open(auth.config.artifact_dir.clone())
+                    .await
+                    .unwrap(),
+            ),
             auth: auth.clone(),
+            validation_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::routes::DEFAULT_VALIDATION_CONCURRENCY,
+            )),
         });
         let app = crate::routes::api_router(state);
         for (path, expected) in [

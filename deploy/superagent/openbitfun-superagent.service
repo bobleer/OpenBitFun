@@ -41,7 +41,7 @@ Environment=SUPERAGENT_FRONTENDS=true
 #Environment=SUPERAGENT_DIRECTORY_KEY_FILE=/opt/openbitfun-superagent/etc/directory.key
 Environment=SUPERAGENT_MAX_ACCOUNTS=256
 Environment=SUPERAGENT_MAX_RESIDENT=512
-Environment=SUPERAGENT_MODEL_ROUNDS=64
+Environment=SUPERAGENT_MODEL_ROUNDS=256
 Environment=SUPERAGENT_WATCH_SECONDS=5
 # easytier's "Failed to send event" warnings repeat every connection with the
 # client's address; they carry no fault, so only their errors are logged.

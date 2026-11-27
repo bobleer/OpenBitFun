@@ -37,6 +37,13 @@ pub struct ValidatedScreenshot {
 }
 
 pub fn validate_market_package(bytes: &[u8]) -> MarketResult<ValidatedMarketPackage> {
+    validate_market_package_with_limit(bytes, MARKET_MAX_UNCOMPRESSED_BYTES)
+}
+
+fn validate_market_package_with_limit(
+    bytes: &[u8],
+    max_uncompressed_bytes: u64,
+) -> MarketResult<ValidatedMarketPackage> {
     if bytes.is_empty() {
         return Err(MarketError::bad_request(
             "empty_package",
@@ -101,15 +108,34 @@ pub fn validate_market_package(bytes: &[u8]) -> MarketResult<ValidatedMarketPack
                 "Links and non-regular files are not allowed in MiniApp packages.",
             ));
         }
-        total_uncompressed = total_uncompressed.saturating_add(entry.size());
-        if total_uncompressed > MARKET_MAX_UNCOMPRESSED_BYTES {
+        let remaining = max_uncompressed_bytes.saturating_sub(total_uncompressed);
+        if entry.size() > remaining {
             return Err(MarketError::bad_request(
                 "package_expansion_too_large",
                 "The uncompressed MiniApp package exceeds 64 MiB.",
             ));
         }
-        let mut content = String::new();
-        entry.read_to_string(&mut content).map_err(|_| {
+        // Do not trust entry.size() in ZIP headers: bound the actual decompressed
+        // stream with Read::take so a forged-header deflate bomb cannot OOM the process.
+        let initial_cap = entry.size().min(remaining).min(1024 * 1024) as usize;
+        let mut raw = Vec::with_capacity(initial_cap);
+        (&mut entry)
+            .take(remaining.saturating_add(1))
+            .read_to_end(&mut raw)
+            .map_err(|_| {
+                MarketError::bad_request(
+                    "invalid_package_archive",
+                    format!("Failed to decompress {name} from the MiniApp package."),
+                )
+            })?;
+        if raw.len() as u64 > remaining {
+            return Err(MarketError::bad_request(
+                "package_expansion_too_large",
+                "The uncompressed MiniApp package exceeds 64 MiB.",
+            ));
+        }
+        total_uncompressed = total_uncompressed.saturating_add(raw.len() as u64);
+        let content = String::from_utf8(raw).map_err(|_| {
             MarketError::bad_request(
                 "invalid_package_text",
                 format!("{name} must be valid UTF-8 text."),
@@ -664,6 +690,45 @@ mod tests {
         let bytes = package_custom(valid_meta(), &oversized_html, "", "[]", &[]);
         assert_eq!(
             validate_market_package(&bytes).unwrap_err().code,
+            "package_expansion_too_large"
+        );
+    }
+
+    #[test]
+    fn package_rejects_spoofed_zip_header_deflate_bomb_without_trusting_entry_size() {
+        // Real compressed stream expands to 256 KiB, tested under a 64 KiB cap,
+        // with both the local file header and central directory uncompressed_size
+        // fields tampered down to 16 bytes so header-only checks would miss it.
+        let payload = "A".repeat(256 * 1024);
+        let mut bytes = package_custom(valid_meta(), &payload, "", "[]", &[]);
+        let target_name = b"source/index.html";
+        let spoofed_size = 16u32.to_le_bytes();
+        // Patch local file header (PK\x03\x04): uncompressed size is at offset +22,
+        // file name begins at offset +30.
+        let mut patched_local = false;
+        let mut patched_cd = false;
+        for i in 0..bytes.len().saturating_sub(46 + target_name.len()) {
+            if &bytes[i..i + 4] == b"PK\x03\x04" {
+                let name_len = u16::from_le_bytes([bytes[i + 26], bytes[i + 27]]) as usize;
+                if name_len == target_name.len() && &bytes[i + 30..i + 30 + name_len] == target_name
+                {
+                    bytes[i + 22..i + 26].copy_from_slice(&spoofed_size);
+                    patched_local = true;
+                }
+            } else if &bytes[i..i + 4] == b"PK\x01\x02" {
+                let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+                if name_len == target_name.len() && &bytes[i + 46..i + 46 + name_len] == target_name
+                {
+                    bytes[i + 24..i + 28].copy_from_slice(&spoofed_size);
+                    patched_cd = true;
+                }
+            }
+        }
+        assert!(patched_local && patched_cd);
+        assert_eq!(
+            validate_market_package_with_limit(&bytes, 64 * 1024)
+                .unwrap_err()
+                .code,
             "package_expansion_too_large"
         );
     }

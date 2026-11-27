@@ -32,8 +32,7 @@ use futures::{SinkExt, StreamExt};
 use openbitfun_link::handshake::{self, Claims, Role};
 use openbitfun_obp::server::e2e::{
     client_fingerprint, decode_message, derive_keys, encode_message, read_record,
-    server_fingerprint, write_record, ClientHello, RecordCipher, ServerHello, MAGIC, RECORD_MAX,
-    VERSION,
+    server_fingerprint, write_record, ClientHello, RecordCipher, ServerHello, MAGIC, VERSION,
 };
 use openbitfun_obp::EVENTS_DROPPED_EVENT;
 use serde_json::{json, Value};
@@ -47,9 +46,15 @@ use crate::directory::Identity;
 use crate::slots::Slot;
 
 const HELLO_MAX: usize = 4 * 1024;
+const HELLO_RECORD_MAX: usize = 64 * 1024;
+const DEFAULT_MAX_INBOUND_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const WS_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+const WS_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const BRIDGE_DUPLEX_BYTES: usize = 64 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVENT_BATCH: usize = 256;
 const OUTBOX_CAPACITY: usize = 256;
+const INBOUND_CHANNEL_CAPACITY: usize = 16;
 /// Capabilities of the node's OBP connection.
 pub const CONNECTION_CAPABILITIES: &[&str] = &[
     "obp_v1",
@@ -65,12 +70,18 @@ const TARGETS_RECORD: &str = "targets";
 /// Resource limits for `/agent/obp` frontend connections.
 #[derive(Debug, Clone)]
 pub struct FrontendsLimits {
-    /// Maximum concurrent `/agent/obp` connections across the process.
+    /// Maximum concurrent authenticated `/agent/obp` connections across the process.
     pub max_connections: usize,
+    /// Maximum concurrent unauthenticated handshakes in progress across the process.
+    pub max_pending_handshakes: usize,
     /// Maximum concurrent `/agent/obp` connections for one account.
     pub max_connections_per_account: usize,
     /// Maximum handshake nonces held in RAM for replay protection.
     pub max_nonces: usize,
+    /// Overall wall-clock deadline for the E2E handshake (magic + hello + verify + answer).
+    pub handshake_timeout: Duration,
+    /// Maximum size in bytes of a single inbound E2E record after authentication.
+    pub max_inbound_record_bytes: usize,
     /// Maximum time after the E2E handshake to send the OBP `hello` request.
     pub hello_timeout: Duration,
     /// Interval between server-initiated WebSocket pings.
@@ -95,8 +106,11 @@ impl Default for FrontendsLimits {
     fn default() -> Self {
         Self {
             max_connections: 2_048,
+            max_pending_handshakes: 128,
             max_connections_per_account: 16,
             max_nonces: 100_000,
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            max_inbound_record_bytes: DEFAULT_MAX_INBOUND_RECORD_BYTES,
             hello_timeout: Duration::from_secs(15),
             ping_interval: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(90),
@@ -223,6 +237,7 @@ pub struct Frontends {
     pub limits: FrontendsLimits,
     targets: std::sync::Mutex<HashMap<String, String>>,
     nonces: std::sync::Mutex<NonceCache>,
+    pending_handshakes: Arc<Semaphore>,
     active_connections: Arc<Semaphore>,
     account_connections: std::sync::Mutex<HashMap<String, usize>>,
 }
@@ -252,6 +267,7 @@ impl Frontends {
             })
             .unwrap_or_default();
         let max_conns = limits.max_connections.max(1);
+        let max_handshakes = limits.max_pending_handshakes.max(1);
         let max_nonces = limits.max_nonces.max(1);
         Arc::new(Self {
             service,
@@ -260,6 +276,7 @@ impl Frontends {
             limits,
             targets: std::sync::Mutex::new(targets),
             nonces: std::sync::Mutex::new(NonceCache::new(max_nonces)),
+            pending_handshakes: Arc::new(Semaphore::new(max_handshakes)),
             active_connections: Arc::new(Semaphore::new(max_conns)),
             account_connections: std::sync::Mutex::new(HashMap::new()),
         })
@@ -456,18 +473,19 @@ async fn obp(
             "browser pages reach the agent through a device",
         );
     }
-    let Ok(permit) = Arc::clone(&frontends.active_connections).try_acquire_owned() else {
+    let Ok(handshake_permit) = Arc::clone(&frontends.pending_handshakes).try_acquire_owned() else {
         return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
             "too_many_connections",
-            "too many open agent connections; retry later",
+            "too many pending agent handshakes; retry later",
         );
     };
     upgrade
-        .max_message_size(RECORD_MAX + 64)
+        .max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let (io, pump) = bridge(socket);
-            let serve = serve_stream_with_permit(frontends, io, permit);
+            let serve = serve_stream_with_handshake_permit(frontends, io, handshake_permit);
             tokio::select! {
                 _ = serve => {}
                 _ = pump => {}
@@ -477,7 +495,7 @@ async fn obp(
 
 /// A WebSocket as a byte stream: binary frames carry the channel's bytes.
 fn bridge(socket: WebSocket) -> (DuplexStream, impl std::future::Future<Output = ()>) {
-    let (local, remote) = tokio::io::duplex(256 * 1024);
+    let (local, remote) = tokio::io::duplex(BRIDGE_DUPLEX_BYTES);
     let pump = async move {
         let (mut sink, mut stream) = socket.split();
         let (mut read, mut write) = tokio::io::split(remote);
@@ -537,106 +555,112 @@ pub async fn serve_stream<S>(frontends: Arc<Frontends>, mut stream: S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let Ok(permit) = Arc::clone(&frontends.active_connections).try_acquire_owned() else {
+    let Ok(handshake_permit) = Arc::clone(&frontends.pending_handshakes).try_acquire_owned() else {
         refuse(
             &mut stream,
             "too_many_connections",
-            "too many open agent connections; retry later",
+            "too many pending agent handshakes; retry later",
         )
         .await;
         return;
     };
-    serve_stream_with_permit(frontends, stream, permit).await;
+    serve_stream_with_handshake_permit(frontends, stream, handshake_permit).await;
 }
 
-async fn serve_stream_with_permit<S>(
+async fn serve_stream_with_handshake_permit<S>(
     frontends: Arc<Frontends>,
     mut stream: S,
-    _conn_permit: OwnedSemaphorePermit,
+    handshake_permit: OwnedSemaphorePermit,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let mut magic = [0u8; 8];
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut magic)).await {
-        Ok(Ok(_)) if &magic == MAGIC => {}
-        _ => return,
-    }
-    let hello =
-        match tokio::time::timeout(HANDSHAKE_TIMEOUT, read_record(&mut stream, HELLO_MAX)).await {
-            Ok(Ok(body)) => body,
-            _ => return,
-        };
-    let Ok(hello) = serde_json::from_slice::<ClientHello>(&hello) else {
-        refuse(
-            &mut stream,
-            "bad_hello",
-            "the end-to-end hello is unreadable",
-        )
-        .await;
-        return;
-    };
-    if hello.v != VERSION {
-        refuse(
-            &mut stream,
-            "unsupported_version",
-            "the agent speaks end-to-end channel version 1",
-        )
-        .await;
-        return;
-    }
-    let Some(client_eph) = b64()
-        .decode(hello.eph.trim())
-        .ok()
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .map(PublicKey::from)
-    else {
-        refuse(&mut stream, "bad_hello", "the ephemeral key is invalid").await;
-        return;
-    };
-    let verified = match verify(&frontends, &hello).await {
-        Ok(verified) => verified,
-        Err((code, message)) => {
-            refuse(&mut stream, code, &message).await;
-            return;
+    let handshake_phase = async {
+        let mut magic = [0u8; 8];
+        match stream.read_exact(&mut magic).await {
+            Ok(_) if &magic == MAGIC => {}
+            _ => return None,
         }
+        let hello = read_record(&mut stream, HELLO_MAX).await.ok()?;
+        let Ok(hello) = serde_json::from_slice::<ClientHello>(&hello) else {
+            refuse(
+                &mut stream,
+                "bad_hello",
+                "the end-to-end hello is unreadable",
+            )
+            .await;
+            return None;
+        };
+        if hello.v != VERSION {
+            refuse(
+                &mut stream,
+                "unsupported_version",
+                "the agent speaks end-to-end channel version 1",
+            )
+            .await;
+            return None;
+        }
+        let Some(client_eph) = b64()
+            .decode(hello.eph.trim())
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .map(PublicKey::from)
+        else {
+            refuse(&mut stream, "bad_hello", "the ephemeral key is invalid").await;
+            return None;
+        };
+        let verified = match verify(&frontends, &hello).await {
+            Ok(verified) => verified,
+            Err((code, message)) => {
+                refuse(&mut stream, code, &message).await;
+                return None;
+            }
+        };
+        let Ok(conn_permit) = Arc::clone(&frontends.active_connections).try_acquire_owned() else {
+            refuse(
+                &mut stream,
+                "too_many_connections",
+                "too many open agent connections; retry later",
+            )
+            .await;
+            return None;
+        };
+        let (slot, key, claims, account_guard) = verified;
+        let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let server_eph = b64().encode(PublicKey::from(&secret).as_bytes());
+        let shared = secret.diffie_hellman(&client_eph);
+        if !shared.was_contributory() {
+            refuse(&mut stream, "bad_hello", "the ephemeral key is invalid").await;
+            return None;
+        }
+        let server_claims = Claims {
+            cert_fingerprint: server_fingerprint(&hello.eph, &server_eph),
+            ..claims
+        };
+        let server_proof = handshake::prove(&key, Role::Server, &server_claims);
+        let answer = ServerHello {
+            v: VERSION,
+            eph: server_eph,
+            proof: server_proof.clone(),
+            protocol: openbitfun_obp::OBP_PROTOCOL_VERSION,
+            capabilities: CONNECTION_CAPABILITIES
+                .iter()
+                .map(|c| c.to_string())
+                .collect(),
+        };
+        let answer = serde_json::to_vec(&answer).ok()?;
+        write_record(&mut stream, &answer).await.ok()?;
+        let (c2s, s2c) = derive_keys(&key, shared.as_bytes(), &hello.proof, &server_proof);
+        Some((slot, account_guard, conn_permit, c2s, s2c))
     };
-    let (slot, key, claims, _account_guard) = verified;
-    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let server_eph = b64().encode(PublicKey::from(&secret).as_bytes());
-    let shared = secret.diffie_hellman(&client_eph);
-    if !shared.was_contributory() {
-        refuse(&mut stream, "bad_hello", "the ephemeral key is invalid").await;
+
+    let established = tokio::time::timeout(frontends.limits.handshake_timeout, handshake_phase)
+        .await
+        .ok()
+        .flatten();
+    drop(handshake_permit);
+    let Some((slot, _account_guard, _conn_permit, c2s, s2c)) = established else {
         return;
-    }
-    let server_claims = Claims {
-        cert_fingerprint: server_fingerprint(&hello.eph, &server_eph),
-        ..claims
     };
-    let server_proof = handshake::prove(&key, Role::Server, &server_claims);
-    let answer = ServerHello {
-        v: VERSION,
-        eph: server_eph,
-        proof: server_proof.clone(),
-        protocol: openbitfun_obp::OBP_PROTOCOL_VERSION,
-        capabilities: CONNECTION_CAPABILITIES
-            .iter()
-            .map(|c| c.to_string())
-            .collect(),
-    };
-    let Ok(answer) = serde_json::to_vec(&answer) else {
-        return;
-    };
-    if tokio::time::timeout(
-        frontends.limits.write_timeout,
-        write_record(&mut stream, &answer),
-    )
-    .await
-    .map(|r| r.is_err())
-    .unwrap_or(true)
-    {
-        return;
-    }
-    let (c2s, s2c) = derive_keys(&key, shared.as_bytes(), &hello.proof, &server_proof);
     log::info!("Superagent frontend connected");
     let _attached = slot.attach();
     let (reader, writer) = tokio::io::split(stream);
@@ -774,8 +798,13 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let text = |value: String| WsMessage::Text(value.into());
+    let max_hello_record = frontends
+        .limits
+        .max_inbound_record_bytes
+        .min(HELLO_RECORD_MAX)
+        .max(1024);
     loop {
-        let record = read_record(reader, RECORD_MAX).await.ok()?;
+        let record = read_record(reader, max_hello_record).await.ok()?;
         let message = inbound.open(&record).and_then(decode_message).ok()?;
         let body = match message {
             WsMessage::Text(body) => body.to_string(),
@@ -916,6 +945,19 @@ async fn connection<R, W>(
         return;
     };
 
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<WsMessage>(INBOUND_CHANNEL_CAPACITY);
+    let max_inbound_record = frontends.limits.max_inbound_record_bytes.max(1024);
+    let reader_task = tokio::spawn(async move {
+        while let Ok(record) = read_record(&mut reader, max_inbound_record).await {
+            let Ok(message) = inbound.open(&record).and_then(decode_message) else {
+                break;
+            };
+            if inbound_tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+
     let text = |value: String| WsMessage::Text(value.into());
     let calls = Arc::new(Semaphore::new(frontends.limits.max_inflight_calls.max(1)));
     let mut ping = tokio::time::interval(frontends.limits.ping_interval);
@@ -950,9 +992,8 @@ async fn connection<R, W>(
         };
 
         tokio::select! {
-            record = read_record(&mut reader, RECORD_MAX) => {
-                let Ok(record) = record else { break None };
-                let Ok(message) = inbound.open(&record).and_then(decode_message) else { break None };
+            message = inbound_rx.recv() => {
+                let Some(message) = message else { break None };
                 last_heard = tokio::time::Instant::now();
                 let body = match message {
                     WsMessage::Text(body) => body.to_string(),
@@ -1065,6 +1106,8 @@ async fn connection<R, W>(
         }
     };
 
+    drop(inbound_rx);
+    reader_task.abort();
     if let Some(frame) = close_reason {
         let _ = tx.send(WsMessage::Close(Some(frame))).await;
     }

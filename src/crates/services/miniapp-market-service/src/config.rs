@@ -4,10 +4,48 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Which HTTP surface this server process exposes.
+///
+/// - `All` (default): combined auth + marketplace service (legacy single-container mode).
+/// - `Auth`: standalone identity authority (`/api/v1/auth/*`, `/api/v1/me`, sign-in pages)
+///   with a strict 16 KiB body limit and zero package/screenshot processing.
+/// - `Market`: marketplace catalog, uploads, and moderation; optionally delegates Bearer
+///   token verification to an independent `Auth` container via `MARKET_AUTH_API_URL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServiceProfile {
+    #[default]
+    All,
+    Auth,
+    Market,
+}
+
+impl ServiceProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Auth => "auth",
+            Self::Market => "market",
+        }
+    }
+
+    fn parse(raw: &str) -> anyhow::Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "all" => Ok(Self::All),
+            "auth" => Ok(Self::Auth),
+            "market" => Ok(Self::Market),
+            other => Err(anyhow!(
+                "MARKET_PROFILE must be one of 'all', 'auth', or 'market' (got '{other}')"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MarketConfig {
+    pub profile: ServiceProfile,
     pub bind: SocketAddr,
     pub public_base_url: String,
+    pub auth_api_url: Option<String>,
     pub database_path: PathBuf,
     pub artifact_dir: PathBuf,
     pub web_dir: PathBuf,
@@ -23,6 +61,7 @@ pub struct MarketConfig {
 
 impl MarketConfig {
     pub fn from_env() -> anyhow::Result<Self> {
+        let profile = ServiceProfile::parse(&env::var("MARKET_PROFILE").unwrap_or_default())?;
         let bind = env::var("MARKET_BIND")
             .unwrap_or_else(|_| "127.0.0.1:9710".to_string())
             .parse()
@@ -31,6 +70,8 @@ impl MarketConfig {
             .unwrap_or_else(|_| "http://127.0.0.1:9710/miniapp".to_string())
             .trim_end_matches('/')
             .to_string();
+        let auth_api_url = non_empty_env("MARKET_AUTH_API_URL")
+            .map(|value| value.trim_end_matches('/').to_string());
         let data_dir = PathBuf::from(
             env::var("MARKET_DATA_DIR").unwrap_or_else(|_| "./var/miniapp-market/data".to_string()),
         );
@@ -63,8 +104,10 @@ impl MarketConfig {
             .unwrap_or(false);
 
         Ok(Self {
+            profile,
             bind,
             public_base_url,
+            auth_api_url,
             database_path,
             artifact_dir,
             web_dir,

@@ -117,6 +117,14 @@ struct GitHubUser {
     avatar_url: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteMeResponse {
+    user: openbitfun_product_domains::miniapp::market::MarketUserSummary,
+    #[serde(default)]
+    email: Option<String>,
+}
+
 #[derive(Debug)]
 pub(super) struct OAuthFlowRecord {
     pub(super) flow_kind: String,
@@ -148,6 +156,15 @@ impl AuthService {
         headers: &HeaderMap,
     ) -> MarketResult<Option<RequestAuth>> {
         if let Some(token) = bearer_token(headers) {
+            if let Some(auth_api_url) = self.config.auth_api_url.as_deref() {
+                let user = self.verify_remote_bearer_token(auth_api_url, token).await?;
+                return Ok(Some(RequestAuth {
+                    user,
+                    kind: RequestAuthKind::Bearer {
+                        family_id: "remote".to_string(),
+                    },
+                }));
+            }
             let Some((user, family_id)) = self.db.api_token_user(token, "access").await? else {
                 return Err(MarketError::unauthorized(
                     "The marketplace access token is invalid or expired.",
@@ -172,6 +189,63 @@ impl AuthService {
                 expires_at,
             },
         }));
+    }
+
+    async fn verify_remote_bearer_token(
+        &self,
+        auth_api_url: &str,
+        token: &str,
+    ) -> MarketResult<AuthenticatedUser> {
+        let url = format!("{}/me", auth_api_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| {
+                MarketError::service_unavailable(
+                    "auth_service_unavailable",
+                    "The identity service is unavailable.",
+                )
+            })?;
+        let status = response.status();
+        if status == axum::http::StatusCode::UNAUTHORIZED
+            || status == axum::http::StatusCode::FORBIDDEN
+        {
+            return Err(MarketError::unauthorized(
+                "The marketplace access token is invalid or expired.",
+            ));
+        }
+        if !status.is_success() {
+            return Err(MarketError::service_unavailable(
+                "auth_service_unavailable",
+                "The identity service could not verify the access token.",
+            ));
+        }
+        let remote: RemoteMeResponse = bounded_json(response, 32 * 1024).await?;
+        if remote.user.github_id > 0 {
+            self.db
+                .upsert_github_user(
+                    remote.user.github_id,
+                    &remote.user.login,
+                    &remote.user.avatar_url,
+                )
+                .await
+        } else if let Some(email) = remote
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            self.db
+                .upsert_email_user(email, &remote.user.login, &remote.user.avatar_url)
+                .await
+        } else {
+            Err(MarketError::unauthorized(
+                "The marketplace access token did not return a verifiable identity.",
+            ))
+        }
     }
 
     pub(crate) async fn require_auth(&self, headers: &HeaderMap) -> MarketResult<RequestAuth> {
@@ -598,12 +672,40 @@ impl AuthService {
         })
     }
 
-    pub(crate) async fn logout(&self, auth: &RequestAuth) -> MarketResult<()> {
+    pub(crate) async fn logout(&self, auth: &RequestAuth, headers: &HeaderMap) -> MarketResult<()> {
         match &auth.kind {
             RequestAuthKind::Web { session_token, .. } => {
                 self.db.delete_web_session(session_token).await
             }
-            RequestAuthKind::Bearer { family_id } => self.db.revoke_token_family(family_id).await,
+            RequestAuthKind::Bearer { family_id } => {
+                if let (Some(auth_api_url), Some(token)) =
+                    (self.config.auth_api_url.as_deref(), bearer_token(headers))
+                {
+                    let url = format!("{}/auth/logout", auth_api_url.trim_end_matches('/'));
+                    let response = self
+                        .client
+                        .post(&url)
+                        .bearer_auth(token)
+                        .send()
+                        .await
+                        .map_err(|_| {
+                            MarketError::service_unavailable(
+                                "auth_service_unavailable",
+                                "The identity service is unavailable.",
+                            )
+                        })?;
+                    if response.status().is_success()
+                        || response.status() == axum::http::StatusCode::UNAUTHORIZED
+                    {
+                        return Ok(());
+                    }
+                    return Err(MarketError::service_unavailable(
+                        "auth_service_unavailable",
+                        "The identity service could not complete sign-out.",
+                    ));
+                }
+                self.db.revoke_token_family(family_id).await
+            }
         }
     }
 
@@ -736,9 +838,15 @@ impl AuthService {
 }
 
 async fn bounded_github_json<T: serde::de::DeserializeOwned>(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
 ) -> MarketResult<T> {
-    const MAX_BYTES: usize = 64 * 1024;
+    bounded_json(response, 64 * 1024).await
+}
+
+async fn bounded_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> MarketResult<T> {
     let oversized = || {
         MarketError::service_unavailable(
             "github_response_size",
@@ -747,13 +855,13 @@ async fn bounded_github_json<T: serde::de::DeserializeOwned>(
     };
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_BYTES as u64)
+        .is_some_and(|length| length > max_bytes as u64)
     {
         return Err(oversized());
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(MarketError::internal)? {
-        if chunk.len() > MAX_BYTES.saturating_sub(bytes.len()) {
+        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
             return Err(oversized());
         }
         bytes.extend_from_slice(&chunk);
@@ -850,8 +958,10 @@ mod tests {
 
     fn test_config(root: &Path) -> MarketConfig {
         MarketConfig {
+            profile: crate::config::ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: None,
             database_path: root.join("market.sqlite"),
             artifact_dir: root.join("artifacts"),
             web_dir: root.join("web"),

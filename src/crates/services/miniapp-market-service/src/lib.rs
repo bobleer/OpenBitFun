@@ -14,16 +14,20 @@ mod routes;
 
 use artifacts::ArtifactStore;
 use auth::AuthService;
+use auth_admission::AuthorizationLimiter;
 use axum::extract::Request;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
-use config::MarketConfig;
+use config::{MarketConfig, ServiceProfile};
 use db::Database;
-use routes::{api_router, MarketState};
+use routes::{
+    api_router, auth_api_router, market_api_router, MarketState, DEFAULT_VALIDATION_CONCURRENCY,
+};
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower_http::services::{ServeDir, ServeFile};
 
 pub use error::{MarketError, MarketResult};
@@ -34,20 +38,25 @@ pub use package::{
 
 pub async fn build_market_router(config: MarketConfig) -> anyhow::Result<Router> {
     let db = Database::open(&config.database_path).await?;
-    let artifacts = ArtifactStore::open(config.artifact_dir.clone()).await?;
-    let cleanup = retention::cleanup_expired_submission_artifacts(&db, &artifacts).await?;
-    if cleanup.submissions_scrubbed > 0
-        || cleanup.packages_removed > 0
-        || cleanup.screenshots_removed > 0
-    {
-        tracing::info!(
-            submissions_scrubbed = cleanup.submissions_scrubbed,
-            packages_removed = cleanup.packages_removed,
-            screenshots_removed = cleanup.screenshots_removed,
-            "MiniApp market startup retention cleanup completed"
-        );
-    }
-    retention::spawn_cleanup_loop(db.clone(), artifacts.clone());
+    let artifacts = if config.profile == ServiceProfile::Auth {
+        None
+    } else {
+        let store = ArtifactStore::open(config.artifact_dir.clone()).await?;
+        let cleanup = retention::cleanup_expired_submission_artifacts(&db, &store).await?;
+        if cleanup.submissions_scrubbed > 0
+            || cleanup.packages_removed > 0
+            || cleanup.screenshots_removed > 0
+        {
+            tracing::info!(
+                submissions_scrubbed = cleanup.submissions_scrubbed,
+                packages_removed = cleanup.packages_removed,
+                screenshots_removed = cleanup.screenshots_removed,
+                "MiniApp market startup retention cleanup completed"
+            );
+        }
+        retention::spawn_cleanup_loop(db.clone(), store.clone());
+        Some(store)
+    };
     let auth_cleanup_db = db.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
@@ -67,17 +76,60 @@ pub async fn build_market_router(config: MarketConfig) -> anyhow::Result<Router>
         db,
         artifacts,
         auth,
+        validation_slots: Arc::new(Semaphore::new(DEFAULT_VALIDATION_CONCURRENCY)),
     });
 
     let index_file = config.web_dir.join("index.html");
-    let spa = ServeDir::new(&config.web_dir)
-        .append_index_html_on_directories(true)
-        .fallback(ServeFile::new(index_file));
+    let router = match config.profile {
+        ServiceProfile::Auth => {
+            let limiter = AuthorizationLimiter::new();
+            let mut app = Router::new()
+                .route_service("/", ServeFile::new(&index_file))
+                .route_service("/sign-in", ServeFile::new(&index_file))
+                .route_service("/complete", ServeFile::new(&index_file))
+                .route_service("/miniapp/auth/{*rest}", ServeFile::new(&index_file))
+                .nest("/api/v1", auth_api_router(state.clone(), limiter.clone()))
+                .nest("/miniapp/api/v1", auth_api_router(state, limiter))
+                .nest_service(
+                    "/miniapp/assets",
+                    ServeDir::new(config.web_dir.join("assets")),
+                );
+            for asset in [
+                "theme-init.js",
+                "favicon.ico",
+                "favicon.svg",
+                "apple-touch-icon.png",
+                "site.webmanifest",
+            ] {
+                app = app.route_service(
+                    &format!("/miniapp/{asset}"),
+                    ServeFile::new(config.web_dir.join(asset)),
+                );
+            }
+            app
+        }
+        ServiceProfile::Market => {
+            let spa = ServeDir::new(&config.web_dir)
+                .append_index_html_on_directories(true)
+                .fallback(ServeFile::new(index_file));
+            let limiter = AuthorizationLimiter::new();
+            Router::new()
+                .route("/", get(|| async { Redirect::permanent("/miniapp/") }))
+                .nest("/miniapp/api/v1", market_api_router(state, limiter))
+                .nest_service("/miniapp", spa)
+        }
+        ServiceProfile::All => {
+            let spa = ServeDir::new(&config.web_dir)
+                .append_index_html_on_directories(true)
+                .fallback(ServeFile::new(index_file));
+            Router::new()
+                .route("/", get(|| async { Redirect::permanent("/miniapp/") }))
+                .nest("/miniapp/api/v1", api_router(state))
+                .nest_service("/miniapp", spa)
+        }
+    };
 
-    Ok(Router::new()
-        .route("/", get(|| async { Redirect::permanent("/miniapp/") }))
-        .nest("/miniapp/api/v1", api_router(state))
-        .nest_service("/miniapp", spa)
+    Ok(router
         .layer(axum::middleware::from_fn(normalize_payload_too_large))
         .layer(axum::middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn(request_id::middleware)))
@@ -152,8 +204,10 @@ mod tests {
     async fn health_route_boots_with_an_empty_database() {
         let temp = tempfile::tempdir().unwrap();
         let config = MarketConfig {
+            profile: ServiceProfile::All,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "http://localhost/miniapp".to_string(),
+            auth_api_url: None,
             database_path: temp.path().join("market.sqlite"),
             artifact_dir: temp.path().join("artifacts"),
             web_dir: temp.path().join("web"),
@@ -292,5 +346,284 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], "payload_too_large");
         assert!(body["error"]["requestId"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn auth_profile_serves_identity_only_without_opening_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_dir = temp.path().join("artifacts-must-not-be-created");
+        let config = MarketConfig {
+            profile: ServiceProfile::Auth,
+            bind: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: "https://auth.openbitfun.com".to_string(),
+            auth_api_url: None,
+            database_path: temp.path().join("auth.sqlite"),
+            artifact_dir: artifact_dir.clone(),
+            web_dir: temp.path().join("web"),
+            github_callback_url: Some(
+                "https://auth.openbitfun.com/api/v1/auth/github/callback".to_string(),
+            ),
+            github_client_id: None,
+            github_client_secret: None,
+            session_secret: "test-session-secret-at-least-24".to_string(),
+            admin_github_ids: HashSet::new(),
+            admin_emails: HashSet::new(),
+            public_browse: false,
+            web_submissions_enabled: false,
+        };
+        tokio::fs::create_dir_all(&config.web_dir).await.unwrap();
+        tokio::fs::write(config.web_dir.join("index.html"), "<html>auth</html>")
+            .await
+            .unwrap();
+
+        let app = build_market_router(config).await.unwrap();
+        assert!(
+            !artifact_dir.exists(),
+            "auth profile must not touch artifact storage"
+        );
+
+        for uri in ["/api/v1/health", "/miniapp/api/v1/health"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["profile"], "auth");
+        }
+
+        let start = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login/start")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"returnTo":"/miniapp/"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start.status(), StatusCode::OK);
+
+        for page in ["/", "/sign-in", "/complete", "/miniapp/auth/sign-in"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{page}");
+        }
+
+        for blocked in [
+            "/api/v1/listings",
+            "/miniapp/api/v1/listings",
+            "/miniapp/api/v1/submissions",
+            "/miniapp/admin",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(blocked).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{blocked}");
+        }
+    }
+
+    #[tokio::test]
+    async fn market_profile_verifies_bearer_tokens_against_standalone_auth_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let web_dir = temp.path().join("web");
+        tokio::fs::create_dir_all(&web_dir).await.unwrap();
+        tokio::fs::write(web_dir.join("index.html"), "<html></html>")
+            .await
+            .unwrap();
+
+        let auth_db_path = temp.path().join("auth.sqlite");
+        let auth_config = MarketConfig {
+            profile: ServiceProfile::Auth,
+            bind: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: "http://127.0.0.1".to_string(),
+            auth_api_url: None,
+            database_path: auth_db_path.clone(),
+            artifact_dir: temp.path().join("auth-artifacts"),
+            web_dir: web_dir.clone(),
+            github_callback_url: None,
+            github_client_id: None,
+            github_client_secret: None,
+            session_secret: "auth-session-secret-at-least-24".to_string(),
+            admin_github_ids: HashSet::new(),
+            admin_emails: HashSet::new(),
+            public_browse: false,
+            web_submissions_enabled: false,
+        };
+        let auth_app = build_market_router(auth_config).await.unwrap();
+        let auth_db = Database::open(&auth_db_path).await.unwrap();
+        let expires = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
+        let gh_user = auth_db
+            .upsert_github_user(
+                4242,
+                "alice",
+                "https://avatars.githubusercontent.com/u/4242",
+            )
+            .await
+            .unwrap();
+        auth_db
+            .create_api_token(
+                gh_user.internal_id,
+                "gh-access-token",
+                "access",
+                "gh-family",
+                expires,
+            )
+            .await
+            .unwrap();
+        let email_user = auth_db
+            .upsert_email_user("ops@example.com", "user-ops", "")
+            .await
+            .unwrap();
+        auth_db
+            .create_api_token(
+                email_user.internal_id,
+                "email-access-token",
+                "access",
+                "email-family",
+                expires,
+            )
+            .await
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let auth_addr = listener.local_addr().unwrap();
+        let auth_server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                auth_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+
+        let market_config = MarketConfig {
+            profile: ServiceProfile::Market,
+            bind: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: "https://market.openbitfun.com/miniapp".to_string(),
+            auth_api_url: Some(format!("http://{auth_addr}/api/v1")),
+            database_path: temp.path().join("market.sqlite"),
+            artifact_dir: temp.path().join("market-artifacts"),
+            web_dir,
+            github_callback_url: None,
+            github_client_id: None,
+            github_client_secret: None,
+            session_secret: "market-session-secret-at-least-24".to_string(),
+            admin_github_ids: HashSet::new(),
+            admin_emails: HashSet::from(["ops@example.com".to_string()]),
+            public_browse: true,
+            web_submissions_enabled: false,
+        };
+        let market_app = build_market_router(market_config).await.unwrap();
+
+        // Market profile does not expose auth issuance endpoints.
+        let login_start = market_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/miniapp/api/v1/auth/login/start")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_start.status(), StatusCode::NOT_FOUND);
+
+        // GitHub Bearer token verified remotely against standalone auth container.
+        let gh_me = market_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/miniapp/api/v1/me")
+                    .header(header::AUTHORIZATION, "Bearer gh-access-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(gh_me.status(), StatusCode::OK);
+        let gh_body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(gh_me.into_body(), 4096).await.unwrap())
+                .unwrap();
+        assert_eq!(gh_body["user"]["githubId"], 4242);
+        assert_eq!(gh_body["user"]["login"], "alice");
+        assert_eq!(gh_body["isAdmin"], false);
+
+        // Verified email Bearer token syncs email identity and honors market admin_emails.
+        let email_me = market_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/miniapp/api/v1/me")
+                    .header(header::AUTHORIZATION, "Bearer email-access-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(email_me.status(), StatusCode::OK);
+        let email_body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(email_me.into_body(), 4096)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(email_body["email"], "ops@example.com");
+        assert_eq!(email_body["isAdmin"], true);
+
+        // Unknown token is rejected with 401.
+        let bad = market_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/miniapp/api/v1/me")
+                    .header(header::AUTHORIZATION, "Bearer invalid-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+
+        // Logout on market forwards Bearer revocation to standalone auth service.
+        let logout = market_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/miniapp/api/v1/auth/logout")
+                    .header(header::AUTHORIZATION, "Bearer gh-access-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+
+        let revoked = market_app
+            .oneshot(
+                Request::builder()
+                    .uri("/miniapp/api/v1/me")
+                    .header(header::AUTHORIZATION, "Bearer gh-access-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        auth_server.abort();
     }
 }

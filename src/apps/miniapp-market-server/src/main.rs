@@ -16,15 +16,19 @@ async fn main() -> anyhow::Result<()> {
 
     let config = MarketConfig::from_env()?;
     let bind = config.bind;
+    let profile = config.profile.as_str();
     let app = build_market_router(config).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("failed to bind MiniApp market server on {bind}"))?;
-    tracing::info!(address = %bind, "MiniApp market server started");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("MiniApp market server stopped unexpectedly")
+    tracing::info!(address = %bind, profile, "MiniApp market server started");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("MiniApp market server stopped unexpectedly")
 }
 
 async fn shutdown_signal() {

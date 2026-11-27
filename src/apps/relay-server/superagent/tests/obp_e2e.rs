@@ -560,3 +560,66 @@ async fn e2e_credit_backpressure_pauses_and_closes_slow_client() {
     .expect("slow client must be closed when credit stays exhausted");
     assert!(got_close);
 }
+
+#[tokio::test]
+async fn e2e_enforces_pending_handshake_cap_and_inbound_record_limit() {
+    use std::time::Duration;
+    let (_dir, frontends, pair, target) = setup_with_limits(
+        true,
+        FrontendsLimits {
+            max_connections: 4,
+            max_pending_handshakes: 1,
+            handshake_timeout: Duration::from_millis(200),
+            max_inbound_record_bytes: 2048,
+            ..FrontendsLimits::default()
+        },
+    )
+    .await;
+
+    // Hold the single pending handshake slot with a silent unauthenticated peer.
+    let (silent_client, server_io) = tokio::io::duplex(4096);
+    let stalled_server = tokio::spawn(openbitfun_superagent::obp_server::serve_stream(
+        Arc::clone(&frontends),
+        server_io,
+    ));
+    tokio::task::yield_now().await;
+
+    // A second concurrent handshake must be rejected immediately without touching active_connections.
+    let refused = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .err()
+        .expect("2nd concurrent handshake must be rejected by max_pending_handshakes");
+    assert_eq!(refused["error"], "too_many_connections");
+
+    // Once the stalled handshake closes, an authenticated connection succeeds.
+    drop(silent_client);
+    let _ = stalled_server.await;
+    let mut client = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let hello = client.rpc("hello", json!({ "protocol": 1 })).await;
+    assert_eq!(hello["result"]["scope"], "account-device");
+
+    // Sending an encrypted record larger than max_inbound_record_bytes closes the connection.
+    let oversized = json!({
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "call",
+        "params": { "command": "superagent_status", "args": { "pad": "x".repeat(4096) } }
+    })
+    .to_string();
+    let sealed = client
+        .c2s
+        .seal(&encode_message(&axum::extract::ws::Message::Text(
+            oversized.into(),
+        )))
+        .unwrap();
+    let _ = write_record(&mut client.stream, &sealed).await;
+    let closed = tokio::time::timeout(Duration::from_millis(400), client.next_message())
+        .await
+        .expect("oversized inbound record must close the connection");
+    assert!(
+        closed.is_none(),
+        "expected EOF after oversized record, got {closed:?}"
+    );
+}
