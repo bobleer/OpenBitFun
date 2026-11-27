@@ -46,8 +46,8 @@ nsh-base = { version = "=0.7.1", default-features = false, optional = true }
 nsh-macos-app = { version = "=0.7.1", default-features = false, optional = true }
 nsh-platform-macos = { version = "=0.7.1", default-features = false, optional = true }
 objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"], optional = true }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSURL"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
 dispatch = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]

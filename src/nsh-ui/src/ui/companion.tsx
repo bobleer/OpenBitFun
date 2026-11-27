@@ -43,11 +43,10 @@ import { focusRingStyle, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
 
 /** Dimensions shared with `desktopPresence.tsx` so the pet window fits bubbles without clipping. */
-export const PET_BUBBLE_WIDTH = 196;
-export const PET_BUBBLE_HEIGHT = 48;
+export const PET_BUBBLE_MAX_WIDTH = space.x6l * 2;
+export const PET_BUBBLE_HEIGHT = space.x3l + space.xs;
 export const PET_BUBBLE_GAP = space.sm;
-/** Height of a single session bubble: spans two stacked bubble slots cleanly. */
-export const PET_BUBBLE_SINGLE_HEIGHT = PET_BUBBLE_HEIGHT * 2 + space.xs;
+export const PET_BUBBLE_LIST_GAP = space.chip;
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
 const DEFAULT_CELL_ASPECT = 192 / 208;
@@ -230,17 +229,14 @@ function bubbleStatusColor(state: PetBubbleState): string {
 
 function PetSessionBubbleCard(props: {
   bubble: PetSessionBubble;
-  single: boolean;
   onOpenSession?: (bubble: PetSessionBubble) => void;
 }) {
   const b = () => props.bubble;
-  const isSingle = () => props.single;
   const targetId = () => b().sessionId ?? b().conversationId ?? b().key;
   const openTarget = () => {
     if (props.onOpenSession) props.onOpenSession(b());
   };
-  const subtitle = () => b().deviceName?.trim() ?? "";
-  const titleLineHeight = () => (isSingle() ? textLineHeight(13, 1.35) : textLineHeight(12, 1.35));
+  const titleLineHeight = () => textLineHeight(12, 1.35);
   return (
     <View
       testID={`pet-bubble-${targetId()}`}
@@ -263,98 +259,76 @@ function PetSessionBubbleCard(props: {
       focusVisibleStyle={focusRingStyle()}
       style={{
         boxSizing: "border-box",
-        width: PET_BUBBLE_WIDTH,
-        height: isSingle() ? PET_BUBBLE_SINGLE_HEIGHT : PET_BUBBLE_HEIGHT,
+        maxWidth: PET_BUBBLE_MAX_WIDTH,
+        height: PET_BUBBLE_HEIGHT,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
         paddingHorizontal: space.md,
-        paddingVertical: isSingle() ? space.md : space.chip,
+        paddingVertical: space.chip,
         borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: bubbleBorderColor(b().state),
         backgroundColor: palette().popoverBg,
         opacity: 0.88,
-        justifyContent: isSingle() && subtitle() ? "space-between" : "center",
-        gap: isSingle() ? space.xs : space.hair,
         cursor: "pointer",
         userSelect: "none",
         ...pressTransition(120),
       }}
     >
-      <View
+      <Text
+        testID={`pet-bubble-title-${targetId()}`}
         style={{
-          flexDirection: "row",
-          alignItems: isSingle() ? "flex-start" : "center",
-          gap: space.chip,
+          ...textStyle("caption", { color: palette().text }),
+          fontSize: textSize(12),
+          fontWeight: "500",
+          lineHeight: titleLineHeight(),
+          flexShrink: 1,
           minWidth: 0,
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
         }}
       >
-        <Text
-          testID={`pet-bubble-title-${targetId()}`}
-          style={{
-            ...textStyle(isSingle() ? "label" : "caption", { color: palette().text }),
-            fontSize: textSize(isSingle() ? 13 : 12),
-            fontWeight: "500",
-            lineHeight: titleLineHeight(),
-            flex: 1,
-            minWidth: 0,
-            numberOfLines: isSingle() ? (subtitle() ? 2 : 3) : 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {b().title}
-        </Text>
-        <View
-          testID={`pet-bubble-indicator-${targetId()}`}
-          style={{
-            width: 14,
-            height: titleLineHeight(),
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          <If when={b().state === "running"}>
-            <Spinner size={12} color={palette().accent} />
-          </If>
-          <If when={b().state === "needs_you" || b().state === "failed"}>
-            <Icon name="alert-circle" size={12} color={bubbleStatusColor(b().state)} />
-          </If>
-          <If when={b().state === "unread"}>
-            <View
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: radii.pill,
-                backgroundColor: palette().accent,
-              }}
-            />
-          </If>
-        </View>
-      </View>
-      <If when={subtitle()}>
-        {device => (
-          <Text
+        {b().title}
+      </Text>
+      <View
+        testID={`pet-bubble-indicator-${targetId()}`}
+        style={{
+          width: 14,
+          height: titleLineHeight(),
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        <If when={b().state === "running"}>
+          <Spinner size={12} color={palette().accent} />
+        </If>
+        <If when={b().state === "needs_you" || b().state === "failed"}>
+          <Icon name="alert-circle" size={12} color={bubbleStatusColor(b().state)} />
+        </If>
+        <If when={b().state === "unread"}>
+          <View
             style={{
-              ...textStyle("caption", { color: palette().textMuted }),
-              fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.3),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
+              width: 7,
+              height: 7,
+              borderRadius: radii.pill,
+              backgroundColor: palette().accent,
             }}
-          >
-            {device()}
-          </Text>
-        )}
-      </If>
+          />
+        </If>
+      </View>
     </View>
   );
 }
 
 /**
  * The pet window's content: up to two active/unread session bubbles to the left
- * of the pet, on a transparent ground. The pet drags the window, opens the Inbox
- * on press, and carries its own context menu; each bubble opens its session on
- * press and offers Close / Close all on right-click.
+ * of the pet, vertically centered against the pet on a transparent ground. The
+ * pet drags the window, opens the Inbox on press, and carries its own context
+ * menu; each bubble opens its session on press and offers Close / Close all on
+ * right-click.
  */
 export function PetWindowContent(props: PetWindowContentProps) {
   const bubbles = () => petSessionBubbles();
@@ -364,7 +338,7 @@ export function PetWindowContent(props: PetWindowContentProps) {
       style={{
         flex: 1,
         flexDirection: "row",
-        alignItems: "flex-end",
+        alignItems: "center",
         justifyContent: "flex-end",
         gap: PET_BUBBLE_GAP,
         padding: space.sm,
@@ -376,11 +350,11 @@ export function PetWindowContent(props: PetWindowContentProps) {
           testID="pet-session-bubbles"
           accessibilityLabel="pet-session-bubbles"
           style={{
-            width: PET_BUBBLE_WIDTH,
+            width: PET_BUBBLE_MAX_WIDTH,
             flexDirection: "column",
-            alignItems: "stretch",
-            justifyContent: "flex-end",
-            gap: space.xs,
+            alignItems: "flex-end",
+            justifyContent: "center",
+            gap: PET_BUBBLE_LIST_GAP,
             flexShrink: 0,
           }}
         >
@@ -388,7 +362,6 @@ export function PetWindowContent(props: PetWindowContentProps) {
             {item => (
               <PetSessionBubbleCard
                 bubble={item()}
-                single={bubbles().length === 1}
                 onOpenSession={props.onOpenSession}
               />
             )}

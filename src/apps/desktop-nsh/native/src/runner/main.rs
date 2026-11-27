@@ -24,6 +24,8 @@ mod bridge;
 mod folder_picker;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod miniapp_launch;
+#[cfg(target_os = "macos")]
+mod panel_drag;
 
 use std::process::ExitCode;
 
@@ -83,6 +85,9 @@ fn main() -> ExitCode {
         #[cfg(not(windows))]
         register_exit_shutdown(backend);
     }
+
+    #[cfg(target_os = "macos")]
+    panel_drag::install();
 
     platform::set_ui_sets(vec![nsh_base::registry(), native_registry]);
     let exit = platform::run();

@@ -6,7 +6,7 @@
 // (`fixtures/installTestPresence.ts` records them).
 
 import { expect, open, test } from "nsh/test";
-import { PET_BUBBLE_HEIGHT, PET_BUBBLE_SINGLE_HEIGHT } from "../src/ui/companion";
+import { PET_BUBBLE_GAP, PET_BUBBLE_HEIGHT, PET_BUBBLE_MAX_WIDTH } from "../src/ui/companion";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, type Backend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -392,14 +392,25 @@ test("the pet shows at most two running/unread session bubbles on its left with 
             rootPath: "/repo",
             sessions: [
               { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 400), status: "idle", unread: false },
-              { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Running build", baseMs + 300), status: "running", unread: false },
-              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-1", "Unread newer", baseMs + 200), status: "idle", unread: true },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Hi", baseMs + 300), status: "running", unread: false },
+              {
+                ...fleetSessionRow(
+                  "dev-a",
+                  "ws-1",
+                  "s-unread-1",
+                  "A very long session title that must stay capped at the maximum bubble width",
+                  baseMs + 200,
+                ),
+                status: "idle",
+                unread: true,
+              },
               { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 100), status: "idle", unread: true },
             ],
           },
         ],
         { hostKind: "desktop" },
       ),
+      fleetDeviceRow("dev-b", "LinuxServer", [], { hostKind: "cli" }),
     ],
     removedDeviceIds: [] as string[],
     totals: { running: 1, waiting: 0, unread: 2 },
@@ -422,23 +433,37 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
   expect(app.shows("id:pet-bubble-s-idle")).toBe(false);
 
-  // Bubbles sit on the left side of the pet sprite without redundant status text,
-  // with the status indicator on the right side of the title.
+  // Bubbles sit on the left side of the pet sprite, vertically centered against it,
+  // showing only title and right-side status indicator (no status text or device subtitle).
   expect(app.shows("Running")).toBe(false);
   expect(app.shows("Unread")).toBe(false);
   expect(app.shows("Needs you")).toBe(false);
   expect(app.shows("Failed")).toBe(false);
+  expect(app.shows("MacBook")).toBe(false);
+  const listLayout = app.layout("id:pet-session-bubbles");
   const bubbleLayout = app.layout("id:pet-bubble-s-run");
+  const longBubbleLayout = app.layout("id:pet-bubble-s-unread-1");
   const titleLayout = app.layout("id:pet-bubble-title-s-run");
   const indicatorLayout = app.layout("id:pet-bubble-indicator-s-run");
   const petLayout = app.layout("label:pet-open-inbox");
+  expect(listLayout).not.toBeNull();
   expect(bubbleLayout).not.toBeNull();
+  expect(longBubbleLayout).not.toBeNull();
   expect(titleLayout).not.toBeNull();
   expect(indicatorLayout).not.toBeNull();
   expect(petLayout).not.toBeNull();
   expect(bubbleLayout!.x + bubbleLayout!.width).toBeLessThanOrEqual(petLayout!.x + 1);
+  // Short bubbles hug the pet tightly (right-aligned) and shrink below the max width; long titles cap at max width.
+  expect(petLayout!.x - (bubbleLayout!.x + bubbleLayout!.width)).toBeLessThanOrEqual(PET_BUBBLE_GAP + 2);
+  expect(bubbleLayout!.width).toBeGreaterThan(40);
+  expect(bubbleLayout!.width).toBeLessThan(PET_BUBBLE_MAX_WIDTH);
+  expect(longBubbleLayout!.width).toBeGreaterThan(bubbleLayout!.width);
+  expect(longBubbleLayout!.width).toBeLessThanOrEqual(PET_BUBBLE_MAX_WIDTH);
   expect(bubbleLayout!.height).toBe(PET_BUBBLE_HEIGHT);
   expect(indicatorLayout!.x).toBeGreaterThanOrEqual(titleLayout!.x + titleLayout!.width - 1);
+  expect(
+    Math.abs(listLayout!.y + listLayout!.height / 2 - (petLayout!.y + petLayout!.height / 2)),
+  ).toBeLessThanOrEqual(1);
 
   // Left-clicking a bubble opens that session.
   await app.press("id:pet-bubble-s-run");
@@ -493,8 +518,15 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   await app.host.send("openbitfun.obpFrames", [eventFrame("fleet://index-changed", { revision: 2, deviceIds: ["dev-a"] })]);
   await app.waitFor("id:pet-bubble-s-run");
   expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
-  // A single visible bubble expands vertically to occupy two bubble slots.
+  // A single visible bubble keeps the compact height and stays vertically centered against the pet.
   const singleBubbleLayout = app.layout("id:pet-bubble-s-run");
+  const singleListLayout = app.layout("id:pet-session-bubbles");
+  const singlePetLayout = app.layout("label:pet-open-inbox");
   expect(singleBubbleLayout).not.toBeNull();
-  expect(singleBubbleLayout!.height).toBe(PET_BUBBLE_SINGLE_HEIGHT);
+  expect(singleListLayout).not.toBeNull();
+  expect(singlePetLayout).not.toBeNull();
+  expect(singleBubbleLayout!.height).toBe(PET_BUBBLE_HEIGHT);
+  expect(
+    Math.abs(singleListLayout!.y + singleListLayout!.height / 2 - (singlePetLayout!.y + singlePetLayout!.height / 2)),
+  ).toBeLessThanOrEqual(1);
 });

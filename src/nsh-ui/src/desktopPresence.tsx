@@ -45,8 +45,8 @@ import { CardView, openCardConversation } from "./ui/cardView";
 import {
   PET_BUBBLE_GAP,
   PET_BUBBLE_HEIGHT,
-  PET_BUBBLE_SINGLE_HEIGHT,
-  PET_BUBBLE_WIDTH,
+  PET_BUBBLE_LIST_GAP,
+  PET_BUBBLE_MAX_WIDTH,
   PetWindowContent,
 } from "./ui/companion";
 
@@ -272,17 +272,16 @@ function petWindowSize(bubbleCount: number): { width: number; height: number } {
   const side = petHeight() + space.sm * 2;
   if (bubbleCount <= 0) return { width: side, height: side };
   const bubblesHeight =
-    (bubbleCount === 1
-      ? PET_BUBBLE_SINGLE_HEIGHT
-      : bubbleCount * PET_BUBBLE_HEIGHT + Math.max(0, bubbleCount - 1) * space.xs) +
+    bubbleCount * PET_BUBBLE_HEIGHT +
+    Math.max(0, bubbleCount - 1) * PET_BUBBLE_LIST_GAP +
     space.sm * 2;
   return {
-    width: PET_BUBBLE_WIDTH + PET_BUBBLE_GAP + side,
+    width: PET_BUBBLE_MAX_WIDTH + PET_BUBBLE_GAP + side,
     height: Math.max(side, bubblesHeight),
   };
 }
 
-/** Keeps the pet anchored at its bottom-right edge as session bubbles appear or close on its left. */
+/** Keeps the pet anchored on the right and vertically centered as session bubbles appear or close on its left. */
 function resizePetWindowAnchored(win: PresenceWindow, next: { width: number; height: number }): void {
   const current = win.bounds?.() ?? lastPetBounds;
   if (current) {
@@ -298,7 +297,7 @@ function resizePetWindowAnchored(win: PresenceWindow, next: { width: number; hei
       const minY = area ? area.origin.y : 0;
       const origin = {
         x: Math.max(minX, Math.round(current.x + current.width - next.width)),
-        y: Math.max(minY, Math.round(current.y + current.height - next.height)),
+        y: Math.max(minY, Math.round(current.y + (current.height - next.height) / 2)),
       };
       lastPetBounds = { x: origin.x, y: origin.y, width: next.width, height: next.height };
       win.setBounds({ origin, size: next });
