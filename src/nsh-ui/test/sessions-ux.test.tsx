@@ -1089,6 +1089,52 @@ test("a live turn gives way when the host's view reports it settled, and re-read
   expect(viewReads[viewReads.length - 1].cursor ?? "").toContain("tv1:0:");
 });
 
+test("first /model opens above the composer without first pressing the model selector", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/model");
+  await app.submit("composer");
+  await app.waitFor("id:model-picker");
+
+  const trigger = app.layout("bot-capsule-trigger")!;
+  const picker = app.layout("id:model-picker")!;
+  expect(Math.abs(picker.x - trigger.x)).toBeLessThan(2);
+  expect(picker.y + picker.height).toBeLessThanOrEqual(trigger.y);
+  expect(trigger.y - (picker.y + picker.height)).toBeLessThan(16);
+  expect(app.value("composer")).toBe("");
+  expect(backend.actions()).not.toContain("submit_user_message");
+
+  await app.keyboard.press("escape");
+  await app.waitFor("id:model-picker", { state: "gone" });
+  // A query with no unique match uses the same anchor.
+  await app.type("composer", "/model missing-model");
+  await app.submit("composer");
+  await app.waitFor("id:model-picker");
+  expect(Math.abs(app.layout("id:model-picker")!.x - trigger.x)).toBeLessThan(2);
+
+  await app.keyboard.press("escape");
+  await app.waitFor("id:model-picker", { state: "gone" });
+  await openSession(app, "Terminal migration");
+  await app.type("composer", "/model");
+  await app.submit("composer");
+  await app.waitFor("id:model-picker");
+  expect(Math.abs(app.layout("id:model-picker")!.x - app.layout("bot-capsule-trigger")!.x)).toBeLessThan(2);
+  await app.keyboard.press("escape");
+  await app.waitFor("id:model-picker", { state: "gone" });
+  // Narrow composers hide the model pill; the visible '+' becomes the anchor.
+  await app.setViewport(520, 900);
+  expect(app.shows("bot-capsule-trigger")).toBe(false);
+  await app.type("composer", "/model");
+  await app.submit("composer");
+  await app.waitFor("id:model-picker");
+  const plus = app.layout("composer-plus")!;
+  const compactPicker = app.layout("id:model-picker")!;
+  expect(Math.abs(compactPicker.x - plus.x)).toBeLessThan(2);
+  expect(compactPicker.y + compactPicker.height).toBeLessThanOrEqual(plus.y);
+  expect(plus.y - (compactPicker.y + compactPicker.height)).toBeLessThan(16);
+});
+
 test("/model switches models locally, bare /goal & /btw open dialogs, and visualize/Skill cards render cleanly", async () => {
   const backend = createBackend();
   withCustomTurns(backend, {

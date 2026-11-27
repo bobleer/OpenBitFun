@@ -484,6 +484,7 @@ const mentionSelectedIndex = signal(0);
 const threadMenuAnchor = signal<ViewRef | null>(null);
 const composerCardAnchor = signal<ViewRef | null>(null);
 const agentPickerAnchor = signal<ViewRef | null>(null);
+const composerModelAnchor = signal<ViewRef | null>(null);
 const modelPickerAnchor = signal<ViewRef | null>(null);
 const reasoningPickerAnchor = signal<ViewRef | null>(null);
 const quickActionsAnchor = signal<ViewRef | null>(null);
@@ -5290,13 +5291,20 @@ async function runUsageSlashCommand(sessionId: string): Promise<void> {
   }
 }
 
+function openComposerModelPicker(): void {
+  modelPickerTarget.set(null);
+  modelPickerAnchor.set(composerModelAnchor() ?? composerPlusAnchor());
+  closePickers("model");
+  modelPickerOpen.set(true);
+}
+
 /** Resolves `/model [query]`: opens the model picker or switches directly to a unique match. */
 async function runModelSlashCommand(arg: string): Promise<void> {
   composerText.set("");
   ensureModelsLoaded();
   const query = arg.trim().toLowerCase();
   if (!query) {
-    modelPickerOpen.set(true);
+    openComposerModelPicker();
     return;
   }
   const candidates: Array<{ ref: string; label: string; keys: string[] }> = [];
@@ -5332,7 +5340,7 @@ async function runModelSlashCommand(arg: string): Promise<void> {
     pushToast(tr("sessions.modelLabel", { name: matches[0]!.label }), "success");
     return;
   }
-  modelPickerOpen.set(true);
+  openComposerModelPicker();
 }
 
 async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<void> {
@@ -7151,6 +7159,7 @@ function SessionComposer(props: SessionComposerProps) {
                 />
               </If>
               <ModelReasoningCapsule
+                primary={props.pane === 0}
                 compact={isCompact}
                 sessionId={props.sessionId}
                 deviceId={props.deviceId}
@@ -7818,6 +7827,7 @@ function selectReasoningForPickerTarget(presetId: string | null): void {
 
 /** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
 function ModelReasoningCapsule(props: {
+  primary: boolean;
   compact: () => boolean;
   sessionId?: () => string | null;
   deviceId?: () => string;
@@ -7830,6 +7840,9 @@ function ModelReasoningCapsule(props: {
 }) {
   let modelTriggerRef: ViewRef | null = null;
   let reasoningTriggerRef: ViewRef | null = null;
+  cleanup(() => {
+    if (props.primary && composerModelAnchor() === modelTriggerRef) composerModelAnchor.set(null);
+  });
   const resolvedText = computed(() => {
     if (props.btwMode) {
       const override = sideQuestionModelOverride();
@@ -7888,7 +7901,7 @@ function ModelReasoningCapsule(props: {
       <View
         ref={el => {
           modelTriggerRef = el;
-          if (!props.onFocusPane && !props.btwMode) modelPickerAnchor.set(el);
+          if (props.primary) composerModelAnchor.set(el);
         }}
         role="button"
         accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
@@ -7959,7 +7972,7 @@ function ModelReasoningCapsule(props: {
         <View
           ref={el => {
             reasoningTriggerRef = el;
-            if (!props.onFocusPane && !props.btwMode) reasoningPickerAnchor.set(el);
+            if (props.primary) reasoningPickerAnchor.set(el);
           }}
           role="button"
           accessibilityLabel={props.reasoningAccessibilityLabel ?? "reasoning-picker"}
@@ -8471,6 +8484,7 @@ function ModelPickerSurface(props: { placement: Placement }) {
   const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
   return (
     <View
+      testID="model-picker"
       style={[
         overlayPopoverStyle(),
         {
