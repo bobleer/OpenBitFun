@@ -1698,12 +1698,11 @@ impl StartupPage {
     fn handle_provider_selection(&mut self, selection: ProviderSelection) {
         match selection {
             ProviderSelection::Provider(template) => {
-                let default_model = template.models.first().cloned().unwrap_or_default();
                 self.model_config_form.show_from_provider(
                     &template.name,
                     &template.base_url,
                     &template.format,
-                    &default_model,
+                    "",
                 );
             }
             ProviderSelection::Custom => {

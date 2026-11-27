@@ -2787,6 +2787,7 @@ impl CoreServiceAgentRuntime {
                         model_id: normalized_model_id.clone(),
                         reasoning_preset: normalized_reasoning_preset.clone().flatten(),
                         routing_mode: None,
+                        context_window_override: None,
                     },
                 })
                 .await

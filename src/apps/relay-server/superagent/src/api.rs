@@ -1116,6 +1116,7 @@ impl Service {
                         }
                     },
                     unread,
+                    failed: !blocked && summary.status == "failed" && unread,
                     needs_attention: blocked,
                     last_activity_ms: summary.updated_ms,
                     origin: None,

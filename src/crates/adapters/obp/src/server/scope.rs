@@ -23,7 +23,7 @@
 //! models), never a paired client.
 
 use openbitfun_product_domains::remote_surface::{
-    event_stance, operation, retired_reason, EventStance, OperationSurface, PeerStance,
+    event_stance, operation, EventStance, OperationSurface, PeerStance,
 };
 use serde_json::Value;
 
@@ -194,11 +194,6 @@ pub fn check_command(
             )),
         };
     }
-    if let Some(reason) = retired_reason(command) {
-        return Err(format!(
-            "command '{command}' is unsupported because {reason}"
-        ));
-    }
     let Some(definition) = operation(command) else {
         return Err(format!(
             "forbidden_for_scope: command '{command}' is unknown to this OpenBitFun backend version; update the backend or check the command name"
@@ -241,9 +236,6 @@ pub fn check_command(
                 "forbidden_for_scope: command '{command}' runs only for the backend owner on that machine"
             ))
         }
-        PeerStance::Retired { reason } => Err(format!(
-            "command '{command}' is unsupported because {reason}"
-        )),
         // Fleet entry verbs (`fleet_call`, `fleet_navigator`, etc.): answered by
         // this host's fleet layer for the owner and the account's own devices
         // (`account-device`), never for a paired client and never for the cloud
@@ -438,9 +430,7 @@ mod tests {
         assert_eq!(device.wire_name(), "account-device");
         assert!(check(&device, "open_workspace").is_ok());
         assert!(check(&device, "obp_get_status").is_err());
-        // The retired LAN switch is refused with its retirement reason.
-        let retired = check(&device, "obp_set_lan_enabled").unwrap_err();
-        assert!(retired.contains("unsupported because"), "{retired}");
+        assert!(check(&device, "obp_set_lan_enabled").is_err());
         assert!(check(&device, "mesh_status").is_err());
         assert!(!event_visible(&device, "account://login-state"));
         assert!(!event_visible(&device, "mesh://status-changed"));

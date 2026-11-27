@@ -22,6 +22,8 @@ import {
 } from "nsh";
 import {
   compactLayout,
+  controlHeight,
+  layout,
   palette,
   radii,
   space,
@@ -278,6 +280,8 @@ export function InsetGroup(props: {
 
 export interface InsetRowProps {
   label: string;
+  /** Inline control drawn directly to the right of the label text. */
+  labelTrailing?: JSX.Element;
   /** Optional second line (13 px secondary text) under the label. */
   detail?: string;
   /** Trailing value (13 px secondary), e.g. a count. */
@@ -310,6 +314,25 @@ function insetRowLabelLineHeight(): number {
 /** One row of an inset grouped list: min height 44, 0x16 padding, inset hairline. */
 export function InsetRow(props: InsetRowProps) {
   const pressable = () => Boolean(props.onPress) && !props.disabled;
+  const labelLineMinHeight = () =>
+    props.labelTrailing
+      ? compactLayout()
+        ? layout.touchTarget
+        : Math.max(insetRowLabelLineHeight(), controlHeight.xs)
+      : insetRowLabelLineHeight();
+  const labelTextStyle = () => ({
+    color:
+      props.tone === "danger"
+        ? palette().danger
+        : props.tone === "muted"
+          ? palette().textSecondary
+          : palette().text,
+    fontSize: textSize(14),
+    fontWeight: "400" as const,
+    lineHeight: insetRowLabelLineHeight(),
+    numberOfLines: 1,
+    textOverflow: "ellipsis" as const,
+  });
   return (
     <View
       role={props.onPress ? "button" : undefined}
@@ -355,7 +378,7 @@ export function InsetRow(props: InsetRowProps) {
         <If when={Boolean(props.leading)} else={
           <If when={props.icon ?? ""}>
             {name => (
-              <View style={{ height: insetRowLabelLineHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+              <View style={{ height: labelLineMinHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
                 <Icon
                   name={name() as IconName}
                   size={16}
@@ -365,28 +388,28 @@ export function InsetRow(props: InsetRowProps) {
             )}
           </If>
         }>
-          <View style={{ minHeight: insetRowLabelLineHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+          <View style={{ minHeight: labelLineMinHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
             {props.leading}
           </View>
         </If>
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <Text
-            style={{
-              color:
-                props.tone === "danger"
-                  ? palette().danger
-                  : props.tone === "muted"
-                    ? palette().textSecondary
-                    : palette().text,
-              fontSize: textSize(14),
-              fontWeight: "400",
-              lineHeight: insetRowLabelLineHeight(),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
+          <If
+            when={Boolean(props.labelTrailing)}
+            else={<Text style={labelTextStyle()}>{props.label}</Text>}
           >
-            {props.label}
-          </Text>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: space.xs,
+                minWidth: 0,
+                minHeight: labelLineMinHeight(),
+              }}
+            >
+              <Text style={{ ...labelTextStyle(), flexShrink: 1, minWidth: 0 }}>{props.label}</Text>
+              <View style={{ flexShrink: 0 }}>{props.labelTrailing}</View>
+            </View>
+          </If>
           <If when={props.detail ?? ""}>
             {detail => (
               <Text

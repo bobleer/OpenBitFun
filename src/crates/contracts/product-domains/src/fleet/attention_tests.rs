@@ -228,3 +228,38 @@ fn wire_shapes_match_the_inbox_and_read_tolerantly() {
     assert!(AttentionJob::from_value(&json!({"title": "no id"})).is_none());
     assert!(AttentionJob::from_value(&json!("garbage")).is_none());
 }
+
+#[test]
+fn persisted_failed_session_surfaces_in_failed_group_until_cleared() {
+    let mut row = session("s-fail", "Broken migration", FleetSessionStatus::Idle, 900);
+    row.unread = true;
+    row.failed = true;
+    let devices = vec![device("ubuntu", "Ubuntu", vec![row.clone()])];
+    let view = project_attention(
+        &AttentionInputs {
+            devices: &devices,
+            prompts: &[],
+            jobs: &[],
+            now_ms: 1_000,
+        },
+        &|_, _| false,
+    );
+    assert_eq!(view.groups.len(), 1);
+    assert_eq!(view.groups[0].id, ATTENTION_GROUP_FAILED);
+    assert_eq!(ids(&view.groups[0]), ["session:ubuntu/s-fail"]);
+
+    // Clearing the host unread/failed receipt removes the session from Inbox.
+    row.unread = false;
+    row.failed = false;
+    let cleared_devices = vec![device("ubuntu", "Ubuntu", vec![row])];
+    let cleared = project_attention(
+        &AttentionInputs {
+            devices: &cleared_devices,
+            prompts: &[],
+            jobs: &[],
+            now_ms: 1_000,
+        },
+        &|_, _| false,
+    );
+    assert!(cleared.groups.is_empty());
+}

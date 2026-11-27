@@ -12,7 +12,6 @@
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
 import { invokeCommand } from "./bridge";
-import { isCommandUnavailable } from "./hostCommands";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
@@ -156,59 +155,6 @@ let loading = false;
 let stored: ToolPermissionConfig | null = null;
 let draftSequence = 0;
 
-/**
- * Compatibility read for a host older than `get_permission_settings`: reads
- * the stored document the way that host's own normalizer does. A current host
- * answers the whole page view itself.
- */
-function normalize(value: unknown): ToolPermissionConfig {
-  const input = (value ?? {}) as {
-    policy?: { preset?: unknown; rules?: unknown };
-    interaction?: { auto_approve_ask?: unknown };
-    approval?: ApprovalConfig;
-  };
-  const rules = Array.isArray(input.policy?.rules)
-    ? (input.policy.rules as PermissionRule[]).filter(
-        rule => rule && typeof rule.action === "string" && typeof rule.resource === "string",
-      )
-    : [];
-  const approval = input.approval;
-  return {
-    policy: {
-      // Anything but the stored `full_access` reads as `ask`, which is what the
-      // desktop normalizer does with an unknown preset.
-      preset: input.policy?.preset === "full_access" ? "full_access" : "ask",
-      rules,
-    },
-    interaction: { auto_approve_ask: input.interaction?.auto_approve_ask === true },
-    ...(approval && typeof approval === "object"
-      ? {
-          approval: {
-            strategy:
-              approval.strategy === "model" || approval.strategy === "immediate_allow"
-                ? approval.strategy
-                : "interactive",
-            model_kind: approval.model_kind === "decision" ? "decision" : "chat",
-            chat_model_id: typeof approval.chat_model_id === "string" ? approval.chat_model_id : "",
-            timeout_ms:
-              typeof approval.timeout_ms === "number" && approval.timeout_ms > 0
-                ? approval.timeout_ms
-                : 30000,
-            on_ask: approval.on_ask === "reject" ? "reject" : "user",
-            on_error: approval.on_error === "reject" ? "reject" : "ask",
-          },
-        }
-      : {}),
-  };
-}
-
-function modeOf(config: ToolPermissionConfig): PermissionMode {
-  if (config.policy.preset === "full_access") return "full_access";
-  const strategy = config.approval?.strategy;
-  if (strategy === "model" || strategy === "immediate_allow") return "auto";
-  return config.interaction.auto_approve_ask ? "auto" : "ask";
-}
-
 function fieldsOf(rule: PermissionRule): Omit<PermissionRuleDraft, "localId"> {
   return {
     action: typeof rule.action === "string" && rule.action ? rule.action : "*",
@@ -339,95 +285,18 @@ function approvalOptionsOf(rows: HostApprovalModel[] | undefined): ApprovalModel
 export async function loadPermissions(): Promise<void> {
   await runStep(async () => {
     try {
-      // The host reads and projects the whole page (wave 4).
       const view = await invokeCommand<PermissionPageView>("get_permission_settings", {});
       applyView(view);
       permissionsSupported.set(true);
       permissionModeControl.set(view?.showPermissionModeControl === true);
       approvalModels.set(approvalOptionsOf(view?.approvalModels));
       await loadDecisionModel();
-      return;
     } catch (error) {
-      if (!isCommandUnavailable(error, "get_permission_settings")) {
-        permissionsSupported.set(false);
-        permissionMode.set(null);
-        permissionsNotice.set(errorText(error));
-        return;
-      }
-    }
-    try {
-      const config = normalize(await getConfig("tool_permissions", true));
-      stored = config;
-      permissionMode.set(modeOf(config));
-      permissionRules.set(rulesOf(config));
-      permissionRuleCount.set(config.policy.rules.length);
-      approvalSettings.set(approvalOf(config));
-      permissionsSupported.set(true);
-    } catch {
-      // A host without the config keeps the section out of the way.
       permissionsSupported.set(false);
       permissionMode.set(null);
+      permissionsNotice.set(errorText(error));
     }
-    try {
-      permissionModeControl.set((await getConfig("app.flow_chat.show_permission_mode_control", true)) === true);
-    } catch {
-      permissionModeControl.set(null);
-    }
-    await loadApprovalModels();
-    await loadDecisionModel();
   });
-}
-
-/**
- * Compatibility read for a host older than `get_permission_settings`: the
- * models automatic approval can pick, in the desktop's own order (fast and
- * primary roles first, then every configured chat model).
- */
-async function loadApprovalModels(): Promise<void> {
-  try {
-    const [rawModels, rawDefaults] = await Promise.all([
-      getConfig("ai.models", true),
-      getConfig("ai.default_models", true),
-    ]);
-    const models = Array.isArray(rawModels)
-      ? rawModels.flatMap(entry => {
-          const record = (entry ?? {}) as { id?: unknown; name?: unknown; model_name?: unknown };
-          if (typeof record.id !== "string" || !record.id) return [];
-          const name =
-            typeof record.model_name === "string" && record.model_name
-              ? record.model_name
-              : typeof record.name === "string" && record.name
-                ? record.name
-                : record.id;
-          return [{ id: record.id, name }];
-        })
-      : [];
-    const defaults = (rawDefaults ?? {}) as { primary?: unknown; fast?: unknown };
-    const role = (value: "primary" | "fast", storedId: unknown): ApprovalModelOption | null => {
-      if (typeof storedId !== "string" || !storedId) return null;
-      const match = models.find(entry => entry.id === storedId);
-      return {
-        value: value,
-        label: value === "fast" ? "Fast model" : "Primary model",
-        hint: match ? match.name : `Unavailable model (${storedId})`,
-        disabled: !match,
-      };
-    };
-    const options = [role("fast", defaults.fast), role("primary", defaults.primary)].filter(
-      (entry): entry is ApprovalModelOption => entry !== null,
-    );
-    for (const model of models) {
-      options.push({ value: model.id, label: model.name, hint: model.id, disabled: false });
-    }
-    const selected = approvalSettings()?.chatModelId ?? "";
-    if (selected && !options.some(entry => entry.value === selected)) {
-      options.unshift({ value: selected, label: `Unavailable model (${selected})`, hint: "", disabled: true });
-    }
-    approvalModels.set(options);
-  } catch {
-    // A host with no model list leaves the approval model to the stored value.
-    approvalModels.set([]);
-  }
 }
 
 /** The decision model (`ai.decision_model`) and whether its key is in the vault. */

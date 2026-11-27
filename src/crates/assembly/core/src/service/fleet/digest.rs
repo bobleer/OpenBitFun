@@ -650,7 +650,12 @@ pub fn session_summary(
     activity: Option<&SessionActivitySummary>,
 ) -> FleetSession {
     let status = session_status(activity);
-    let failed = activity.and_then(|a| a.failed).unwrap_or(false);
+    let failed = activity
+        .and_then(|a| {
+            a.failed
+                .or_else(|| Some(a.unread_completion.as_deref() == Some("error")))
+        })
+        .unwrap_or(false);
     let unread = activity
         .and_then(|a| a.unread.or(Some(a.unread_completion.is_some())))
         .unwrap_or(false);
@@ -666,7 +671,8 @@ pub fn session_summary(
         agent_type: metadata.agent_type.clone(),
         status,
         unread,
-        needs_attention: status == FleetSessionStatus::Waiting || failed,
+        failed,
+        needs_attention: status == FleetSessionStatus::Waiting,
         last_activity_ms: metadata.last_active_at,
         origin: session_origin(metadata),
     }

@@ -311,26 +311,12 @@ export function isSkillDisabled(skillKey: string): boolean {
 }
 
 export function canDeleteInstalledSkill(skill: SkillRecord): boolean {
-  if (skill.canDelete !== undefined) return skill.canDelete;
-  // Compatibility read for a host (or CLI peer) older than the `canDelete` flag:
-  // the same ownership rule its `delete_skill` enforces.
-  if (skill.isBuiltin) return false;
-  const sourceId = skill.sourceId.trim().toLowerCase();
-  if (sourceId) {
-    return sourceId === "openbitfun" || sourceId === "openbitfun-system";
-  }
-  const sourceSlot = skill.sourceSlot.trim().toLowerCase();
-  if (sourceSlot) {
-    return sourceSlot.startsWith("openbitfun");
-  }
-  return true;
+  return skill.canDelete === true;
 }
 
 export function canToggleInstalledSkill(skill: SkillRecord): boolean {
   if (!directSkillManagementSupported()) return false;
-  if (skill.canToggle !== undefined) return skill.canToggle;
-  // Compatibility read for a host older than the `canToggle` flag.
-  return !(isRemoteWorkspace(activeWorkspace()) && skill.level === "project");
+  return skill.canToggle === true;
 }
 
 let skillsLoadTicket = 0;

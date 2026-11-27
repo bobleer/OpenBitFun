@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_and_retired_commands_fail_loudly() {
+    async fn unknown_commands_fail_loudly() {
         let host = crate::native_host::create_native_host();
         let service = BackendService::new(host);
         let error = service
@@ -181,14 +181,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, "unsupported_in_native_host: no_such_command");
-        let error = service
-            .dispatch("debug_open_devtools", serde_json::json!({}))
-            .await
-            .unwrap_err();
-        assert!(
-            error.starts_with("unsupported_in_native_host: debug_open_devtools (retired: "),
-            "{error}"
-        );
         // A native command whose managed state is not registered names it.
         let error = service
             .dispatch("get_opened_workspaces", serde_json::json!({}))

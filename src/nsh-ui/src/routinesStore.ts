@@ -353,8 +353,6 @@ interface HostPreviewResponse {
 export const monthOccurrences = signal<Record<string, number[]>>({});
 /** Host run times per job id for the next 24 hours. */
 export const dueOccurrences = signal<Record<string, number[]>>({});
-/** The host (or peer) has no `preview_cron_occurrences`: previews need a host update. */
-export const routinePreviewUnavailable = signal(false);
 
 export type DraftPreviewState = "idle" | "loading" | "valid" | "invalid" | "unavailable";
 export interface DraftSchedulePreview {
@@ -371,25 +369,11 @@ export const draftSchedulePreview = signal<DraftSchedulePreview>({
   issueMessage: "",
 });
 
-function isPreviewUnavailable(error: unknown, command: string): boolean {
-  return isCommandUnavailable(error, command);
-}
-
 function occurrencesByJob(response: HostPreviewResponse | null | undefined): Record<string, number[]> {
   const byJob: Record<string, number[]> = {};
   for (const row of response?.jobs ?? []) {
     if (!row?.jobId) continue;
     byJob[row.jobId] = (row.occurrences ?? []).filter(ms => typeof ms === "number" && Number.isFinite(ms));
-  }
-  return byJob;
-}
-
-/** Only the run the host reported itself, for a host without previews. */
-function reportedRunsIn(startMs: number, endMs: number): Record<string, number[]> {
-  const byJob: Record<string, number[]> = {};
-  for (const job of routines()) {
-    const next = job.state.nextRunAtMs;
-    if (job.enabled && typeof next === "number" && next >= startMs && next <= endMs) byJob[job.id] = [next];
   }
   return byJob;
 }
@@ -411,11 +395,6 @@ export async function refreshRoutineOccurrences(): Promise<void> {
   const month = calendarWindow();
   const now = Date.now();
   const dayEnd = now + 24 * 60 * 60 * 1000;
-  if (routinePreviewUnavailable()) {
-    monthOccurrences.set(reportedRunsIn(month.startMs, month.endMs));
-    dueOccurrences.set(reportedRunsIn(now, dayEnd));
-    return;
-  }
   try {
     const [monthResponse, dueResponse] = await Promise.all([
       invokeCommand<HostPreviewResponse>("preview_cron_occurrences", {
@@ -434,12 +413,6 @@ export async function refreshRoutineOccurrences(): Promise<void> {
     dueOccurrences.set(occurrencesByJob(dueResponse));
   } catch (error) {
     if (ticket !== occurrenceTicket) return;
-    if (isPreviewUnavailable(error, "preview_cron_occurrences")) {
-      routinePreviewUnavailable.set(true);
-      monthOccurrences.set(reportedRunsIn(month.startMs, month.endMs));
-      dueOccurrences.set(reportedRunsIn(now, dayEnd));
-      return;
-    }
     console.warn(`Failed to preview routine runs: ${error instanceof Error ? error.message : String(error)}`);
     monthOccurrences.set({});
     dueOccurrences.set({});
@@ -488,10 +461,6 @@ let draftPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 /** Asks the host to preview the draft's next runs (debounced while typing). */
 export function scheduleDraftPreview(delayMs = 250): void {
   if (draftPreviewTimer) clearTimeout(draftPreviewTimer);
-  if (routinePreviewUnavailable()) {
-    draftSchedulePreview.set({ state: "unavailable", occurrences: [], issueCode: "", issueMessage: "" });
-    return;
-  }
   draftSchedulePreview.update(prev => ({ ...prev, state: "loading" }));
   draftPreviewTimer = setTimeout(() => {
     draftPreviewTimer = null;
@@ -526,11 +495,6 @@ export async function refreshDraftPreview(): Promise<void> {
     }
   } catch (error) {
     if (ticket !== draftPreviewTicket) return;
-    if (isPreviewUnavailable(error, "preview_cron_occurrences")) {
-      routinePreviewUnavailable.set(true);
-      draftSchedulePreview.set({ state: "unavailable", occurrences: [], issueCode: "", issueMessage: "" });
-      return;
-    }
     draftSchedulePreview.set({
       state: "invalid",
       occurrences: [],
@@ -645,7 +609,6 @@ export function selectCalendarDay(dayKey: string): void {
 // --- Host actions & subscriptions ---
 
 const cronHostReadyDevices = new Set<string>();
-let routinePreviewDevice = "";
 let routinesScope = "";
 let scopedWorkspaceId: string | undefined;
 let routinesLoadTicket = 0;
@@ -656,10 +619,6 @@ function routineScopeKey(): string {
 
 export function ensureCronHostReady(): void {
   const scope = currentDeviceScopeKey();
-  if (routinePreviewDevice !== scope) {
-    routinePreviewDevice = scope;
-    routinePreviewUnavailable.set(false);
-  }
   if (cronHostReadyDevices.has(scope)) return;
   cronHostReadyDevices.add(scope);
   void invokeRawCommand<unknown>("notify_cron_host_ready", {}).catch(() => undefined);

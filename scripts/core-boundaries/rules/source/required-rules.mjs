@@ -12,8 +12,8 @@ export const requiredContentRules = [
     patterns: [
       {
         regex:
-          /\binvokeCommand(?:<[^>]*>)?\(\s*['"]get_external_source_control_snapshot['"]/,
-        message: 'missing stable external-source control snapshot invocation',
+          /\binvokeCommand(?:<[^>]*>)?\(\s*['"]get_external_source_discovery_snapshot['"]/,
+        message: 'missing stable external-source discovery snapshot invocation',
       },
     ],
   },

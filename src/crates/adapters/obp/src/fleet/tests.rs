@@ -178,12 +178,6 @@ impl FakeOwner {
 #[derive(Clone)]
 enum FakePeer {
     Fleet(Arc<FakeOwner>),
-    /// A mesh host without `fleet_v1`: navigator, pages, permissions.
-    Legacy {
-        navigator: Value,
-        pages: HashMap<String, Value>,
-        permissions: Value,
-    },
 }
 
 #[derive(Default)]
@@ -228,12 +222,6 @@ impl FakeTransport {
                 capabilities: vec![FLEET_V1_CAPABILITY.to_string()],
                 host_capabilities: vec!["user_question_response".to_string()],
                 version: Some("0.9.0".to_string()),
-            },
-            FakePeer::Legacy { .. } => FleetPeerLinkInfo {
-                instance_id: Some("old-instance".to_string()),
-                capabilities: vec!["dispatch_target_v1".to_string()],
-                host_capabilities: Vec::new(),
-                version: Some("0.8.0".to_string()),
             },
         })
     }
@@ -292,23 +280,6 @@ impl FleetPeerTransport for FakeTransport {
                         serde_json::from_value(args["request"].clone()).unwrap();
                     Ok(serde_json::to_value(owner.digest(request)).unwrap())
                 }
-                (Some(FakePeer::Legacy { .. }), "fleet_digest") => Err(FleetCallError::command(
-                    "unsupported_in_native_host: fleet_digest",
-                )),
-                (Some(FakePeer::Legacy { navigator, .. }), "get_workspace_navigator") => {
-                    Ok(navigator)
-                }
-                (Some(FakePeer::Legacy { pages, .. }), "list_persisted_sessions_page") => {
-                    let id = args["request"]["workspaceId"].as_str().unwrap_or_default();
-                    pages
-                        .get(id)
-                        .cloned()
-                        .ok_or_else(|| FleetCallError::command("Workspace not found"))
-                }
-                (
-                    Some(FakePeer::Legacy { permissions, .. }),
-                    "list_pending_permission_requests",
-                ) => Ok(permissions),
                 (Some(_), "fail_on_owner") => Err(FleetCallError {
                     code: -32000,
                     message: "Session not found: s-x".to_string(),
@@ -896,133 +867,6 @@ async fn bounds_truncate() {
         .count();
     assert!(not_indexed >= 40 + 1 - MAX_INDEXED_DEVICES, "{not_indexed}");
     fleet.sync.shutdown();
-}
-
-#[tokio::test]
-async fn old_mesh_peer_indexed_by_polling_and_forwarded() {
-    let fleet = fleet();
-    let navigator = json!({
-        "opened": [
-            {"id": "local_old", "name": "legacy-repo", "rootPath": "C:\\src\\legacy", "workspaceKind": "normal", "sshHost": "localhost"},
-            {"id": "remote_x", "name": "server", "rootPath": "/srv/app", "workspaceKind": "remote", "sshHost": "build.example", "connectionId": "ssh-root@build.example", "connectionName": "Build Server"}
-        ],
-        "recent": [{"id": "asst_1", "name": "Helper", "rootPath": "/a", "workspaceKind": "assistant"}],
-        "selectedId": "local_old",
-        "selection": "host_current"
-    });
-    let mut pages = HashMap::new();
-    pages.insert(
-        "local_old".to_string(),
-        json!({
-            "sessions": [
-                {"sessionId": "old-1", "sessionName": "Fix build", "agentType": "agentic", "lastActiveAt": 500},
-                {"sessionId": "old-2", "sessionName": "Ask", "agentType": "agentic", "lastActiveAt": 900,
-                 "relationship": {"parentSessionId": "old-1"}},
-                {"sessionId": "old-3", "sessionName": "Done", "agentType": "agentic", "lastActiveAt": 100}
-            ],
-            "activities": [
-                {"sessionId": "old-1", "execution": "running", "pendingApprovals": 0, "pendingQuestions": 0},
-                {"sessionId": "old-2", "execution": "idle", "pendingApprovals": 1, "pendingQuestions": 0},
-                {"sessionId": "old-3", "execution": "idle", "pendingApprovals": 0, "pendingQuestions": 0, "unread": true}
-            ],
-            "totalTopLevelCount": 80, "loadedTopLevelCount": 2, "hasMore": true
-        }),
-    );
-    let permissions = json!([
-        {"requestId": "perm-1", "roundId": "r", "order": 0, "projectId": "p", "sessionId": "old-2",
-         "agentId": "a", "action": "bash", "resources": ["rm -rf build"], "source": {"kind": "tool_call", "identity": "Bash"}}
-    ]);
-    fleet.transport.add(
-        presence("dev-old", "Old CLI", FleetHostKind::Cli),
-        Some(FakePeer::Legacy {
-            navigator,
-            pages,
-            permissions,
-        }),
-    );
-    fleet.sync.refresh_presence().await;
-    let link = fleet.transport.link_of("dev-old").unwrap();
-    fleet.index.set_link("dev-old", link.clone());
-    fleet.sync.poll_legacy("dev-old", &link).await.unwrap();
-
-    let navigator = fleet.index.navigator(None);
-    let old = device(&navigator, "dev-old");
-    assert_eq!(old.state, FleetDeviceState::Online);
-    assert_eq!(old.fleet_protocol, None, "a leaf owner without fleet_v1");
-    assert_eq!(old.workspaces.len(), 3);
-    let repo = old
-        .workspaces
-        .iter()
-        .find(|w| w.workspace_id == "local_old")
-        .unwrap();
-    assert!(repo.is_host_current);
-    assert_eq!(repo.root_path, "C:/src/legacy", "paths are POSIX");
-    assert_eq!(repo.ssh_host, None);
-    assert!(repo.has_more);
-    assert_eq!(repo.session_total, 80);
-    let status = |id: &str| {
-        repo.sessions
-            .iter()
-            .find(|s| s.session_id == id)
-            .unwrap()
-            .clone()
-    };
-    assert_eq!(status("old-1").status, FleetSessionStatus::Running);
-    assert_eq!(status("old-2").status, FleetSessionStatus::Waiting);
-    assert!(status("old-2").needs_attention);
-    assert_eq!(status("old-2").parent_session_id.as_deref(), Some("old-1"));
-    assert!(status("old-3").unread);
-    let remote = old
-        .workspaces
-        .iter()
-        .find(|w| w.workspace_id == "remote_x")
-        .unwrap();
-    assert_eq!(remote.kind, FleetWorkspaceKind::RemoteSsh);
-    assert_eq!(remote.ssh_host.as_deref(), Some("build.example"));
-    assert_eq!(
-        remote.connection_id.as_deref(),
-        Some("ssh-root@build.example")
-    );
-    assert_eq!(remote.connection_name.as_deref(), Some("Build Server"));
-    let prompts = fleet.index.prompts();
-    let prompt = prompts
-        .prompts
-        .iter()
-        .find(|p| p.prompt_id == "perm-1")
-        .unwrap();
-    assert_eq!(prompt.device_id, "dev-old");
-    assert_eq!(prompt.workspace_id, "local_old");
-    assert_eq!(prompt.tool_name.as_deref(), Some("Bash"));
-    assert!(prompt.answerable);
-
-    // Commands go to it as plain calls, args unchanged.
-    let args = json!({"request": {"sessionId": "old-1", "turnId": "t"}});
-    let answer = call(&fleet.router, None, "cancel_dialog_turn", args.clone())
-        .await
-        .unwrap();
-    assert_eq!(answer["handledBy"], "dev-old");
-    let calls = fleet.transport.calls.lock().unwrap().clone();
-    let (device_id, command, sent) = calls.last().unwrap();
-    assert_eq!(
-        (device_id.as_str(), command.as_str()),
-        ("dev-old", "cancel_dialog_turn")
-    );
-    assert_eq!(sent, &args);
-    // The window holds only the first page; ids beyond it may exist there.
-    let answer = call(
-        &fleet.router,
-        Some("dev-old"),
-        "cancel_dialog_turn",
-        json!({"request": {"sessionId": "older-not-listed"}}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer["handledBy"], "dev-old");
-
-    // A second poll with no change leaves the projection's revision alone.
-    let revision = fleet.index.revision();
-    fleet.sync.poll_legacy("dev-old", &link).await.unwrap();
-    assert!(fleet.index.navigator(Some(revision)).devices.is_empty());
 }
 
 #[tokio::test]

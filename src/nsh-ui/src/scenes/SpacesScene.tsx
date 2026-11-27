@@ -10,7 +10,6 @@ import {
   closeSpaceInspector,
   confirmDeleteSpace,
   confirmingDeleteSpaceId,
-  createSpaceWithAgent,
   hasCurrentSpaceCatalog,
   inspectSpace,
   localizedSpace,
@@ -23,7 +22,6 @@ import {
   selectedSpaceSourceCode,
   selectedSpaceVersions,
   spaceInspectorBusy,
-  spacePrompt,
   spaces,
   spacesBusy,
   spacesCatalogDevice,
@@ -31,8 +29,6 @@ import {
   spaceInCurrentCatalog,
   spacesNotice,
   spaceSourceTab,
-  spaceCreating,
-  spaceCreationBlockedReason,
   spacesInitialLoad,
   stopSpaceWorker,
   subscribeSpaceEvents,
@@ -58,7 +54,6 @@ import {
 import { deviceContext } from "../state";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { CatalogCard } from "../ui/CatalogCard";
-import { stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import { createEditorStyles, inferCodeLanguage } from "../ui/markdown";
 import { Spinner } from "../ui/motion";
@@ -96,7 +91,6 @@ import {
   IconButton,
   InlineBanner,
   InlineDeleteConfirm,
-  InputBox,
   SegmentedTabs,
   type SegmentedTabOption,
 } from "../ui/primitives";
@@ -108,7 +102,6 @@ import {
   StudioEmpty,
   StudioHeader,
   StudioSection,
-  studioCompact,
   trackStudioWidth,
 } from "../ui/studio";
 import { CardsSection } from "../ui/cardView"; // wave22-p3
@@ -134,26 +127,6 @@ function sourceTabs(): ReadonlyArray<SegmentedTabOption<SpaceSourceTab>> {
     { value: "css", label: tr("spaces.tabCss") },
     { value: "ui_js", label: tr("spaces.tabUiJs") },
     { value: "worker_js", label: tr("spaces.tabWorkerJs") },
-  ];
-}
-
-function spacePromptStarters(): ReadonlyArray<{ id: string; label: string; prompt: string }> {
-  return [
-    {
-      id: "sprint",
-      label: tr("spaces.starterSprintTitle"),
-      prompt: tr("spaces.starterSprintPrompt"),
-    },
-    {
-      id: "pomodoro",
-      label: tr("spaces.starterPomodoroTitle"),
-      prompt: tr("spaces.starterPomodoroPrompt"),
-    },
-    {
-      id: "log",
-      label: tr("spaces.starterLogTitle"),
-      prompt: tr("spaces.starterLogPrompt"),
-    },
   ];
 }
 
@@ -810,64 +783,6 @@ function SpaceInspectorModal() {
   );
 }
 
-/** The composer that asks an agent to build a Space; the page's one primary action. */
-function CreateSpaceSection() {
-  return (
-    <StudioSection title={tr("spaces.createTitle")} accessibilityLabel="spaces-create-section">
-      <View style={{ gap: space.sm, minWidth: 0 }}>
-        <InputBox
-          value={spacePrompt()}
-          multiline
-          minHeight={76}
-          placeholder={tr("spaces.promptPlaceholder")}
-          accessibilityLabel="spaces-prompt-input"
-          onChange={val => spacePrompt.set(val)}
-        />
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, minWidth: 0 }}>
-          <Each of={spacePromptStarters()} key={s => s.id}>
-            {starter => (
-              <Button
-                label={starter().label}
-                variant="outline"
-                size={compactLayout() ? "sm" : "xs"}
-                accessibilityLabel={`spaces-starter-${starter().id}`}
-                onPress={() => spacePrompt.set(starter().prompt)}
-              />
-            )}
-          </Each>
-          <View style={{ flex: 1, minWidth: 0 }} />
-          <Button
-            label={tr("spaces.createWithAgent")}
-            variant="primary"
-            size="md"
-            leadingIcon="sparkles"
-            loading={spaceCreating()}
-            disabled={Boolean(spaceCreationBlockedReason()) || spaceCreating() || !spacePrompt().trim()}
-            tooltip={spaceCreationBlockedReason() || undefined}
-            accessibilityLabel="spaces-create-agent"
-            style={
-              studioCompact()
-                ? { width: "100%", height: layout.touchTarget, minHeight: layout.touchTarget }
-                : undefined
-            }
-            onPress={() => void createSpaceWithAgent()}
-          />
-        </View>
-        <Text
-          style={{
-            paddingHorizontal: space.xs,
-            color: spaceCreationBlockedReason() ? stateColor("needs_you") : palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.45),
-          }}
-        >
-          {spaceCreationBlockedReason() || tr("spaces.createSubtitleCreative")}
-        </Text>
-      </View>
-    </StudioSection>
-  );
-}
-
 function installedSummary(): string {
   const installed = tr("spaces.installedCount", { count: formatCount(spaces().length) });
   const running = runningSpaceWorkers().length;
@@ -1150,8 +1065,6 @@ export function SpacesScene(props: { embedded?: boolean }) {
             <CardsSection deviceId={cardsDeviceForLibrary()} />
           </If>
           <If when={spacesView() === "library"}>
-          <CreateSpaceSection />
-
           <SpaceCatalogToolbar scope="spaces" query={query()} placeholder={tr("spaces.searchPlaceholder")}
             onQueryChange={query.set} category={category()} onCategoryChange={category.set}
             sort={{ value: effectiveSort(), onChange: installedSort.set, rankingsAvailable: rankingsAvailable() }} />

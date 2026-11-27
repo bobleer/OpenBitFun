@@ -48,7 +48,7 @@ pub const MASTER_KEY_LEN: usize = 32;
 /// A retired official deployment has its own credential database. Authenticate
 /// with the new deployment instead of replaying its token or deleting the record.
 ///
-/// Every official release lives under `https://remote.openbitfun.com/v/<version>`;
+/// Versioned official deployments live under `<DEFAULT_SERVICE_ORIGIN>/v/<version>`;
 /// any such endpoint other than the one this build targets is retired.
 pub fn is_retired_official_relay(value: &str) -> bool {
     let current = reqwest::Url::parse(openbitfun_product_domains::account::DEFAULT_RELAY_URL)
@@ -877,7 +877,7 @@ mod tests {
             assert!(persisted_relay_requires_migration(url), "{url}");
         }
         for url in [
-            "https://remote.openbitfun.com/v/1.0.2",
+            "https://relay.example.com/v/1.0.2",
             "http://192.168.1.2:8080",
             "http://192.168.1.2:9700/custom",
             "http://relay.example:9700",

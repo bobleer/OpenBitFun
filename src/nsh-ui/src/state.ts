@@ -41,7 +41,7 @@ import {
   tr,
   type AppLocale,
 } from "./i18n";
-import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
+import { markSessionSeen, reconcileSessionReadState, reconcileVisibleFleetReadState } from "./sessionStatusStore";
 import { reuseRows } from "./rowReuse";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { clearPermissionsForSession } from "./permissionStore";
@@ -53,13 +53,11 @@ import { clearQuestionsForSession, loadQuestionMailbox } from "./userQuestionSto
 import { superAgentUi } from "./productGates";
 import {
   archiveSession,
-  cancelDialogTurn,
   copySession,
   createSession,
   deletePersistedSession,
   forkSession,
   getWorkspaceNavigator,
-  interruptDialogTurn,
   getSessionTranscriptView,
   listSessions,
   normalizeSessionSummary,
@@ -1274,7 +1272,14 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   });
   // Opening a session is what makes it read; its row compares against this stamp.
   const row = sessions().find(item => item.sessionId === sessionId);
-  markSessionSeen(sessionId, sessionLastActivityMs(row));
+  const fleetRow = fleetActive() ? fleetSessionRow(device, sessionId) : null;
+  const resolvedWs = owner || row?.workspaceId || activeWorkspaceId() || undefined;
+  markSessionSeen(
+    sessionId,
+    sessionLastActivityMs(row) ?? fleetRow?.lastActivityMs,
+    device,
+    resolvedWs,
+  );
   void loadTurns(sessionId, { silent: true });
   // A question asked before this surface looked at the session has no event left
   // to replay, so the host's mailbox is read on every open.
@@ -1891,24 +1896,9 @@ export async function sendTurn(
         if (result.outcome === "steered") await loadTurns(sessionId);
       }
     } catch (error) {
-      if (!external?.execution && isMissingCommand(error, "submit_user_message")) {
-        outcome = await sendWithLegacyHost(
-          sessionId,
-          fallbackWorkspaceId,
-          message,
-          attachments,
-          running,
-          restoreDraft,
-          target.isVisible,
-          agentType,
-          route,
-          options?.turnId,
-        );
-        return;
-      }
+      if (!running) clearPendingTurn(sessionId, origin);
       restoreDraft();
       if (target.isVisible()) {
-        if (!running) clearPendingTurn(sessionId, origin);
         turnError.set(error instanceof Error ? error.message : String(error));
       }
     }
@@ -1917,55 +1907,8 @@ export async function sendTurn(
 }
 
 /**
- * A host without `submit_user_message`: an idle session still starts a turn; a
- * message written during a turn is kept in the composer with an explicit notice,
- * because only a newer host decides between steering and queueing.
- */
-async function sendWithLegacyHost(
-  sessionId: string,
-  workspaceId: string,
-  message: ReturnType<typeof messageWithSessionReferences>,
-  attachments: ReturnType<typeof buildAttachmentContexts>,
-  running: boolean,
-  restoreDraft: () => void,
-  isVisible: () => boolean,
-  agentType: string,
-  route?: { target: string },
-  turnId?: string,
-): Promise<SubmitUserMessageResult["outcome"] | null> {
-  if (running) {
-    restoreDraft();
-    if (isVisible()) sendNotice.set(tr("chat.send.hostUpdateRequired"));
-    return null;
-  }
-  try {
-    const result = await startDialogTurn({
-      sessionId,
-      userInput: message.text,
-      ...(turnId ? { turnId } : {}),
-      ...(message.displayText !== message.text ? { originalUserInput: message.displayText } : {}),
-      ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
-      agentType,
-      workspaceId,
-      ...(attachments.length ? { imageContexts: attachments } : {}),
-    }, route);
-    if (!result.success) throw new Error(result.message);
-    return "started";
-  } catch (error) {
-    restoreDraft();
-    if (isVisible()) {
-      clearPendingTurn(sessionId);
-      turnError.set(error instanceof Error ? error.message : String(error));
-    }
-    return null;
-  }
-}
-
-/**
- * Stops the turn the host reported as running. The host's `stop_dialog_turn`
- * interrupts when it can and cancels otherwise, so every client stops the same
- * way. A host older than that command gets the interruption it has, with hard
- * cancellation behind it, which is what such a host itself offered.
+ * Stops the turn the host reported as running (`stop_dialog_turn` interrupts
+ * when it can and cancels otherwise, so every client stops the same way).
  */
 export async function stopRunningTurn(): Promise<void> {
   const sessionId = activeSessionId();
@@ -1973,16 +1916,7 @@ export async function stopRunningTurn(): Promise<void> {
   if (!sessionId || !turnId) return;
   const key = activeSessionKey() ?? sessionKey(sessionId);
   await runStep(async () => {
-    try {
-      await stopDialogTurn(sessionId, turnId);
-    } catch (error) {
-      if (!isMissingCommand(error, "stop_dialog_turn")) throw error;
-      try {
-        await interruptDialogTurn(sessionId, turnId);
-      } catch {
-        await cancelDialogTurn(sessionId, turnId);
-      }
-    }
+    await stopDialogTurn(sessionId, turnId);
     // Only clear running/live/pending state if no newer turn has replaced `turnId`.
     if (runningTurnId() === turnId) runningTurnId.set(null);
     const device = activeSessionDevice();
@@ -2175,8 +2109,7 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
 
 function lineageSessionIdOf(result: unknown): string {
   if (!result || typeof result !== "object") return "";
-  const record = result as Record<string, unknown>;
-  const id = record.sessionId ?? record.session_id;
+  const id = (result as { sessionId?: unknown }).sessionId;
   return typeof id === "string" ? id : "";
 }
 
@@ -2290,6 +2223,7 @@ function sessionSummaryOf(row: FleetSession): SessionSummary {
     workspaceId: row.workspaceId,
     agentType: row.agentType,
     unread: row.unread,
+    failed: Boolean(row.failed || row.status === "error"),
     deviceId: row.deviceId,
   };
 }
@@ -2312,7 +2246,10 @@ function applyFleetWorkspaceRows(): void {
   workspaceNavigatorOutdated.set(false);
   const key = activeWorkspaceKey();
   const row = key ? fleetWorkspaceByKey(key) : null;
-  if (!row) return;
+  if (!row) {
+    reconcileVisibleFleetReadState();
+    return;
+  }
   const rows = row.sessions.map(sessionSummaryOf);
   const known = new Set(rows.map(item => item.sessionId));
   const current = sessions();
@@ -2321,6 +2258,7 @@ function applyFleetWorkspaceRows(): void {
   const next = reuseRows(current, [...rows, ...extra], item => item.sessionId);
   if (next !== current) sessions.set(next);
   reconcileSessionReadState(rows);
+  reconcileVisibleFleetReadState();
   sessionTotal.set(row.sessionTotal);
   sessionHasMore.set(row.hasMore || sessionCursor() !== null);
 }

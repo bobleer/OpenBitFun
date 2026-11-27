@@ -360,20 +360,6 @@ fn session_catalog_query(
     Ok(query.filter(|query| Some(query.workspace_id.as_str()) == workspace_id.as_deref()))
 }
 
-pub(crate) async fn list_persisted_sessions_count(
-    state: &PeerHostState,
-    args: &Value,
-) -> Result<Value, String> {
-    let request = request_value(args);
-    let workspace_path = resolved_session_storage_path(state, request).await?;
-    let list = state
-        .compatibility
-        .list_persisted_sessions(&workspace_path)
-        .await
-        .map_err(|e| format!("Failed to count persisted sessions: {e}"))?;
-    Ok(json!(list.len()))
-}
-
 /// CLI Peer observers can acknowledge results and persist title presentation
 /// without projecting Session history back into the Runtime.
 /// Read one session's persisted metadata, like Desktop
@@ -437,7 +423,47 @@ pub(crate) async fn save_session_metadata(
         })
         .await
         .map_err(|error| format!("Failed to update session presentation metadata: {error}"))?;
+    crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
+}
+
+fn parse_seen_through_ms(request: &Value) -> Option<u64> {
+    request
+        .get("seenThroughMs")
+        .or_else(|| request.get("seen_through_ms"))
+        .and_then(Value::as_u64)
+}
+
+/// Acknowledges a session's unread completion receipt on this CLI host so
+/// every client (desktop, phone, browser) and this host's fleet digest stop
+/// marking the session unread. Mirrors Desktop `mark_session_seen`.
+pub(crate) async fn mark_session_seen(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = validated_session_id(request)?;
+    let seen_through_ms = parse_seen_through_ms(request);
+    let storage_path = if has_session_workspace_scope(request) {
+        ensure_session_workspace_runtime_ownership(state, request).await?;
+        resolved_session_storage_path(state, request).await?
+    } else {
+        state
+            .compatibility
+            .find_session_storage_path(&state.workspace_service, &session_id)
+            .await
+            .map_err(|error| format!("Failed to locate session workspace: {error}"))?
+            .ok_or_else(|| format!("Session metadata not found: {session_id}"))?
+    };
+    let changed = state
+        .compatibility
+        .acknowledge_session_unread(&storage_path, &session_id, seen_through_ms)
+        .await
+        .map_err(|error| format!("Failed to mark session seen: {error}"))?;
+    if changed {
+        crate::fleet_host::refresh_local_now().await;
+    }
+    Ok(json!({ "changed": changed }))
 }
 
 pub(crate) async fn search_session_content(
@@ -983,29 +1009,79 @@ pub(crate) async fn delete_session(state: &PeerHostState, args: &Value) -> Resul
         })
         .await
         .map_err(|error| format!("Failed to delete session: {}", error.into_message()))?;
+    crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
 }
 
-pub(crate) async fn rename_session(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+pub(crate) async fn update_session_title(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
     let request = request_value(args);
     let session_id = validated_session_id(request)?;
-    let storage_request = session_storage_request(state, request).await?;
-    let title = get_string(request, "sessionName")
-        .or_else(|_| get_string(request, "title"))
+    let title = get_string(request, "title")
+        .or_else(|_| get_string(request, "sessionName"))
         .or_else(|_| get_string(request, "name"))?;
+    let trimmed_title = title.trim().to_string();
+    let (workspace_id, workspace_path, remote_connection_id, remote_ssh_host) =
+        if has_session_workspace_scope(request) {
+            let scope = session_storage_request(state, request).await?;
+            (
+                optional_string(request, "workspaceId"),
+                scope.workspace_path.to_string_lossy().to_string(),
+                scope.remote_connection_id,
+                scope.remote_ssh_host,
+            )
+        } else {
+            (None, String::new(), None, None)
+        };
     state
         .agent_runtime
         .rename_session(AgentSessionRenameRequest {
-            workspace_id: optional_string(request, "workspaceId"),
-            workspace_path: storage_request.workspace_path.to_string_lossy().to_string(),
+            workspace_id,
+            workspace_path,
             session_id,
-            session_name: title,
-            remote_connection_id: storage_request.remote_connection_id,
-            remote_ssh_host: storage_request.remote_ssh_host,
+            session_name: trimmed_title.clone(),
+            remote_connection_id,
+            remote_ssh_host,
         })
         .await
-        .map_err(|error| peer_runtime_session_error("Failed to rename session", error))?;
-    Ok(Value::Null)
+        .map_err(|error| peer_runtime_session_error("Failed to update session title", error))?;
+    crate::fleet_host::refresh_local_now().await;
+    Ok(json!(trimmed_title))
+}
+
+pub(crate) async fn export_session_transcript(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = validated_session_id(request)?;
+    let storage_path = if has_session_workspace_scope(request) {
+        ensure_session_workspace_runtime_ownership(state, request).await?;
+        resolved_session_storage_path(state, request).await?
+    } else {
+        state
+            .compatibility
+            .find_session_storage_path(&state.workspace_service, &session_id)
+            .await
+            .map_err(|error| format!("Failed to locate session workspace: {error}"))?
+            .ok_or_else(|| format!("Session metadata not found: {session_id}"))?
+    };
+    let options = openbitfun_core::service::session::SessionTranscriptExportOptions {
+        tools: optional_bool(request, "tools").unwrap_or(true),
+        tool_inputs: optional_bool(request, "toolInputs").unwrap_or(false),
+        thinking: optional_bool(request, "thinking").unwrap_or(false),
+        turns: request
+            .get("turns")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()),
+    };
+    let export = state
+        .compatibility
+        .export_persisted_session_transcript(&storage_path, &session_id, &options)
+        .await
+        .map_err(|error| peer_core_session_error("Failed to export session transcript", error))?;
+    serde_json::to_value(export).map_err(|error| error.to_string())
 }
 
 /// Fork a session through the selected persisted turn, like Desktop
@@ -1101,6 +1177,7 @@ pub(crate) async fn unarchive_session(
         })
         .await
         .map_err(|error| format!("Failed to save session metadata: {}", error.into_message()))?;
+    crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
 }
 
@@ -1155,6 +1232,9 @@ pub(crate) async fn delete_all_archived_sessions(
             .map_err(|error| format!("Failed to delete session: {}", error.into_message()))?;
         deleted += 1;
     }
+    if deleted > 0 {
+        crate::fleet_host::refresh_local_now().await;
+    }
     Ok(json!(deleted))
 }
 
@@ -1195,6 +1275,7 @@ pub(crate) async fn archive_session(state: &PeerHostState, args: &Value) -> Resu
         })
         .await
         .map_err(|error| format!("Failed to archive session: {}", error.into_message()))?;
+    crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
 }
 
@@ -1216,6 +1297,7 @@ pub(crate) async fn touch_session_activity(
         .touch_persisted_session(&workspace_path, &session_id)
         .await
         .map_err(|e| format!("Failed to update session activity: {e}"))?;
+    crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
 }
 
@@ -1304,17 +1386,29 @@ pub(crate) async fn update_session_model(
     let reasoning_preset = optional_string(request, "reasoningPreset")
         .map(|preset| preset.trim().to_string())
         .filter(|preset| !preset.is_empty());
+    let context_window_override = match request.get("contextWindowOverride") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(value) => {
+            let tokens = value
+                .as_u64()
+                .and_then(|raw| usize::try_from(raw).ok())
+                .ok_or_else(|| "contextWindowOverride must be a positive integer".to_string())?;
+            Some(Some(tokens))
+        }
+    };
     if has_session_workspace_scope(request) {
         ensure_session_workspace_runtime_ownership(state, request).await?;
         let storage = resolved_session_storage_path(state, request).await?;
         state
             .compatibility
-            .update_session_model_selection_from_storage_path_with_routing(
+            .update_session_model_selection_from_storage_path_with_options(
                 &storage,
                 &session_id,
                 &model_name,
                 reasoning_preset.as_deref(),
                 routing_mode.as_deref(),
+                context_window_override,
                 optional_bool(request, "includeInternal").unwrap_or(false),
             )
             .await
@@ -1329,6 +1423,7 @@ pub(crate) async fn update_session_model(
                 model_id: model_name,
                 reasoning_preset,
                 routing_mode,
+                context_window_override,
             },
         })
         .await
@@ -2190,6 +2285,49 @@ mod tests {
         assert_eq!(assistant_catalog.default_mode_id, "Claw");
         assert_eq!(assistant_catalog.entries.len(), 1);
         assert_eq!(assistant_catalog.entries[0].id, "Claw");
+    }
+
+    #[test]
+    fn mark_session_seen_accepts_camel_and_snake_case_seen_through_ms() {
+        use serde_json::json;
+        assert_eq!(
+            super::parse_seen_through_ms(&json!({ "seenThroughMs": 1_763_000_000_000u64 })),
+            Some(1_763_000_000_000u64)
+        );
+        assert_eq!(
+            super::parse_seen_through_ms(&json!({ "seen_through_ms": 1_763_000_000_500u64 })),
+            Some(1_763_000_000_500u64)
+        );
+        assert_eq!(
+            super::parse_seen_through_ms(&json!({ "seenThroughMs": null })),
+            None
+        );
+        assert_eq!(super::parse_seen_through_ms(&json!({})), None);
+    }
+
+    #[test]
+    fn mark_session_seen_and_save_session_metadata_refresh_fleet_digest() {
+        let source = include_str!("session.rs").replace("\r\n", "\n");
+        let mark_seen = source
+            .split_once("pub(crate) async fn mark_session_seen(")
+            .expect("CLI peer mark_session_seen")
+            .1
+            .split_once("pub(crate) async fn search_session_content(")
+            .expect("CLI peer mark_session_seen boundary")
+            .0;
+        assert!(mark_seen.contains("ensure_session_workspace_runtime_ownership"));
+        assert!(mark_seen.contains("find_session_storage_path"));
+        assert!(mark_seen.contains("acknowledge_session_unread"));
+        assert!(mark_seen.contains("crate::fleet_host::refresh_local_now().await"));
+
+        let save_meta = source
+            .split_once("pub(crate) async fn save_session_metadata(")
+            .expect("CLI peer save_session_metadata")
+            .1
+            .split_once("fn parse_seen_through_ms(")
+            .expect("CLI peer save_session_metadata boundary")
+            .0;
+        assert!(save_meta.contains("crate::fleet_host::refresh_local_now().await"));
     }
 }
 

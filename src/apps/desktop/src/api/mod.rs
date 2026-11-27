@@ -41,7 +41,6 @@ pub mod miniapp_agent_api;
 pub mod miniapp_api;
 pub mod miniapp_market_api;
 pub mod native_shell_api;
-pub mod pages_api;
 pub mod path_target;
 pub mod remote_connect_api;
 pub mod remote_workspace_policy;

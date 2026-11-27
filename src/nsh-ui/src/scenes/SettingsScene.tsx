@@ -302,7 +302,6 @@ import {
 } from "../modelDiscoveryStore";
 import {
   catalogProviders,
-  chooseCatalogModel,
   chooseCatalogProvider,
   closeModelForm,
   closeModelLimits,
@@ -340,7 +339,6 @@ import {
   openModelLimits,
   saveModelDraft,
   saveModelLimits,
-  selectedCatalogProvider,
   setCatalogQuery,
   setModelEnabled,
   storedModels,
@@ -1598,12 +1596,14 @@ function SettingsRow(props: {
   first?: boolean;
   stacked?: boolean;
   controlWidth?: number;
+  /** Action aligned to the right of the label/description header when `stacked` is true. */
+  headerExtra?: JSX.Element;
   children?: JSX.Element;
 }) {
   return (
     <ConfigRow testID={props.testID} label={props.label} description={props.description}
       wrap={props.wrap} stacked={props.stacked} controlWidth={props.controlWidth}
-      divider={false} topDivider={!props.first}>
+      headerExtra={props.headerExtra} divider={false} topDivider={!props.first}>
       {props.children}
     </ConfigRow>
   );
@@ -6413,7 +6413,7 @@ function ModelSection() {
             <If when={testStatus().status === "error" && testStatus().errorDetails ? testStatus().errorDetails! : ""}>
               {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
             </If>
-            {/* Presets: a provider fills the endpoint and protocol, a model fills the id and limits. */}
+            {/* Presets: a provider fills the endpoint and protocol; models are typed or discovered remotely. */}
             <If when={!modelDraft().editingId && modelCatalogLoaded() && modelCatalog().length > 0}>
               <View style={{ gap: space.sm }}>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
@@ -6442,23 +6442,6 @@ function ModelSection() {
                     )}
                   </Each>
                 </View>
-                <If when={selectedCatalogProvider() !== null}>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
-                    <Each of={selectedCatalogProvider()?.models ?? []} key={model => model.id}>
-                      {model => (
-                        <SelectableChip
-                          label={model().label}
-                          active={modelDraft().modelName === model().id}
-                          accessibilityLabel={`model-catalog-model-${model().id}`}
-                          onPress={() => {
-                            resetRemoteDiscovery();
-                            chooseCatalogModel(model().id);
-                          }}
-                        />
-                      )}
-                    </Each>
-                  </View>
-                </If>
                 <If when={modelCatalogNotice() !== ""}>
                   <Text style={textStyle("caption")}>{localizeHostError(modelCatalogNotice())}</Text>
                 </If>
@@ -7817,7 +7800,12 @@ function DesktopCompanionRow() {
             />
           </If>
         </SettingsRow>
-        <SettingsRow label={tr("pet.character")} description={tr("pet.characterBody")} stacked={true}>
+        <SettingsRow
+          label={tr("pet.character")}
+          description={tr("pet.characterBody")}
+          stacked={true}
+          headerExtra={<PetImportButton />}
+        >
           <PetCharacterGrid />
         </SettingsRow>
         <SettingsRow label={tr("cards.settingsEnabled")} description={tr("cards.settingsEnabledBody")}>
@@ -8616,13 +8604,7 @@ function ActivityPage() {
 const archivedRestoring = signal<string | null>(null);
 const archivedDeleteAllOpen = signal(false);
 const archivedDeletingAll = signal(false);
-/**
- * Archived sessions loaded from `list_archived_sessions` for the selected
- * device and workspace; `null` means the host does not offer the command (an
- * older build or legacy fixture), in which case we fall back to filtering the
- * loaded `sessions()` catalogue.
- */
-const archivedSessionsFromHost = signal<SessionSummary[] | null>(null);
+const archivedSessionsFromHost = signal<SessionSummary[]>([]);
 const archivedSessionsLoading = signal(false);
 const archivedSessionsError = signal("");
 let archivedLoadTicket = 0;
@@ -8668,7 +8650,7 @@ function archivedTargetOptions(): { target: string } | undefined {
 async function loadArchivedSessions(): Promise<void> {
   const workspace = activeWorkspace();
   if (!workspace) {
-    archivedSessionsFromHost.set(null);
+    archivedSessionsFromHost.set([]);
     archivedSessionsError.set("");
     return;
   }
@@ -8694,13 +8676,8 @@ async function loadArchivedSessions(): Promise<void> {
     archivedSessionsFromHost.set(list);
   } catch (error) {
     if (ticket !== archivedLoadTicket) return;
-    if (isCommandUnavailable(error, "list_archived_sessions")) {
-      archivedSessionsFromHost.set(null);
-      archivedSessionsError.set("");
-    } else {
-      archivedSessionsFromHost.set([]);
-      archivedSessionsError.set(localizeHostError(errorMessageOf(error)));
-    }
+    archivedSessionsFromHost.set([]);
+    archivedSessionsError.set(localizeHostError(errorMessageOf(error)));
   } finally {
     if (ticket === archivedLoadTicket) {
       archivedSessionsLoading.set(false);
@@ -8713,23 +8690,19 @@ async function restoreArchivedSession(row: SessionSummary): Promise<void> {
   if (!workspace || archivedRestoring() === row.sessionId) return;
   archivedRestoring.set(row.sessionId);
   try {
-    if (archivedSessionsFromHost() !== null) {
-      await invokeCommand<unknown>(
-        "unarchive_session",
-        {
-          sessionId: row.sessionId,
-          workspaceId: row.workspaceId || workspace.id,
-        },
-        archivedTargetOptions(),
-      );
-      archivedSessionsFromHost.update(list => (list ? list.filter(item => item.sessionId !== row.sessionId) : list));
-      if (fleetActive()) {
-        void refreshFleetNavigator();
-      } else {
-        await loadSessions();
-      }
+    await invokeCommand<unknown>(
+      "unarchive_session",
+      {
+        sessionId: row.sessionId,
+        workspaceId: row.workspaceId || workspace.id,
+      },
+      archivedTargetOptions(),
+    );
+    archivedSessionsFromHost.update(list => list.filter(item => item.sessionId !== row.sessionId));
+    if (fleetActive()) {
+      void refreshFleetNavigator();
     } else {
-      await archiveSessionRow(row.sessionId, false);
+      await loadSessions();
     }
   } catch (error) {
     pushToast(localizeHostError(errorMessageOf(error)), "error");
@@ -8759,9 +8732,7 @@ async function deleteAllArchived(): Promise<void> {
     );
     archivedDeleteAllOpen.set(false);
     pushToast(tr("settings.archived.deletedAll", { count: typeof deleted === "number" ? deleted : 0 }), "success");
-    if (archivedSessionsFromHost() !== null) {
-      archivedSessionsFromHost.set([]);
-    }
+    archivedSessionsFromHost.set([]);
     await loadArchivedSessions();
     await loadSessions();
   } catch (error) {
@@ -8958,11 +8929,7 @@ function ArchivedSessionsSection() {
       void loadArchivedSessions();
     });
   });
-  const rows = () => {
-    const hostRows = archivedSessionsFromHost();
-    if (hostRows !== null) return hostRows;
-    return sessions().filter(item => isSessionArchived(item));
-  };
+  const rows = () => archivedSessionsFromHost();
   return (
     <View accessibilityLabel="settings-archived" style={{ gap: space.md }}>
       <If when={archivedSessionsError()}>
@@ -9012,7 +8979,7 @@ function ArchivedSessionsSection() {
                         workspaceId: row().workspaceId || activeWorkspace()?.id || "",
                         title: row().sessionName || row().sessionId,
                         archived: true,
-                      })
+                      }).then(() => void loadArchivedSessions())
                     }
                   />
                   <Button
@@ -9696,7 +9663,6 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
         id="pet"
         title={tr("settings.page.pet")}
         hideTitle={true}
-        extra={companionAvailableHere() ? <PetImportButton /> : undefined}
       >
         <DesktopCompanionRow />
       </SettingsGroup>

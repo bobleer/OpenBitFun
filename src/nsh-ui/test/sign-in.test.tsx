@@ -59,7 +59,7 @@ function accountHost(options: { rateLimited?: boolean } = {}) {
   return { base, calls, requests };
 }
 
-test("first run: email, then the code, in the app, then the device is ready", async () => {
+test("first run: declining the disclaimer blocks sign-in; agreeing sends the email code and finishes", async () => {
   const { base, calls, requests } = accountHost();
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
 
@@ -69,6 +69,18 @@ test("first run: email, then the code, in the app, then the device is ready", as
 
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
+  await app.waitFor("remote-disclaimer-modal");
+  expect(calls).not.toContain("account_email_start");
+
+  // Declining refuses sign-in without contacting the host.
+  await app.press("remote-disclaimer-decline");
+  await app.waitFor("remote-disclaimer-modal", { state: "gone" });
+  expect(calls).not.toContain("account_email_start");
+
+  // Continuing again opens the disclaimer; agreeing proceeds directly to the code step.
+  await app.press("label:account-auth-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.waitFor("text:Check your email");
   await app.waitFor("text:Enter the code we sent to me@example.com.");
   expect(requests.find(entry => entry.action === "account_email_start")?.request).toMatchObject({
@@ -95,6 +107,8 @@ test("a wrong code says so and can be typed again; another email goes back", asy
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.type("account-auth-code-input", "00000000");
   await app.press("label:account-auth-verify");
   await app.waitFor("text:That code didn't work. Check it or send a new one.");
@@ -109,6 +123,8 @@ test("refusals are worded by their code", async () => {
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.waitFor("text:Too many attempts. Wait a minute and try again.");
 });
 
@@ -122,19 +138,29 @@ test("use on this device only leaves the sign-in without an account", async () =
   expect(calls).not.toContain("account_github_start");
 });
 
-test("the account dialog signs in with the code and names the account by its email", async () => {
+test("the account dialog requires agreeing to the disclaimer before opening, then signs in with the code", async () => {
   const { base } = accountHost();
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
   await app.press("label:account-auth-local-only");
   await app.press("Open account");
+  await app.waitFor("remote-disclaimer-modal");
+  expect(app.shows("label:account-auth-modal")).toBe(false);
+  await app.press("remote-disclaimer-decline");
+  await app.waitFor("remote-disclaimer-modal", { state: "gone" });
+  expect(app.shows("label:account-auth-modal")).toBe(false);
+
+  await app.press("Open account");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.waitFor("label:account-auth-modal");
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
   await app.type("account-auth-code-input", "12345678");
-  // Signed in: the dialog closes with a toast; reopened, it names the account.
+  // Signed in: the dialog closes with a toast; reopened, it names the account without re-prompting.
   await app.waitFor("text:Signed in as me@example.com");
   await app.press("Open account");
   await app.waitFor("text:Signed in as me@example.com");
+  expect(app.shows("remote-disclaimer-modal")).toBe(false);
   expect(app.texts().some(text => text.includes(HANDLE) || text.includes("email-7"))).toBe(false);
   await app.press("label:account-auth-sign-out");
   await app.waitFor("label:account-auth-continue");
@@ -145,6 +171,9 @@ test("GitHub is the secondary sign-in and the only one in the browser", async ()
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
   await app.press("label:account-auth-local-only");
   await app.press("Open account");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
+  await app.waitFor("label:account-auth-modal");
   await app.press("label:account-auth-github");
   await app.waitFor("text:Finish in your browser");
   expect(app.openedUrls()).toContain("https://github.com/login/oauth/authorize?state=1");

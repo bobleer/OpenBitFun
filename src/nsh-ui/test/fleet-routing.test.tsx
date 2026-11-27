@@ -96,7 +96,7 @@ test("routing table: owner ids are read at the registry path; fleet verbs and co
   expect(isFleetPlainCommand("fleet_call")).toBe(true);
   expect(isFleetPlainCommand("account_status")).toBe(true);
   expect(isFleetPlainCommand("reveal_session_storage_directory")).toBe(true);
-  expect(isFleetPlainCommand("peer_link_connect")).toBe(true);
+  expect(isFleetPlainCommand("mesh_status")).toBe(true);
   expect(isFleetPlainCommand("get_session_transcript_view")).toBe(false);
   expect(fleetOwnerKeyOf("get_session_transcript_view", { request: { session_id: "s-1" } })).toEqual({
     entity: "session",

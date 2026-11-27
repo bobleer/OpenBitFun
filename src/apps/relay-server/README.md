@@ -10,14 +10,12 @@ deploy a server. Older clients can remain on the GitHub-only authorization flow.
 For connection choices, internet requirements, privacy, service limits, and
 self-hosting, see the user FAQ: [English](FAQ.md) / [中文](FAQ.zh-CN.md).
 
-The official endpoint is `https://remote.openbitfun.com/relay?v=1.0.10`: the
-service version travels as a `v` query parameter so a release no longer needs
-its own proxy location, and the bare origin is the account controller. The
-older `https://remote.openbitfun.com/v/1.0.2/` path stays live on the same
-process and database for builds that predate the parameter, so both aliases
-share credentials and device registration. This release is deployed with
-its own process, database, assets, and reverse-proxy location. An existing
-`/relay` deployment remains on its existing binary and data directory.
+In OpenBitFun 2.0, every official service lives on `https://super.openbitfun.com`
+(see [`deploy/super/README.md`](../../../deploy/super/README.md)): this binary
+runs with `RELAY_PROFILE=directory` behind `https://super.openbitfun.com/directory`
+as the account device directory (`DEFAULT_ACCOUNT_DIRECTORY_URL`, also
+`DEFAULT_RELAY_URL`), while device traffic flows over OpenBitFun Link rather
+than the legacy 1.x relay transport.
 
 For device-to-device control, the Relay forwards opaque encrypted payloads.
 Each device generates an X25519 private key locally and registers its public key
@@ -53,15 +51,14 @@ SSH and Docker workspace connections remain independent of Relay login.
 Self-hosting is supported through source and deployment scripts. The public mode uses a fixed official endpoint; it has no deployment wizard or editable
 Relay URL. A private Relay therefore needs a matching client build.
 
-1. Fork this workspace and read `CONTRIBUTING.md`. Build the Relay and mobile
-   controller from the same revision. Keep your fork's changes in source control.
-2. Select your HTTPS endpoint in `src/crates/contracts/product-domains/src/account.rs`, then align
-   the mobile controller constant in `src/mobile-web/src/services/pairingLink.ts` (the desktop
-   UI keeps no copy of the endpoint). Native clients have
-   matching constants in KMP `core-transport/AccountDeviceLink.kt` and HarmonyOS
-   `services/AccountDeviceLink.ets`; update the HarmonyOS account-link parser too.
-   Search for `https://remote.openbitfun.com/relay?v=` to verify every runtime
-   reference and corresponding test before building your distribution.
+1. Fork this workspace and read `CONTRIBUTING.md`. Build the directory/gateway
+   services and clients from the same revision. Keep your fork's changes in source control.
+2. Select your HTTPS service origin and directory endpoint in
+   `src/crates/contracts/product-domains/src/account.rs`
+   (`DEFAULT_SERVICE_ORIGIN`, `DEFAULT_ACCOUNT_DIRECTORY_URL`, `DEFAULT_RELAY_URL`)
+   and align the mobile app constant in `src/apps/mobile-nsh/native/src/account.rs`
+   (`DEFAULT_DIRECTORY_URL`). Search for `super.openbitfun.com` to verify every
+   runtime reference and corresponding test before building your distribution.
 3. Decide who owns identity. You can retain the official OpenBitFun identity
    authority, or run the [shared identity service](../../../deploy/miniapp-market/README.md)
    with your own GitHub OAuth application and/or email delivery configuration.

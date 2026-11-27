@@ -2,12 +2,12 @@
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
   "catalogDigest": "3ed78c6ff3e1a9cdd54af58d888ee083cfdd4ab2b2a16f56f1270290a8a2b1f8",
-  "commandCount": 733,
+  "commandCount": 727,
   "coverage": {
-    "commandCount": 733,
-    "documentedCommandCount": 631,
-    "implementationCommandCount": 102,
-    "implementationDigest": "4954073be0636de6ca1ef4d75ade342a2450cbc396030322c116e2973299eb4e"
+    "commandCount": 727,
+    "documentedCommandCount": 630,
+    "implementationCommandCount": 97,
+    "implementationDigest": "56c3f129de51205ee00af4ac936add094f57dacb9c0d2a198e0cbd6050baf93f"
   },
   "commands": [
     {
@@ -1333,22 +1333,6 @@
     {
       "id": "computer_use_request_permission",
       "moduleId": "computer_use",
-      "capabilityId": "feature.computer-use",
-      "capabilityIds": [
-        "feature.computer-use"
-      ],
-      "documentedItemIds": [
-        "feature.computer-use:request-permissions"
-      ],
-      "visibility": "documented",
-      "rustPath": "computer_use_request_permission",
-      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
-      "signature": "fn computer_use_request_permission( request: ComputerPermissionRequest, ) -> Result<ComputerPermissionReceipt, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "computer_use_request_permissions",
-      "moduleId": "computer_use",
       "capabilityId": null,
       "capabilityIds": [
         "feature.computer-use",
@@ -1361,9 +1345,9 @@
         "setting.tools.execution:computer-use-permissions"
       ],
       "visibility": "documented",
-      "rustPath": "computer_use_request_permissions",
+      "rustPath": "computer_use_request_permission",
       "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
-      "signature": "fn computer_use_request_permissions() -> Result<(), String>",
+      "signature": "fn computer_use_request_permission( request: ComputerPermissionRequest, ) -> Result<ComputerPermissionReceipt, String>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -5510,20 +5494,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "install_update",
-      "moduleId": "update",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "backend_protocol::native_commands::install_update",
-      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
-      "signature": "fn install_update( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "interrupt_dialog_turn",
       "moduleId": "agentic",
       "capabilityId": "feature.ai-assistant",
@@ -7182,62 +7152,6 @@
       "sourceFile": "src/apps/desktop/src/api/clipboard_file_api.rs",
       "signature": "fn paste_files(request: PasteFilesRequest) -> Result<PasteFilesResponse, String>",
       "remoteWorkspacePolicy": "RemoteUnsupported"
-    },
-    {
-      "id": "peer_link_call",
-      "moduleId": "peer_link",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "mesh::peer_link::peer_link_call",
-      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
-      "signature": "fn peer_link_call(request: PeerLinkCallRequest) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_link_connect",
-      "moduleId": "peer_link",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "mesh::peer_link::peer_link_connect",
-      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
-      "signature": "fn peer_link_connect(request: PeerLinkConnectRequest) -> Result<PeerLinkInfo, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_link_disconnect",
-      "moduleId": "peer_link",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "mesh::peer_link::peer_link_disconnect",
-      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
-      "signature": "fn peer_link_disconnect(request: PeerLinkDisconnectRequest) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_link_events",
-      "moduleId": "peer_link",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "mesh::peer_link::peer_link_events",
-      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
-      "signature": "fn peer_link_events(request: PeerLinkEventsRequest) -> Result<PeerEventsBatch, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "plan_external_hook_import_command",

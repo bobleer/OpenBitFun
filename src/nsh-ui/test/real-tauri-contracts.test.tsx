@@ -349,9 +349,9 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
   // Must resolve symbolic "primary" to "Claude Sonnet 4.5" instead of showing raw "primary"!
   await app.waitFor("label:bot-capsule-trigger >> text:Claude Sonnet 4.5");
 
-  // Embedded reasoning presets must be available without extra `project_ai_model_reasoning_catalog` RPC!
-  // On Default reasoning, the trigger stays a compact icon-only button without cluttering the bar with "Default".
-  await app.waitFor("reasoning-picker");
+  // Reasoning is configured inside the model picker submenu (no standalone reasoning button),
+  // and embedded reasoning presets must load without extra `project_ai_model_reasoning_catalog` RPC!
+  expect(app.shows("reasoning-picker")).toBe(false);
   expect(backend.actions()).not.toContain("project_ai_model_reasoning_catalog");
 
   // Picker offers `"text_chat"` enabled models and hides disabled + image-only models.
@@ -361,12 +361,19 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
   expect(app.texts()).not.toContain("Disabled Model");
   expect(app.texts()).not.toContain("DALL-E");
 
+  // Hovering a model with embedded reasoning opens the right-side config submenu without extra RPC.
+  await app.hover("label:model-option-cfg-claude-sonnet");
+  await app.waitFor("id:model-config-side-panel");
+  await app.waitFor("reasoning-option-high");
+  expect(backend.actions()).not.toContain("project_ai_model_reasoning_catalog");
+
   // Choosing a model sends real config ID (`cfg-claude-haiku`), NOT upstream `model_name`.
   await app.press("model-option-cfg-claude-haiku");
   const update = backend.calls.find(call => call.action === "update_session_model");
   expect(update?.request).toMatchObject({
     sessionId: "session-primary",
     modelName: "cfg-claude-haiku",
+    contextWindowOverride: 300_000,
   });
   await app.waitFor("label:bot-capsule-trigger >> text:Claude Haiku 4.5");
 });

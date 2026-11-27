@@ -1317,6 +1317,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
   // `null` is the model's own default, and `undefined` is a host too old to report
   // the field at all.
   let sessionReasoningPreset: string | null | undefined = options.sessionReasoningPreset;
+  let sessionContextWindowOverride: number | null | undefined = undefined;
   const reasoningCatalogFixture =
     options.reasoningCatalog === undefined ? undefined : options.reasoningCatalog;
 
@@ -2876,9 +2877,32 @@ export function createBackend(options: BackendOptions = {}): Backend {
         ];
       case "respond_permission":
         return null;
-      case "archive_session":
-      case "unarchive_session":
-      case "delete_persisted_session":
+      case "archive_session": {
+        const sid = String(payload.sessionId ?? payload.session_id ?? "");
+        for (const item of sessions) {
+          if (item.sessionId === sid) {
+            item.status = "archived";
+            item.persistedStatus = "archived";
+          }
+        }
+        return null;
+      }
+      case "unarchive_session": {
+        const sid = String(payload.sessionId ?? payload.session_id ?? "");
+        for (const item of sessions) {
+          if (item.sessionId === sid) {
+            item.status = "active";
+            item.persistedStatus = "active";
+          }
+        }
+        return null;
+      }
+      case "delete_persisted_session": {
+        const sid = String(payload.session_id ?? payload.sessionId ?? "");
+        const idx = sessions.findIndex(item => item.sessionId === sid);
+        if (idx >= 0) sessions.splice(idx, 1);
+        return null;
+      }
       case "account_update_device_alias":
         return null;
       // P-UI parity (wave 17): session and workspace row actions on any device.
@@ -2970,7 +2994,11 @@ export function createBackend(options: BackendOptions = {}): Backend {
         );
         return { hits, truncated: false };
       }
-      case "get_ai_model_catalog":
+      case "list_archived_sessions":
+        return sessions.filter(item => item.status === "archived" || item.persistedStatus === "archived");
+      case "get_ai_model_catalog": {
+        const embeddedReasoning =
+          reasoningCatalogFixture === null ? null : (reasoningCatalogFixture ?? DEFAULT_REASONING_CATALOG);
         return {
           version: 1,
           models: [
@@ -2978,11 +3006,10 @@ export function createBackend(options: BackendOptions = {}): Backend {
               id: "cfg-primary",
               name: "Primary model",
               provider: "openai",
-              // The same model `ai.models` stores, because the reasoning catalog is
-              // projected from that entry's endpoint and reasoning block.
               model_name: "gpt-4.1-mini",
               enabled: true,
-              capabilities: ["chat", "tool_call"],
+              capabilities: ["text_chat", "tool_call"],
+              reasoning: embeddedReasoning,
             },
             {
               id: "cfg-fast",
@@ -2990,7 +3017,8 @@ export function createBackend(options: BackendOptions = {}): Backend {
               provider: "openai",
               model_name: "fast-small",
               enabled: true,
-              capabilities: ["chat"],
+              capabilities: ["text_chat"],
+              reasoning: embeddedReasoning,
             },
             {
               id: "cfg-image",
@@ -3001,8 +3029,9 @@ export function createBackend(options: BackendOptions = {}): Backend {
               capabilities: ["image_generation"],
             },
           ],
-          default_models: { primary: "gpt-4.1-mini" },
+          default_models: { primary: "cfg-primary" },
         };
+      }
       case "update_session_model": {
         // The host validates the pair, so a preset that arrives without its model
         // is refused there; here the write is only remembered for the next read.
@@ -3015,6 +3044,9 @@ export function createBackend(options: BackendOptions = {}): Backend {
         }
         if (Object.prototype.hasOwnProperty.call(payload, "reasoningPreset")) {
           sessionReasoningPreset = (payload.reasoningPreset as string | null) ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, "contextWindowOverride")) {
+          sessionContextWindowOverride = (payload.contextWindowOverride as number | null) ?? null;
         }
         return null;
       }
@@ -3034,6 +3066,9 @@ export function createBackend(options: BackendOptions = {}): Backend {
           sessionId: sid,
           selection: selection ?? { kind: "model", model_ref: "gpt-4.1-mini" },
           ...(sessionReasoningPreset === undefined ? {} : { reasoningPreset: sessionReasoningPreset }),
+          ...(sessionContextWindowOverride === undefined
+            ? {}
+            : { contextWindowOverride: sessionContextWindowOverride }),
         };
       }
       case "get_session_model_target": {
@@ -3045,6 +3080,9 @@ export function createBackend(options: BackendOptions = {}): Backend {
           sessionId: sid,
           selection: { kind: "model", model_ref: modelRef },
           ...(sessionReasoningPreset === undefined ? {} : { reasoningPreset: sessionReasoningPreset }),
+          ...(sessionContextWindowOverride === undefined
+            ? {}
+            : { contextWindowOverride: sessionContextWindowOverride }),
         };
       }
       case "project_ai_model_reasoning_catalog": {

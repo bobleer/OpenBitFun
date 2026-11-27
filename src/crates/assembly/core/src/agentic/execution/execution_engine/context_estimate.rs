@@ -110,7 +110,12 @@ impl ExecutionEngine {
             &model_config.format,
             supports_images,
         );
-        let context_window = request_budget(&model_config, pool_budget).context_window;
+        let context_window = request_budget_with_override(
+            &model_config,
+            pool_budget,
+            session.config.context_window_override,
+        )
+        .context_window;
         let policy = registry
             .get_agent_tool_policy(&session.agent_type, workspace.workspace_id.as_deref())
             .await;

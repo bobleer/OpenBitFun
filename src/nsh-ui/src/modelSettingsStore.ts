@@ -303,11 +303,6 @@ export function catalogProviders(): ModelCatalogProvider[] {
     .slice(0, 8);
 }
 
-export function selectedCatalogProvider(): ModelCatalogProvider | null {
-  const id = modelCatalogProvider();
-  return id ? modelCatalog().find(provider => provider.id === id) ?? null : null;
-}
-
 export function setCatalogQuery(text: string): void {
   modelCatalogQuery.set(text);
 }
@@ -325,27 +320,6 @@ export function chooseCatalogProvider(id: string): void {
       baseUrl: endpoint.baseUrl,
     }));
   }
-}
-
-export function chooseCatalogModel(modelId: string): void {
-  const provider = selectedCatalogProvider();
-  const model = provider?.models.find(entry => entry.id === modelId);
-  if (!model) return;
-  // The catalog's own output limit may exceed what the host accepts for that
-  // window; the host clamps it on save and says so.
-  const output = model.output;
-  modelDraft.update(current => {
-    // The name follows the picked model until the user types one of their own.
-    const previous = provider?.models.find(entry => entry.id === current.modelName);
-    const autoName = !current.name.trim() || (previous !== undefined && current.name === previous.label);
-    return {
-      ...current,
-      modelName: model.id,
-      name: autoName ? model.label : current.name,
-      contextWindow: model.context ? String(model.context) : current.contextWindow,
-      maxTokens: output ? String(output) : current.maxTokens,
-    };
-  });
 }
 
 export async function loadModels(): Promise<void> {

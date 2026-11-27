@@ -221,6 +221,7 @@ async fn run_inner(store: &DispatchStore, job_id: &str) -> Result<()> {
                     model_id: model,
                     reasoning_preset,
                     routing_mode: None,
+                    context_window_override: None,
                 },
             })
             .await

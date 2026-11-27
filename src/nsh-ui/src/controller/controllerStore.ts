@@ -10,9 +10,15 @@
 
 import { signal } from "nsh";
 import { installBackendConnection } from "../bridge";
-import { FLEET_PROTOCOL_VERSION, type FleetCursor } from "../fleetTypes";
-import { fleetEntryCandidates, withFleetFailover } from "./fleetEntry";
+import {
+  EVENTS_DROPPED_EVENT,
+  EVENTS_DROPPED_INSTANCE_CHANGED,
+  FLEET_PROTOCOL_VERSION,
+  type FleetCursor,
+} from "../fleetTypes";
+import { ENTRY_CHANGED_REASON, fleetEntryCandidates, withFleetFailover } from "./fleetEntry";
 import { currentLocale } from "../i18n";
+import { ensureRemoteDisclaimer } from "../remoteDisclaimerStore";
 import {
   controllerErrorCode,
   controllerPort,
@@ -62,7 +68,7 @@ let connection: ControllerConnection | null = null;
 let stopUiEventWatch: (() => void) | null = null;
 let uiCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let uiCheckInFlight = false;
-let dismissedUiBundleId: string | null = null;
+const dismissedUiBundleIds = new Set<string>();
 /** The device this page was opened for, until the first device list is read. */
 let launchDevice: string | null = null;
 /** Pick nothing at the first device list (the user asked to see it, or a UI failed). */
@@ -239,7 +245,8 @@ async function openUiSourceDevice(): Promise<void> {
 
 export async function requestControllerCode(email: string): Promise<void> {
   const port = controllerPort();
-  if (!port) return;
+  if (!port || !email.trim()) return;
+  if (!(await ensureRemoteDisclaimer(() => requestControllerCode(email)))) return;
   const challenge = await run(() => port.requestCode(email.trim(), { locale: currentLocale() }));
   if (challenge) {
     controllerChallenge.set(challenge);
@@ -297,20 +304,26 @@ export async function checkControllerUiUpdate(): Promise<void> {
   if (!port?.checkUiUpdate || !active || active.state() !== "connected" || uiCheckInFlight) return;
   uiCheckInFlight = true;
   try {
-    const update = await port.checkUiUpdate(active);
+    let update: ControllerUiUpdate | null;
+    try {
+      update = await port.checkUiUpdate(active);
+    } catch {
+      // Transient RPC or loader error: leave any current notice untouched.
+      return;
+    }
     if (connection !== active) return;
     if (!update) {
       controllerUiUpdate.set(null);
       return;
     }
-    if (dismissedUiBundleId === update.bundleId) return;
+    if (dismissedUiBundleIds.has(update.bundleId)) return;
     controllerUiUpdate.set(update);
   } finally {
     uiCheckInFlight = false;
   }
 }
 
-function scheduleControllerUiUpdateCheck(delayMs = 800): void {
+export function scheduleControllerUiUpdateCheck(delayMs = 800): void {
   if (uiCheckTimer !== null) clearTimeout(uiCheckTimer);
   uiCheckTimer = setTimeout(() => {
     uiCheckTimer = null;
@@ -320,7 +333,7 @@ function scheduleControllerUiUpdateCheck(delayMs = 800): void {
 
 export function dismissControllerUiUpdate(): void {
   const current = controllerUiUpdate();
-  if (current) dismissedUiBundleId = current.bundleId;
+  if (current) dismissedUiBundleIds.add(current.bundleId);
   controllerUiUpdate.set(null);
 }
 
@@ -347,7 +360,9 @@ function startUiUpdateWatch(active: ControllerConnection): void {
   stopUiEventWatch = active.subscribe(events => {
     if (connection !== active) return;
     for (const item of events) {
-      if (item.event === "fleet://digest-changed" || item.event === "backend://events-dropped") {
+      if (item.event !== EVENTS_DROPPED_EVENT) continue;
+      const reason = (item.payload as { reason?: unknown } | null)?.reason;
+      if (reason === EVENTS_DROPPED_INSTANCE_CHANGED || reason === ENTRY_CHANGED_REASON) {
         scheduleControllerUiUpdateCheck();
         return;
       }

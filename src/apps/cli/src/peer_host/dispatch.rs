@@ -1,9 +1,5 @@
 //! OBP call dispatch for the CLI Peer Host.
 
-use openbitfun_core_types::agent_identity_wire::{
-    translate_agent_identity_command, AgentIdentityDialect,
-};
-
 use serde_json::Value;
 
 use super::commands;
@@ -44,7 +40,6 @@ pub(crate) async fn handle_obp_call(command: &str, args: Value) -> Result<Value,
         PeerHostVerdict::Execute => {}
     }
     let state = peer_host_state()?;
-    let args = translate_agent_identity_command(command, args, AgentIdentityDialect::Canonical)?;
     commands::dispatch(command, &args, state).await
 }
 
@@ -150,17 +145,6 @@ mod tests {
         assert!(err.contains("local-only"), "{err}");
     }
 
-    #[tokio::test]
-    async fn retired_lsp_commands_fail_before_peer_state_or_command_dispatch() {
-        let err = handle_obp_call("lsp_open_workspace", json!({}))
-            .await
-            .expect_err("retired command");
-        assert_eq!(
-            err,
-            "command 'lsp_open_workspace' is unsupported because the OpenBitFun LSP runtime has been retired"
-        );
-    }
-
     #[test]
     fn detached_dispatch_uses_a_distinct_target_command_family() {
         assert_eq!(
@@ -235,7 +219,83 @@ mod tests {
     /// frontend gate instead.
     #[test]
     fn interactive_tools_and_tool_catalog_are_not_refused_before_dispatch() {
-        for command in ["cancel_tool", "get_all_tools_info", "submit_user_answers"] {
+        for command in [
+            "cancel_tool",
+            "get_all_tools_info",
+            "mark_session_seen",
+            "submit_user_answers",
+            "get_assistant_workspaces",
+            "get_primary_assistant_workspace",
+            "create_assistant_workspace",
+            "set_assistant_identity",
+            "set_primary_assistant_workspace",
+            "delete_assistant_workspace",
+            "reset_assistant_workspace",
+            "reset_workspace_persona_files",
+            "close_workspace",
+            "update_workspace_info",
+            "remove_recent_workspace",
+            "list_cron_jobs",
+            "create_cron_job",
+            "update_cron_job",
+            "delete_cron_job",
+            "notify_cron_host_ready",
+            "list_agent_tool_names",
+            "get_custom_agent_detail",
+            "create_custom_agent",
+            "update_custom_agent",
+            "delete_custom_agent",
+            "reload_custom_agents",
+            "get_subagent_detail",
+            "create_subagent",
+            "update_subagent",
+            "delete_subagent",
+            "reload_subagents",
+            "update_subagent_config",
+            "set_agent_profile_config",
+            "reset_agent_profile_config",
+            "set_global_skill_disabled",
+            "validate_skill_path",
+            "add_skill",
+            "delete_skill",
+            "replace_mode_skill_selection",
+            "reset_mode_skill_selection",
+            "submit_user_message",
+            "stop_dialog_turn",
+            "steer_dialog_turn",
+            "list_session_commands",
+            "execute_session_command",
+            "update_session_title",
+            "get_operation_diff",
+            "export_session_transcript",
+            "get_mcp_servers",
+            "start_mcp_server",
+            "stop_mcp_server",
+            "restart_mcp_server",
+            "get_mcp_server_status",
+            "load_mcp_json_config",
+            "save_mcp_json_config",
+            "delete_mcp_server",
+            "list_mcp_prompts",
+            "get_mcp_prompt",
+            "list_mcp_resources",
+            "read_mcp_resource",
+            "update_mcp_remote_auth",
+            "clear_mcp_remote_auth",
+            "start_mcp_remote_oauth",
+            "get_mcp_remote_oauth_session",
+            "cancel_mcp_remote_oauth",
+            "plan_external_mcp_import_command",
+            "apply_external_mcp_import_command",
+            "list_removed_external_sessions",
+            "restore_removed_external_session",
+            "get_memory_paths",
+            "reset_memory",
+            "export_config",
+            "import_config",
+            "get_app_version",
+            "retry_file_watch",
+        ] {
             assert!(
                 !is_local_only_command(command),
                 "{command} must be routable to the peer host"

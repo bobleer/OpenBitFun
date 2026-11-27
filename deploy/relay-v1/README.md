@@ -267,7 +267,7 @@ pruning only buys time until the version reaches the retirement switch above.
 ## Version-by-query endpoint and the Page origin
 
 Releases used to be separated by a proxy location (`/v/<version>/`). A client
-now targets `https://remote.openbitfun.com/relay?v=<service-version>`: the
+now targets `https://relay.example.com/relay?v=<service-version>`: the
 version travels as a query parameter, one proxy location serves every build,
 and the bare origin is the account controller. `/v/1.0.2/` stays live on the
 same process and database for builds that predate the parameter, so both

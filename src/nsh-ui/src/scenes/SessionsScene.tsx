@@ -197,34 +197,41 @@ import {
   takeQueuedEntry,
 } from "../queueStore";
 import {
+  CONTEXT_LENGTH_PRESETS,
   activeModelId,
   activeModelDetail,
   activeModelLabel,
-  activeReasoningChoices,
   activeReasoningId,
   activeReasoningLabel,
   chatModels,
+  chooseContextLength,
   chooseModel,
   chooseReasoning,
+  contextLengthForSession,
+  defaultReasoningPresetFor,
   ensureModelsLoaded,
+  ensureReasoningChoicesForModel,
+  explicitContextLengthForSession,
   fleetChoiceOf,
   fleetModelGroups,
   fleetModelText,
-  modelIdForSession,
-  modelTextForSession,
-  reasoningChoicesForSession,
+  formatContextLengthLabel,
+  isCustomContextLength,
+  isReasoningLoadingForModel,
   modelChangePending,
   modelContextForSession,
-  modelContextOf,
-  modelContextPending,
+  modelIdForSession,
+  modelTextForSession,
+  parseContextLengthInput,
+  reasoningChoicesForModel,
   reasoningIdForSession,
   reasoningLabelForSession,
+  reasoningPresetLabel,
   refreshFleetModels,
   type FleetModelsDevice,
   type SessionModelTarget,
   ensureReasoningLoaded,
   modelPickerOpen,
-  reasoningPickerOpen,
 } from "../modelStore";
 import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { midTurnSendPolicy } from "../sendPolicyStore";
@@ -407,8 +414,6 @@ import { PromptReferenceText } from "../ui/PromptReferenceText";
 import { PromptReferenceEditor, promptReferenceEditorAvailable, type ComposerInputHandle } from "../ui/PromptReferenceEditor";
 import { promptReferenceParts, promptReferencesIn, skillPromptToken } from "../promptReferences";
 import { TabGroup } from "../ui/TabGroup";
-import { ReasoningControl } from "../ui/ReasoningControl";
-import { ModelContextControl } from "../ui/ModelContextControl";
 import { filterModelPickerCatalog, findModelPickerMatches, modelPickerCatalog, modelPickerProviders,
   readModelPickerCatalog, type ModelPickerGroup } from "../ui/modelPickerCatalog";
 import { composerReferenceDisplayText, mergeSessionReferences, sessionReferenceDraft, sessionReferenceKey, type SessionReferenceCandidate,
@@ -562,7 +567,6 @@ const agentPickerAnchor = signal<ViewRef | null>(null);
 const composerModelAnchor = signal<ViewRef | null>(null);
 const secondaryComposerModelAnchor = signal<ViewRef | null>(null);
 const modelPickerAnchor = signal<ViewRef | null>(null);
-const reasoningPickerAnchor = signal<ViewRef | null>(null);
 const quickActionsAnchor = signal<ViewRef | null>(null);
 const composerPlusAnchor = signal<ViewRef | null>(null);
 const secondaryComposerPlusAnchor = signal<ViewRef | null>(null);
@@ -573,7 +577,7 @@ const mentionPlacement = signal<Placement>("top");
 const quickActionsPlacement = signal<Placement>("top");
 const agentPickerPlacement = signal<Placement>("top");
 const modelPickerPlacement = signal<Placement>("top");
-const reasoningPickerPlacement = signal<Placement>("top");
+const slashMenuPlacement = signal<Placement>("top");
 const permissionModePlacement = signal<Placement>("top");
 const contextUsagePlacement = signal<Placement>("top");
 const transcriptScrolled = signal(false);
@@ -721,14 +725,11 @@ function closeMentionPopover(): void {
   mentionPlacement.set("top");
 }
 
-function closePickers(except?: "model" | "reasoning" | "agent" | "actions"): void {
+function closePickers(except?: "model" | "agent" | "actions"): void {
   if (except !== "model") {
     modelPickerOpen.set(false);
     modelPickerPlacement.set("top");
-  }
-  if (except !== "reasoning") {
-    reasoningPickerOpen.set(false);
-    reasoningPickerPlacement.set("top");
+    resetModelPickerTransientState();
   }
   if (except !== "agent") {
     agentPickerOpen.set(false);
@@ -1283,8 +1284,8 @@ const headerState = computed<MarkState | null>(() => {
   if (pendingMatches && !turnError()) return "working";
   const id = activeSessionId();
   const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
-  if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
-  if (row?.status === "error") return "failed";
+  if (row?.status === "waiting" || (row?.needsAttention && !row?.failed && row?.status !== "error")) return "needs_you";
+  if (row?.status === "error" || row?.failed) return "failed";
   if (row?.status === "running") return "working";
   return null;
 });
@@ -6512,8 +6513,12 @@ const contextTargetDeviceId = signal<string>("");
 function contextUsageFor(sessionId: string | null, deviceId?: string) {
   const usage = sessionId ? contextUsage()[sessionId] : undefined;
   if (!usage) return null;
-  const fallbackMax = modelContextForSession({ sessionId, deviceId })?.contextWindow ?? null;
-  const max = usage.max ?? fallbackMax;
+  const explicitOverride = explicitContextLengthForSession(sessionId, deviceId);
+  const fallbackMax =
+    explicitOverride ??
+    modelContextForSession({ sessionId, deviceId })?.contextWindow ??
+    null;
+  const max = explicitOverride ?? usage.max ?? fallbackMax;
   return { ...usage, max, ratio: max && max > 0 ? Math.min(1, usage.used / max) : null };
 }
 
@@ -6781,47 +6786,21 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
   }
   if (compact) {
     const agentLocked = agentModeLockedToSingle();
-    items.push(
-      {
-        id: "agent",
-        icon: "bot",
-        label: tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) }),
-        separator: true,
-        disabled: agentLocked,
-        accessibilityLabel: "agent-picker",
-        onSelect: agentLocked
-          ? undefined
-          : fromPlus(() => {
-              agentPickerAnchor.set(composerPlusAnchor());
-              closePickers("agent");
-              agentPickerOpen.set(true);
-            }),
-      },
-      {
-        id: "model",
-        icon: "cpu",
-        label: tr("sessions.modelLabel", { name: activeModelLabel() }),
-        accessibilityLabel: "bot-capsule-trigger",
-        onSelect: fromPlus(() => {
-          modelPickerAnchor.set(composerPlusAnchor());
-          closePickers("model");
-          modelPickerOpen.set(true);
-        }),
-      },
-    );
-    if (activeReasoningChoices().length > 0) {
-      items.push({
-        id: "reasoning",
-        icon: "bulb",
-        label: tr("sessions.reasoningLabel", { name: activeReasoningLabel() }),
-        accessibilityLabel: "reasoning-picker",
-        onSelect: fromPlus(() => {
-          reasoningPickerAnchor.set(composerPlusAnchor());
-          closePickers("reasoning");
-          reasoningPickerOpen.set(true);
-        }),
-      });
-    }
+    items.push({
+      id: "agent",
+      icon: "bot",
+      label: tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) }),
+      separator: true,
+      disabled: agentLocked,
+      accessibilityLabel: "agent-picker",
+      onSelect: agentLocked
+        ? undefined
+        : fromPlus(() => {
+            agentPickerAnchor.set(composerPlusAnchor());
+            closePickers("agent");
+            agentPickerOpen.set(true);
+          }),
+    });
     const usage = activeContextUsage();
     if (usage) {
       items.push({
@@ -7835,22 +7814,19 @@ function SessionComposer(props: SessionComposerProps) {
             </View>
           }
           endActions={
-            <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.xs }}>
-              <If when={!collapseInline()}>
-                <ModelReasoningCapsule
-                  primary={props.pane === 0}
-                  modelAnchor={props.pane === 0 ? composerModelAnchor : props.pane === 1 ? secondaryComposerModelAnchor : undefined}
-                  compact={isCompact}
-                  sessionId={props.sessionId}
-                  deviceId={props.deviceId}
-                  workspaceId={props.workspaceId}
-                  btwMode={btwMode}
-                  showReasoning={props.showReasoning}
-                  modelAccessibilityLabel={props.modelAccessibilityLabel}
-                  reasoningAccessibilityLabel={props.reasoningAccessibilityLabel}
-                  onFocusPane={props.onFocusPane}
-                />
-              </If>
+            <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: isCompact() ? space.hair : space.xs }}>
+              <ModelReasoningCapsule
+                primary={props.pane === 0}
+                modelAnchor={props.pane === 0 ? composerModelAnchor : props.pane === 1 ? secondaryComposerModelAnchor : undefined}
+                compact={collapseInline}
+                sessionId={props.sessionId}
+                deviceId={props.deviceId}
+                workspaceId={props.workspaceId}
+                btwMode={btwMode}
+                showReasoning={props.showReasoning}
+                modelAccessibilityLabel={props.modelAccessibilityLabel}
+                onFocusPane={props.onFocusPane}
+              />
               <If when={Boolean(props.showPermissionShield)}>
                 <ComposerFullAccessShield
                   sessionId={props.sessionId}
@@ -8018,27 +7994,6 @@ function ComposerOverlays() {
           }}
         >
           <ContextUsageSurface placement={contextUsagePlacement()} align={contextUsageAlign()} />
-        </Overlay>
-      </If>
-
-      <If when={reasoningPickerOpen()}>
-        <Overlay
-          anchor={reasoningPickerAnchor()}
-          placement="top"
-          align="start"
-          offset={6}
-          margin={8}
-          onPosition={pos => reasoningPickerPlacement.set(pos.placement)}
-          onPressOutside={() => {
-            modelPickerTarget.set(null);
-            closePickers();
-          }}
-          onCancel={() => {
-            modelPickerTarget.set(null);
-            closePickers();
-          }}
-        >
-          <ReasoningPickerSurface placement={reasoningPickerPlacement()} />
         </Overlay>
       </If>
     </>
@@ -8420,9 +8375,72 @@ type ComposerModelTarget =
 
 const modelPickerTarget = signal<ComposerModelTarget | null>(null);
 const modelPickerRequestedSearch = signal("");
+const modelPickerSearch = signal("");
+const modelConfigHoverId = signal<string | null>(null);
+const modelConfigPinnedId = signal<string | null>(null);
+const modelCustomContextOpen = signal(false);
+const modelCustomContextText = signal("");
+const modelCustomContextError = signal("");
+const modelReasoningError = signal("");
+
+let modelConfigHoverTimer: ReturnType<typeof setTimeout> | null = null;
 
 function alternateModelCatalogOwner(deviceId: string | undefined): string | null {
   return fleetActive() && deviceId && deviceId !== activeSessionDevice() ? deviceId : null;
+}
+
+function pickerTargetDeviceId(): string {
+  const target = modelPickerTarget();
+  if (target?.kind === "btw") return currentSideQuestionParent()?.deviceId ?? activeSessionDevice();
+  if (target?.kind === "session" && target.deviceId !== undefined) return target.deviceId;
+  return activeSessionDevice();
+}
+
+function cancelModelConfigHoverLeave(): void {
+  if (modelConfigHoverTimer !== null) {
+    clearTimeout(modelConfigHoverTimer);
+    modelConfigHoverTimer = null;
+  }
+}
+
+function scheduleModelConfigHoverLeave(): void {
+  cancelModelConfigHoverLeave();
+  modelConfigHoverTimer = setTimeout(() => {
+    modelConfigHoverTimer = null;
+    modelConfigHoverId.set(null);
+  }, 160);
+}
+
+function hoverModelForConfig(modelId: string): void {
+  if (compactLayout() || pickerTargetIsBtw()) return;
+  cancelModelConfigHoverLeave();
+  modelConfigHoverId.set(modelId);
+  modelReasoningError.set("");
+  void ensureReasoningChoicesForModel(modelId, pickerTargetDeviceId());
+}
+
+function resetModelPickerTransientState(): void {
+  cancelModelConfigHoverLeave();
+  modelPickerSearch.set("");
+  modelConfigHoverId.set(null);
+  modelConfigPinnedId.set(null);
+  modelCustomContextOpen.set(false);
+  modelCustomContextText.set("");
+  modelCustomContextError.set("");
+  modelReasoningError.set("");
+}
+
+const activeModelConfigId = computed<string | null>(() => modelConfigHoverId() ?? modelConfigPinnedId());
+
+function pickerTargetIsBtw(): boolean {
+  return modelPickerTarget()?.kind === "btw";
+}
+
+function pickerTargetSession(): SessionModelTarget | undefined {
+  const target = modelPickerTarget();
+  return target?.kind === "session"
+    ? { sessionId: target.sessionId, deviceId: target.deviceId, workspaceId: target.workspaceId }
+    : undefined;
 }
 
 function pickerTargetModelId(): string | null {
@@ -8445,40 +8463,67 @@ function pickerTargetReasoningId(): string | null {
   return activeReasoningId();
 }
 
-function pickerTargetReasoningChoices() {
+function pickerTargetReasoningLabel(): string {
   const target = modelPickerTarget();
   if (target?.kind === "session") {
-    return reasoningChoicesForSession(target.sessionId, target.deviceId);
+    return reasoningLabelForSession(target.sessionId, target.deviceId);
   }
-  return activeReasoningChoices();
+  return activeReasoningLabel();
 }
 
-function selectModelForPickerTarget(modelId: string): void {
+function pickerTargetContextLength(): number {
+  const target = modelPickerTarget();
+  if (target?.kind === "session") {
+    return contextLengthForSession(target.sessionId, target.deviceId);
+  }
+  return contextLengthForSession(activeSessionId(), activeSessionDevice());
+}
+
+function selectModelForPickerTarget(
+  modelId: string,
+  options?: { reasoningPreset?: string | null; contextWindowOverride?: number | null; keepOpen?: boolean },
+): void {
   const target = modelPickerTarget();
   if (target?.kind === "btw") {
     sideQuestionModelOverride.set(modelId);
     modelPickerOpen.set(false);
     modelPickerTarget.set(null);
+    resetModelPickerTransientState();
     return;
   }
-  const sessionTarget: SessionModelTarget | undefined =
-    target?.kind === "session"
-      ? { sessionId: target.sessionId, deviceId: target.deviceId, workspaceId: target.workspaceId }
-      : undefined;
-  modelPickerTarget.set(null);
-  void chooseModel(modelId, sessionTarget);
+  const sessionTarget = pickerTargetSession();
+  if (!options?.keepOpen) {
+    modelPickerTarget.set(null);
+    resetModelPickerTransientState();
+  }
+  void chooseModel(modelId, sessionTarget, options);
 }
 
-function pickerSessionTarget(): SessionModelTarget | undefined {
-  const target = modelPickerTarget();
-  return target?.kind === "session" ? target : undefined;
+function selectContextForPickerTarget(modelId: string, tokens: number): void {
+  if (pickerTargetIsBtw()) return;
+  const sessionTarget = pickerTargetSession();
+  modelConfigPinnedId.set(modelId);
+  modelCustomContextError.set("");
+  void chooseContextLength(tokens, sessionTarget, { modelId, keepOpen: true });
 }
 
-function selectReasoningForPickerTarget(presetId: string | null): Promise<boolean> {
-  return chooseReasoning(presetId, pickerSessionTarget());
+async function selectReasoningForPickerTarget(modelId: string, presetId: string | null): Promise<void> {
+  if (pickerTargetIsBtw()) return;
+  modelConfigPinnedId.set(modelId);
+  modelReasoningError.set("");
+  const sessionTarget = pickerTargetSession();
+  if (modelId === pickerTargetModelId()) {
+    try {
+      await chooseReasoning(presetId, sessionTarget, { keepOpen: true });
+    } catch (error) {
+      modelReasoningError.set(localizeHostError(error instanceof Error ? error.message : String(error)));
+    }
+    return;
+  }
+  selectModelForPickerTarget(modelId, { reasoningPreset: presetId, keepOpen: true });
 }
 
-/** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
+/** Compact icon-anchored Model pill (reasoning & context settings live inside its picker). */
 function ModelReasoningCapsule(props: {
   primary: boolean;
   modelAnchor?: Signal<ViewRef | null>;
@@ -8493,7 +8538,6 @@ function ModelReasoningCapsule(props: {
   onFocusPane?: () => void;
 }) {
   let modelTriggerRef: ViewRef | null = null;
-  let reasoningTriggerRef: ViewRef | null = null;
   cleanup(() => {
     if (props.modelAnchor?.() === modelTriggerRef) props.modelAnchor?.set(null);
   });
@@ -8516,15 +8560,12 @@ function ModelReasoningCapsule(props: {
       ? modelTextForSession(props.sessionId(), props.deviceId?.())
       : { label: activeModelLabel(), detail: activeModelDetail() };
   });
-  const choices = computed(() =>
-    props.showReasoning === false
-      ? []
-      : props.sessionId
-        ? reasoningChoicesForSession(props.sessionId(), props.deviceId?.())
-        : activeReasoningChoices(),
-  );
   const reasoningId = computed(() =>
-    props.sessionId ? reasoningIdForSession(props.sessionId(), props.deviceId?.()) : activeReasoningId(),
+    props.showReasoning === false
+      ? null
+      : props.sessionId
+        ? reasoningIdForSession(props.sessionId(), props.deviceId?.())
+        : activeReasoningId(),
   );
   const reasoningLabel = computed(() =>
     props.sessionId ? reasoningLabelForSession(props.sessionId(), props.deviceId?.()) : activeReasoningLabel(),
@@ -8532,6 +8573,37 @@ function ModelReasoningCapsule(props: {
   const reasoningElevated = computed(() => {
     const id = reasoningId();
     return Boolean(id && id !== "default");
+  });
+  const contextTokens = computed(() =>
+    props.btwMode
+      ? null
+      : props.sessionId
+        ? contextLengthForSession(props.sessionId(), props.deviceId?.())
+        : contextLengthForSession(activeSessionId(), activeSessionDevice()),
+  );
+  const explicitContext = computed(() =>
+    props.btwMode
+      ? null
+      : props.sessionId
+        ? explicitContextLengthForSession(props.sessionId(), props.deviceId?.())
+        : explicitContextLengthForSession(activeSessionId(), activeSessionDevice()),
+  );
+  const metaBadge = computed(() => {
+    if (props.btwMode || props.compact()) return "";
+    const parts: string[] = [];
+    if (reasoningElevated()) parts.push(reasoningLabel());
+    const explicit = explicitContext();
+    if (explicit !== null) parts.push(formatContextLengthLabel(explicit));
+    return parts.join(" · ");
+  });
+  const tooltipText = computed(() => {
+    const base = resolvedText().detail ? `${resolvedText().label} · ${resolvedText().detail}` : resolvedText().label;
+    if (props.btwMode) return tr("sessions.modelLabel", { name: base });
+    const parts = [tr("sessions.modelLabel", { name: base })];
+    if (reasoningElevated()) parts.push(tr("sessions.reasoningLabel", { name: reasoningLabel() }));
+    const ctx = contextTokens();
+    if (ctx !== null) parts.push(`${tr("models.contextLength")}: ${formatContextLengthLabel(ctx)}`);
+    return parts.join(" · ");
   });
   const currentTarget = (): ComposerModelTarget =>
     props.btwMode
@@ -8546,10 +8618,10 @@ function ModelReasoningCapsule(props: {
     <View
       style={{
         flexShrink: 1,
-        minWidth: props.compact() ? 56 : 72,
+        minWidth: 0,
+        maxWidth: props.compact() ? 168 : 292,
         flexDirection: "row",
         alignItems: "center",
-        gap: space.xs,
       }}
     >
       <View
@@ -8559,13 +8631,7 @@ function ModelReasoningCapsule(props: {
         }}
         role="button"
         accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
-        tooltip={
-          <TooltipBubble
-            text={tr("sessions.modelLabel", {
-              name: resolvedText().detail ? `${resolvedText().label} · ${resolvedText().detail}` : resolvedText().label,
-            })}
-          />
-        }
+        tooltip={compactLayout() ? undefined : <TooltipBubble text={tooltipText()} />}
         onPress={() => {
           props.onFocusPane?.();
           modelPickerTarget.set(currentTarget());
@@ -8573,22 +8639,37 @@ function ModelReasoningCapsule(props: {
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
           modelPickerOpen.set(next);
-          // Other devices' models may have come or gone since the last read.
-          if (next) void refreshFleetModels();
+          if (next) {
+            resetModelPickerTransientState();
+            // Other devices' models may have come or gone since the last read.
+            void refreshFleetModels();
+            const currentId = pickerTargetModelId();
+            const target = currentTarget();
+            const targetDevice = target.kind === "session" ? target.deviceId : undefined;
+            if (currentId && !props.btwMode) void ensureReasoningChoicesForModel(currentId, targetDevice);
+          }
         }}
         style={{
-          height: chatComposerMetrics.controlHeight,
-          minWidth: props.compact() ? 52 : 64,
+          height: compactLayout() ? 34 : chatComposerMetrics.controlHeight,
+          minWidth: 0,
           flexShrink: 1,
-          maxWidth: props.compact() ? 172 : 216,
-          paddingHorizontal: space.sm,
+          maxWidth: props.compact() ? 168 : 292,
+          paddingHorizontal: props.compact() ? space.sm : space.sm,
           borderRadius: radii.pill,
           borderWidth: 1,
-          borderColor: modelPickerOpen() ? palette().border : "transparent",
+          borderColor: modelPickerOpen()
+            ? palette().border
+            : compactLayout()
+              ? palette().borderSubtle
+              : "transparent",
           flexDirection: "row",
           alignItems: "center",
           gap: space.chip,
-          backgroundColor: modelPickerOpen() ? palette().surfaceSubtle : "transparent",
+          backgroundColor: modelPickerOpen()
+            ? palette().surfaceSubtle
+            : compactLayout()
+              ? palette().surfaceSubtle
+              : "transparent",
           cursor: "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
@@ -8616,91 +8697,28 @@ function ModelReasoningCapsule(props: {
         >
           {resolvedText().label}
         </Text>
+        <If when={metaBadge()}>
+          {meta => (
+            <Text
+              style={{
+                flexShrink: 0,
+                color: palette().textMuted,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.3),
+                fontWeight: "500",
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {meta()}
+            </Text>
+          )}
+        </If>
         <Icon
           name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
           size={10}
           color={palette().textMuted}
         />
       </View>
-
-      <If when={choices().length > 0}>
-        <View
-          ref={el => {
-            reasoningTriggerRef = el;
-            if (props.primary) reasoningPickerAnchor.set(el);
-          }}
-          role="button"
-          accessibilityLabel={props.reasoningAccessibilityLabel ?? "reasoning-picker"}
-          tooltip={
-            <TooltipBubble
-              text={tr("sessions.reasoningLabel", { name: reasoningLabel() })}
-            />
-          }
-          onPress={() => {
-            props.onFocusPane?.();
-            modelPickerTarget.set(currentTarget());
-            reasoningPickerAnchor.set(reasoningTriggerRef);
-            const next = !reasoningPickerOpen();
-            closePickers(next ? "reasoning" : undefined);
-            reasoningPickerOpen.set(next);
-          }}
-          style={{
-            height: chatComposerMetrics.controlHeight,
-            width: reasoningElevated() ? undefined : chatComposerMetrics.controlHeight,
-            minWidth: chatComposerMetrics.controlHeight,
-            flexShrink: 0,
-            maxWidth: 100,
-            paddingHorizontal: reasoningElevated() ? space.sm : 0,
-            borderRadius: radii.pill,
-            borderWidth: 1,
-            borderColor: reasoningPickerOpen()
-              ? palette().border
-              : reasoningElevated()
-                ? palette().accentBorder
-                : "transparent",
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: space.xs,
-            backgroundColor: reasoningPickerOpen()
-              ? palette().surfaceSubtle
-              : reasoningElevated()
-                ? palette().accentSoft
-                : "transparent",
-            cursor: "pointer",
-            userSelect: "none",
-            ...pressTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{
-            backgroundColor: reasoningElevated() ? palette().accentSoft : palette().surfaceSubtle,
-            borderColor: reasoningElevated() ? palette().accent : palette().borderSubtle,
-          }}
-          activeStyle={tactileActiveStyle(0.95)}
-          focusVisibleStyle={focusRingStyle(-1)}
-        >
-          <Icon
-            name="bulb"
-            size={reasoningElevated() ? 12 : 14}
-            color={reasoningElevated() ? palette().accent : palette().textMuted}
-          />
-          <If when={reasoningElevated()}>
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                color: palette().accent,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.3),
-                fontWeight: "600",
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {reasoningLabel()}
-            </Text>
-          </If>
-        </View>
-      </If>
     </View>
   );
 }
@@ -9190,24 +9208,38 @@ function AgentPickerSurface(props: { placement: Placement }) {
   );
 }
 
-function pickerModelContext() {
-  if (modelPickerTarget()?.kind === "btw") {
-    const context = modelContextOf(pickerTargetModelId(), currentSideQuestionParent()?.deviceId ?? activeSessionDevice());
-    return context && { ...context, editable: false };
+function modelHeaderMeta(modelId: string, groups: ModelPickerGroup[]): { label: string; subtitle: string } {
+  for (const group of groups) {
+    const row = group.rows.find(item => item.ref === modelId);
+    if (row) {
+      const parts = [row.detail, group.device && !group.device.isThisDevice ? group.device.name : ""].filter(Boolean);
+      return { label: row.label, subtitle: parts.join(" · ") };
+    }
   }
-  return modelContextForSession(pickerSessionTarget());
+  const remote = fleetChoiceOf(modelId);
+  if (remote) {
+    const text = fleetModelText(remote.choice);
+    const parts = [text.detail, remote.device.isThisDevice ? "" : remote.device.name].filter(Boolean);
+    return { label: text.label, subtitle: parts.join(" · ") };
+  }
+  const local = chatModels().find(option => option.id === modelId);
+  if (local) return { label: local.label, subtitle: local.detail };
+  return { label: modelId, subtitle: "" };
 }
 
 function ModelPickerOverlay() {
-  const editingContext = signal<string | null>(null);
   const initialQuery = untracked(modelPickerRequestedSearch);
-  modelPickerRequestedSearch.set("");
-  const searchOpen = signal(Boolean(initialQuery));
+  if (initialQuery) {
+    modelPickerRequestedSearch.set("");
+    modelPickerSearch.set(initialQuery);
+  }
+  const provider = signal<string | null>(null);
   const filterOpen = signal(false);
   const composingSearch = signal(false);
   let lastDismiss = -Infinity;
   const close = () => {
     modelPickerTarget.set(null);
+    resetModelPickerTransientState();
     closePickers();
   };
   const dismiss = () => {
@@ -9217,65 +9249,64 @@ function ModelPickerOverlay() {
       filterOpen.set(false);
       return;
     }
-    if (searchOpen()) {
-      searchOpen.set(false);
-      return;
-    }
-    const context = pickerModelContext();
-    if (context && editingContext() === context.key) {
-      if (!modelContextPending(context)) editingContext.set(null);
+    if (modelPickerSearch() || provider()) {
+      modelPickerSearch.set("");
+      provider.set(null);
       return;
     }
     close();
   };
-  return <Overlay anchor={modelPickerAnchor()} placement="top" align="start" offset={6} margin={8}
-    onPosition={pos => modelPickerPlacement.set(pos.placement)} onPressOutside={close} onCancel={dismiss}>
-    <ModelPickerSurface placement={modelPickerPlacement()} editingContext={editingContext()} onContextEdit={editingContext.set}
-      initialQuery={initialQuery} searchOpen={searchOpen()} onSearchOpen={open => {
-        if (open) editingContext.set(null);
-        else filterOpen.set(false);
-        searchOpen.set(open);
-      }} filterOpen={filterOpen()} onFilterOpen={open => {
-        if (!open) lastDismiss = Date.now();
-        filterOpen.set(open);
-      }} onCompositionChange={composingSearch.set} onDismiss={dismiss} />
-  </Overlay>;
+  return (
+    <Overlay
+      anchor={modelPickerAnchor()}
+      placement="top"
+      align="start"
+      offset={6}
+      margin={8}
+      onPosition={pos => modelPickerPlacement.set(pos.placement)}
+      onPressOutside={close}
+      onCancel={dismiss}
+    >
+      <ModelPickerSurface
+        placement={modelPickerPlacement()}
+        provider={provider()}
+        onProviderChange={provider.set}
+        filterOpen={filterOpen()}
+        onFilterOpen={open => {
+          if (!open) lastDismiss = Date.now();
+          filterOpen.set(open);
+        }}
+        onCompositionChange={composingSearch.set}
+        onDismiss={dismiss}
+      />
+    </Overlay>
+  );
 }
 
 function ModelPickerSurface(props: {
   placement: Placement;
-  editingContext: string | null;
-  onContextEdit: (key: string | null) => void;
-  initialQuery: string;
-  searchOpen: boolean;
-  onSearchOpen: (open: boolean) => void;
+  provider: string | null;
+  onProviderChange: (id: string | null) => void;
   filterOpen: boolean;
   onFilterOpen: (open: boolean) => void;
   onCompositionChange: (active: boolean) => void;
   onDismiss: () => void;
 }) {
   const motion = usePopoverMotion(() => props.placement, "start", props.onDismiss);
-  const model = () => pickerModelContext();
-  const reportedContext = () => {
-    if (modelPickerTarget()?.kind === "btw") return null;
-    const target = pickerSessionTarget();
-    return contextUsageFor(target ? target.sessionId : activeSessionId(), target?.deviceId)?.max;
-  };
-  const savingModel = () => modelPickerTarget()?.kind !== "btw" && modelChangePending(pickerSessionTarget());
-  const savingContext = () => modelContextPending(model());
-  const disabled = () => savingModel() || savingContext();
-  const hasReasoning = () => modelPickerTarget()?.kind !== "btw" && Boolean(pickerSessionTarget()?.sessionId ?? activeSessionId()) && pickerTargetReasoningChoices().length > 0;
-  const query = signal(props.initialQuery);
-  const provider = signal<string | null>(null);
+  cleanup(() => cancelModelConfigHoverLeave());
+
   const highlighted = signal<string | null>(null);
   const inputFocused = signal(false);
   const composing = signal(false);
   const rowRefs = new Map<string, ViewRef>();
   let input: InputRef | null = null;
   const filterAnchor = signal<ViewRef | null>(null);
-  let restoreSearchFocus = false;
-  const alternateOwner = computed(() => alternateModelCatalogOwner(modelPickerTarget()?.kind === "btw"
-    ? currentSideQuestionParent()?.deviceId : pickerSessionTarget()?.deviceId));
+
+  const targetDevice = computed(() => pickerTargetDeviceId());
+  const savingModel = () => !pickerTargetIsBtw() && modelChangePending(pickerTargetSession());
+  const alternateOwner = computed(() => alternateModelCatalogOwner(
+    pickerTargetIsBtw() ? currentSideQuestionParent()?.deviceId : pickerTargetSession()?.deviceId,
+  ));
   const alternateCatalog = signal<{ owner: string; groups: ModelPickerGroup[] | null } | null>(null);
   effect(() => {
     const owner = alternateOwner();
@@ -9302,19 +9333,9 @@ function ModelPickerSurface(props: {
     return resolved.groups ? "ready" : "unavailable";
   });
   const providers = computed(() => modelPickerProviders(catalog()));
-  const activeProvider = computed(() => providers().find(item => item.id === provider()));
-  const visible = computed(() => props.searchOpen ? filterModelPickerCatalog(catalog(), query(), activeProvider()?.id ?? null) : catalog());
+  const activeProvider = computed(() => providers().find(item => item.id === props.provider));
+  const visible = computed(() => filterModelPickerCatalog(catalog(), modelPickerSearch(), activeProvider()?.id ?? null));
   const selectable = computed(() => visible().flatMap(group => group.rows.filter(row => row.selectable)));
-
-  effect(() => {
-    if (props.searchOpen) return;
-    query.set("");
-    provider.set(null);
-    highlighted.set(null);
-    inputFocused.set(false);
-    composing.set(false);
-    props.onCompositionChange(false);
-  });
 
   const move = (offset: number) => {
     const rows = selectable();
@@ -9326,18 +9347,18 @@ function ModelPickerSurface(props: {
     rowRefs.get(next.ref)?.reveal({ vertical: "nearest", animated: false });
   };
   effect(() => {
-    if (!props.searchOpen || !inputFocused() || composing() || props.filterOpen || disabled()) return;
+    if (!inputFocused() || composing() || props.filterOpen || savingModel()) return;
     return keymap.bind({ down: () => move(1), up: () => move(-1) }, { when: "always", overFocused: true, repeat: true });
   });
 
   const submitSearch = () => {
-    if (disabled() || composing() || props.filterOpen) return;
+    if (savingModel() || composing() || props.filterOpen) return;
     const rows = selectable();
     const next = rows.find(row => row.ref === highlighted()) ?? rows[0];
     if (next) selectModelForPickerTarget(next.ref);
   };
   const selectProvider = (id: string | null) => {
-    provider.set(id);
+    props.onProviderChange(id);
     highlighted.set(null);
     input?.focus();
   };
@@ -9348,61 +9369,170 @@ function ModelPickerSurface(props: {
     id: `provider:${item.id}`, label: item.label, active: activeProvider()?.id === item.id,
     accessibilityLabel: `model-provider-${item.id}`, onSelect: () => selectProvider(item.id),
   }))]);
+
+  const desktopSideModelId = computed(() =>
+    !compactLayout() && !pickerTargetIsBtw() ? (activeModelConfigId() ?? "") : "",
+  );
+  const mobileTrayModelId = computed(() =>
+    compactLayout() && !pickerTargetIsBtw() ? (modelConfigPinnedId() ?? "") : "",
+  );
+
   return (
     <View
       testID="model-picker"
       style={[
-        overlayPopoverStyle(),
         {
-          width: 344,
-          maxWidth: "92%",
-          padding: POPOVER_PADDING,
-          gap: space.hair,
+          flexDirection: compactLayout() ? "column" : "row",
+          alignItems: "flex-start",
+          gap: space.xs,
+          maxWidth: "96%",
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
-      <If when={props.searchOpen ? null : model()}>
-        {context => <ModelContextControl model={context()} reportedWindow={reportedContext()}
-          editing={props.editingContext === context().key} disabled={savingModel()} onEditingChange={props.onContextEdit} />}
-      </If>
-      <If when={!props.searchOpen && hasReasoning()}>
-        <ReasoningControl choices={pickerTargetReasoningChoices()} selected={pickerTargetReasoningId()}
-          pending={savingModel() || savingContext()} expandable onSelect={selectReasoningForPickerTarget} />
-      </If>
-      <If when={!props.searchOpen && (model() || hasReasoning())}><PopoverSeparator /></If>
-      <If when={props.searchOpen} else={<View style={{ flexDirection: "row", alignItems: "center", paddingRight: space.xs }}>
-        <View style={{ flex: 1, minWidth: 0 }}><PopoverSectionHeader label={tr("sessions.model")} /></View>
-        <IconButton icon="search" size="xs" accessibilityLabel="model-picker-search-open" tooltip={tr("sessions.modelSearch")}
-          disabled={disabled()} buttonRef={node => { if (restoreSearchFocus) { restoreSearchFocus = false; node.focus(); } }}
-          onPress={() => { restoreSearchFocus = true; props.onSearchOpen(true); }} />
-      </View>}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, padding: space.xs }}>
-          <IconButton icon="chevron-left" size="sm" accessibilityLabel="model-picker-search-back" tooltip={tr("common.back")}
-            onPress={() => props.onSearchOpen(false)} />
-          <SearchInput value={query()} onChange={value => { query.set(value); highlighted.set(null); }} onSubmit={submitSearch}
-            onFocus={() => inputFocused.set(true)} onBlur={() => inputFocused.set(false)}
+      <View
+        style={[
+          overlayPopoverStyle(),
+          {
+            width: compactLayout() ? 332 : 348,
+            maxWidth: "94%",
+            padding: 0,
+            overflow: "hidden",
+          },
+        ]}
+      >
+        {/* Sticky Search & Provider Filter Header */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            paddingHorizontal: space.sm,
+            paddingVertical: space.sm,
+            borderBottomWidth: 1,
+            borderColor: palette().borderSubtle,
+          }}
+        >
+          <SearchInput
+            value={modelPickerSearch()}
+            size="sm"
+            autoFocus={!compactLayout()}
+            inputRef={node => { input = node; }}
+            placeholder={tr("models.searchPlaceholder")}
+            clearLabel={tr("common.clear")}
+            accessibilityLabel="model-picker-search"
+            accessibilityActiveDescendant={rowRefs.get(highlighted() ?? "") ?? null}
+            onFocus={() => inputFocused.set(true)}
+            onBlur={() => inputFocused.set(false)}
             onCompositionChange={active => { composing.set(active); props.onCompositionChange(active); }}
-            inputRef={node => { input = node; }} placeholder={tr("sessions.modelSearch")}
-            accessibilityLabel="model-picker-search-input" accessibilityActiveDescendant={rowRefs.get(highlighted() ?? "") ?? null}
-            size="sm" autoFocus style={{ flex: 1 }} />
-          <IconButton icon="filter" size="sm" accessibilityLabel="model-picker-provider-filter" buttonRef={filterAnchor.set}
-            tooltip={activeProvider()?.label ?? tr("sessions.modelFilterProvider")} active={Boolean(activeProvider())}
-            disabled={disabled() || !providers().length} onPress={() => props.onFilterOpen(!props.filterOpen)} />
+            onSubmit={submitSearch}
+            onChange={value => {
+              modelPickerSearch.set(value);
+              highlighted.set(null);
+            }}
+            style={{ flex: 1 }}
+          />
+          <If when={providers().length > 0}>
+            <IconButton
+              icon="filter"
+              size="sm"
+              accessibilityLabel="model-picker-provider-filter"
+              buttonRef={filterAnchor.set}
+              tooltip={activeProvider()?.label ?? tr("sessions.modelFilterProvider")}
+              active={Boolean(activeProvider())}
+              disabled={savingModel()}
+              onPress={() => props.onFilterOpen(!props.filterOpen)}
+            />
+          </If>
+          <DropdownMenu
+            open={props.filterOpen}
+            anchor={filterAnchor()}
+            align="end"
+            items={filterItems()}
+            onClose={() => props.onFilterOpen(false)}
+          />
         </View>
-        <DropdownMenu open={props.filterOpen} anchor={filterAnchor()} align="end" items={filterItems()}
-          onClose={() => props.onFilterOpen(false)} />
+
+        {/* Scrollable Model List */}
+        <If
+          when={catalogStatus() !== "ready"}
+          else={
+            <ModelPickerList
+              groups={visible()}
+              disabled={savingModel()}
+              highlighted={highlighted()}
+              rowRefs={rowRefs}
+            />
+          }
+        >
+          <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>
+            {tr(catalogStatus() === "loading" ? "common.loading" : "sessions.modelCatalogUnavailable")}
+          </Text>
+        </If>
+
+        {/* Mobile / Compact Inline Config Tray (shown after tapping a model) */}
+        <If when={mobileTrayModelId()}>
+          {modelId => (
+            <View
+              testID="model-config-inline-panel"
+              style={{
+                borderTopWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().canvasSubtle,
+                padding: space.sm,
+                gap: space.sm,
+              }}
+            >
+              <ModelConfigPanelContent modelId={modelId()} compact={true} deviceId={targetDevice()} groups={catalog()} />
+            </View>
+          )}
+        </If>
+      </View>
+
+      {/* Desktop Right-Side Config Submenu (hover or click-pinned) */}
+      <If when={desktopSideModelId()}>
+        {modelId => (
+          <View
+            testID="model-config-side-panel"
+            onMouseEnter={cancelModelConfigHoverLeave}
+            onMouseLeave={scheduleModelConfigHoverLeave}
+            style={[
+              overlayPopoverStyle(),
+              {
+                width: 264,
+                padding: space.sm,
+                gap: space.sm,
+              },
+            ]}
+          >
+            <ModelConfigPanelContent modelId={modelId()} compact={false} deviceId={targetDevice()} groups={catalog()} />
+          </View>
+        )}
       </If>
-      <If when={catalogStatus() !== "ready"} else={<If when={props.searchOpen && !visible().some(group => group.rows.length > 0)}
-        else={<ModelPickerList groups={visible()} disabled={disabled()}
-          highlighted={props.searchOpen ? highlighted() : null} rowRefs={rowRefs} />}>
-        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>{tr("sessions.modelNoMatches")}</Text>
-      </If>}>
-        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>
-          {tr(catalogStatus() === "loading" ? "common.loading" : "sessions.modelCatalogUnavailable")}
-        </Text>
-      </If>
+    </View>
+  );
+}
+
+function ModelSearchEmptyState() {
+  return (
+    <View
+      style={{
+        paddingVertical: space.lg,
+        paddingHorizontal: space.md,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        style={{
+          color: palette().textMuted,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.4),
+        }}
+      >
+        {tr("models.noSearchResults")}
+      </Text>
     </View>
   );
 }
@@ -9422,151 +9552,658 @@ function deviceModelsNote(device: FleetModelsDevice): string {
 }
 
 /** Preserves the catalog's order and device headings, including unavailable rows. */
-function ModelPickerList(props: { groups: ModelPickerGroup[]; disabled: boolean; highlighted: string | null; rowRefs: Map<string, ViewRef> }) {
+function ModelPickerList(props: {
+  groups: ModelPickerGroup[];
+  disabled: boolean;
+  highlighted: string | null;
+  rowRefs: Map<string, ViewRef>;
+}) {
+  const hasVisibleGroups = () => props.groups.some(group => group.rows.length > 0 || Boolean(group.device));
   return (
-    <Scroll smoothWheel style={{ maxHeight: props.groups[0]?.device ? 320 : 240, minHeight: 0 }} scrollbar={true}>
-      <View style={{ gap: space.hair }}>
-        <Each of={props.groups} key={group => group.device?.deviceId ?? ""}>
-          {(group, idx) => (
-            <View testID={group().device && `model-device-${group().device!.deviceId}`} style={{ gap: space.hair }}>
-              <If when={idx() > 0}>
-                <PopoverSeparator />
-              </If>
-              <If when={group().device}>{device => <View
+    <Scroll
+      smoothWheel
+      style={{ maxHeight: compactLayout() ? 228 : 352, minHeight: 0 }}
+      scrollbar={true}
+    >
+      <View style={{ padding: POPOVER_PADDING, gap: space.xs }}>
+        <If when={hasVisibleGroups()} else={<ModelSearchEmptyState />}>
+          <Each of={props.groups} key={group => group.device?.deviceId ?? ""}>
+            {(group, idx) => (
+              <View
+                testID={group().device ? `model-device-${group().device!.deviceId}` : undefined}
                 style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: space.sm,
-                  paddingHorizontal: space.sm,
-                  paddingTop: space.xs,
-                  paddingBottom: space.xs,
+                  gap: space.hair,
+                  ...(idx() > 0
+                    ? {
+                        paddingTop: space.xs,
+                        borderTopWidth: 1,
+                        borderColor: palette().borderSubtle,
+                      }
+                    : {}),
                 }}
               >
-                <Text
-                  style={{
-                    flexShrink: 1,
-                    minWidth: 0,
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.3),
-                    fontWeight: "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {device().isThisDevice ? `${device().name} · ${tr("models.thisDevice")}` : device().name}
-                </Text>
-                <If when={deviceModelsNote(device())}>
-                  <Text
-                    testID={`model-device-note-${device().deviceId}`}
-                    style={{
-                      flexShrink: 1,
-                      minWidth: 0,
-                      marginLeft: "auto",
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.3),
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {deviceModelsNote(device())}
-                  </Text>
+                <If when={group().device}>
+                  {device => (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.chip,
+                        paddingHorizontal: space.sm,
+                        paddingTop: space.xs,
+                        paddingBottom: space.xs,
+                      }}
+                    >
+                      <Icon
+                        name={device().hostKind === "cli" ? "terminal" : "monitor"}
+                        size={12}
+                        color={palette().textMuted}
+                      />
+                      <Text
+                        style={{
+                          flexShrink: 1,
+                          minWidth: 0,
+                          color: palette().textMuted,
+                          fontSize: textSize(11.5),
+                          lineHeight: textLineHeight(11.5, 1.3),
+                          fontWeight: "600",
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {device().isThisDevice
+                          ? `${device().name} · ${tr("models.thisDevice")}`
+                          : device().name}
+                      </Text>
+                      <If when={deviceModelsNote(device())}>
+                        <Text
+                          testID={`model-device-note-${device().deviceId}`}
+                          style={{
+                            flexShrink: 0,
+                            marginLeft: "auto",
+                            color: palette().textMuted,
+                            fontSize: textSize(11),
+                            lineHeight: textLineHeight(11, 1.3),
+                            paddingHorizontal: 6,
+                            paddingVertical: 1,
+                            borderRadius: radii.sm,
+                            backgroundColor: palette().surfaceSubtle,
+                          }}
+                        >
+                          {deviceModelsNote(device())}
+                        </Text>
+                      </If>
+                      <If when={!deviceModelsNote(device()) && group().rows.length > 0}>
+                        <Text
+                          style={{
+                            flexShrink: 0,
+                            marginLeft: "auto",
+                            color: palette().textMuted,
+                            fontSize: textSize(11),
+                            lineHeight: textLineHeight(11, 1.3),
+                            fontVariant: ["tabular-nums"],
+                          }}
+                        >
+                          {String(group().rows.length)}
+                        </Text>
+                      </If>
+                    </View>
+                  )}
                 </If>
-              </View>}</If>
-              <Each of={group().rows} key={choice => choice.ref}>
-                {choice => <ModelPickerRow choice={choice()} disabled={props.disabled}
-                  highlighted={choice().ref === props.highlighted} refs={props.rowRefs} />}
-              </Each>
-            </View>
-          )}
-        </Each>
+                <Each of={group().rows} key={choice => choice.ref}>
+                  {choice => (
+                    <ModelPickerRow
+                      choice={choice()}
+                      disabled={props.disabled}
+                      highlighted={choice().ref === props.highlighted}
+                      refs={props.rowRefs}
+                    />
+                  )}
+                </Each>
+              </View>
+            )}
+          </Each>
+        </If>
       </View>
     </Scroll>
   );
 }
 
 /**
- * A model row's text: the model on the title line, its provider under it in the
- * muted subtitle style, both as the host labelled them. The current model carries
- * a check and medium weight on the title line; `trailing` adds marks before it.
+ * Compact, high-contrast model row shared by fleet and local lists:
+ * model title + optional primary tag on line 1, subtle provider subtitle beneath,
+ * active checkmark + compact config indicator + hover/click chevron on the right.
  */
-function ModelRowText(props: { active: boolean; label: string; detail: string; trailing?: JSX.Element }) {
-  return (
-    <ListRowContent
-      title={props.label}
-      titleWeight={props.active ? "500" : "400"}
-      subtitle={props.detail}
-      trailing={
-        props.active || props.trailing ? (
-          <>
-            {props.trailing}
-            <If when={props.active}>
-              <PopoverCheck />
-            </If>
-          </>
-        ) : undefined
-      }
-    />
-  );
-}
-
-function ModelPickerRow(props: { choice: ModelPickerGroup["rows"][number]; disabled: boolean; highlighted: boolean; refs: Map<string, ViewRef> }) {
+function ModelPickerRow(props: {
+  choice: ModelPickerGroup["rows"][number];
+  disabled: boolean;
+  highlighted: boolean;
+  refs: Map<string, ViewRef>;
+}) {
   const ref = props.choice.ref;
   cleanup(() => props.refs.delete(ref));
-  const active = () => props.choice.ref === pickerTargetModelId();
+  const active = () => ref === pickerTargetModelId();
   const disabled = () => props.disabled || !props.choice.selectable;
+  const inspected = () => activeModelConfigId() === ref;
+  const activeConfigBadge = () => {
+    if (!active() || pickerTargetIsBtw()) return "";
+    const parts: string[] = [];
+    const rId = pickerTargetReasoningId();
+    if (rId && rId !== "default") parts.push(pickerTargetReasoningLabel());
+    parts.push(formatContextLengthLabel(pickerTargetContextLength()));
+    return parts.join(" · ");
+  };
+
   return (
     <View
       ref={node => { props.refs.set(ref, node); }}
       role="button"
-      accessibilityLabel={`model-option-${props.choice.ref}`}
+      accessibilityLabel={`model-option-${ref}`}
       disabled={disabled()}
       accessibilityState={{ disabled: disabled(), selected: active() }}
-      onPress={() => {
-        if (!disabled()) selectModelForPickerTarget(props.choice.ref);
+      onMouseEnter={() => {
+        if (!disabled()) hoverModelForConfig(ref);
       }}
-      style={popoverRowStyle(props.highlighted, disabled())}
+      onMouseLeave={() => {
+        if (!disabled()) scheduleModelConfigHoverLeave();
+      }}
+      onPress={() => {
+        if (disabled()) return;
+        if (pickerTargetIsBtw()) {
+          selectModelForPickerTarget(ref);
+          return;
+        }
+        modelConfigPinnedId.set(ref);
+        modelCustomContextOpen.set(false);
+        modelCustomContextError.set("");
+        modelReasoningError.set("");
+        void ensureReasoningChoicesForModel(ref, pickerTargetDeviceId());
+        if (!active()) {
+          selectModelForPickerTarget(ref, { keepOpen: true });
+        }
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
+        minHeight: compactLayout() ? layout.touchTarget : 36,
+        paddingHorizontal: space.sm,
+        paddingVertical: 5,
+        borderRadius: POPOVER_ROW_RADIUS,
+        borderCurve: "continuous",
+        backgroundColor: props.highlighted || inspected() ? listRowHoverBg() : "transparent",
+        opacity: disabled() ? 0.45 : 1,
+        cursor: disabled() ? "not-allowed" : "pointer",
+        userSelect: "none",
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
       hoverStyle={popoverRowHoverStyle(disabled())}
       activeStyle={disabled() ? {} : popoverRowActiveStyle()}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <ModelRowText
-        active={active()}
-        label={props.choice.label}
-        detail={props.choice.detail}
-        trailing={
-          props.choice.primary ? (
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.chip, minWidth: 0 }}>
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              color: palette().text,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.35),
+              fontWeight: active() ? "600" : "400",
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.choice.label}
+          </Text>
+          <If when={Boolean(props.choice.primary)}>
+            <Text
+              style={{
+                flexShrink: 0,
+                color: palette().textMuted,
+                fontSize: textSize(10.5),
+                lineHeight: textLineHeight(10.5, 1.3),
+                fontWeight: "500",
+                paddingHorizontal: 5,
+                paddingVertical: 1,
+                borderRadius: radii.sm,
+                backgroundColor: palette().surfaceSubtle,
+              }}
+            >
               {tr("models.primary")}
             </Text>
-          ) : undefined
-        }
-      />
+          </If>
+        </View>
+        <If when={props.choice.detail}>
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11),
+              lineHeight: textLineHeight(11, 1.3),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.choice.detail}
+          </Text>
+        </If>
+      </View>
+
+      <View
+        style={{
+          flexShrink: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.chip,
+        }}
+      >
+        <If when={activeConfigBadge()}>
+          {badge => (
+            <Text
+              style={{
+                color: palette().textSecondary,
+                fontSize: textSize(10.5),
+                lineHeight: textLineHeight(10.5, 1.3),
+                fontWeight: "500",
+                fontVariant: ["tabular-nums"],
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: radii.sm,
+                backgroundColor: palette().surfaceSubtle,
+              }}
+            >
+              {badge()}
+            </Text>
+          )}
+        </If>
+        <If when={active()}>
+          <PopoverCheck />
+        </If>
+        <If when={props.choice.selectable && !pickerTargetIsBtw()}>
+          <Icon
+            name="chevron-right"
+            size={12}
+            color={inspected() || active() ? palette().textSecondary : palette().textMuted}
+          />
+        </If>
+      </View>
     </View>
   );
 }
 
-function ReasoningPickerSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
+/**
+ * Shared Reasoning Intensity + Context Length configuration panel.
+ * Rendered as a floating right-side submenu on desktop (hover or click-pinned)
+ * and as an inline bottom tray inside the picker on mobile (after tapping a model).
+ */
+function ModelConfigPanelContent(props: {
+  modelId: string;
+  compact: boolean;
+  deviceId: string;
+  groups: ModelPickerGroup[];
+}) {
+  const header = () => modelHeaderMeta(props.modelId, props.groups);
+  const isCurrentModel = () => props.modelId === pickerTargetModelId();
+  const choices = () => reasoningChoicesForModel(props.modelId, props.deviceId);
+  const loadingReasoning = () => isReasoningLoadingForModel(props.modelId, props.deviceId);
+  const saving = () => modelChangePending(pickerTargetSession());
+  const effectiveReasoningId = () => {
+    if (isCurrentModel()) return pickerTargetReasoningId();
+    return defaultReasoningPresetFor(props.modelId, choices(), props.deviceId);
+  };
+  const currentContextTokens = () => pickerTargetContextLength();
+  const customActive = () => isCustomContextLength(currentContextTokens());
+
+  const applyCustomContext = () => {
+    const parsed = parseContextLengthInput(modelCustomContextText());
+    if (parsed === null) {
+      modelCustomContextError.set(tr("models.contextCustomInvalid"));
+      return;
+    }
+    modelCustomContextError.set("");
+    modelCustomContextOpen.set(false);
+    selectContextForPickerTarget(props.modelId, parsed);
+  };
+
+  const chipStyle = (selected: boolean, disabled = false): ViewStyle => ({
+    minHeight: props.compact ? 32 : 26,
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: selected ? palette().accentBorder : palette().borderSubtle,
+    backgroundColor: selected ? palette().accentSoft : palette().panelRaised,
+    opacity: disabled ? 0.5 : 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs,
+    cursor: disabled ? "not-allowed" : "pointer",
+    userSelect: "none",
+    ...pressTransition(MOTION_DURATION.fast),
+  });
+
+  const chipTextColor = (selected: boolean) => (selected ? palette().accent : palette().textSecondary);
+
   return (
-    <View
-      style={[
-        overlayPopoverStyle(),
-        {
-          width: 344,
-          maxWidth: "92%",
-          padding: POPOVER_PADDING,
-          gap: space.hair,
-          transformOrigin: popoverOrigin(props.placement, "start"),
-        },
-        motion.style,
-      ]}
-    >
-      <PopoverSectionHeader label={tr("sessions.reasoning")} />
-      <ReasoningControl choices={pickerTargetReasoningChoices()} selected={pickerTargetReasoningId()}
-        pending={modelChangePending(pickerSessionTarget())} onSelect={selectReasoningForPickerTarget}
-        onConfirmed={() => { modelPickerTarget.set(null); closePickers(); }} />
+    <View style={{ gap: space.sm }}>
+      {/* Panel header: model name + close button */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.xs,
+          paddingBottom: space.xs,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+          <Text
+            style={{
+              color: palette().text,
+              fontSize: textSize(12.5),
+              lineHeight: textLineHeight(12.5, 1.3),
+              fontWeight: "600",
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {header().label}
+          </Text>
+          <If when={header().subtitle}>
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.25),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {header().subtitle}
+            </Text>
+          </If>
+        </View>
+        <IconButton
+          icon="close"
+          size="xs"
+          iconSize={12}
+          accessibilityLabel="model-config-close"
+          onPress={() => {
+            modelPickerTarget.set(null);
+            resetModelPickerTransientState();
+            closePickers();
+          }}
+        />
+      </View>
+
+      {/* Section 1: Reasoning Intensity */}
+      <View style={{ gap: space.chip }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <Icon name="bulb" size={12} color={palette().textMuted} />
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.3),
+              fontWeight: "600",
+            }}
+          >
+            {tr("sessions.reasoning")}
+          </Text>
+        </View>
+
+        <If when={loadingReasoning()}>
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.35),
+            }}
+          >
+            {tr("models.loadingOptions")}
+          </Text>
+        </If>
+
+        <If when={!loadingReasoning() && choices().length === 0}>
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.35),
+            }}
+          >
+            {tr("models.reasoningUnsupported")}
+          </Text>
+        </If>
+
+        <If when={!loadingReasoning() && choices().length > 0}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.chip }}>
+            <View
+              role="button"
+              disabled={saving()}
+              accessibilityLabel="reasoning-option-default"
+              accessibilityState={{ selected: effectiveReasoningId() === null, pressed: effectiveReasoningId() === null, disabled: saving() }}
+              onPress={() => {
+                if (!saving()) void selectReasoningForPickerTarget(props.modelId, null);
+              }}
+              style={chipStyle(effectiveReasoningId() === null, saving())}
+              hoverStyle={saving() ? undefined : { borderColor: palette().borderStrong }}
+              activeStyle={saving() ? {} : tactileActiveStyle(0.96)}
+              focusVisibleStyle={focusRingStyle(-1)}
+            >
+              <Text
+                style={{
+                  color: chipTextColor(effectiveReasoningId() === null),
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.3),
+                  fontWeight: effectiveReasoningId() === null ? "600" : "400",
+                }}
+              >
+                {tr("common.default")}
+              </Text>
+            </View>
+            <Each of={choices()} key={choice => choice.id}>
+              {choice => {
+                const selected = () => effectiveReasoningId() === choice().id;
+                return (
+                  <View
+                    role="button"
+                    disabled={saving()}
+                    accessibilityLabel={`reasoning-option-${choice().id}`}
+                    accessibilityState={{ selected: selected(), pressed: selected(), disabled: saving() }}
+                    onPress={() => {
+                      if (!saving()) void selectReasoningForPickerTarget(props.modelId, choice().id);
+                    }}
+                    style={chipStyle(selected(), saving())}
+                    hoverStyle={saving() ? undefined : { borderColor: palette().borderStrong }}
+                    activeStyle={saving() ? {} : tactileActiveStyle(0.96)}
+                    focusVisibleStyle={focusRingStyle(-1)}
+                  >
+                    <Text
+                      style={{
+                        color: chipTextColor(selected()),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.3),
+                        fontWeight: selected() ? "600" : "400",
+                      }}
+                    >
+                      {reasoningPresetLabel(choice())}
+                    </Text>
+                  </View>
+                );
+              }}
+            </Each>
+          </View>
+        </If>
+        <If when={modelReasoningError()}>
+          {err => (
+            <Text
+              style={{
+                color: palette().danger,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.35),
+              }}
+            >
+              {err()}
+            </Text>
+          )}
+        </If>
+      </View>
+
+      {/* Section 2: Context Length */}
+      <View
+        style={{
+          gap: space.chip,
+          paddingTop: space.xs,
+          borderTopWidth: 1,
+          borderColor: palette().borderSubtle,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <Icon name="layers" size={12} color={palette().textMuted} />
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.3),
+              fontWeight: "600",
+            }}
+          >
+            {tr("models.contextLength")}
+          </Text>
+          <Text
+            style={{
+              marginLeft: "auto",
+              color: palette().textSecondary,
+              fontSize: textSize(11),
+              lineHeight: textLineHeight(11, 1.3),
+              fontWeight: "500",
+              fontVariant: ["tabular-nums"],
+            }}
+          >
+            {formatContextLengthLabel(currentContextTokens())}
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.chip }}>
+          <Each of={CONTEXT_LENGTH_PRESETS} key={preset => String(preset.tokens)}>
+            {preset => {
+              const selected = () => currentContextTokens() === preset().tokens;
+              return (
+                <View
+                  role="button"
+                  disabled={saving()}
+                  accessibilityLabel={`context-option-${preset().tokens}`}
+                  accessibilityState={{ selected: selected(), disabled: saving() }}
+                  onPress={() => {
+                    if (saving()) return;
+                    modelCustomContextOpen.set(false);
+                    modelCustomContextError.set("");
+                    selectContextForPickerTarget(props.modelId, preset().tokens);
+                  }}
+                  style={chipStyle(selected(), saving())}
+                  hoverStyle={saving() ? undefined : { borderColor: palette().borderStrong }}
+                  activeStyle={saving() ? {} : tactileActiveStyle(0.96)}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <Text
+                    style={{
+                      color: chipTextColor(selected()),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.3),
+                      fontWeight: selected() ? "600" : "400",
+                      fontVariant: ["tabular-nums"],
+                    }}
+                  >
+                    {preset().label}
+                  </Text>
+                </View>
+              );
+            }}
+          </Each>
+
+          <View
+            role="button"
+            disabled={saving()}
+            accessibilityLabel="context-option-custom"
+            accessibilityState={{ selected: modelCustomContextOpen() || customActive(), disabled: saving() }}
+            onPress={() => {
+              if (saving()) return;
+              modelConfigPinnedId.set(props.modelId);
+              const next = !modelCustomContextOpen();
+              modelCustomContextOpen.set(next);
+              modelCustomContextError.set("");
+              if (next) {
+                modelCustomContextText.set(
+                  customActive() ? formatContextLengthLabel(currentContextTokens()) : "",
+                );
+              }
+            }}
+            style={chipStyle(modelCustomContextOpen() || customActive(), saving())}
+            hoverStyle={saving() ? undefined : { borderColor: palette().borderStrong }}
+            activeStyle={saving() ? {} : tactileActiveStyle(0.96)}
+            focusVisibleStyle={focusRingStyle(-1)}
+          >
+            <Text
+              style={{
+                color: chipTextColor(modelCustomContextOpen() || customActive()),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
+                fontWeight: modelCustomContextOpen() || customActive() ? "600" : "400",
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {customActive()
+                ? `${tr("models.contextCustom")} · ${formatContextLengthLabel(currentContextTokens())}`
+                : tr("models.contextCustom")}
+            </Text>
+          </View>
+        </View>
+
+        <If when={modelCustomContextOpen()}>
+          <View style={{ gap: space.xs, paddingTop: space.hair }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <InputBox
+                  value={modelCustomContextText()}
+                  size="sm"
+                  autoFocus={true}
+                  placeholder={tr("models.contextCustomPlaceholder")}
+                  accessibilityLabel="context-custom-input"
+                  onChange={value => {
+                    modelCustomContextText.set(value);
+                    if (modelCustomContextError()) modelCustomContextError.set("");
+                  }}
+                  onSubmit={applyCustomContext}
+                />
+              </View>
+              <Button
+                label={tr("models.apply")}
+                variant="primary"
+                size="xs"
+                accessibilityLabel="context-custom-apply"
+                onPress={applyCustomContext}
+              />
+            </View>
+            <If when={modelCustomContextError()}>
+              {err => (
+                <Text
+                  style={{
+                    color: palette().danger,
+                    fontSize: textSize(11),
+                    lineHeight: textLineHeight(11, 1.35),
+                  }}
+                >
+                  {err()}
+                </Text>
+              )}
+            </If>
+          </View>
+        </If>
+      </View>
     </View>
   );
 }
@@ -10186,8 +10823,8 @@ const secondaryHeaderState = computed<MarkState | null>(() => {
   const id = secondarySessionId();
   if (pending && id && pending.sessionId === id && !secondaryTurnError()) return "working";
   const row = id ? fleetSessionRow(secondarySessionDevice(), id) : null;
-  if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
-  if (row?.status === "error") return "failed";
+  if (row?.status === "waiting" || (row?.needsAttention && !row?.failed && row?.status !== "error")) return "needs_you";
+  if (row?.status === "error" || row?.failed) return "failed";
   if (row?.status === "running") return "working";
   return null;
 });
@@ -10835,42 +11472,6 @@ function SecondaryComposerDock() {
             onSelect: fromPlus(() => openSecondaryPermissionPicker(anchor(), "start")),
           });
         }
-        if (compact) {
-          const secModelText = modelTextForSession(secondarySessionId(), secondarySessionDevice());
-          const secReasoningChoices = reasoningChoicesForSession(secondarySessionId(), secondarySessionDevice());
-          items.push({
-            id: "sec-model",
-            icon: "cpu",
-            label: tr("sessions.modelLabel", { name: secModelText.label }),
-            separator: true,
-            accessibilityLabel: "secondary-bot-capsule-trigger",
-            onSelect: fromPlus(() => {
-              focusPane(1);
-              modelPickerTarget.set({ kind: "session", ...secondaryModelTarget() });
-              modelPickerAnchor.set(anchor());
-              closePickers("model");
-              modelPickerOpen.set(true);
-              void refreshFleetModels();
-            }),
-          });
-          if (secReasoningChoices.length > 0) {
-            items.push({
-              id: "sec-reasoning",
-              icon: "bulb",
-              label: tr("sessions.reasoningLabel", {
-                name: reasoningLabelForSession(secondarySessionId(), secondarySessionDevice()),
-              }),
-              accessibilityLabel: "secondary-reasoning-picker",
-              onSelect: fromPlus(() => {
-                focusPane(1);
-                modelPickerTarget.set({ kind: "session", ...secondaryModelTarget() });
-                reasoningPickerAnchor.set(anchor());
-                closePickers("reasoning");
-                reasoningPickerOpen.set(true);
-              }),
-            });
-          }
-        }
         return items;
       }}
     />
@@ -11440,25 +12041,6 @@ function BtwSessionPane(props?: { compact?: boolean }) {
                 }),
               },
             ];
-            if (compact) {
-              const parent = currentSideQuestionParent();
-              const btwModelLabel =
-                sideQuestionModelOverride() || modelTextForSession(parent?.sessionId ?? null, parent?.deviceId).label;
-              items.push({
-                id: "btw-model",
-                icon: "cpu",
-                label: tr("sessions.modelLabel", { name: btwModelLabel }),
-                separator: true,
-                accessibilityLabel: "btw-bot-capsule-trigger",
-                onSelect: fromPlus(() => {
-                  modelPickerTarget.set({ kind: "btw" });
-                  modelPickerAnchor.set(anchor());
-                  closePickers("model");
-                  modelPickerOpen.set(true);
-                  void refreshFleetModels();
-                }),
-              });
-            }
             return items;
           }}
         />

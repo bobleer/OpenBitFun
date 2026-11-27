@@ -30,8 +30,6 @@ pub(crate) const PAIRING_CODE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Pending pairing codes kept at once (older ones are dropped).
 const MAX_PENDING_CODES: usize = 8;
 
-#[cfg(test)]
-const LEGACY_SETTINGS_FILE: &str = "settings.json";
 const CLIENTS_FILE: &str = "paired-clients.json";
 const IDENTITY_FILE: &str = "lan-identity.json";
 pub(crate) const OWNER_TOKEN_FILE: &str = "owner-token";
@@ -374,20 +372,5 @@ mod tests {
             .filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().contains("unreadable"));
         assert!(kept);
-    }
-
-    #[test]
-    fn the_retired_lan_settings_file_is_left_untouched() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = r#"{"lanEnabled":true,"lanPort":47611}"#;
-        std::fs::write(dir.path().join(LEGACY_SETTINGS_FILE), legacy).unwrap();
-        let mut store = ObpStore::open(dir.path().to_path_buf()).unwrap();
-        let code = store.create_code("Phone".into());
-        store.redeem_code(&code, None).unwrap();
-        // Read by older builds after a downgrade; never rewritten or removed.
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(LEGACY_SETTINGS_FILE)).unwrap(),
-            legacy
-        );
     }
 }

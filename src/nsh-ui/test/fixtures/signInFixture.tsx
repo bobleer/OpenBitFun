@@ -6,6 +6,7 @@ import "../../src/agentEvents";
 import { mount, signal, Text, View } from "nsh";
 import { palette, space, textStyle } from "../../src/theme";
 import { AccountAuthModal, openAccountAuthModal, SignInScreen } from "../../src/ui/AccountAuthModal";
+import { RemoteDisclaimerModal } from "../../src/ui/RemoteDisclaimerModal";
 import { ToastHost } from "../../src/ui/overlays";
 import { Button } from "../../src/ui/primitives";
 
@@ -22,6 +23,7 @@ function Fixture() {
         <SignInScreen onLocalOnly={() => finished.set("local only")} onDone={() => finished.set("welcome done")} />
       </If>
       <AccountAuthModal />
+      <RemoteDisclaimerModal />
       <ToastHost />
     </View>
   );

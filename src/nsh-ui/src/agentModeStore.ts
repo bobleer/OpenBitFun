@@ -8,20 +8,14 @@
 // starts as, resolved from the `app.flow_chat` preference. `update_session_mode`
 // refuses to rebind a started session (`session_mode_locked`) and records the pick
 // as `last_mode_id`. This store only mirrors the answer for the composer.
-//
-// A host older than the catalog command still answers `get_available_modes`; its
-// rows are drawn as the host lists them, with a notice that ordering and defaults
-// need a newer host, instead of this surface re-deriving the rules.
 
 import { computed, signal } from "nsh";
 import {
-  getAvailableModes,
   getSessionModeCatalog,
   updateSessionMode,
   type SessionModeCatalogEntry,
 } from "./api";
 import { tr } from "./i18n";
-import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import {
   DEFAULT_AGENT_TYPE,
   activeSessionId,
@@ -195,10 +189,6 @@ export async function loadAgentModes(workspaceId: string): Promise<string | null
     if (sessionIdForWorkspace(workspaceId) === sessionId) {
       catalogueKey = key;
     }
-    if (isMissingCommand(error, "get_session_mode_catalog")) {
-      await loadLegacyModes(workspaceId, root);
-      return null;
-    }
     agentChoices.set([]);
     catalogSessionStarted.set(null);
     agentCatalogAnswered.set(false);
@@ -208,35 +198,6 @@ export async function loadAgentModes(workspaceId: string): Promise<string | null
     return null;
   } finally {
     if (loadingKey === key) loadingKey = null;
-  }
-}
-
-/** An older host: its rows as listed, with a notice that the rules need an update. */
-async function loadLegacyModes(workspaceId: string, root: string): Promise<void> {
-  try {
-    const rows = await getAvailableModes(workspaceId, root || undefined);
-    if (activeWorkspaceId() !== workspaceId) return;
-    agentChoices.set(
-      (rows ?? [])
-        .filter(row => typeof row?.id === "string" && row.id.trim())
-        .map(row => ({
-          id: row.id.trim(),
-          label: (row.name ?? "").trim() || row.id.trim(),
-          description: (row.description ?? "").trim(),
-          profile: false,
-          switchable: true,
-        })),
-    );
-    catalogSessionStarted.set(null);
-    agentCatalogAnswered.set(true);
-    agentCatalogNotice.set(tr("sessions.agentCatalogHostUpdate"));
-  } catch (error) {
-    if (activeWorkspaceId() !== workspaceId) return;
-    agentChoices.set([]);
-    agentCatalogAnswered.set(false);
-    agentCatalogNotice.set(
-      tr("sessions.agentCatalogUnavailable", { error: error instanceof Error ? error.message : String(error) }),
-    );
   }
 }
 

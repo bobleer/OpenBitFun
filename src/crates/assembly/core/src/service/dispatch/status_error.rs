@@ -17,11 +17,6 @@ use std::fmt;
 /// `DISPATCH_JOB_NOT_FOUND_MARKER`.
 pub const DISPATCH_JOB_NOT_FOUND_MARKER: &str = "[dispatch_job_not_found]";
 
-/// Text older target CLIs produce when the job directory or its commit marker
-/// is missing.
-const LEGACY_NOT_FOUND_TEXT: [&str; 2] =
-    ["dispatch job not found:", "dispatch job is not committed:"];
-
 /// The target answered that it has no record of the job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchJobNotFoundOnTarget {
@@ -42,13 +37,7 @@ impl std::error::Error for DispatchJobNotFoundOnTarget {}
 
 /// True when a target error message says the job does not exist there.
 pub fn is_target_job_not_found_message(message: &str) -> bool {
-    if message.contains(DISPATCH_JOB_NOT_FOUND_MARKER) {
-        return true;
-    }
-    let lower = message.to_ascii_lowercase();
-    LEGACY_NOT_FOUND_TEXT
-        .iter()
-        .any(|legacy| lower.contains(legacy))
+    message.contains(DISPATCH_JOB_NOT_FOUND_MARKER)
 }
 
 /// Replace a target "no such job" failure with the typed error; any other
@@ -87,26 +76,6 @@ mod tests {
         assert!(classified
             .to_string()
             .starts_with(DISPATCH_JOB_NOT_FOUND_MARKER));
-    }
-
-    #[test]
-    fn legacy_target_text_maps_to_typed_not_found() {
-        for message in [
-            "dispatch status failed (exit 1): {\"error\":\"dispatch job not found: job-1: No such file or directory (os error 2)\"}",
-            "dispatch job is not committed: job-1: No such file or directory (os error 2)",
-        ] {
-            let classified = classify_target_status_error("job-1", anyhow::anyhow!("{message}"));
-            assert!(
-                classified.downcast_ref::<DispatchJobNotFoundOnTarget>().is_some(),
-                "{message}"
-            );
-        }
-        // Context chains are inspected too: the legacy text may be a cause.
-        let chained = anyhow::anyhow!("dispatch job not found: job-1")
-            .context("device dispatch_target_status failed");
-        assert!(classify_target_status_error("job-1", chained)
-            .downcast_ref::<DispatchJobNotFoundOnTarget>()
-            .is_some());
     }
 
     #[test]

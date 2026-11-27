@@ -75,6 +75,10 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 // ---------------------------------------------------------------------------
 // Enumerations
 // ---------------------------------------------------------------------------
@@ -284,6 +288,14 @@ pub struct FleetSession {
     pub status: FleetSessionStatus,
     #[serde(deserialize_with = "null_default")]
     pub unread: bool,
+    /// Host-derived: the unread completion receipt is a failed turn (`error`).
+    /// Absent on older hosts (`false`).
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "null_default"
+    )]
+    pub failed: bool,
     #[serde(deserialize_with = "null_default")]
     pub needs_attention: bool,
     #[serde(deserialize_with = "null_default")]
@@ -296,6 +308,7 @@ impl FleetSession {
     /// Whether the session is kept beyond the per-workspace recency window.
     pub fn is_pinned_by_activity(&self) -> bool {
         self.unread
+            || self.failed
             || self.needs_attention
             || matches!(
                 self.status,
@@ -833,6 +846,7 @@ mod tests {
                         agent_type: "agentic".into(),
                         status: FleetSessionStatus::Waiting,
                         unread: true,
+                        failed: false,
                         needs_attention: true,
                         last_activity_ms: 5,
                         origin: Some(FleetSessionOrigin::Dispatch),

@@ -105,6 +105,8 @@ export interface FleetSession {
   agentType: string;
   status: FleetSessionStatus;
   unread: boolean;
+  /** Host-derived: the unread completion receipt is a failed turn (`error`). */
+  failed?: boolean;
   needsAttention: boolean;
   lastActivityMs: number;
   origin?: FleetSessionOrigin | null;

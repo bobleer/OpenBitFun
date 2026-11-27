@@ -80,6 +80,7 @@ import {
   runningTurns,
   secondarySessionDevice,
   secondarySessionId,
+  secondaryWorkspaceId,
   sessionKey,
   sessionTurns,
   setPendingTurn,
@@ -1612,7 +1613,7 @@ async function settleCompletedTurn(sessionId: string, turnId: string | null, aft
       clearPendingTurn(sessionId);
     }
   });
-  markSessionSeen(sessionId, Date.now());
+  markSessionSeen(sessionId, Date.now(), origin, activeWorkspaceId() ?? undefined);
   void refreshSessionsSilently();
 }
 
@@ -1637,6 +1638,7 @@ export function settleLiveTurnFromView(sessionId: string): void {
     clearStreamedText();
     clearPendingTurn(sessionId);
   });
+  markSessionSeen(sessionId, Date.now(), activeSessionDevice(), activeWorkspaceId() ?? undefined);
 }
 
 async function settleSecondaryCompletedTurn(
@@ -1683,7 +1685,7 @@ async function settleSecondaryCompletedTurn(
       bridge.clearPendingTurn(sessionId, key);
     }
   });
-  markSessionSeen(sessionId, Date.now());
+  markSessionSeen(sessionId, Date.now(), origin, secondaryWorkspaceId() ?? undefined);
   void refreshSessionsSilently();
 }
 
@@ -1704,6 +1706,7 @@ export function settleSecondaryLiveTurnFromView(sessionId: string): void {
     secondaryLiveTurn.set(null);
     bridge.clearPendingTurn(sessionId, key);
   });
+  markSessionSeen(sessionId, Date.now(), secondarySessionDevice(), secondaryWorkspaceId() ?? undefined);
 }
 
 /**
@@ -2476,7 +2479,9 @@ export function subscribeAgentEvents(): void {
       clearQuestionsForSession(sessionId, eventOrigin);
       clearPermissionsForSession(sessionId, eventOrigin);
     }
-    if (kind === "failed" && rawSession) markSessionFailed(rawSession);
+    if (kind === "failed" && rawSession && !isActive(rawSession) && !isSecondary(rawSession)) {
+      markSessionFailed(rawSession, eventOrigin);
+    }
     if (sessionId && isSecondary(sessionId)) {
       flushSecondaryStreamingBuffers();
       const effectiveTurnId = eventTurnId ?? secondaryLiveTurn()?.turnId ?? null;
@@ -2546,18 +2551,34 @@ export function subscribeAgentEvents(): void {
           : null;
     if (!sessionId) return;
     if (isActive(sessionId)) {
+      const origin = eventOrigin;
       if (settlingTurns.has(keyOf(sessionId)) || liveTurn()?.settling) {
         void settleCompletedTurn(sessionId, settledTurnId, true);
       } else if (!runningTurnId()) {
         // External or detached update landed on the active session.
-        void loadTurns(sessionId, { silent: true });
+        void loadTurns(sessionId, { silent: true }).then(loaded => {
+          if (loaded !== null && settledTurnId && activeSessionId() === sessionId && activeSessionDevice() === origin) {
+            markSessionSeen(sessionId, Date.now(), origin, activeWorkspaceId() ?? undefined);
+          }
+        });
       }
     } else if (isSecondary(sessionId)) {
+      const origin = eventOrigin;
       const key = keyOf(sessionId);
       if (settlingTurns.has(key) || secondaryLiveTurn()?.settling) {
         void settleSecondaryCompletedTurn(sessionId, settledTurnId, true);
       } else if (!runningTurns()[key]) {
-        void getSecondaryPaneBridge()?.loadTurns(sessionId, { silent: true });
+        void getSecondaryPaneBridge()?.loadTurns(sessionId, { silent: true }).then(loaded => {
+          if (
+            loaded !== null &&
+            settledTurnId &&
+            splitPaneOpen() &&
+            secondarySessionId() === sessionId &&
+            secondarySessionDevice() === origin
+          ) {
+            markSessionSeen(sessionId, Date.now(), origin, secondaryWorkspaceId() ?? undefined);
+          }
+        });
       }
     }
     void refreshSessionsSilently();

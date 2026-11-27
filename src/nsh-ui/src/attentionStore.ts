@@ -2,12 +2,10 @@
 // ux-redesign §3.4 and §7), and the one place a prompt is answered from.
 //
 // Display only. The backend groups and orders the items and counts the badge
-// (`fleet_attention`); this store keeps its latest answer. An entry without
-// `fleet_attention` (an older backend) still has `fleet_prompts`: its prompts
-// become the "Needs you" group in the backend's order, and the badge is the
-// navigator's `waiting` total. A backend without the fleet layer has neither;
-// the session view still shows its own prompts (`permissionStore`,
-// `userQuestionStore`), answered through the same `answerPrompt`.
+// (`fleet_attention`); this store keeps its latest answer. A backend without
+// the fleet layer has no `fleet_attention`; the session view still shows its
+// own prompts (`permissionStore`, `userQuestionStore`), answered through the
+// same `answerPrompt`.
 //
 // Answering routes to the device whose runtime asked: `respond_permission` /
 // `submit_user_answers` with `target = deviceId`, or `dispatch_target_answer`
@@ -20,8 +18,7 @@
 import { computed, effect, signal, untracked } from "nsh";
 import { errorMessageOf } from "./backendConnection";
 import { connectionState, fleetActive, invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
-import { fleetDeviceById, fleetPromptList, fleetPrompts, fleetTotals, refreshFleetPrompts } from "./fleetStore";
-import { isCommandUnavailable } from "./hostCommands";
+import { fleetDeviceById, fleetPromptList, fleetTotals, refreshFleetPrompts } from "./fleetStore";
 import {
   FLEET_ENTRY_LOST,
   fleetErrorKind,
@@ -80,10 +77,8 @@ export interface AttentionView {
   badge: number;
 }
 
-/** The latest `fleet_attention` answer; `null` before the first read or on a backend without it. */
+/** The latest `fleet_attention` answer; `null` before the first read. */
 export const attentionView = signal<AttentionView | null>(null);
-/** `false` once the entry answered `fleet_attention` as unknown (an older backend). */
-export const attentionServed = signal<boolean | null>(null);
 /** Why the last read failed; `""` otherwise. */
 export const attentionError = signal("");
 
@@ -94,52 +89,17 @@ export function toggleInboxSheet(open?: boolean): void {
   inboxSheetOpen.set(open ?? !inboxSheetOpen());
 }
 
-function promptEntry(prompt: FleetPrompt): AttentionEntry {
-  const device = fleetDeviceById(prompt.deviceId);
-  return {
-    itemId: `${prompt.deviceId}/${prompt.promptId}`,
-    kind: prompt.kind,
-    source: {
-      deviceId: prompt.deviceId,
-      workspaceId: prompt.workspaceId,
-      sessionId: prompt.sessionId,
-      ...(prompt.jobId ? { jobId: prompt.jobId } : {}),
-    },
-    title: sessionTitleOf(prompt) || prompt.title,
-    deviceName: device?.name,
-    hostKind: device?.hostKind,
-    prompt,
-    answerable: prompt.answerable,
-    reason: prompt.unanswerableReason,
-  };
-}
-
-/** The title of the session a prompt belongs to, as the navigator lists it. */
-function sessionTitleOf(prompt: FleetPrompt): string {
-  const device = fleetDeviceById(prompt.deviceId);
-  for (const workspace of device?.workspaces ?? []) {
-    const row = workspace.sessions.find(session => session.sessionId === prompt.sessionId);
-    if (row) return row.title;
-  }
-  return "";
-}
-
-/**
- * The groups the Inbox draws: the backend's `fleet_attention` groups, or, on an
- * entry without it, the prompt tray as one "Needs you" group.
- */
+/** The groups the Inbox draws, directly from `fleet_attention`. */
 export const attentionGroups = computed<AttentionGroup[]>(() => {
   const view = attentionView();
+  if (!view) return [];
   // wave23-E: a Super Agent conversation's items have nowhere to open while that gate is off.
-  if (view && !superAgentUi()) {
+  if (!superAgentUi()) {
     return view.groups
       .map(group => ({ ...group, items: group.items.filter(item => !item.source.conversationId) }))
       .filter(group => group.items.length > 0);
   }
-  if (view) return view.groups;
-  if (!fleetActive() || !fleetPrompts()) return [];
-  const prompts = fleetPromptList();
-  return prompts.length ? [{ id: "needs_you", items: prompts.map(promptEntry) }] : [];
+  return view.groups;
 });
 
 /** The needs-you count from the backend (sidebar pill, phone tab badge). */
@@ -154,10 +114,6 @@ export const inboxBadge = computed<number>(() => {
 let inFlight: Promise<void> | null = null;
 let again = false;
 
-function isUnknownCommand(error: unknown): boolean {
-  return isCommandUnavailable(errorMessageOf(error), "fleet_attention");
-}
-
 async function readAttention(): Promise<void> {
   const answer = await invokeCommand<AttentionView>("fleet_attention", {});
   if (!answer || !Array.isArray(answer.groups)) throw new Error("fleet_attention answered without groups");
@@ -166,13 +122,12 @@ async function readAttention(): Promise<void> {
     groups: answer.groups.map(group => ({ id: group.id, items: Array.isArray(group.items) ? group.items : [] })),
     badge: typeof answer.badge === "number" ? answer.badge : 0,
   });
-  attentionServed.set(true);
   attentionError.set("");
 }
 
 /** Reads the Inbox once more (one read in flight; a change during it reads again). */
 export async function refreshAttention(): Promise<void> {
-  if (!fleetActive() || attentionServed() === false) return;
+  if (!fleetActive()) return;
   if (inFlight) {
     again = true;
     return inFlight;
@@ -184,11 +139,6 @@ export async function refreshAttention(): Promise<void> {
         try {
           await readAttention();
         } catch (error) {
-          if (isUnknownCommand(error)) {
-            attentionServed.set(false);
-            attentionView.set(null);
-            return;
-          }
           attentionError.set(errorMessageOf(error));
           console.warn(`Inbox read failed: ${errorMessageOf(error)}`);
         }
@@ -223,9 +173,8 @@ export function startAttentionStore(): void {
     if (typeof payload?.revision === "number" && held !== undefined && payload.revision <= held) return;
     void refreshAttention();
   });
-  // A prompt change also changes the Inbox; a backend that serves the view says so with its own event.
   listenEvent<unknown>("fleet://prompts-changed", () => {
-    if (attentionServed()) void refreshAttention();
+    void refreshAttention();
   });
   let wasActive = false;
   effect(() => {
@@ -234,11 +183,9 @@ export function startAttentionStore(): void {
     wasActive = active;
     untracked(() => {
       if (active) {
-        attentionServed.set(null);
         void refreshAttention();
       } else {
         attentionView.set(null);
-        attentionServed.set(null);
       }
     });
   });
@@ -467,7 +414,6 @@ export function resetAttentionForTests(): void {
   held.clear();
   promptStatuses.set({});
   attentionView.set(null);
-  attentionServed.set(null);
   attentionError.set("");
   inboxSheetOpen.set(false);
 }

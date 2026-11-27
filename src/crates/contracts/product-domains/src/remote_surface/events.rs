@@ -58,7 +58,6 @@ pub const OWNER_ONLY_EVENT_PREFIXES: &[(&str, &str)] = &[
         "openbitfun://file-drop-preview",
         "native drag and drop on the backend machine's window",
     ),
-    ("peer-host-invoke://", "the legacy peer-host webview bridge"),
     ("tray://", "the backend machine's tray"),
     ("update://", "the backend machine's updater"),
     ("updater://", "the backend machine's updater"),
@@ -98,7 +97,6 @@ mod tests {
             "window://fullscreen-chrome",
             "tray://mark-all-read",
             "updater://progress",
-            "peer-host-invoke://request",
             "host://shell-request",
             "openbitfun-update-progress",
         ] {

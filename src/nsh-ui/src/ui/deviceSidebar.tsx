@@ -533,6 +533,51 @@ function DeviceState(props: { node: DeviceTreeNode }) {
   );
 }
 
+// TEMPORARY (dev diagnostics): show peer P2P/Relay mode and latency on the right
+// of each sidebar device header to inspect Link routing during development.
+// Set to `false` or comment out `<DevRouteTag />` before cutting a release.
+const SHOW_DEV_ROUTE_TAG = true;
+
+function devRouteText(node: DeviceTreeNode): string {
+  if (!SHOW_DEV_ROUTE_TAG || node.isClient) return "";
+  const kind = node.routeKind;
+  if (kind === "local") return "";
+  const mode =
+    kind === "direct_lan" || kind === "direct_ipv4" || kind === "direct_ipv6"
+      ? "P2P"
+      : kind === "relayed_server" || kind === "relayed_peer"
+        ? "Relay"
+        : "";
+  const latency =
+    typeof node.routeLatencyMs === "number" && Number.isFinite(node.routeLatencyMs) && node.routeLatencyMs >= 0
+      ? `${Math.max(1, Math.round(node.routeLatencyMs))}ms`
+      : "";
+  if (mode && latency) return `${mode} · ${latency}`;
+  return mode || latency;
+}
+
+// TEMPORARY (dev diagnostics): comment out before release.
+function DevRouteTag(props: { node: DeviceTreeNode }) {
+  const text = () => devRouteText(props.node);
+  return (
+    <If when={text()}>
+      {label => (
+        <Text
+          testID={`sidebar-device-dev-route-${props.node.deviceId || "local"}`}
+          style={{
+            ...textStyle("micro", { color: palette().chromeTextMuted, tabular: true }),
+            fontWeight: "500",
+            flexShrink: 0,
+            numberOfLines: 1,
+          }}
+        >
+          {label()}
+        </Text>
+      )}
+    </If>
+  );
+}
+
 function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void }) {
   const hovered = signal(false);
   const menuOpen = signal(false);
@@ -563,6 +608,10 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
         }}
         trailing={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+            {/* TEMPORARY (dev diagnostics): comment out before release. */}
+            <If when={!(hovered() || menuOpen())}>
+              <DevRouteTag node={props.node} />
+            </If>
             <If when={!(hovered() || menuOpen() || touchFirst)}>
               <DeviceState node={props.node} />
             </If>
@@ -590,7 +639,7 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
         }
       >
         {/* A device reads as the heading of its workspaces: small caps-style caption, no glyph or indent. */}
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.chip }}>
           <Text
             style={{
               ...textStyle("caption", { uppercase: true, color: palette().chromeTextMuted }),
@@ -605,9 +654,30 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
             {props.node.name}
           </Text>
           <If when={props.node.isClient}>
-            <Text style={{ ...textStyle("caption", { color: palette().chromeTextMuted }), flexShrink: 0, numberOfLines: 1 }}>
-              {tr("device.thisDevice")}
-            </Text>
+            <View
+              testID={`sidebar-device-this-device-${id()}`}
+              style={{
+                paddingHorizontal: space.chip,
+                paddingVertical: space.hair,
+                borderRadius: radii.pill,
+                borderCurve: "continuous",
+                backgroundColor: palette().chromeTextMuted,
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Text
+                style={{
+                  ...textStyle("micro", { color: palette().chromeBg }),
+                  fontWeight: "500",
+                  fontVariant: undefined,
+                  numberOfLines: 1,
+                }}
+              >
+                {tr("device.thisDevice")}
+              </Text>
+            </View>
           </If>
           {/* The fold state, shown while pointed at (a folded device always says so). */}
           <If when={hovered() || !open()}>

@@ -1273,15 +1273,15 @@ test('desktop UI command contracts do not become Rust compilation inputs', async
   assert.ok(webCommandRule, 'Desktop UI must retain a boundary-owned stable command contract');
 
   const webCommandPattern = webCommandRule.patterns.find(
-    (pattern) => pattern.message.includes('external-source control snapshot'),
+    (pattern) => pattern.message.includes('external-source discovery snapshot'),
   )?.regex;
-  assert.ok(webCommandPattern, 'Desktop UI command contract must name the control snapshot');
+  assert.ok(webCommandPattern, 'Desktop UI command contract must name the discovery snapshot');
 
   const webApi = await readFile(new URL(`../${webApiPath}`, import.meta.url), 'utf8');
   assert.equal(webCommandPattern.test(webApi), true);
   assert.equal(
     webCommandPattern.test(
-      webApi.replace('get_external_source_control_snapshot', 'get_renamed_snapshot'),
+      webApi.replace('get_external_source_discovery_snapshot', 'get_renamed_snapshot'),
     ),
     false,
     'renaming the invoked command must break the cross-surface contract',

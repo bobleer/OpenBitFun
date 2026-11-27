@@ -173,46 +173,11 @@ function normalizeVersions(raw: unknown): SpaceVersionEntry[] {
   });
 }
 
-/**
- * The permission badge ids of a space: the host's (`permissionBadges` on
- * `list_miniapps`), else, for a host older than the field, the same reading of
- * the manifest its `MiniAppPermissions::badges` does.
- */
+/** The permission badge ids of a space, as the host reported them (`permissionBadges`). */
 export function spacePermissionBadges(space: SpaceMeta): string[] {
   if (space.permissionBadges) return space.permissionBadges;
   const listed = spaces().find(item => item.id === space.id)?.permissionBadges;
-  if (listed) return listed;
-  return summarizeSpacePermissions(space.permissions);
-}
-
-/** Compatibility read for an older host; ids match the backend's badge ids. */
-export function summarizeSpacePermissions(permissions: Record<string, unknown>): string[] {
-  const badges: string[] = [];
-  const fs = permissions.fs as { read?: unknown[]; write?: unknown[] } | undefined;
-  if (fs && ((Array.isArray(fs.read) && fs.read.length > 0) || (Array.isArray(fs.write) && fs.write.length > 0))) {
-    badges.push("filesystem");
-  }
-  const shell = permissions.shell as { allow?: unknown[] } | undefined;
-  if (shell && Array.isArray(shell.allow) && shell.allow.length > 0) {
-    badges.push("shell");
-  }
-  const net = permissions.net as { allow?: unknown[] } | undefined;
-  if (net && Array.isArray(net.allow) && net.allow.length > 0) {
-    badges.push("network");
-  }
-  const node = permissions.node as { enabled?: boolean } | undefined;
-  if (node?.enabled) {
-    badges.push("node_worker");
-  }
-  const ai = permissions.ai as { enabled?: boolean } | undefined;
-  if (ai?.enabled) {
-    badges.push("ai_bridge");
-  }
-  const agent = permissions.agent as { enabled?: boolean } | undefined;
-  if (agent?.enabled) {
-    badges.push("agent_bridge");
-  }
-  return badges.length > 0 ? badges : ["sandboxed_ui"];
+  return listed ?? [];
 }
 
 export const runningWorkerSet = computed(() => new Set(runningSpaceWorkers()));

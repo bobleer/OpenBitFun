@@ -163,6 +163,59 @@ export interface ModelOption {
   contextWindow?: number;
 }
 
+/** Default session context length (300K tokens). */
+export const DEFAULT_SESSION_CONTEXT_TOKENS = 300_000;
+export const MIN_SESSION_CONTEXT_TOKENS = 4_096;
+export const MAX_SESSION_CONTEXT_TOKENS = 10_000_000;
+
+export interface ContextLengthPreset {
+  tokens: number;
+  label: string;
+  isDefault?: boolean;
+}
+
+export const CONTEXT_LENGTH_PRESETS: readonly ContextLengthPreset[] = [
+  { tokens: 128_000, label: "128K" },
+  { tokens: 256_000, label: "256K" },
+  { tokens: 300_000, label: "300K", isDefault: true },
+  { tokens: 500_000, label: "500K" },
+  { tokens: 1_000_000, label: "1M" },
+];
+
+/** Parses a custom context length string (`"400K"`, `"1.5M"`, `"400000"`, `"256,000"`). */
+export function parseContextLengthInput(raw: string): number | null {
+  const cleaned = raw.trim().replace(/[,\s_]/g, "").toUpperCase();
+  if (!cleaned) return null;
+  const match = /^(\d+(?:\.\d+)?)([KM])?$/.exec(cleaned);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = match[2];
+  const multiplier = unit === "M" ? 1_000_000 : unit === "K" ? 1_000 : 1;
+  const tokens = Math.round(value * multiplier);
+  if (tokens < MIN_SESSION_CONTEXT_TOKENS || tokens > MAX_SESSION_CONTEXT_TOKENS) return null;
+  return tokens;
+}
+
+/** Short human label for a context length in tokens (`128K`, `300K`, `1M`, `400K`). */
+export function formatContextLengthLabel(tokens: number): string {
+  const preset = CONTEXT_LENGTH_PRESETS.find(item => item.tokens === tokens);
+  if (preset) return preset.label;
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : Number(m.toFixed(2))}M`;
+  }
+  if (tokens >= 1_000) {
+    const k = tokens / 1_000;
+    return `${Number.isInteger(k) ? k : Number(k.toFixed(1))}K`;
+  }
+  return String(tokens);
+}
+
+export function isCustomContextLength(tokens: number): boolean {
+  return !CONTEXT_LENGTH_PRESETS.some(item => item.tokens === tokens);
+}
+
 export const models = signal<ModelOption[]>([]);
 /** Role -> configured model reference from `catalog.default_models` (e.g. `primary`, `fast`). */
 export const defaultModels = signal<Record<string, string | null | undefined>>({});
@@ -170,6 +223,8 @@ export const defaultModels = signal<Record<string, string | null | undefined>>({
 export const defaultModelId = signal<string | null>(null);
 /** `sessionKey` → the model the host reported or the user picked in this surface. */
 export const sessionModels = signal<Record<string, string>>({});
+/** `sessionKey` → explicit context length in tokens reported by host or picked here (`null`/absent = default 300K). */
+export const sessionContextLengths = signal<Record<string, number | null>>({});
 /** `sessionKey` → pool id when the session is bound to a model pool. */
 const sessionPoolIds = signal<Record<string, string>>({});
 export const modelPickerOpen = signal(false);
@@ -269,6 +324,13 @@ function findOption(ref: string | null | undefined): ModelOption | undefined {
   );
 }
 
+function canonicalModelRef(ref: string): string {
+  // A model reference projected by `fleet_models` is already the authoritative wire ref.
+  const fleet = fleetChoiceOf(ref);
+  if (fleet) return fleet.choice.modelRef;
+  return findOption(ref)?.id ?? ref;
+}
+
 /**
  * Resolves symbolic session roles (`"primary"`, `"fast"`, `"auto"`, `"default"`)
  * against `catalog.default_models` so the composer shows the real configured
@@ -277,6 +339,10 @@ function findOption(ref: string | null | undefined): ModelOption | undefined {
 export function resolveModelRef(raw: string | null | undefined): string | null {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return defaultModelId();
+
+  // Keep fleet-projected refs intact so local/remote fleet rows match session bindings.
+  const fleet = fleetChoiceOf(trimmed);
+  if (fleet) return fleet.choice.modelRef;
 
   // An explicit configured model whose ID literally equals a role name wins first.
   const direct = findOption(trimmed);
@@ -409,9 +475,6 @@ export async function loadModels(): Promise<void> {
       if (ticket !== modelCatalogTicket || scope !== modelScopeRevision || deviceId !== deviceContext()) return;
       const { rawEntries, options } = modelOptionsFromCatalog(catalog);
       const primaryRef = catalog?.default_models?.primary ?? null;
-      // Backend snapshots new sessions from `ai.agent_model_selections.mode`
-      // (`mode_default_model_id`), falling back to `default_models.primary` on
-      // older hosts that omit the field.
       const preferred = catalog?.mode_default_model_id ?? primaryRef;
       models.set(options);
       defaultModels.set({ ...(catalog?.default_models ?? {}) });
@@ -423,6 +486,9 @@ export async function loadModels(): Promise<void> {
         const choices = projectionToChoices(rawEntries[index].reasoning);
         if (choices !== null) {
           embeddedReasoning[reasoningCacheKey(options[index].id, deviceId)] = choices;
+          if (options[index].configId && options[index].configId !== options[index].id) {
+            embeddedReasoning[reasoningCacheKey(options[index].configId, deviceId)] = choices;
+          }
         }
       }
       if (Object.keys(embeddedReasoning).length > 0) {
@@ -460,13 +526,9 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
     configId,
     configName: entry.name || "",
     modelName,
-    // The host labels each model; a host from before the rule sends no label,
-    // and its entries read as they were shown then.
     label: entry.label || entry.name || modelName,
     detail: entry.label ? entry.detail ?? "" : entry.provider ?? "",
     provider: entry.provider ?? "",
-    // Real Rust emits `"text_chat"`; accept `"chat"` as well for legacy fixtures.
-    // An empty capability list stays offerable for hosts without capability metadata.
     chat:
       capabilities.length === 0 ||
       capabilities.includes("text_chat") ||
@@ -477,54 +539,179 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
   };
 }
 
-/** Binds the target (or active) session to a model, the way the composer's picker does. */
-export async function chooseModel(modelId: string, target?: SessionModelTarget): Promise<void> {
+export interface ChooseModelOptions {
+  /** Explicit reasoning preset (`null` = model default); omitted defaults to `"high"` when offered. */
+  reasoningPreset?: string | null;
+  /** Explicit context length in tokens; omitted keeps session's current length (or 300K default). */
+  contextWindowOverride?: number | null;
+  /** Keep the model picker open after applying (used when adjusting settings inside the submenu). */
+  keepOpen?: boolean;
+}
+
+/** Returns the default `"high"` preset id if the model offers it, otherwise `null`. */
+export function defaultReasoningPresetFor(
+  modelId: string,
+  choices?: ReasoningChoice[] | null,
+  deviceId?: string,
+): string | null {
+  const list = choices ?? cachedReasoningFor(modelId, deviceId);
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const high = list.find(choice => choice.id.toLowerCase() === "high");
+  return high ? high.id : null;
+}
+
+/** Explicit session context length if set, or the default `300K` (`300_000`) tokens. */
+export function contextLengthForSession(sessionId: string | null, deviceId?: string): number {
+  if (!sessionId) return DEFAULT_SESSION_CONTEXT_TOKENS;
+  const key = sessionKey(sessionId, deviceId ?? activeSessionDevice());
+  const stored = sessionContextLengths()[key];
+  return typeof stored === "number" && stored > 0 ? stored : DEFAULT_SESSION_CONTEXT_TOKENS;
+}
+
+/** Explicit stored context length for a session, or `null` when not overridden yet. */
+export function explicitContextLengthForSession(sessionId: string | null, deviceId?: string): number | null {
+  if (!sessionId) return null;
+  const key = sessionKey(sessionId, deviceId ?? activeSessionDevice());
+  const stored = sessionContextLengths()[key];
+  return typeof stored === "number" && stored > 0 ? stored : null;
+}
+
+export const activeContextLength = computed<number>(() =>
+  contextLengthForSession(activeSessionId(), activeSessionDevice()),
+);
+
+export const activeContextLengthLabel = computed<string>(() =>
+  formatContextLengthLabel(activeContextLength()),
+);
+
+function applyContextLengthToSession(key: string, tokens: number | null): void {
+  sessionContextLengths.update(current => (current[key] === tokens ? current : { ...current, [key]: tokens }));
+}
+
+/** Binds the target (or active) session to a model, with default `high` reasoning and `300K` context length when unspecified. */
+export async function chooseModel(
+  modelId: string,
+  target?: SessionModelTarget,
+  options?: ChooseModelOptions,
+): Promise<void> {
   const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
-  modelPickerOpen.set(false);
+  if (!options?.keepOpen) modelPickerOpen.set(false);
   if (!sessionId || !key) return;
   const release = beginModelSave(key);
   if (!release) return;
   const route = { target: deviceId || undefined };
-  const resolved = deviceId === deviceContext() ? findOption(modelId)?.id ?? modelId : modelId;
+  const resolved = deviceId === deviceContext() ? canonicalModelRef(modelId) : modelId;
   const wasPool = Boolean(sessionPoolIds()[key]);
-  const currentReasoning = reasoningIdForSession(sessionId, deviceId);
-  const keepReasoning = reasoningOfferedFor(resolved, deviceId, currentReasoning);
-  const preset = keepReasoning ? currentReasoning : null;
+
+  // Determine the reasoning preset to apply:
+  // - If explicitly requested (e.g. picked from the model's submenu), honor it when valid (or null for default).
+  // - Otherwise (direct model pick), default to `"high"` when the model is known to offer it;
+  //   if reasoning choices haven't been loaded yet (e.g. mobile tap without hover), load them and
+  //   apply default `"high"` once known as long as no newer write superseded this pick.
+  const explicitReasoning = Boolean(options && "reasoningPreset" in options);
+  const knownChoices = cachedReasoningFor(resolved, deviceId);
+  let sendReasoning = false;
+  let preset: string | null = null;
+  if (explicitReasoning) {
+    const requested = options?.reasoningPreset ?? null;
+    if (requested === null || reasoningOfferedFor(resolved, deviceId, requested)) {
+      sendReasoning = true;
+      preset = requested;
+    }
+  } else if (Array.isArray(knownChoices)) {
+    const defaultHigh = defaultReasoningPresetFor(resolved, knownChoices, deviceId);
+    if (defaultHigh !== null) {
+      sendReasoning = true;
+      preset = defaultHigh;
+    } else {
+      const currentReasoning = reasoningIdForSession(sessionId, deviceId);
+      if (reasoningOfferedFor(resolved, deviceId, currentReasoning)) {
+        sendReasoning = true;
+        preset = currentReasoning;
+      }
+    }
+  }
+
+  const effectiveContext =
+    options && "contextWindowOverride" in options
+      ? options.contextWindowOverride ?? DEFAULT_SESSION_CONTEXT_TOKENS
+      : contextLengthForSession(sessionId, deviceId);
+
   const scope = modelScopeRevision;
   const write = bumpWriteGen(key);
-  await runStep(async () => {
-    if (wasPool) {
-      await updateSessionModelTarget({
-        sessionId,
-        selection: { kind: "model", model_ref: resolved },
-        ...(workspaceId ? { workspaceId } : {}),
-        includeInternal: false,
-      }, route);
-      if (keepReasoning && preset !== null) {
+  let saved = false;
+  try {
+    await runStep(async () => {
+      if (wasPool) {
+        await updateSessionModelTarget({
+          sessionId,
+          selection: { kind: "model", model_ref: resolved },
+          ...(workspaceId ? { workspaceId } : {}),
+          includeInternal: false,
+        }, route);
         await updateSessionModel({
           sessionId,
           modelName: resolved,
-          reasoningPreset: preset,
+          ...(sendReasoning ? { reasoningPreset: preset } : {}),
+          contextWindowOverride: effectiveContext,
+          ...(workspaceId ? { workspaceId } : {}),
+          includeInternal: false,
+        }, route);
+      } else {
+        await updateSessionModel({
+          sessionId,
+          modelName: resolved,
+          // A preset the new model does not offer would be refused as a pair, so only
+          // send reasoningPreset when it is `null` or known to be offered by this model.
+          ...(sendReasoning ? { reasoningPreset: preset } : {}),
+          contextWindowOverride: effectiveContext,
           ...(workspaceId ? { workspaceId } : {}),
           includeInternal: false,
         }, route);
       }
-    } else {
-      await updateSessionModel({
-        sessionId,
-        modelName: resolved,
-        // A preset the new model does not offer would be refused as a pair, so the
-        // session keeps its setting only when this surface knows it is offered.
-        ...(keepReasoning ? { reasoningPreset: preset } : {}),
-        ...(workspaceId ? { workspaceId } : {}),
-        includeInternal: false,
-      }, route);
-    }
-    if (scope !== modelScopeRevision || sessionWriteGen[key] !== write) return;
-    targetReadFor.add(key);
-    setSessionModelBinding(key, sessionId, resolved, null);
-    if (!keepReasoning) applyReasoningToSession(key, null);
-  }).finally(release);
+      if (scope !== modelScopeRevision || sessionWriteGen[key] !== write) return;
+      saved = true;
+      targetReadFor.add(key);
+      setSessionModelBinding(key, sessionId, resolved, null);
+      applyReasoningToSession(key, sendReasoning ? preset : null);
+      applyContextLengthToSession(key, effectiveContext);
+    });
+  } finally {
+    release();
+  }
+
+  // When a model is selected directly before its reasoning catalog has loaded (such as on
+  // touch devices without hover), load its presets and apply default `"high"` if supported.
+  if (saved && !explicitReasoning && !Array.isArray(knownChoices)) {
+    void ensureReasoningChoicesForModel(resolved, deviceId).then(async loadedChoices => {
+      if (scope !== modelScopeRevision || (sessionWriteGen[key] ?? 0) !== write) return;
+      const defaultHigh = defaultReasoningPresetFor(resolved, loadedChoices, deviceId);
+      if (defaultHigh === null) return;
+      const followRelease = beginModelSave(key);
+      if (!followRelease) return;
+      const followGen = bumpWriteGen(key);
+      try {
+        await runStep(
+          async () => {
+            await updateSessionModel({
+              sessionId,
+              modelName: resolved,
+              reasoningPreset: defaultHigh,
+              contextWindowOverride: effectiveContext,
+              ...(workspaceId ? { workspaceId } : {}),
+              includeInternal: false,
+            }, route);
+            if (scope === modelScopeRevision && (sessionWriteGen[key] ?? 0) === followGen) {
+              applyReasoningToSession(key, defaultHigh);
+            }
+          },
+          { trackBusy: false, clearError: false },
+        );
+      } finally {
+        followRelease();
+      }
+    });
+  }
 }
 
 /** One reasoning setting a model offers, as the composer draws it. */
@@ -565,7 +752,7 @@ export function reasoningPresetLabel(preset: ReasoningChoice): string {
 /** `sessionKey` → the reasoning setting the host reported or this surface wrote. */
 export const sessionReasoning = signal<Record<string, string | null>>({});
 /** Device and model id → offered settings; `null` while that owner answers. */
-const reasoningByModel = signal<Record<string, ReasoningChoice[] | null>>({});
+export const reasoningByModel = signal<Record<string, ReasoningChoice[] | null>>({});
 export const reasoningPickerOpen = signal(false);
 const modelSaves = signal<ReadonlySet<string>>(new Set());
 const reasoningLoads = new Map<string, Promise<void>>();
@@ -585,9 +772,30 @@ function modelCatalogTarget(modelId: string, deviceId: string): { modelId: strin
   return fleet ? { deviceId: fleet[1], modelId: fleet[2] } : { deviceId, modelId };
 }
 
-function reasoningCacheKey(modelId: string, deviceId: string): string {
-  const owner = modelCatalogTarget(modelId, deviceId);
+function reasoningCacheKey(modelId: string, deviceId?: string): string {
+  const targetDevice = deviceId ?? activeSessionDevice() ?? deviceContext();
+  const owner = modelCatalogTarget(modelId, targetDevice);
   return JSON.stringify([owner.deviceId, owner.modelId]);
+}
+
+function cachedReasoningFor(modelId: string, deviceId?: string): ReasoningChoice[] | null | undefined {
+  const targetDevice = deviceId ?? activeSessionDevice() ?? deviceContext();
+  const owner = modelCatalogTarget(modelId, targetDevice);
+  const map = reasoningByModel();
+  const primaryKey = JSON.stringify([owner.deviceId, owner.modelId]);
+  if (primaryKey in map) return map[primaryKey];
+  if (owner.deviceId === deviceContext() || owner.deviceId === entryDeviceId()) {
+    const resolved = canonicalModelRef(owner.modelId);
+    const resolvedKey = JSON.stringify([owner.deviceId, resolved]);
+    if (resolvedKey in map) return map[resolvedKey];
+    if (deviceContext() !== owner.deviceId) {
+      const localKey = JSON.stringify([deviceContext(), resolved]);
+      if (localKey in map) return map[localKey];
+      const rawLocalKey = JSON.stringify([deviceContext(), owner.modelId]);
+      if (rawLocalKey in map) return map[rawLocalKey];
+    }
+  }
+  return undefined;
 }
 
 export interface ModelContextView {
@@ -665,6 +873,43 @@ export async function saveComposerModelContext(context: ModelContextView, capaci
   }
 }
 
+const inFlightReasoningLoads = new Map<string, Promise<ReasoningChoice[]>>();
+
+/** Returns the cached reasoning choices for any model id (empty while loading or unsupported). */
+export function reasoningChoicesForModel(modelId: string | null | undefined, deviceId?: string): ReasoningChoice[] {
+  if (!modelId) return [];
+  return cachedReasoningFor(modelId, deviceId) ?? [];
+}
+
+/** True while reasoning choices for `modelId` are currently being fetched from the host. */
+export function isReasoningLoadingForModel(modelId: string | null | undefined, deviceId?: string): boolean {
+  if (!modelId) return false;
+  return cachedReasoningFor(modelId, deviceId) === null;
+}
+
+/** Ensures reasoning presets for `modelId` are loaded into `reasoningByModel` (deduped). */
+export function ensureReasoningChoicesForModel(modelId: string, deviceId?: string): Promise<ReasoningChoice[]> {
+  const targetDevice = deviceId ?? activeSessionDevice() ?? deviceContext();
+  const existing = cachedReasoningFor(modelId, targetDevice);
+  if (Array.isArray(existing)) return Promise.resolve(existing);
+  const cacheKey = reasoningCacheKey(modelId, targetDevice);
+  const pending = inFlightReasoningLoads.get(cacheKey);
+  if (pending) return pending;
+  const scope = modelScopeRevision;
+  reasoningByModel.update(current => (current[cacheKey] === undefined ? { ...current, [cacheKey]: null } : current));
+  const task = reasoningChoicesFor(modelId, targetDevice)
+    .catch(() => [] as ReasoningChoice[])
+    .then(choices => {
+      if (scope === modelScopeRevision) {
+        reasoningByModel.update(current => ({ ...current, [cacheKey]: choices }));
+      }
+      inFlightReasoningLoads.delete(cacheKey);
+      return choices;
+    });
+  inFlightReasoningLoads.set(cacheKey, task);
+  return task;
+}
+
 /**
  * `sessionKey` → the model whose reasoning was already read. The composer's effect
  * recomputes the active model whenever the session catalog moves, and a host round
@@ -682,7 +927,7 @@ export function reasoningChoicesForSession(sessionId: string | null, deviceId?: 
   if (sessionId && sessionPoolIds()[sessionKey(sessionId, deviceId ?? activeSessionDevice())]) return [];
   const modelId = modelIdForSession(sessionId, deviceId);
   if (!modelId) return [];
-  return reasoningByModel()[reasoningCacheKey(modelId, deviceId ?? activeSessionDevice())] ?? [];
+  return cachedReasoningFor(modelId, deviceId ?? activeSessionDevice()) ?? [];
 }
 
 export function reasoningLabelForSession(sessionId: string | null, deviceId?: string): string {
@@ -710,7 +955,7 @@ export const activeReasoningLabel = computed<string>(() =>
 );
 
 function reasoningOfferedFor(modelId: string, deviceId: string, presetId: string | null): boolean {
-  const choices = reasoningByModel()[reasoningCacheKey(modelId, deviceId)];
+  const choices = cachedReasoningFor(modelId, deviceId);
   // Until the host answers, the pair is left alone: sending a preset it may not
   // know would make the model change fail, which is worse than not carrying it.
   if (choices === null || choices === undefined) return false;
@@ -762,22 +1007,25 @@ export async function ensureReasoningLoaded(target?: SessionModelTarget): Promis
           if (result.reasoningPreset !== undefined) {
             applyReasoningToSession(key, result.reasoningPreset ?? null);
           }
+          if (result.contextWindowOverride !== undefined) {
+            applyContextLengthToSession(
+              key,
+              typeof result.contextWindowOverride === "number" && result.contextWindowOverride > 0
+                ? result.contextWindowOverride
+                : null,
+            );
+          }
         }
       }
 
       const effectiveModelId = modelIdForSession(sessionId, deviceId);
       if (!effectiveModelId) return;
-      const cacheKey = reasoningCacheKey(effectiveModelId, deviceId);
-      if (reasoningReadFor[key] === effectiveModelId && reasoningByModel()[cacheKey] !== undefined) {
+      if (reasoningReadFor[key] === effectiveModelId && Array.isArray(cachedReasoningFor(effectiveModelId, deviceId))) {
         return;
       }
       reasoningReadFor[key] = effectiveModelId;
-      if (reasoningByModel()[cacheKey] === undefined) {
-        reasoningByModel.update(current => ({ ...current, [cacheKey]: null }));
-        const choices = await reasoningChoicesFor(effectiveModelId, deviceId).catch(() => [] as ReasoningChoice[]);
-        if (scope === modelScopeRevision && reasoningByModel()[cacheKey] === null) {
-          reasoningByModel.update(current => ({ ...current, [cacheKey]: choices }));
-        }
+      if (cachedReasoningFor(effectiveModelId, deviceId) === undefined) {
+        await ensureReasoningChoicesForModel(effectiveModelId, deviceId);
       }
     },
     { trackBusy: false, clearError: false },
@@ -787,25 +1035,46 @@ export async function ensureReasoningLoaded(target?: SessionModelTarget): Promis
   finally { if (reasoningLoads.get(key) === loading) reasoningLoads.delete(key); }
 }
 
+async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
+  if (!storedModels().length) {
+    await loadStoredModels().catch(() => undefined);
+  }
+  const opt = findOption(modelId);
+  const direct = storedModels().find(
+    entry =>
+      entry.id === modelId ||
+      entry.model_name === modelId ||
+      (opt ? entry.id === opt.configId || entry.model_name === opt.modelName : false),
+  );
+  if (direct) return direct;
+  const defaults = (await getConfig("ai.default_models", true).catch(() => null)) as
+    | Record<string, string | null>
+    | null;
+  const resolved = defaults?.[modelId];
+  if (!resolved) return null;
+  return storedModels().find(entry => entry.id === resolved || entry.model_name === resolved) ?? null;
+}
+
 /** The presets a model's provider compiles its reasoning into (fallback when catalog omitted `reasoning`). */
 async function reasoningChoicesFor(modelId: string, deviceId: string, refreshCatalog = false): Promise<ReasoningChoice[]> {
   const owner = modelCatalogTarget(modelId, deviceId);
   const route = { target: owner.deviceId || undefined };
   const remoteOwner = owner.deviceId !== deviceContext();
   if (remoteOwner || refreshCatalog) {
-    const catalog = await getModelCatalog(route);
+    const catalog = await getModelCatalog(route).catch(() => null);
     const entry = catalog?.models?.find(model => model.id === owner.modelId || model.model_name === owner.modelId);
-    if (!entry) return [];
-    const choices = projectionToChoices(entry.reasoning);
-    if (choices !== null) return choices;
-    if (remoteOwner) {
-      return projectionToChoices(await projectAiModelReasoningCatalog({
-        provider: entry.provider, modelName: entry.model_name, baseUrl: entry.base_url ?? "",
-        contextWindow: entry.context_window, reasoning: {},
-      }, route)) ?? [];
+    if (entry) {
+      const choices = projectionToChoices(entry.reasoning);
+      if (choices !== null) return choices;
+      if (remoteOwner) {
+        return projectionToChoices(await projectAiModelReasoningCatalog({
+          provider: entry.provider, modelName: entry.model_name, baseUrl: entry.base_url ?? "",
+          contextWindow: entry.context_window, reasoning: {},
+        }, route)) ?? [];
+      }
     }
   }
-  const entry = await storedModelEntry(modelId);
+  const entry = await storedModelEntry(owner.modelId);
   if (entry) {
     const block = entry.reasoning;
     const projection = await projectAiModelReasoningCatalog({
@@ -830,41 +1099,20 @@ async function reasoningChoicesFor(modelId: string, deviceId: string, refreshCat
   return projectionToChoices(projection) ?? [];
 }
 
-/**
- * The model's own `ai.models` entry. Used only as fallback when `get_ai_model_catalog`
- * did not embed the model's projected reasoning presets.
- */
-async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
-  if (!storedModels().length) {
-    await loadStoredModels().catch(() => undefined);
-  }
-  const opt = findOption(modelId);
-  const direct = storedModels().find(
-    entry =>
-      entry.id === modelId ||
-      entry.model_name === modelId ||
-      (opt ? entry.id === opt.configId || entry.model_name === opt.modelName : false),
-  );
-  if (direct) return direct;
-  // A session can name a role (`primary`) rather than a model, which is what an
-  // install that never picked one stores. The host's own default table resolves
-  // it, and that model is what the runtime will run.
-  const defaults = (await getConfig("ai.default_models", true).catch(() => null)) as
-    | Record<string, string | null>
-    | null;
-  const resolved = defaults?.[modelId];
-  if (!resolved) return null;
-  return storedModels().find(entry => entry.id === resolved || entry.model_name === resolved) ?? null;
-}
-
 /** Sets the reasoning the next turn runs at, alongside the model it is bound to. */
 export function modelChangePending(target?: SessionModelTarget): boolean {
   const { key } = resolveTarget(target);
   return key !== null && modelSaves().has(key);
 }
 
-export async function chooseReasoning(presetId: string | null, target?: SessionModelTarget): Promise<boolean> {
+export async function chooseReasoning(
+  presetId: string | null,
+  target?: SessionModelTarget,
+  options?: { keepOpen?: boolean },
+): Promise<boolean> {
   const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
+  reasoningPickerOpen.set(false);
+  if (!options?.keepOpen) modelPickerOpen.set(false);
   if (!sessionId || !key) return false;
   const release = beginModelSave(key);
   if (!release) return false;
@@ -876,16 +1124,84 @@ export async function chooseReasoning(presetId: string | null, target?: SessionM
     if (!modelId || sessionPoolIds()[key] || scope !== modelScopeRevision) return false;
     if (presetId === reasoningIdForSession(sessionId, deviceId)) return true;
     if (presetId !== null && !reasoningOfferedFor(modelId, deviceId, presetId)) return false;
+    const contextTokens = explicitContextLengthForSession(sessionId, deviceId);
     const write = bumpWriteGen(key);
     await updateSessionModel({
       sessionId,
       modelName: modelId,
       reasoningPreset: presetId,
+      ...(contextTokens !== null ? { contextWindowOverride: contextTokens } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       includeInternal: false,
     }, { target: deviceId || undefined });
     if (scope === modelScopeRevision && sessionWriteGen[key] === write) applyReasoningToSession(key, presetId);
     return true;
+  } finally {
+    release();
+  }
+}
+
+/** Sets the session's context length limit (in tokens) alongside its current model and reasoning setting. */
+export async function chooseContextLength(
+  tokens: number,
+  target?: SessionModelTarget,
+  options?: { modelId?: string; reasoningPreset?: string | null; keepOpen?: boolean },
+): Promise<void> {
+  const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
+  if (!options?.keepOpen) modelPickerOpen.set(false);
+  if (!sessionId || !key) return;
+  const release = beginModelSave(key);
+  if (!release) return;
+  const route = { target: deviceId || undefined };
+  const scope = modelScopeRevision;
+  try {
+    if (!targetReadFor.has(key)) {
+      await ensureReasoningLoaded(target);
+    }
+    const resolvedModel = options?.modelId
+      ? (deviceId === deviceContext() ? canonicalModelRef(options.modelId) : options.modelId)
+      : modelIdForSession(sessionId, deviceId);
+    if (!resolvedModel || scope !== modelScopeRevision) return;
+    const currentModel = modelIdForSession(sessionId, deviceId);
+    const switchingModel = resolvedModel !== currentModel;
+    const desiredReasoning =
+      options && "reasoningPreset" in options
+        ? options.reasoningPreset ?? null
+        : switchingModel
+          ? defaultReasoningPresetFor(resolvedModel, undefined, deviceId)
+          : reasoningIdForSession(sessionId, deviceId);
+    const canSendReasoning =
+      desiredReasoning === null || reasoningOfferedFor(resolvedModel, deviceId, desiredReasoning);
+
+    const wasPool = Boolean(sessionPoolIds()[key]);
+    const write = bumpWriteGen(key);
+    await runStep(async () => {
+      if (wasPool && switchingModel) {
+        await updateSessionModelTarget({
+          sessionId,
+          selection: { kind: "model", model_ref: resolvedModel },
+          ...(workspaceId ? { workspaceId } : {}),
+          includeInternal: false,
+        }, route);
+      }
+      await updateSessionModel({
+        sessionId,
+        modelName: resolvedModel,
+        ...(canSendReasoning ? { reasoningPreset: desiredReasoning } : {}),
+        contextWindowOverride: tokens,
+        ...(workspaceId ? { workspaceId } : {}),
+        includeInternal: false,
+      }, route);
+      if (scope !== modelScopeRevision || sessionWriteGen[key] !== write) return;
+      targetReadFor.add(key);
+      if (switchingModel) {
+        setSessionModelBinding(key, sessionId, resolvedModel, null);
+      }
+      if (canSendReasoning) {
+        applyReasoningToSession(key, desiredReasoning);
+      }
+      applyContextLengthToSession(key, tokens);
+    });
   } finally {
     release();
   }
@@ -907,6 +1223,7 @@ onWorkspaceChanged(() => {
   defaultModels.set({});
   defaultModelId.set(null);
   sessionModels.set({});
+  sessionContextLengths.set({});
   sessionPoolIds.set({});
   fleetModelGroups.set(null);
   modelPickerOpen.set(false);
@@ -915,6 +1232,7 @@ onWorkspaceChanged(() => {
   reasoningPickerOpen.set(false);
   sessionReasoning.set({});
   reasoningByModel.set({});
+  inFlightReasoningLoads.clear();
   reasoningLoads.clear();
   targetReadFor.clear();
   for (const key of Object.keys(reasoningReadFor)) delete reasoningReadFor[key];

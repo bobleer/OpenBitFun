@@ -246,6 +246,11 @@ pub(crate) async fn get_watched_paths() -> Result<Value, String> {
     Ok(json!(paths))
 }
 
+pub(crate) async fn retry_file_watch() -> Result<Value, String> {
+    openbitfun_core::service::retry_file_watch().await?;
+    Ok(Value::Null)
+}
+
 pub(crate) async fn check_path_exists(
     state: &PeerHostState,
     args: &Value,

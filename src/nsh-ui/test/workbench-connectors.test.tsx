@@ -597,19 +597,21 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   // Open WeChat channel modal & start QR, then close modal.
   await app.press("channel-toggle-weixin");
   await app.press("connector-weixin-qr-start");
-  await app.waitFor("text:https://weixin.example/qr/wx-qr-1");
+  await app.waitFor("connector-weixin-qr");
   expect(backend.weixinQrStarts()).toBe(1);
-  // A non-image QR payload is drawn as a QR code, as the desktop does.
-  expect(app.shows("connector-weixin-qr")).toBe(true);
+  // Raw QR URL noise and duplicate raw-English host notices stay hidden once the QR renders.
+  expect(app.shows("text:https://weixin.example/qr/wx-qr-1")).toBe(false);
+  expect(app.shows("text:Scan QR code with WeChat")).toBe(false);
+  expect(app.shows("connector-weixin-copy-url")).toBe(false);
   // need_verify_code asks for the number and sends it with the next poll only.
   await app.press("connector-weixin-qr-poll");
   await app.waitFor("connector-weixin-verify-code");
   expect(backend.weixinPolls.at(-1)).toMatchObject({ session_key: "wx-qr-1", verify_code: null });
   await app.type("connector-weixin-verify-code", "4821");
   await app.press("connector-weixin-verify-submit");
-  await app.waitFor("Confirm on your phone");
+  await app.waitFor("Scanned. Confirm on your phone.");
   expect(backend.weixinPolls.at(-1)).toMatchObject({ session_key: "wx-qr-1", verify_code: "4821" });
-  await app.press("text:Done");
+  await app.press("label:modal-close");
 
   // Whether other devices may control this one.
   await app.press("remote-control-allowed");
@@ -979,11 +981,14 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
         provider: "openai_codex",
         state: "healthy",
         plan: "Pro",
-        primary_window: {
-          label: "5h window",
-          remaining_percent: 72,
-          reset_at: "2h",
-        },
+        windows: [
+          {
+            id: "5h",
+            display_name: "5h window",
+            used_percent: 28,
+            resets_at: Math.floor(Date.now() / 1000) + 7230,
+          },
+        ],
       },
     },
   });
@@ -999,7 +1004,7 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
   await app.press("models-tab-subscriptions");
   await app.waitFor("AI subscriptions");
   await app.waitFor("OpenAI Codex");
-  await app.waitFor("5h window · 72% left · resets 2h");
+  await app.waitUntil(() => app.texts().some(t => t.includes("5h window") && t.includes("72% left")));
   // A host without account instances has one slot per provider, named by the
   // provider key: the quota is never asked for by the account's email.
   expect(backend.quotaCalls.at(-1)).toMatchObject({ provider: "openai_codex", accountId: "openai_codex" });

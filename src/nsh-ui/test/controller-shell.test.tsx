@@ -10,7 +10,14 @@
 import { expect, open, test, type App } from "nsh/test";
 import type { ControllerDevice } from "../src/controller/controllerPort";
 import { pickUiSourceDevice } from "../src/controller/controllerStore";
-import { launchStateOf, refusalError, resolveControllerUrl, uiManifestError } from "../src/controller/webController";
+import {
+  compareManifestVersions,
+  launchStateOf,
+  refusalError,
+  resolveControllerUrl,
+  shouldOfferUiUpdate,
+  uiManifestError,
+} from "../src/controller/webController";
 import { createDeviceBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -313,6 +320,8 @@ async function signIn(app: App) {
   await app.waitFor("label:controller-email");
   await app.type("controller-email-input", "me@example.com");
   await app.press("label:controller-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   // A complete code signs in by itself.
   await app.type("controller-code-input", "12345678");
 }
@@ -324,6 +333,15 @@ test("sign in with the email code; the device opens by itself and runs in place 
   await app.waitFor("label:controller-email");
   await app.type("controller-email-input", "Me@Example.com");
   await app.press("label:controller-continue");
+  await app.waitFor("remote-disclaimer-modal");
+  expect(host.requests).toEqual([]);
+  await app.press("remote-disclaimer-decline");
+  await app.waitFor("remote-disclaimer-modal", { state: "gone" });
+  expect(host.requests).toEqual([]);
+
+  await app.press("label:controller-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.waitFor("label:controller-code");
   await app.waitFor("text:Enter the code we sent to me@example.com.");
   expect(host.requests[0]).toMatchObject({ method: "POST", body: { email: "Me@Example.com", locale: "en-US" } });
@@ -623,4 +641,143 @@ test("reconnecting to a restarted device with a newer UI shows a Reload notice a
   await app.press("label:web-ui-update-reload");
   for (let step = 0; step < 100 && host.launched.length === 0; step += 1) await app.wait(50);
   expect(host.launched[0]).toEqual({ bundleId: DEVICE_BUNDLE, deviceId: "desk-1" });
+});
+
+test("shouldOfferUiUpdate rejects same-version cross-device flaps and downgrades, while accepting real upgrades", () => {
+  expect(compareManifestVersions("2.0.1", "2.0.0")).toBeGreaterThan(0);
+  expect(compareManifestVersions("2.0.0", "2.0.0-beta.1")).toBeGreaterThan(0);
+  expect(compareManifestVersions("2.0.0", "2.0.0")).toBe(0);
+  expect(compareManifestVersions("2.0.0", "2.0.1")).toBeLessThan(0);
+  expect(compareManifestVersions("next", "2.0.0")).toBeNull();
+
+  // Same version on another device (e.g. MacBook 2.0.0 vs Ubuntu 2.0.0 with different build hashes) never prompts.
+  expect(
+    shouldOfferUiUpdate({
+      runningBundleId: OWN_BUNDLE,
+      runningVersion: "2.0.0",
+      runningOwnerDeviceId: "macbook",
+      candidateBundleId: DEVICE_BUNDLE,
+      candidateVersion: "2.0.0",
+      candidateOwnerDeviceId: "ubuntu",
+    }),
+  ).toBe(false);
+
+  // Older version (downgrade after a newer peer drops) never prompts.
+  expect(
+    shouldOfferUiUpdate({
+      runningBundleId: DEVICE_BUNDLE,
+      runningVersion: "2.0.1",
+      runningOwnerDeviceId: "ubuntu",
+      candidateBundleId: OWN_BUNDLE,
+      candidateVersion: "2.0.0",
+      candidateOwnerDeviceId: "macbook",
+    }),
+  ).toBe(false);
+
+  // Strictly newer version from any peer prompts.
+  expect(
+    shouldOfferUiUpdate({
+      runningBundleId: OWN_BUNDLE,
+      runningVersion: "2.0.0",
+      runningOwnerDeviceId: "macbook",
+      candidateBundleId: DEVICE_BUNDLE,
+      candidateVersion: "2.0.1",
+      candidateOwnerDeviceId: "ubuntu",
+    }),
+  ).toBe(true);
+
+  // Same owning device replacing its own bundle (e.g. local rebuild / restart) still prompts.
+  expect(
+    shouldOfferUiUpdate({
+      runningBundleId: OWN_BUNDLE,
+      runningVersion: "2.0.0",
+      runningOwnerDeviceId: "macbook",
+      candidateBundleId: DEVICE_BUNDLE,
+      candidateVersion: "2.0.0",
+      candidateOwnerDeviceId: "macbook",
+    }),
+  ).toBe(true);
+});
+
+test("fleet reconnects never show a spurious Reload notice for same-version peer flaps, downgrades, or transient fleet errors", async () => {
+  const V200_MAC = { ...MANIFEST, version: "2.0.0" };
+  const V200_UBUNTU = {
+    ...MANIFEST,
+    version: "2.0.0",
+    files: [{ path: "index.html", sha256: "d".repeat(64), size: 11 }],
+  };
+  const V199_OLD = { ...MANIFEST, version: "1.9.9" };
+  const V201_NEW = { ...MANIFEST, version: "2.0.1" };
+  const fleetManifest: Record<
+    string,
+    { manifest: Record<string, unknown>; ownerDeviceId?: string; holders?: string[] } | { error: string }
+  > = {
+    "desk-1": {
+      manifest: V200_MAC,
+      ownerDeviceId: "desk-1",
+      holders: ["desk-1"],
+    },
+  };
+  const host = controllerHost({
+    signedIn: true,
+    fleet: { protocol: 1, deviceId: "desk-1", cursorState: {} },
+    fleetManifest,
+    manifest: { "desk-1": { manifest: V199_OLD } },
+    bundleId: data => {
+      const m = data.manifest as { version?: string; files?: Array<{ sha256?: string }> };
+      if (m.version === "2.0.0" && m.files?.[0]?.sha256 === "c".repeat(64)) return OWN_BUNDLE;
+      return DEVICE_BUNDLE;
+    },
+  });
+  const app = await start(host);
+  await until(app, "label:controller-studio");
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+  const initialFleetCalls = host.calls.filter(name => name === "fleet_ui_bundle").length;
+
+  // 1. Routine `fleet://digest-changed` ticks must not poll `fleet_ui_bundle` or show a notice.
+  const firstSocketId = host.latestSocketId()!;
+  host.push({
+    id: firstSocketId,
+    type: "message",
+    data: JSON.stringify({
+      type: "event",
+      seq: 1,
+      event: "fleet://digest-changed",
+      payload: { revision: 2 },
+    }),
+  });
+  await app.wait(1000);
+  expect(host.calls.filter(name => name === "fleet_ui_bundle").length).toBe(initialFleetCalls);
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+
+  // 2. Peer tie-break flap to another 2.0.0 device with a different bundleId must not show Reload.
+  fleetManifest["desk-1"] = { manifest: V200_UBUNTU, ownerDeviceId: "cli-2", holders: ["cli-2"] };
+  host.push({ id: firstSocketId, type: "close", code: 1006, reason: "blip" });
+  await app.waitUntil(() => host.calls.filter(name => name === "fleet_ui_bundle").length > initialFleetCalls);
+  await app.wait(200);
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+
+  // 3. Transient `fleet_ui_bundle` timeout must not fall back to older `ui_bundle_manifest` (1.9.9).
+  const callsBeforeTimeout = host.calls.filter(name => name === "fleet_ui_bundle").length;
+  const manifestCallsBefore = host.calls.filter(name => name === "ui_bundle_manifest").length;
+  fleetManifest["desk-1"] = { error: "timeout: peer took too long" };
+  host.push({ id: host.latestSocketId()!, type: "close", code: 1006, reason: "blip" });
+  await app.waitUntil(() => host.calls.filter(name => name === "fleet_ui_bundle").length > callsBeforeTimeout);
+  await app.wait(200);
+  expect(host.calls.filter(name => name === "ui_bundle_manifest").length).toBe(manifestCallsBefore);
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+
+  // 4. Older version (1.9.9) must not offer a downgrade.
+  const callsBeforeOld = host.calls.filter(name => name === "fleet_ui_bundle").length;
+  fleetManifest["desk-1"] = { manifest: V199_OLD, ownerDeviceId: "desk-1", holders: ["desk-1"] };
+  host.push({ id: host.latestSocketId()!, type: "close", code: 1006, reason: "blip" });
+  await app.waitUntil(() => host.calls.filter(name => name === "fleet_ui_bundle").length > callsBeforeOld);
+  await app.wait(200);
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+
+  // 5. Genuine newer release (2.0.1 from peer cli-2) does show the Reload notice.
+  fleetManifest["desk-1"] = { manifest: V201_NEW, ownerDeviceId: "cli-2", holders: ["cli-2"] };
+  host.push({ id: host.latestSocketId()!, type: "close", code: 1006, reason: "restarting" });
+  await until(app, "label:web-ui-update-notice");
+  await app.waitFor("text:OpenBitFun 2.0.1 interface is ready.");
 });

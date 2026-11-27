@@ -69,7 +69,7 @@ pub(crate) async fn dispatch(
                 .map_err(
                     openbitfun_core::external_sources::sanitize_external_source_operation_error,
                 )?;
-            serde_json::to_value(snapshot.into_legacy_v0_compatible())
+            serde_json::to_value(snapshot)
         }
         "get_external_source_control_snapshot" => {
             let force_refresh = optional_bool_field(request, "forceRefresh")?;

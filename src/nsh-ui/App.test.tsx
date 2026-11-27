@@ -333,27 +333,6 @@ test("a queued message waits in the host queue; this window never drains it", as
   await app.waitUntil(() => !app.shows("queued-panel"));
 });
 
-test("rows an earlier build kept locally are handed to the host queue once", async () => {
-  const backend = createBackend({ hostQueue: true });
-  const app = await open("./App.tsx", {
-    ...DESKTOP,
-    host: { handlers: backend.handlers },
-    storage: {
-      "openbitfun.nsh.pending-queue.v1": JSON.stringify([
-        { id: "nsh-old-1", sessionId: "session-1", content: "Left over from before" },
-      ]),
-    },
-  });
-  await showAllSessions(app, "NSH skeleton");
-  const submits = await waitForCalls(backend, "manage_dialog_queue", 2);
-  const submit = submits.find(call => (call.request as { action?: string })?.action === "submit");
-  expect(submit?.request).toMatchObject({
-    sessionId: "session-1",
-    message: { turnId: "nsh-old-1", content: "Left over from before" },
-  });
-  await app.waitUntil(() => app.storage()["openbitfun.nsh.pending-queue.v1"] === undefined);
-});
-
 test("a host with a dialog queue keeps the message and promotes it on request", async () => {
   const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
@@ -949,14 +928,14 @@ test("the composer picks the model the next turn runs on", async () => {
   // A model that cannot chat is not offered.
   // Each row: the model as the host labels it, then its provider (an older host
   // without labels reads as the entry's name and request format).
-  await app.waitFor("label:model-option-fast-small >> text:Fast model");
+  await app.waitFor("label:model-option-cfg-fast >> text:Fast model");
   expect(app.texts()).not.toContain("Image model");
 
-  await app.press("model-option-fast-small");
+  await app.press("model-option-cfg-fast");
   const update = backend.calls.find(call => call.action === "update_session_model");
   expect(update?.request).toMatchObject({
     sessionId: "session-1",
-    modelName: "fast-small",
+    modelName: "cfg-fast",
     workspaceId: "workspace-1",
   });
   await app.waitFor("label:bot-capsule-trigger >> text:Fast model");
@@ -973,31 +952,46 @@ test("the composer offers the reasoning the chosen model supports", async () => 
 
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
-  // The session reported no preset (model default): icon-only button without "Default" text clutter.
-  await app.waitFor("reasoning-picker");
-  expect(app.shows("label:reasoning-picker >> text:Default")).toBe(false);
+  // Reasoning lives inside the model picker submenu rather than as a standalone composer button.
+  await app.waitFor("label:bot-capsule-trigger >> text:Primary model");
+  expect(app.shows("reasoning-picker")).toBe(false);
 
-  await app.press("reasoning-picker");
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("label:model-option-cfg-primary");
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
   await app.waitFor("reasoning-option-high");
 
   await app.press("reasoning-option-high");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as { reasoningPreset?: string | null })?.reasoningPreset === "high",
+    ),
+  );
   const update = backend.calls.filter(call => call.action === "update_session_model").at(-1);
   expect(update?.request).toMatchObject({
     sessionId: "session-1",
-    modelName: "gpt-4.1-mini",
+    modelName: "cfg-primary",
     reasoningPreset: "high",
     workspaceId: "workspace-1",
   });
-  // Elevated reasoning expands into a compact tinted chip with the host-accepted label.
-  await app.waitFor("label:reasoning-picker >> text:High");
+  await app.waitFor("label:bot-capsule-trigger >> text:High");
 
   // Back to the model's own default, written as a null rather than dropped: the
-  // host distinguishes "clear it" from "leave it alone", and the button returns to icon-only.
-  await app.press("reasoning-picker");
+  // host distinguishes "clear it" from "leave it alone", and the badge drops High.
   await app.press("reasoning-option-default");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as { reasoningPreset?: string | null })?.reasoningPreset === null,
+    ),
+  );
   const cleared = backend.calls.filter(call => call.action === "update_session_model").at(-1);
   expect(cleared?.request).toMatchObject({ reasoningPreset: null });
-  await app.waitUntil(() => app.shows("reasoning-picker") && !app.shows("label:reasoning-picker >> text:High"));
+  await app.waitUntil(() => !app.shows("label:bot-capsule-trigger >> text:High"));
 });
 
 test("a host that declares no reasoning settings draws no control", async () => {
@@ -1665,9 +1659,7 @@ test("a host older than the typed settings commands says so instead of writing w
   // The refused form stays open over the page (and its list) until it is closed.
   await app.press("model-editor-cancel");
   await app.press("nav-settings-page-permissions");
-  await app.waitFor("Edit rules");
-  await app.press("permission-mode-auto");
-  await app.waitFor("This device is older than this window and cannot apply this change. Update OpenBitFun on it.");
+  await app.waitUntil(() => backend.calls.some(call => call.action === "get_permission_settings"));
   expect(backend.settingsWrites.some(write => write.path === "tool_permissions")).toBe(false);
 });
 
@@ -1783,7 +1775,7 @@ test("a configured model takes its enabled flag and its limits from this page", 
   expect(limited[0]).toMatchObject({ context_window: 200000, max_tokens: 32000, enabled: false });
 });
 
-test("the model form fills itself from this machine's catalog", async () => {
+test("the model form fills endpoint and protocol from a provider preset without preset model chips", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
@@ -1791,31 +1783,30 @@ test("the model form fills itself from this machine's catalog", async () => {
   await app.press("nav-settings-page-models");
   await app.waitFor("Configured model");
   await app.press("add-model");
-  await app.waitFor("Discover a model: pick a provider, then a model, and the form fills itself.");
+  await app.waitFor("Quick setup: pick a provider to fill its endpoint and protocol.");
 
-  // The picker asks this machine for its own projection once, then narrows it.
+  // The picker asks this machine for its own projection once, then narrows providers.
   const read = backend.actions().filter(action => action === "get_local_models_dev_catalogs");
   expect(read).toHaveLength(1);
   await app.type("model-filter", "anthro");
   await app.press("model-catalog-provider-anthropic");
-  await app.waitFor("Claude Sonnet 4");
 
-  // A catalog pick carries the endpoint format, the model id and both limits, so
-  // the form does not have to be typed twice.
-  await app.press("model-catalog-model-claude-sonnet-4");
+  // Selecting a preset provider fills its endpoint and protocol, without showing preset model chips.
+  expect(app.shows("model-catalog-model-claude-sonnet-4")).toBe(false);
+  expect(app.shows("text:Claude Sonnet 4")).toBe(false);
+  expect(app.value("model-base-url")).toBe("https://api.anthropic.com/v1");
+
+  await app.type("model-model-name", "claude-sonnet-4");
   await app.press("save-model");
-  // The (folded) name follows the picked model, not the provider.
-  await app.waitFor("Added Claude Sonnet 4");
+  await app.waitFor("Added claude-sonnet-4");
   const write = backend.settingsWrites.filter(entry => entry.path === "ai.models").pop()?.value as Array<
     Record<string, unknown>
   >;
   expect(write[1]).toMatchObject({
-    name: "Claude Sonnet 4",
+    name: "claude-sonnet-4",
     provider: "anthropic",
     model_name: "claude-sonnet-4",
     base_url: "https://api.anthropic.com/v1",
-    context_window: 200000,
-    max_tokens: 8000,
   });
 });
 
@@ -1829,7 +1820,7 @@ test("a host without a model catalog still takes a model by hand", async () => {
   await app.waitFor("Configured model");
   await app.press("add-model");
   await app.waitFor("Base URL");
-  expect(app.texts().some(text => text.startsWith("Discover a model"))).toBe(false);
+  expect(app.texts().some(text => text.startsWith("Quick setup:"))).toBe(false);
 
   await app.press("model-more-options");
   await app.type("model-name", "Hand written");
@@ -2232,15 +2223,14 @@ test("a terminal close failure keeps the tab available for retry", async () => {
 });
 
 test("a shell's title follows its program, while a named tab keeps its name", async () => {
-  const backend = createBackend();
+  const backend = createBackend({
+    terminalProfiles: {
+      "workspace-1": [{ id: "p1", name: "Dev server", shellId: "shell-bash", shellType: "Bash", startupCommand: "" }],
+    },
+  });
   const app = await open("./App.tsx", {
     ...DESKTOP,
     host: { handlers: backend.handlers },
-    storage: {
-      "openbitfun.nsh.terminal-profiles.v1": JSON.stringify({
-        "/repo": [{ id: "p1", name: "Dev server", shellId: "shell-bash", shellType: "Bash", startupCommand: "" }],
-      }),
-    },
   });
 
   await openToolScene(app, "terminal");
@@ -2285,16 +2275,16 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
     workspaceId: "workspace-1",
     profile: { name: "Terminal 1", shellId: "shell-bash", shellType: "Bash", startupCommand: "pnpm run dev" },
   });
-  expect(backend.actions()).not.toContain("terminal_write");
+  expect(backend.actions()).not.toContain("terminal_send_command");
 
   // The saved profile is listed, and opening it starts its shell.
   await app.waitFor("Open Terminal 1");
   await app.press("Open Terminal 1");
   const created = backend.calls.filter(call => call.action === "terminal_create").pop();
   expect(created?.request).toMatchObject({ shellId: "shell-bash", shellType: "Bash" });
-  // The startup command is typed into the new shell, newline included.
-  const written = backend.calls.filter(call => call.action === "terminal_write").pop();
-  expect(written?.request).toMatchObject({ sessionId: "terminal-2", data: "pnpm run dev\r" });
+  // The startup command is sent to the new shell through `terminal_send_command`.
+  const sent = backend.calls.filter(call => call.action === "terminal_send_command").pop();
+  expect(sent?.request).toMatchObject({ sessionId: "terminal-2", command: "pnpm run dev" });
 
   await app.press("profiles-toggle");
   await app.press("profile-delete-Terminal 1");
@@ -2304,67 +2294,6 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
   });
   // Nothing is kept in this surface's storage any more.
   expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"] ?? "").not.toContain("Terminal 1");
-});
-
-test("a profile a previous run saved is offered again", async () => {
-  const backend = createBackend();
-  const app = await open("./App.tsx", {
-    ...DESKTOP,
-    host: { handlers: backend.handlers },
-    storage: {
-      "openbitfun.nsh.terminal-profiles.v1": JSON.stringify({
-        "/repo": [
-          { id: "p1", name: "Dev server", shellId: "shell-zsh", shellType: "Zsh", startupCommand: "pnpm run dev" },
-          // A malformed record from a hand-edited file is skipped, not fatal.
-          { id: "p2", name: "" },
-        ],
-      }),
-    },
-  });
-
-  await openToolScene(app, "terminal");
-  await app.waitFor("shell 1");
-  await app.press("profiles-toggle");
-  await app.waitFor("Open Dev server");
-  expect(app.texts()).toContain("Profiles 1");
-  // The list an earlier build kept under the workspace root was handed to the host once
-  // (the malformed row stayed behind) and then forgotten here.
-  expect(backend.calls.filter(call => call.action === "import_terminal_profiles")).toHaveLength(1);
-  expect(backend.calls.find(call => call.action === "import_terminal_profiles")?.request).toMatchObject({
-    workspaceId: "workspace-1",
-    profiles: [{ id: "p1", name: "Dev server", shellId: "shell-zsh", shellType: "Zsh", startupCommand: "pnpm run dev" }],
-  });
-  await app.waitUntil(() => app.storage()["openbitfun.nsh.terminal-profiles.v1"] === undefined);
-
-  await app.press("Open Dev server");
-  await app.waitFor("Dev server");
-  const written = backend.calls.filter(call => call.action === "terminal_write").pop();
-  expect(written?.request).toMatchObject({ data: "pnpm run dev\r" });
-});
-
-test("an older host without profile commands keeps stored profiles openable and says saving needs an update", async () => {
-  const backend = createBackend({ terminalProfilesUnsupported: true });
-  const app = await open("./App.tsx", {
-    ...DESKTOP,
-    host: { handlers: backend.handlers },
-    storage: {
-      "openbitfun.nsh.terminal-profiles.v1": JSON.stringify({
-        "id:local:workspace-1": [
-          { id: "p1", name: "Dev server", shellId: "shell-zsh", shellType: "Zsh", startupCommand: "pnpm run dev" },
-        ],
-      }),
-    },
-  });
-
-  await openToolScene(app, "terminal");
-  await app.waitFor("shell 1");
-  await app.press("profiles-toggle");
-  await app.waitFor("Open Dev server");
-  await app.press("profile-save");
-  await app.waitFor("This device cannot keep terminal profiles. Update OpenBitFun on it to save or delete profiles; profiles saved earlier still open.");
-  expect(backend.actions()).not.toContain("upsert_terminal_profile");
-  // Nothing is deleted from storage while the host cannot take the rows.
-  expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"]).toContain("Dev server");
 });
 
 test("settings assigns a model to a product task, in the shape the host reads", async () => {

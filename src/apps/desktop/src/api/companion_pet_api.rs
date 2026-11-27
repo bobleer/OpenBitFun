@@ -385,8 +385,14 @@ mod tests {
             .join(BUILTIN_DIR);
         let store = LocalPetPackages::new(Some(root), temp_dir("user"));
         let pets = store.builtin_pets();
-        assert_eq!(pets.len(), 14, "every built-in sprite set ships");
+        assert_eq!(pets.len(), 3, "only the three built-in sprite sets ship");
         assert_eq!(pets[0].id, AGENT_COMPANION_DEFAULT_PET_ID);
+        let mut ids: Vec<&str> = pets.iter().map(|pet| pet.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["bitblob", "deepseek-goldwhale", "openbitfun-girl"]
+        );
         for pet in &pets {
             assert_eq!(pet.source, "builtin");
             assert!(pet.package_path.starts_with(AGENT_COMPANION_BUILTIN_PREFIX));
@@ -445,9 +451,16 @@ mod tests {
         let store = LocalPetPackages::new(Some(root.clone()), temp_dir("user"));
         assert_eq!(
             store
+                .resolve_spritesheet("/agent-companion-pets/openbitfun-girl/spritesheet.webp")
+                .unwrap(),
+            root.join("openbitfun-girl").join("spritesheet.webp")
+        );
+        // Retired built-in selections (e.g. boxcat) fall back to BitBlob rather than failing.
+        assert_eq!(
+            store
                 .resolve_spritesheet("/agent-companion-pets/boxcat/spritesheet.webp")
                 .unwrap(),
-            root.join("boxcat").join("spritesheet.webp")
+            root.join("bitblob").join("spritesheet.webp")
         );
         assert_eq!(
             store

@@ -269,7 +269,6 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("computer_use_get_status"),
     target("computer_use_open_system_settings"),
     target("computer_use_request_permission"),
-    target("computer_use_request_permissions"),
     target("computer_use_share_control"),
     target("computer_use_share_forget_grant"),
     target("computer_use_share_grants"),
@@ -522,7 +521,6 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     local("inspect_snapshot_storage"),
     target("install_acp_client_cli"),
     local("install_pending_update"),
-    local("install_update"),
     owner("interrupt_dialog_turn",                                     Session,   "request.sessionId"),
     owner("launch_review",                                             Session,   "request.parentSessionId"),
     owner("launch_review_remediation",                                 Session,   "request.sessionId"),
@@ -628,10 +626,6 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("open_remote_workspace"),
     target_because("open_workspace",                                            OPENS_ON_CHOSEN_DEVICE),
     owner("paste_files",                                               Workspace, "request.workspaceId"),
-    local("peer_link_call"),
-    local("peer_link_connect"),
-    local("peer_link_disconnect"),
-    local("peer_link_events"),
     owner("plan_external_hook_import_command",                         Workspace, "request.workspaceId"),
     owner("plan_external_mcp_import_command",                          Workspace, "request.workspaceId"),
     target("predownload_acp_client_adapter"),
@@ -937,7 +931,7 @@ mod tests {
         matches!(
             op.surface,
             OperationSurface::TauriCommand | OperationSurface::CloudNode
-        ) && !matches!(op.peer, PeerStance::Retired { .. } | PeerStance::FleetEntry)
+        ) && !matches!(op.peer, PeerStance::FleetEntry)
     }
 
     #[test]
@@ -1102,11 +1096,6 @@ mod tests {
             fleet_route("reveal_session_storage_directory"),
             FleetRoute::EntryLocal,
             "opening a local file manager must use the backend owner's connection"
-        );
-        assert_eq!(
-            fleet_route("get_workspace_info"),
-            FleetRoute::ByTarget { reason: None },
-            "a HostInvoke-only alias has no row and goes to the target"
         );
         assert_eq!(
             fleet_route("a_command_from_a_newer_client"),

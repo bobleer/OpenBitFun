@@ -196,6 +196,64 @@ pub(crate) async fn get_session_file_diff_stats(
     .await
 }
 
+pub(crate) async fn get_operation_diff(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let file_path = get_string(request, "filePath")?;
+    let operation_id = optional_string(request, "operationId");
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = openbitfun_core::service::snapshot::open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let diff = match operation_id.as_deref() {
+        Some(operation_id) => {
+            manager
+                .get_operation_diff_before(
+                    &session_id,
+                    &file_path,
+                    operation_id,
+                    read.visible_turn_end(),
+                )
+                .await
+        }
+        None => {
+            manager
+                .get_file_diff_before(&session_id, &file_path, None, read.visible_turn_end())
+                .await
+        }
+    }
+    .map_err(|error| format!("Failed to get operation diff: {error}"))?;
+
+    let original = diff
+        .get("original_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let modified = diff
+        .get("modified_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    Ok(json!({
+        "filePath": diff.get("file_path").and_then(|v| v.as_str()).unwrap_or(&file_path),
+        "originalContent": original.to_string(),
+        "modifiedContent": modified.to_string(),
+        "anchorLine": diff.get("anchor_line").and_then(|v| v.as_u64()),
+    }))
+}
+
 pub(crate) async fn rollback_session_to_turn(
     state: &PeerHostState,
     args: &Value,

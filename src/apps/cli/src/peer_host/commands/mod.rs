@@ -1,5 +1,6 @@
 //! Product HostInvoke command handlers for CLI Peer Host.
 
+mod agents;
 mod btw;
 mod config;
 mod cron;
@@ -8,6 +9,7 @@ mod external_sources;
 mod filesystem;
 mod git;
 mod goal;
+mod mcp;
 mod model_pools;
 mod models;
 mod permission;
@@ -56,17 +58,32 @@ pub(crate) fn dispatch<'a>(
         "get_models_dev_catalog_status" => Box::pin(models::get_models_dev_catalog_status()),
         "refresh_models_dev_catalog_now" => Box::pin(models::refresh_models_dev_catalog_now()),
         "test_ai_config_connection" => Box::pin(models::test_ai_config_connection(args)),
-        // Workspace / config
+        // Workspace / assistant / config
         "initialize_workspace_startup_state" => {
             Box::pin(workspace::initialize_workspace_startup_state(state))
+        }
+        "get_assistant_workspaces" => Box::pin(workspace::get_assistant_workspaces(state)),
+        "get_primary_assistant_workspace" => {
+            Box::pin(workspace::get_primary_assistant_workspace(state))
+        }
+        "create_assistant_workspace" => Box::pin(workspace::create_assistant_workspace(state, args)),
+        "set_assistant_identity" => Box::pin(workspace::set_assistant_identity(state, args)),
+        "set_primary_assistant_workspace" => {
+            Box::pin(workspace::set_primary_assistant_workspace(state, args))
+        }
+        "delete_assistant_workspace" => Box::pin(workspace::delete_assistant_workspace(state, args)),
+        "reset_assistant_workspace" => Box::pin(workspace::reset_assistant_workspace(state, args)),
+        "reset_workspace_persona_files" => {
+            Box::pin(workspace::reset_workspace_persona_files(state, args))
         }
         "get_workspace_icon" => Box::pin(workspace::get_workspace_icon(state, args)),
         "set_workspace_icon" => Box::pin(workspace::set_workspace_icon(state, args)),
         "get_opened_workspaces" => Box::pin(workspace::get_opened_workspaces(state)),
         "get_recent_workspaces" => Box::pin(workspace::get_recent_workspaces(state)),
-        "get_current_workspace" | "get_workspace_info" => {
-            Box::pin(workspace::get_current_workspace(state))
-        }
+        "get_current_workspace" => Box::pin(workspace::get_current_workspace(state)),
+        "close_workspace" => Box::pin(workspace::close_workspace(state, args)),
+        "remove_recent_workspace" => Box::pin(workspace::remove_recent_workspace(state, args)),
+        "update_workspace_info" => Box::pin(workspace::update_workspace_info(state, args)),
         "set_active_workspace" => Box::pin(workspace::set_active_workspace(state, args)),
         "reorder_opened_workspaces" => Box::pin(workspace::reorder_opened_workspaces(state, args)),
         "open_workspace" => Box::pin(workspace::open_workspace(state, args)),
@@ -77,6 +94,23 @@ pub(crate) fn dispatch<'a>(
         "get_config" => Box::pin(config::get_config(args)),
         "get_configs" => Box::pin(config::get_configs(args)),
         "set_config" => Box::pin(config::set_config(state, args)),
+        "export_config" => Box::pin(config::export_config()),
+        "import_config" => Box::pin(config::import_config(args)),
+        // Custom agents, subagents, and profiles
+        "list_agent_tool_names" => Box::pin(agents::list_agent_tool_names()),
+        "get_custom_agent_detail" => Box::pin(agents::get_custom_agent_detail(state, args)),
+        "create_custom_agent" => Box::pin(agents::create_custom_agent(state, args)),
+        "update_custom_agent" => Box::pin(agents::update_custom_agent(state, args)),
+        "delete_custom_agent" => Box::pin(agents::delete_custom_agent(state, args)),
+        "reload_custom_agents" => Box::pin(agents::reload_custom_agents(state, args)),
+        "get_subagent_detail" => Box::pin(agents::get_subagent_detail(state, args)),
+        "create_subagent" => Box::pin(agents::create_subagent(state, args)),
+        "update_subagent" => Box::pin(agents::update_subagent(state, args)),
+        "delete_subagent" => Box::pin(agents::delete_subagent(state, args)),
+        "reload_subagents" => Box::pin(agents::reload_subagents(state, args)),
+        "update_subagent_config" => Box::pin(agents::update_subagent_config(state, args)),
+        "set_agent_profile_config" => Box::pin(agents::set_agent_profile_config(args)),
+        "reset_agent_profile_config" => Box::pin(agents::reset_agent_profile_config(args)),
         // Typed settings mutations (wave 3 config).
         "ai_model_upsert" => Box::pin(settings_mutations::ai_model_upsert(args)),
         "ai_model_delete" => Box::pin(settings_mutations::ai_model_delete(args)),
@@ -118,6 +152,36 @@ pub(crate) fn dispatch<'a>(
         | "update_external_integration_policy_command" => {
             Box::pin(external_sources::dispatch(command, args, state))
         }
+        "plan_external_mcp_import_command" => {
+            Box::pin(external_sources::plan_external_mcp_import_command(state, args))
+        }
+        "apply_external_mcp_import_command" => {
+            Box::pin(external_sources::apply_external_mcp_import_command(state, args))
+        }
+        "list_removed_external_sessions" => {
+            Box::pin(external_sources::list_removed_external_sessions(args))
+        }
+        "restore_removed_external_session" => {
+            Box::pin(external_sources::restore_removed_external_session(args))
+        }
+        // MCP servers, prompts, resources, and remote auth
+        "get_mcp_servers" => Box::pin(mcp::get_mcp_servers()),
+        "start_mcp_server" => Box::pin(mcp::start_mcp_server(args)),
+        "stop_mcp_server" => Box::pin(mcp::stop_mcp_server(args)),
+        "restart_mcp_server" => Box::pin(mcp::restart_mcp_server(args)),
+        "get_mcp_server_status" => Box::pin(mcp::get_mcp_server_status(args)),
+        "load_mcp_json_config" => Box::pin(mcp::load_mcp_json_config()),
+        "save_mcp_json_config" => Box::pin(mcp::save_mcp_json_config(args)),
+        "delete_mcp_server" => Box::pin(mcp::delete_mcp_server(args)),
+        "list_mcp_prompts" => Box::pin(mcp::list_mcp_prompts(args)),
+        "get_mcp_prompt" => Box::pin(mcp::get_mcp_prompt(args)),
+        "list_mcp_resources" => Box::pin(mcp::list_mcp_resources(args)),
+        "read_mcp_resource" => Box::pin(mcp::read_mcp_resource(args)),
+        "update_mcp_remote_auth" => Box::pin(mcp::update_mcp_remote_auth(args)),
+        "clear_mcp_remote_auth" => Box::pin(mcp::clear_mcp_remote_auth(args)),
+        "start_mcp_remote_oauth" => Box::pin(mcp::start_mcp_remote_oauth(args)),
+        "get_mcp_remote_oauth_session" => Box::pin(mcp::get_mcp_remote_oauth_session(args)),
+        "cancel_mcp_remote_oauth" => Box::pin(mcp::cancel_mcp_remote_oauth(args)),
 
         // The web UI bundle a browser loads from this host (wave 10).
         "ui_bundle_manifest" => Box::pin(system::ui_bundle_manifest()),
@@ -143,7 +207,7 @@ pub(crate) fn dispatch<'a>(
         // Filesystem
         "workspace_file_upload" => Box::pin(filesystem::workspace_file_upload(state, args)),
         "html_preview_read_resource" => Box::pin(filesystem::html_preview_read_resource(args)),
-        "get_directory_children" | "explorer_get_children" | "list_files" => {
+        "get_directory_children" | "explorer_get_children" => {
             Box::pin(filesystem::get_directory_children(&state.filesystem_service, &state.workspace_service, args))
         }
         "get_directory_children_paginated" | "explorer_get_children_paginated" => {
@@ -160,6 +224,7 @@ pub(crate) fn dispatch<'a>(
         "start_file_watch" => Box::pin(filesystem::start_file_watch(state, args)),
         "stop_file_watch" => Box::pin(filesystem::stop_file_watch(state, args)),
         "get_watched_paths" => Box::pin(filesystem::get_watched_paths()),
+        "retry_file_watch" => Box::pin(filesystem::retry_file_watch()),
         "check_path_exists" => Box::pin(filesystem::check_path_exists(state, args)),
         "create_directory" => Box::pin(filesystem::create_directory(state, args)),
         "read_file_content" => Box::pin(filesystem::read_file_content(state, args)),
@@ -183,11 +248,9 @@ pub(crate) fn dispatch<'a>(
         "list_persisted_sessions" => Box::pin(session::list_persisted_sessions(state, args)),
         "list_persisted_sessions_page" => Box::pin(session::list_persisted_sessions_page(state, args)),
         "save_session_metadata" => Box::pin(session::save_session_metadata(state, args)),
+        "mark_session_seen" => Box::pin(session::mark_session_seen(state, args)),
         "load_persisted_session_metadata" => {
             Box::pin(session::load_persisted_session_metadata(state, args))
-        }
-        "list_persisted_sessions_count" => {
-            Box::pin(session::list_persisted_sessions_count(state, args))
         }
         "search_session_content" => Box::pin(session::search_session_content(state, args)),
         "load_session_trajectory" => Box::pin(session::load_session_trajectory(state, args)),
@@ -208,7 +271,8 @@ pub(crate) fn dispatch<'a>(
         "delete_all_archived_sessions" => {
             Box::pin(session::delete_all_archived_sessions(state, args))
         }
-        "rename_session" => Box::pin(session::rename_session(state, args)),
+        "update_session_title" => Box::pin(session::update_session_title(state, args)),
+        "export_session_transcript" => Box::pin(session::export_session_transcript(state, args)),
         "archive_session" => Box::pin(session::archive_session(state, args)),
         "unarchive_session" => Box::pin(session::unarchive_session(state, args)),
         "list_archived_sessions" => Box::pin(session::list_archived_sessions(state, args)),
@@ -240,9 +304,15 @@ pub(crate) fn dispatch<'a>(
         "get_session_file_diff_stats" => {
             Box::pin(snapshot::get_session_file_diff_stats(state, args))
         }
+        "get_operation_diff" => Box::pin(snapshot::get_operation_diff(state, args)),
 
         // Dialog / tools
         "manage_dialog_queue" => Box::pin(dialog::manage_dialog_queue(state, args)),
+        "submit_user_message" => Box::pin(dialog::submit_user_message(state, args)),
+        "steer_dialog_turn" => Box::pin(dialog::steer_dialog_turn(state, args)),
+        "stop_dialog_turn" => Box::pin(dialog::stop_dialog_turn(state, args)),
+        "list_session_commands" => Box::pin(dialog::list_session_commands(state, args)),
+        "execute_session_command" => Box::pin(dialog::execute_session_command(state, args)),
         "start_dialog_turn" => Box::pin(dialog::start_dialog_turn(state, args)),
         "cancel_dialog_turn" => Box::pin(dialog::cancel_dialog_turn(state, args)),
         "cancel_session" => Box::pin(dialog::cancel_session(state, args)),
@@ -293,11 +363,16 @@ pub(crate) fn dispatch<'a>(
         | "git_get_changed_files"
         | "git_resolve_revision" => Box::pin(git::read(command, args)),
 
-        // Soft empty / no-op for Desktop-only subsystems
-        // Routine previews (wave 4).
+        // Scheduled jobs (routines)
+        "list_cron_jobs" => Box::pin(cron::list_cron_jobs(state, args)),
+        "create_cron_job" => Box::pin(cron::create_cron_job(args)),
+        "update_cron_job" => Box::pin(cron::update_cron_job(args)),
+        "delete_cron_job" => Box::pin(cron::delete_cron_job(args)),
+        "notify_cron_host_ready" => Box::pin(cron::notify_cron_host_ready()),
         "validate_cron_job_draft" => Box::pin(cron::validate_draft(args)),
         "preview_cron_occurrences" => Box::pin(cron::preview_occurrences(args)),
-        "notify_cron_host_ready" => Box::pin(soft::notify_cron_host_ready()),
+
+        // Soft empty / no-op for Desktop-only subsystems
         "list_miniapps" => Box::pin(soft::list_miniapps()),
         "miniapp_worker_list_running" => Box::pin(soft::miniapp_worker_list_running()),
         "get_acp_clients" => Box::pin(soft::get_acp_clients()),
@@ -307,8 +382,17 @@ pub(crate) fn dispatch<'a>(
         "get_skill_configs" => Box::pin(skills::get_skill_configs(args)),
         "get_mode_skill_configs" => Box::pin(skills::get_mode_skill_configs(args)),
         "get_global_skill_settings" => Box::pin(skills::get_global_skill_settings(args)),
+        "set_global_skill_disabled" => Box::pin(skills::set_global_skill_disabled(args)),
+        "validate_skill_path" => Box::pin(skills::validate_skill_path(args)),
+        "add_skill" => Box::pin(skills::add_skill(args)),
+        "delete_skill" => Box::pin(skills::delete_skill(args)),
+        "replace_mode_skill_selection" => Box::pin(skills::replace_mode_skill_selection(args)),
+        "reset_mode_skill_selection" => Box::pin(skills::reset_mode_skill_selection(args)),
 
-        // System
+        // System / memory
+        "get_app_version" => Box::pin(system::get_app_version()),
+        "get_memory_paths" => Box::pin(system::get_memory_paths(state)),
+        "reset_memory" => Box::pin(system::reset_memory(state)),
         "get_system_info" => Box::pin(system::get_system_info()),
         "get_runtime_logging_info" => Box::pin(system::get_runtime_logging_info()),
         "get_token_usage_statistics" => Box::pin(system::get_token_usage_statistics(state, args)),
@@ -467,7 +551,6 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "get_personal_overview",
     "get_web_search_credential_status",
     "get_decision_model_credential_status",
-    "get_workspace_info",
     "git_get_repository_trust",
     "git_is_repository",
     "git_get_repository",
@@ -481,11 +564,9 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "git_get_changed_files",
     "git_resolve_revision",
     "initialize_workspace_startup_state",
-    "list_files",
     "get_session_interaction_mailbox",
     "list_pending_permission_requests",
     "list_persisted_sessions",
-    "list_persisted_sessions_count",
     "list_persisted_sessions_page",
     "list_project_permission_audit",
     "list_project_permission_grants",
@@ -494,11 +575,11 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "load_session_trajectory",
     "load_session_turns",
     "get_session_transcript_view",
+    "mark_session_seen",
     "open_workspace",
     "product_control_invoke",
     "reload_config",
     "remove_project_permission_grant",
-    "rename_session",
     "reorder_opened_workspaces",
     "respond_permission",
     "respond_permission_batch",
@@ -546,6 +627,85 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "update_external_integration_policy_command",
     "update_session_mode",
     "update_session_model",
+    // Assistants & workspace lifecycle
+    "get_assistant_workspaces",
+    "get_primary_assistant_workspace",
+    "create_assistant_workspace",
+    "set_assistant_identity",
+    "set_primary_assistant_workspace",
+    "delete_assistant_workspace",
+    "reset_assistant_workspace",
+    "reset_workspace_persona_files",
+    "close_workspace",
+    "update_workspace_info",
+    "remove_recent_workspace",
+    // Scheduled jobs (routines)
+    "list_cron_jobs",
+    "create_cron_job",
+    "update_cron_job",
+    "delete_cron_job",
+    "notify_cron_host_ready",
+    // Custom agents, subagents, and profiles
+    "list_agent_tool_names",
+    "get_custom_agent_detail",
+    "create_custom_agent",
+    "update_custom_agent",
+    "delete_custom_agent",
+    "reload_custom_agents",
+    "get_subagent_detail",
+    "create_subagent",
+    "update_subagent",
+    "delete_subagent",
+    "reload_subagents",
+    "update_subagent_config",
+    "set_agent_profile_config",
+    "reset_agent_profile_config",
+    // Skills management
+    "set_global_skill_disabled",
+    "validate_skill_path",
+    "add_skill",
+    "delete_skill",
+    "replace_mode_skill_selection",
+    "reset_mode_skill_selection",
+    // Session interactive controls, diff, and transcript export
+    "submit_user_message",
+    "stop_dialog_turn",
+    "steer_dialog_turn",
+    "list_session_commands",
+    "execute_session_command",
+    "update_session_title",
+    "get_operation_diff",
+    "export_session_transcript",
+    // MCP servers, prompts, resources, and remote auth
+    "get_mcp_servers",
+    "start_mcp_server",
+    "stop_mcp_server",
+    "restart_mcp_server",
+    "get_mcp_server_status",
+    "load_mcp_json_config",
+    "save_mcp_json_config",
+    "delete_mcp_server",
+    "list_mcp_prompts",
+    "get_mcp_prompt",
+    "list_mcp_resources",
+    "read_mcp_resource",
+    "update_mcp_remote_auth",
+    "clear_mcp_remote_auth",
+    "start_mcp_remote_oauth",
+    "get_mcp_remote_oauth_session",
+    "cancel_mcp_remote_oauth",
+    // External MCP / session import
+    "plan_external_mcp_import_command",
+    "apply_external_mcp_import_command",
+    "list_removed_external_sessions",
+    "restore_removed_external_session",
+    // Memory, config export/import, app version, file watch recovery
+    "get_memory_paths",
+    "reset_memory",
+    "export_config",
+    "import_config",
+    "get_app_version",
+    "retry_file_watch",
 ];
 
 /// Commands answered by `soft.rs` with a declared empty or no-op success.
@@ -555,7 +715,6 @@ pub(crate) const SOFT_EMPTY_COMMANDS: &[&str] = &[
     "list_background_command_activities",
     "list_miniapps",
     "miniapp_worker_list_running",
-    "notify_cron_host_ready",
 ];
 
 #[cfg(test)]

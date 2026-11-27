@@ -256,6 +256,10 @@ pub struct SessionConfig {
     /// model's default preset (Auto).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_preset: Option<String>,
+    /// Explicit session context length override in tokens. `None` uses the
+    /// active model's configured context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<usize>,
     /// Explicit tool permission mode selected for this session. `None` follows
     /// the user-level default, so an unset session keeps tracking global
     /// configuration changes instead of freezing the value it was created with.
@@ -350,6 +354,7 @@ impl Default for SessionConfig {
             model_pool_selection_revision: 0,
             model_pool_binding: None,
             reasoning_preset: None,
+            context_window_override: None,
             permission_mode: None,
             tool_presentation_mode: ToolPresentationMode::default(),
             continuation_policy: SessionContinuationPolicy::default(),
@@ -612,6 +617,25 @@ mod tests {
             .remove("tool_presentation_mode");
         let legacy: SessionConfig = serde_json::from_value(serialized).unwrap();
         assert_eq!(legacy.tool_presentation_mode, ToolPresentationMode::Native);
+    }
+
+    #[test]
+    fn context_window_override_persists_and_legacy_sessions_default_none() {
+        let config = SessionConfig {
+            context_window_override: Some(300_000),
+            ..SessionConfig::default()
+        };
+        let mut serialized = serde_json::to_value(&config).expect("serialize session config");
+        assert_eq!(serialized["context_window_override"], 300_000);
+        let restored: SessionConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(restored.context_window_override, Some(300_000));
+
+        serialized
+            .as_object_mut()
+            .expect("session config object")
+            .remove("context_window_override");
+        let legacy: SessionConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(legacy.context_window_override, None);
     }
 
     #[test]

@@ -450,6 +450,9 @@ impl ChatMode {
         self.agent_type = chat_state.agent_type.clone();
         self.workspace = chat_state.workspace.clone();
         self.refresh_workspace_git_status(&mut chat_state, &rt_handle);
+        if self.restore_session_id.is_some() {
+            self.acknowledge_active_session_seen(&chat_state, &rt_handle);
+        }
 
         // Apply model override (--model flag): update the session model.
         // The backend validates the ID; an invalid ID logs a warning and
@@ -1028,6 +1031,9 @@ impl ChatMode {
                             needs_redraw = true;
                         }
                     }
+                    AgenticEvent::SessionHistoryChanged { .. } => {
+                        self.acknowledge_active_session_seen(&chat_state, &rt_handle);
+                    }
                     _ => {
                         let projection = project_transcript_event(&mut chat_state, event, true);
                         if projection.changed {
@@ -1048,6 +1054,7 @@ impl ChatMode {
                         match projection.terminal {
                             Some(TranscriptTerminalOutcome::Completed) => {
                                 self.refresh_workspace_git_status(&mut chat_state, &rt_handle);
+                                self.acknowledge_active_session_seen(&chat_state, &rt_handle);
                                 chat_view.set_status(None);
                                 self.emit_terminal_attention(
                                     &mut terminal,
@@ -1057,6 +1064,7 @@ impl ChatMode {
                             }
                             Some(TranscriptTerminalOutcome::Failed(error)) => {
                                 self.refresh_workspace_git_status(&mut chat_state, &rt_handle);
+                                self.acknowledge_active_session_seen(&chat_state, &rt_handle);
                                 chat_view.set_status(Some(format!("Error: {error}")));
                                 self.emit_terminal_attention(
                                     &mut terminal,
@@ -1066,6 +1074,7 @@ impl ChatMode {
                             }
                             Some(TranscriptTerminalOutcome::Cancelled) => {
                                 self.refresh_workspace_git_status(&mut chat_state, &rt_handle);
+                                self.acknowledge_active_session_seen(&chat_state, &rt_handle);
                                 chat_view.set_status(Some("Cancelled".to_string()));
                                 tracing::info!("Dialog turn cancelled");
                             }

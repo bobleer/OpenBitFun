@@ -106,6 +106,7 @@ import {
 import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { aboutOpen } from "../ui/AboutDialog";
 import { accountAuthModalOpen } from "../ui/AccountAuthModal";
+import { remoteDisclaimerOpen } from "../remoteDisclaimerStore";
 import { deviceException } from "../ui/fleet";
 import { Spinner } from "../ui/motion";
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
@@ -128,6 +129,7 @@ const globalOverlayOccludingBrowser = computed(() => {
     inboxSheetOpen() ||
     aboutOpen() ||
     accountAuthModalOpen() ||
+    remoteDisclaimerOpen() ||
     newWorkspaceModalOpen() ||
     sshConnectionModalOpen() ||
     remoteFileBrowserOpen() ||

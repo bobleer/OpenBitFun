@@ -2392,9 +2392,6 @@ impl Engine {
         };
         for (conversation_id, wait, deadline) in parked {
             let resume = match &wait {
-                // A turn parked on holder availability by an earlier build:
-                // the next model round runs now, or ends with the notice.
-                Wait::Holder => true,
                 Wait::Jobs {
                     job_ids,
                     until,

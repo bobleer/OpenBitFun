@@ -2463,10 +2463,7 @@ pub struct SessionInfo {
     pub workspace_id: Option<String>,
     pub session_id: String,
     pub name: String,
-    #[serde(
-        serialize_with = "openbitfun_core_types::agent_identity_wire::serialize_legacy_agent_id",
-        deserialize_with = "openbitfun_core_types::agent_identity::deserialize_agent_id"
-    )]
+    #[serde(deserialize_with = "openbitfun_core_types::agent_identity::deserialize_agent_id")]
     pub agent_type: String,
     pub created_at: String,
     pub updated_at: String,

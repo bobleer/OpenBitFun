@@ -9,7 +9,7 @@
 //!
 //! `mesh_e2e_*` and `peer_link_e2e_*` (ignored) run the whole path for real:
 //! two in-process Link nodes join a throwaway account network through the
-//! relay node (`wss://remote.openbitfun.com/mesh/et/`), and one backend
+//! relay node (`wss://super.openbitfun.com/mesh/et/`), and one backend
 //! calls the other and streams its events. The credentials come from the
 //! server (`openbitfun-link-node issue`, two devices of one scratch account):
 //!

@@ -4,14 +4,12 @@
 
 ## Do I need to deploy a server?
 
-No. Released clients use the official Relay for same-account device control.
-Sign in on the host and controller with the same OpenBitFun account and follow
-the Remote Connect invitation or device-selection flow. Keep the host running
-and reachable. The official endpoint is `https://remote.openbitfun.com/relay?v=1.0.10`;
-the version travels as a query parameter, and the older
-`https://remote.openbitfun.com/v/1.0.2/` path keeps working against the same
-account database;
-the path is a service-protocol prefix, not the current desktop release number.
+No. OpenBitFun 2.0 clients use the official service host
+`https://super.openbitfun.com` (account directory at
+`https://super.openbitfun.com/directory`, see
+[`deploy/super/README.md`](../../../deploy/super/README.md)). Sign in on each
+host and client with the same OpenBitFun account and keep the host running and
+reachable.
 
 | Connection | What you need |
 | --- | --- |

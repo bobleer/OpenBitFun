@@ -350,7 +350,7 @@ pub fn project_attention(
     for device in inputs.devices {
         for workspace in &device.workspaces {
             for row in &workspace.sessions {
-                if row.status != FleetSessionStatus::Error {
+                if row.status != FleetSessionStatus::Error && !row.failed {
                     continue;
                 }
                 let item_id = format!("session:{}/{}", device.device_id, row.session_id);

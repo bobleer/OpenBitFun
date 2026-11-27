@@ -207,7 +207,10 @@ test("an empty tab uses the boxless empty state with the Library's words and one
   await app.press("library-tab-routines");
   await app.waitFor("No routines yet");
   expect(app.shows("text:Run a check every morning, or a task once at a set time.")).toBe(true);
-  expect(app.shows("label:routines-empty-action")).toBe(true);
+  // Single primary CTA lives in the toolbar; empty state does not duplicate it or show empty filters.
+  expect(app.shows("label:routines-new")).toBe(true);
+  expect(app.shows("label:routines-empty-action")).toBe(false);
+  expect(app.shows("label:routines-filter-all")).toBe(false);
 });
 
 test("schedules read as words, and a cron-only schedule shows the expression without a Cron label", async () => {

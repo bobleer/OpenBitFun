@@ -4,9 +4,27 @@
 // Operation Registry (`peerSurface.ts`), so `bridge.ts` always routes them to
 // this machine whichever device the UI shows.
 
-import { Clipboard, Storage, signal } from "nsh";
+import { signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
+import {
+  REMOTE_CONNECT_DISCLAIMER_KEY,
+  agreeRemoteDisclaimer,
+  declineRemoteDisclaimer,
+  ensureRemoteDisclaimer,
+  openRemoteDisclaimer,
+  remoteDisclaimerAgreed,
+  remoteDisclaimerOpen,
+} from "./remoteDisclaimerStore";
+
+export {
+  REMOTE_CONNECT_DISCLAIMER_KEY,
+  agreeRemoteDisclaimer,
+  declineRemoteDisclaimer,
+  openRemoteDisclaimer,
+  remoteDisclaimerAgreed,
+  remoteDisclaimerOpen,
+};
 
 export interface ConnectorMethodInfo {
   id: string;
@@ -196,61 +214,6 @@ async function saveFormState(): Promise<void> {
   });
 }
 
-/** The desktop's key, so agreeing on either surface counts for both. */
-export const REMOTE_CONNECT_DISCLAIMER_KEY = "openbitfun:remote-connect:disclaimer-agreed:v1";
-export const remoteDisclaimerAgreed = signal(false);
-export const remoteDisclaimerOpen = signal(false);
-let disclaimerLoaded: Promise<void> | null = null;
-let pendingAfterDisclaimer: (() => Promise<void>) | null = null;
-
-function loadRemoteDisclaimer(): Promise<void> {
-  if (!disclaimerLoaded) {
-    disclaimerLoaded = Storage.getItem(REMOTE_CONNECT_DISCLAIMER_KEY)
-      .then(value => {
-        if (value === "true") remoteDisclaimerAgreed.set(true);
-      })
-      .catch(() => undefined);
-  }
-  return disclaimerLoaded;
-}
-
-/**
- * The desktop shows the Remote Connect disclaimer before the first connection
- * and starts nothing until it is agreed. Returns whether `action` may run now;
- * otherwise it runs after the user agrees.
- */
-async function ensureRemoteDisclaimer(action: () => Promise<void>): Promise<boolean> {
-  await loadRemoteDisclaimer();
-  if (remoteDisclaimerAgreed()) return true;
-  pendingAfterDisclaimer = action;
-  remoteDisclaimerOpen.set(true);
-  return false;
-}
-
-export function openRemoteDisclaimer(): void {
-  void loadRemoteDisclaimer();
-  pendingAfterDisclaimer = null;
-  remoteDisclaimerOpen.set(true);
-}
-
-export function declineRemoteDisclaimer(): void {
-  pendingAfterDisclaimer = null;
-  remoteDisclaimerOpen.set(false);
-}
-
-export async function agreeRemoteDisclaimer(): Promise<void> {
-  remoteDisclaimerAgreed.set(true);
-  remoteDisclaimerOpen.set(false);
-  try {
-    await Storage.setItem(REMOTE_CONNECT_DISCLAIMER_KEY, "true");
-  } catch {
-    // Storage failures fall back to the in-memory agreement for this run.
-  }
-  const action = pendingAfterDisclaimer;
-  pendingAfterDisclaimer = null;
-  if (action) await action();
-}
-
 export async function saveAndConnectTelegram(): Promise<void> {
   if (!(await ensureRemoteDisclaimer(saveAndConnectTelegram))) return;
   const token = telegramToken().trim();
@@ -345,7 +308,6 @@ export async function startWeixinQr(): Promise<void> {
     const message = readStr(res ?? {}, ["message"]);
     weixinVerifyCode.set("");
     weixinQr.set({ sessionKey, qrImageUrl, message, status: "wait" });
-    connectorNotice.set(message || tr("devices.store.weixinQrReady"));
   } catch (error) {
     connectorError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -391,8 +353,6 @@ export async function pollWeixinQr(): Promise<void> {
       await invokeCommand<Record<string, unknown>>("remote_connect_start", { method: "bot_weixin" });
       await refreshConnectorStatus();
       connectorNotice.set(tr("devices.store.weixinConnected"));
-    } else if (message) {
-      connectorNotice.set(message);
     }
   } catch (error) {
     connectorError.set(error instanceof Error ? error.message : String(error));
@@ -415,15 +375,5 @@ export async function setBotVerboseConnectorMode(verbose: boolean): Promise<void
     connectorError.set(error instanceof Error ? error.message : String(error));
   } finally {
     connectorBusy.set(false);
-  }
-}
-
-export async function copyPairingLink(url: string): Promise<void> {
-  if (!url) return;
-  try {
-    await Clipboard.writeText(url);
-    connectorNotice.set(tr("devices.store.copiedPairing"));
-  } catch (error) {
-    connectorError.set(error instanceof Error ? error.message : String(error));
   }
 }

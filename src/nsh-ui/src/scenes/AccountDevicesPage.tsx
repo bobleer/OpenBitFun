@@ -16,7 +16,6 @@ import {
   connectorStatus,
   connectorsLoading,
   connectorsSupported,
-  copyPairingLink,
   ensureConnectors,
   feishuAppId,
   feishuAppSecret,
@@ -30,20 +29,17 @@ import {
   telegramToken,
   weixinQr,
   weixinVerifyCode,
-  agreeRemoteDisclaimer,
-  declineRemoteDisclaimer,
   openRemoteDisclaimer,
-  remoteDisclaimerAgreed,
-  remoteDisclaimerOpen,
   remoteControlSaving,
   setRemoteControlAllowed,
 } from "../connectorsStore";
+import { openRenameDevice } from "../deviceActions";
 import { fleetDevices } from "../fleetStore";
 import type { FleetDevice } from "../fleetTypes";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
 import { loadObpStatus, obpStatus } from "../obpStore";
 import { superAgentUi } from "../productGates";
-import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { DeviceGlyph, deviceException, stateColor } from "../ui/fleet";
 import { ObpPairingCard } from "./ObpPairingCard";
 import { UseOnPhonePanel } from "./UseOnPhonePanel";
@@ -51,7 +47,7 @@ import { Icon, type IconName } from "../ui/icons";
 import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { InsetGroup, InsetRow, MoreMenu, QrCodeView, StudioEmpty, StudioSection } from "../ui/studio";
 import { ModalDialog, pushToast, type DropdownMenuItem } from "../ui/overlays";
-import { Badge, Button, InlineBanner, InputBox, ToggleSwitch, focusRingStyle } from "../ui/primitives";
+import { Badge, Button, IconButton, InlineBanner, InputBox, ToggleSwitch, focusRingStyle } from "../ui/primitives";
 
 type ChannelId = "telegram" | "feishu" | "weixin";
 
@@ -395,59 +391,87 @@ function ChannelsSection() {
         </View>
       </ModalDialog>
 
-      {/* WeChat Modal — strictly one primary CTA per step */}
+      {/* WeChat Modal — single focused step at a time, centered QR, no raw URL clutter */}
       <ModalDialog
         open={activeChannelModal() === "weixin"}
         title={tr("devices.wechatBot")}
         subtitle={tr("devices.wechatSubtitle")}
-        size="md"
+        size="sm"
         accessibilityLabel="connector-modal-weixin"
         // The QR is scanned on a phone: the click that brings the window back must not end it.
         keepOpenOnBackdrop={Boolean(weixinQr()) && weixinQr()!.status !== "confirmed"}
         onClose={closeChannelModal}
         footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
-            <Button
-              label={tr("common.done")}
-              variant="secondary"
-              size="md"
-              onPress={closeChannelModal}
-            />
-          </View>
-        }
-      >
-        <View style={{ gap: space.md }}>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-            <Button
-              label={tr("devices.startWechatQr")}
-              variant={weixinQr() ? "secondary" : "primary"}
-              size="md"
-              leadingIcon="smartphone"
-              accessibilityLabel="connector-weixin-qr-start"
-              disabled={connectorBusy()}
-              onPress={() => {
-                connectorBannerOwner.set("weixin");
-                void startWeixinQr();
-              }}
-            />
-          </View>
           <If when={weixinQr()}>
             {qr => (
-              <View
-                style={{
-                  gap: space.md,
-                  paddingTop: space.md,
-                  borderTopWidth: 1,
-                  borderColor: palette().borderSubtle,
-                }}
-              >
-                <Text
-                  style={{
-                    ...textStyle("label", { color: palette().text }),
-                  }}
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+                <If
+                  when={qr().status === "confirmed"}
+                  else={
+                    <>
+                      <Button
+                        label={tr("devices.refreshWechatQr")}
+                        variant={qr().status === "error" ? "primary" : "secondary"}
+                        size="md"
+                        leadingIcon="refresh"
+                        accessibilityLabel="connector-weixin-qr-start"
+                        loading={qr().status === "error" && connectorBusy()}
+                        disabled={connectorBusy()}
+                        onPress={() => {
+                          connectorBannerOwner.set("weixin");
+                          void startWeixinQr();
+                        }}
+                      />
+                      <If when={qr().status !== "error"}>
+                        <Button
+                          label={tr("devices.checkWechatQr")}
+                          variant={qr().status === "need_verify_code" ? "secondary" : "primary"}
+                          size="md"
+                          accessibilityLabel="connector-weixin-qr-poll"
+                          loading={qr().status !== "need_verify_code" && connectorBusy()}
+                          disabled={connectorBusy()}
+                          onPress={() => {
+                            connectorBannerOwner.set("weixin");
+                            void pollWeixinQr();
+                          }}
+                        />
+                      </If>
+                    </>
+                  }
                 >
-                  {qr().message || tr("devices.qrStatus", { status: qr().status })}
-                </Text>
+                  <Button
+                    label={tr("common.done")}
+                    variant="primary"
+                    size="md"
+                    onPress={closeChannelModal}
+                  />
+                </If>
+              </View>
+            )}
+          </If>
+        }
+      >
+        <View style={{ alignItems: "center", gap: space.lg, minWidth: 0, paddingVertical: space.xs }}>
+          <If
+            when={weixinQr()}
+            else={
+              <Button
+                label={tr("devices.startWechatQr")}
+                variant="primary"
+                size="md"
+                leadingIcon="smartphone"
+                accessibilityLabel="connector-weixin-qr-start"
+                loading={connectorBusy()}
+                disabled={connectorBusy()}
+                onPress={() => {
+                  connectorBannerOwner.set("weixin");
+                  void startWeixinQr();
+                }}
+              />
+            }
+          >
+            {qr => (
+              <View style={{ width: "100%", alignItems: "center", gap: space.md, minWidth: 0 }}>
                 <If
                   when={
                     qr().status === "wait" &&
@@ -459,14 +483,23 @@ function ChannelsSection() {
                   }
                 >
                   {content => (
-                    <View style={{ alignSelf: "flex-start", borderRadius: radii.md, overflow: "hidden" }}>
-                      <QrCodeView value={content()} size={164} accessibilityLabel="connector-weixin-qr" />
-                    </View>
+                    <QrCodeView
+                      value={content()}
+                      size={compactLayout() ? 176 : 192}
+                      accessibilityLabel="connector-weixin-qr"
+                    />
                   )}
                 </If>
+                <If when={qr().status === "scanned"}>
+                  <Text style={{ ...textStyle("label", { color: palette().textSecondary }), textAlign: "center" }}>
+                    {tr("devices.weixinScanned")}
+                  </Text>
+                </If>
                 <If when={qr().status === "need_verify_code"}>
-                  <View style={{ gap: space.sm }}>
-                    <Text style={textStyle("caption")}>{tr("devices.weixinVerifyHint")}</Text>
+                  <View style={{ width: "100%", gap: space.sm, minWidth: 0 }}>
+                    <Text style={textStyle("caption", { color: palette().textSecondary })}>
+                      {tr("devices.weixinVerifyHint")}
+                    </Text>
                     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: space.sm }}>
                       <View style={{ flex: 1, minWidth: 140 }}>
                         <InputBox
@@ -487,6 +520,7 @@ function ChannelsSection() {
                         variant="primary"
                         size="md"
                         accessibilityLabel="connector-weixin-verify-submit"
+                        loading={connectorBusy()}
                         disabled={connectorBusy() || !weixinVerifyCode().trim()}
                         onPress={() => {
                           connectorBannerOwner.set("weixin");
@@ -496,212 +530,29 @@ function ChannelsSection() {
                     </View>
                   </View>
                 </If>
-                <If when={qr().qrImageUrl}>
-                  {url => (
-                    <View
-                      style={{
-                        paddingHorizontal: space.md,
-                        paddingVertical: space.sm,
-                        borderRadius: radii.sm,
-                        borderCurve: "continuous",
-                        borderWidth: 1,
-                        borderColor: palette().borderSubtle,
-                        backgroundColor: palette().surfaceTertiary,
-                      }}
-                    >
-                      <Text
-                        style={{
-                          minWidth: 0,
-                          fontFamily: fontMono(),
-                          ...textStyle("caption", { color: palette().textSecondary }),
-                          numberOfLines: 2,
-                          textOverflow: "ellipsis-middle",
-                          userSelect: "text",
-                        }}
-                      >
-                        {url()}
-                      </Text>
-                    </View>
-                  )}
+                <If when={qr().status === "confirmed"}>
+                  <View style={{ width: "100%" }}>
+                    <InlineBanner tone="success" message={tr("devices.store.weixinConnected")} />
+                  </View>
                 </If>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
-                  <If when={qr().qrImageUrl}>
-                    {url => (
-                      <Button
-                        label={tr("devices.copyQrUrl")}
-                        variant="secondary"
-                        size="sm"
-                        leadingIcon="copy"
-                        accessibilityLabel="connector-weixin-copy-url"
-                        onPress={() => void copyPairingLink(url())}
-                      />
-                    )}
-                  </If>
-                  <Button
-                    label={tr("devices.checkWechatQr")}
-                    variant={qr().status === "need_verify_code" ? "secondary" : "primary"}
-                    size="sm"
-                    accessibilityLabel="connector-weixin-qr-poll"
-                    disabled={connectorBusy()}
-                    onPress={() => {
-                      connectorBannerOwner.set("weixin");
-                      void pollWeixinQr();
-                    }}
-                  />
-                </View>
+                <If when={qr().status === "error" && qr().message}>
+                  <View style={{ width: "100%" }}>
+                    <InlineBanner tone="danger" message={localizeHostError(qr().message)} />
+                  </View>
+                </If>
               </View>
             )}
           </If>
-          <If when={connectorBannerOwner() === "weixin" && connectorNotice() ? connectorNotice() : ""}>
-            {msg => <InlineBanner tone="success" message={localizeHostError(msg())} />}
-          </If>
           <If when={connectorBannerOwner() === "weixin" && connectorError() ? connectorError() : ""}>
-            {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
+            {err => (
+              <View style={{ width: "100%" }}>
+                <InlineBanner tone="danger" message={localizeHostError(err())} />
+              </View>
+            )}
           </If>
         </View>
       </ModalDialog>
     </StudioSection>
-  );
-}
-
-const DISCLAIMER_KEY_ITEMS = [
-  "devices.remote.disclaimerItemGeneralRisk",
-  "devices.remote.disclaimerItemSecurity",
-  "devices.remote.disclaimerItemEncryption",
-  "devices.remote.disclaimerItemPrivacy",
-] as const;
-const DISCLAIMER_DETAIL_ITEMS = [
-  "devices.remote.disclaimerItemOpenSource",
-  "devices.remote.disclaimerItemDataUsage",
-  "devices.remote.disclaimerItemCredentials",
-  "devices.remote.disclaimerItemQrCode",
-  "devices.remote.disclaimerItemRelay",
-  "devices.remote.disclaimerItemNetwork",
-  "devices.remote.disclaimerItemBot",
-  "devices.remote.disclaimerItemBotPersistence",
-  "devices.remote.disclaimerItemMobileBrowser",
-  "devices.remote.disclaimerItemCompliance",
-  "devices.remote.disclaimerItemLiability",
-] as const;
-
-function DisclaimerList(props: { items: readonly MessageKey[]; start: number }) {
-  return (
-    <View style={{ gap: space.sm }}>
-      <Each of={props.items}>
-        {(key, index) => (
-          <View style={{ flexDirection: "row", gap: space.sm, alignItems: "flex-start" }}>
-            <Text
-              style={{
-                width: space.xl,
-                flexShrink: 0,
-                ...textStyle("label", { color: palette().textMuted }),
-                fontWeight: "400",
-              }}
-            >
-              {`${props.start + index()}.`}
-            </Text>
-            <Text
-              style={{
-                flex: 1,
-                minWidth: 0,
-                ...textStyle("label", { color: palette().textSecondary }),
-                fontWeight: "400",
-              }}
-            >
-              {tr(key())}
-            </Text>
-          </View>
-        )}
-      </Each>
-    </View>
-  );
-}
-
-/** The desktop's Remote Connect disclaimer: a gate before the first connection. */
-function RemoteDisclaimerModal() {
-  const detailsOpen = signal(false);
-  return (
-    <ModalDialog
-      open={remoteDisclaimerOpen()}
-      title={tr("devices.remote.disclaimerTitle")}
-      size="md"
-      accessibilityLabel="remote-disclaimer-modal"
-      onClose={() => declineRemoteDisclaimer()}
-      footer={
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
-          <Button
-            label={remoteDisclaimerAgreed() ? tr("common.close") : tr("devices.remote.disclaimerDecline")}
-            variant="secondary"
-            size="md"
-            accessibilityLabel="remote-disclaimer-decline"
-            onPress={() => declineRemoteDisclaimer()}
-          />
-          <If when={!remoteDisclaimerAgreed()}>
-            <Button
-              label={tr("devices.remote.disclaimerAgree")}
-              variant="primary"
-              size="md"
-              accessibilityLabel="remote-disclaimer-agree"
-              onPress={() => void agreeRemoteDisclaimer()}
-            />
-          </If>
-        </View>
-      }
-    >
-      <View style={{ gap: space.lg }}>
-        <Text
-          style={textStyle("caption", {
-            color: remoteDisclaimerAgreed() ? palette().textMuted : stateColor("needs_you"),
-          })}
-        >
-          {remoteDisclaimerAgreed()
-            ? tr("devices.remote.disclaimerStatusAgreed")
-            : tr("devices.remote.disclaimerStatusPending")}
-        </Text>
-        <Text
-          style={{
-            ...textStyle("label", { color: palette().textSecondary }),
-            fontWeight: "400",
-          }}
-        >
-          {tr("devices.remote.disclaimerIntro")}
-        </Text>
-        <Text style={textStyle("body", { color: palette().text })}>{tr("devices.remote.disclaimerKeyRisks")}</Text>
-        <DisclaimerList items={DISCLAIMER_KEY_ITEMS} start={1} />
-        <View
-          role="button"
-          accessibilityLabel="remote-disclaimer-details"
-          accessibilityState={{ expanded: detailsOpen() }}
-          hitSlop={touchSlop(controlHeight.sm)}
-          onPress={() => detailsOpen.update(open => !open)}
-          hoverStyle={{ backgroundColor: palette().panelHover }}
-          activeStyle={tactileActiveStyle(0.98)}
-          focusVisibleStyle={focusRingStyle()}
-          style={{
-            alignSelf: "flex-start",
-            minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-            paddingHorizontal: space.sm,
-            marginLeft: -space.sm,
-            borderRadius: radii.md,
-            borderCurve: "continuous",
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.xs,
-            cursor: "pointer",
-            userSelect: "none",
-            ...pressTransition(MOTION_DURATION.fast),
-          }}
-        >
-          <Icon name={detailsOpen() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
-          <Text style={textStyle("label", { color: palette().textSecondary })}>
-            {tr("devices.remote.disclaimerFullDetails")}
-          </Text>
-        </View>
-        <If when={detailsOpen()}>
-          <DisclaimerList items={DISCLAIMER_DETAIL_ITEMS} start={5} />
-        </If>
-      </View>
-    </ModalDialog>
   );
 }
 
@@ -796,6 +647,19 @@ function AccountDevicesSection() {
                   first={index() === 0}
                   leading={<DeviceGlyph kind={device().hostKind} size={16} />}
                   label={device().name}
+                  labelTrailing={
+                    device().deviceId && device().hostKind.toLowerCase() !== "cloud" ? (
+                      <IconButton
+                        icon="edit"
+                        size="xs"
+                        iconColor={palette().textMuted}
+                        tooltip={tr("device.menuRename")}
+                        accessibilityLabel={`account-device-rename-${device().deviceId}`}
+                        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+                        onPress={() => openRenameDevice(device().deviceId, device().name)}
+                      />
+                    ) : undefined
+                  }
                   detail={deviceDetail(device())}
                   trailing={
                     <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
@@ -846,7 +710,6 @@ export function AccountDevicesPage() {
         <ObpPairingCard autoload={false} />
       </If>
       <ChannelsSection />
-      <RemoteDisclaimerModal />
     </View>
   );
 }

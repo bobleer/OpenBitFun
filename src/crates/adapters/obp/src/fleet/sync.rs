@@ -7,10 +7,6 @@
 //!   instanceId}` on connect, on every `fleet://digest-changed` hint, and on
 //!   [`FleetSync::hint`]; a full snapshot is pulled on an instance change, on
 //!   a gap, and every [`FleetSyncConfig::anti_entropy`] (anti-entropy);
-//! - a mesh peer without `fleet_v1` (a leaf owner) is indexed by polling its
-//!   navigator, the first sessions page of each workspace and its pending
-//!   permissions, on events (coalesced) and every
-//!   [`FleetSyncConfig::legacy_poll`];
 //! - a relay-only host (no OBP on the device network) is never dialed; the
 //!   index shows it `update_required`.
 //!
@@ -124,10 +120,6 @@ pub trait FleetPeerTransport: Send + Sync + 'static {
 pub struct FleetSyncConfig {
     /// Full snapshot pull from every `fleet_v1` peer.
     pub anti_entropy: Duration,
-    /// Poll of a mesh peer without `fleet_v1`.
-    pub legacy_poll: Duration,
-    /// Events of a legacy peer are coalesced into one poll per this window.
-    pub legacy_hint_window: Duration,
     /// Presence re-read without a presence hint.
     pub presence_poll: Duration,
     /// Local digests are coalesced into one pull per this window.
@@ -135,21 +127,16 @@ pub struct FleetSyncConfig {
     /// Reconnect backoff.
     pub retry_min: Duration,
     pub retry_max: Duration,
-    /// Workspaces of a legacy peer read concurrently.
-    pub legacy_concurrency: usize,
 }
 
 impl Default for FleetSyncConfig {
     fn default() -> Self {
         Self {
             anti_entropy: Duration::from_secs(5 * 60),
-            legacy_poll: Duration::from_secs(60),
-            legacy_hint_window: Duration::from_secs(2),
             presence_poll: Duration::from_secs(30),
             local_coalesce: Duration::from_millis(300),
             retry_min: Duration::from_secs(1),
             retry_max: Duration::from_secs(60),
-            legacy_concurrency: 4,
         }
     }
 }
@@ -437,11 +424,7 @@ impl FleetSync {
                 .device_facts(device_id)
                 .is_some_and(|facts| facts.host_kind == FleetHostKind::Cloud);
         self.index.set_link(device_id, link.clone());
-        let period = if fleet {
-            self.config.anti_entropy
-        } else {
-            self.config.legacy_poll
-        };
+        let period = self.config.anti_entropy;
         let mut force_full = false;
         loop {
             let outcome = if fleet {
@@ -450,7 +433,7 @@ impl FleetSync {
             } else if presence_only {
                 Ok(FleetApply::Applied { changed: false })
             } else {
-                self.poll_legacy(device_id, &link).await
+                return Some("fleet_v1_required".to_string());
             };
             force_full = false;
             if let Err(error) = outcome {
@@ -466,22 +449,7 @@ impl FleetSync {
                 tokio::select! {
                     signal = subscription.signals.recv() => match signal {
                         Some(FleetPeerSignal::Event { event, .. }) => {
-                            if fleet {
-                                if event == FLEET_DIGEST_CHANGED_EVENT {
-                                    break;
-                                }
-                            } else if presence_only {
-                                // Nothing to re-index.
-                            } else {
-                                // A leaf owner has no digest: any event may
-                                // change its summaries. Coalesce without
-                                // swallowing a link-closed signal.
-                                tokio::time::sleep(self.config.legacy_hint_window).await;
-                                while let Ok(queued) = subscription.signals.try_recv() {
-                                    if let FleetPeerSignal::Closed { reason } = queued {
-                                        return Some(reason);
-                                    }
-                                }
+                            if fleet && event == FLEET_DIGEST_CHANGED_EVENT {
                                 break;
                             }
                         }
@@ -543,414 +511,10 @@ impl FleetSync {
         })?;
         Ok(self.index.apply_digest(device_id, since, digest))
     }
-
-    /// Index a mesh peer without `fleet_v1` by polling its view models.
-    pub async fn poll_legacy(
-        &self,
-        device_id: &str,
-        link: &FleetPeerLinkInfo,
-    ) -> Result<FleetApply, FleetCallError> {
-        use futures::stream::{self, StreamExt};
-
-        let navigator = self
-            .peers
-            .call(
-                device_id,
-                "get_workspace_navigator",
-                json!({ "request": {} }),
-            )
-            .await?;
-        let workspaces = legacy::workspaces(device_id, &navigator);
-        let requests: Vec<(String, Value)> = workspaces
-            .iter()
-            .map(|workspace| {
-                (
-                    workspace.workspace_id.clone(),
-                    legacy::sessions_page_args(workspace),
-                )
-            })
-            .collect();
-        let pages: Vec<(String, Result<Value, FleetCallError>)> = stream::iter(requests)
-            .map(|(workspace_id, args)| {
-                let peers = Arc::clone(&self.peers);
-                let device_id = device_id.to_string();
-                async move {
-                    let page = peers
-                        .call(&device_id, "list_persisted_sessions_page", args)
-                        .await;
-                    (workspace_id, page)
-                }
-            })
-            .buffered(self.config.legacy_concurrency.max(1))
-            .collect()
-            .await;
-        let mut sessions = Vec::new();
-        let mut workspaces = workspaces;
-        for (workspace_id, page) in pages {
-            match page {
-                Ok(page) => {
-                    let (listed, total, has_more) =
-                        legacy::sessions(device_id, &workspace_id, &page);
-                    if let Some(workspace) = workspaces
-                        .iter_mut()
-                        .find(|workspace| workspace.workspace_id == workspace_id)
-                    {
-                        workspace.session_total = total;
-                        workspace.has_more = has_more;
-                    }
-                    sessions.extend(listed);
-                }
-                // A transport failure ends this poll; a command failure (an
-                // unreadable workspace on that host) only skips the workspace.
-                Err(error) if error.is_transport() => return Err(error),
-                Err(error) => {
-                    log::debug!(
-                        "Fleet legacy session page failed: device_id={device_id}, workspace_id={workspace_id}, error={error}"
-                    );
-                    if let Some(workspace) = workspaces
-                        .iter_mut()
-                        .find(|workspace| workspace.workspace_id == workspace_id)
-                    {
-                        workspace.has_more = true;
-                    }
-                }
-            }
-        }
-        let prompts = match self
-            .peers
-            .call(device_id, "list_pending_permission_requests", json!({}))
-            .await
-        {
-            Ok(value) => legacy::permission_prompts(device_id, &value, &sessions),
-            Err(error) if error.is_transport() => return Err(error),
-            Err(_) => Vec::new(),
-        };
-        let revision = self
-            .index
-            .partition_cursor(device_id)
-            .map_or(1, |(_, revision)| revision + 1);
-        let digest = FleetDigest {
-            device_id: device_id.to_string(),
-            instance_id: link
-                .instance_id
-                .clone()
-                .unwrap_or_else(|| "legacy".to_string()),
-            revision,
-            full: true,
-            workspaces,
-            sessions,
-            prompts,
-            removed: FleetDigestRemovals::default(),
-            sessions_truncated: false,
-            // A leaf owner publishes no model catalog.
-            models: None,
-        };
-        Ok(self.index.apply_digest(device_id, None, digest))
-    }
 }
 
 impl Drop for FleetSync {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Legacy view models -> fleet summaries
-// ---------------------------------------------------------------------------
-
-/// Projection of the view models every mesh host already serves
-/// (`get_workspace_navigator`, `list_persisted_sessions_page`,
-/// `list_pending_permission_requests`) into fleet summaries. Read
-/// tolerantly: both the camelCase wire and snake_case aliases.
-pub mod legacy {
-    use super::*;
-
-    /// The local host name a CLI host puts in `sshHost` of a local
-    /// workspace.
-    const LOCAL_SSH_HOSTS: &[&str] = &["localhost", "local"];
-
-    fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-        keys.iter()
-            .find_map(|key| value.get(*key).and_then(Value::as_str))
-            .filter(|text| !text.is_empty())
-    }
-
-    fn number(value: &Value, keys: &[&str]) -> Option<u64> {
-        keys.iter()
-            .find_map(|key| value.get(*key).and_then(Value::as_u64))
-    }
-
-    /// The workspace kind of a navigator item.
-    pub fn workspace_kind(item: &Value) -> FleetWorkspaceKind {
-        match text(item, &["workspaceKind", "workspace_kind"]) {
-            Some("assistant") => FleetWorkspaceKind::Assistant,
-            Some("remote") => FleetWorkspaceKind::RemoteSsh,
-            Some("normal") | None => FleetWorkspaceKind::Local,
-            Some(_) => FleetWorkspaceKind::Unknown,
-        }
-    }
-
-    /// Opened then recent workspaces of a navigator answer.
-    pub fn workspaces(device_id: &str, navigator: &Value) -> Vec<FleetWorkspace> {
-        let current = (navigator.get("selection").and_then(Value::as_str) == Some("host_current"))
-            .then(|| text(navigator, &["selectedId", "selected_id"]))
-            .flatten();
-        let mut out: Vec<FleetWorkspace> = Vec::new();
-        for list in ["opened", "recent"] {
-            let Some(items) = navigator.get(list).and_then(Value::as_array) else {
-                continue;
-            };
-            for item in items {
-                let Some(id) = text(item, &["id", "workspaceId"]) else {
-                    continue;
-                };
-                if out.iter().any(|w| w.workspace_id == id) {
-                    continue;
-                }
-                let kind = workspace_kind(item);
-                let ssh_host = (kind == FleetWorkspaceKind::RemoteSsh)
-                    .then(|| text(item, &["sshHost", "ssh_host"]))
-                    .flatten()
-                    .filter(|host| !LOCAL_SSH_HOSTS.contains(host))
-                    .map(str::to_string);
-                let connection_id = (kind == FleetWorkspaceKind::RemoteSsh)
-                    .then(|| text(item, &["connectionId", "connection_id"]))
-                    .flatten()
-                    .map(str::to_string);
-                let connection_name = (kind == FleetWorkspaceKind::RemoteSsh)
-                    .then(|| text(item, &["connectionName", "connection_name"]))
-                    .flatten()
-                    .map(str::to_string);
-                out.push(FleetWorkspace {
-                    device_id: device_id.to_string(),
-                    workspace_id: id.to_string(),
-                    name: text(item, &["name"]).unwrap_or(id).to_string(),
-                    root_path: text(item, &["rootPath", "root_path"])
-                        .unwrap_or_default()
-                        .replace('\\', "/"),
-                    kind,
-                    ssh_host,
-                    connection_id,
-                    connection_name,
-                    link_state: None,
-                    is_host_current: Some(id) == current,
-                    is_primary_assistant: false,
-                    sessions: Vec::new(),
-                    session_total: 0,
-                    has_more: false,
-                });
-                if out.len() >= MAX_WORKSPACES_PER_DEVICE {
-                    return out;
-                }
-            }
-        }
-        out
-    }
-
-    /// The `list_persisted_sessions_page` arguments for a workspace: its id
-    /// and the legacy path scope, the first page only.
-    pub fn sessions_page_args(workspace: &FleetWorkspace) -> Value {
-        let mut request = json!({
-            "workspaceId": workspace.workspace_id,
-            "workspacePath": workspace.root_path,
-            "limit": MAX_TOP_LEVEL_SESSIONS_PER_WORKSPACE,
-        });
-        if let Some(host) = &workspace.ssh_host {
-            request["remoteSshHost"] = json!(host);
-        }
-        json!({ "request": request })
-    }
-
-    /// Session status from a page activity.
-    pub fn session_status(activity: Option<&Value>) -> FleetSessionStatus {
-        let Some(activity) = activity else {
-            return FleetSessionStatus::Idle;
-        };
-        let waiting = number(activity, &["pendingApprovals", "pending_approvals"]).unwrap_or(0) > 0
-            || number(activity, &["pendingQuestions", "pending_questions"]).unwrap_or(0) > 0;
-        if waiting {
-            return FleetSessionStatus::Waiting;
-        }
-        match text(activity, &["execution"]) {
-            Some("running" | "queued") => FleetSessionStatus::Running,
-            Some("error") => FleetSessionStatus::Error,
-            _ => FleetSessionStatus::Idle,
-        }
-    }
-
-    /// The sessions of one page, its top-level total and whether more exist.
-    pub fn sessions(
-        device_id: &str,
-        workspace_id: &str,
-        page: &Value,
-    ) -> (Vec<FleetSession>, u32, bool) {
-        let activities: HashMap<&str, &Value> = page
-            .get("activities")
-            .and_then(Value::as_array)
-            .map(|list| {
-                list.iter()
-                    .filter_map(|activity| {
-                        Some((text(activity, &["sessionId", "session_id"])?, activity))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut sessions = Vec::new();
-        for item in page
-            .get("sessions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(id) = text(item, &["sessionId", "session_id"]) else {
-                continue;
-            };
-            let activity = activities.get(id).copied();
-            let status = session_status(activity);
-            let failed = activity
-                .and_then(|a| a.get("failed"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let unread = activity
-                .and_then(|a| a.get("unread"))
-                .and_then(Value::as_bool)
-                .unwrap_or_else(|| {
-                    activity
-                        .and_then(|a| text(a, &["unreadCompletion", "unread_completion"]))
-                        .is_some()
-                });
-            let parent = item
-                .get("relationship")
-                .and_then(|relationship| {
-                    text(relationship, &["parentSessionId", "parent_session_id"])
-                })
-                .map(str::to_string);
-            sessions.push(FleetSession {
-                device_id: device_id.to_string(),
-                workspace_id: workspace_id.to_string(),
-                session_id: id.to_string(),
-                parent_session_id: parent,
-                title: text(item, &["sessionName", "session_name", "title"])
-                    .unwrap_or_default()
-                    .to_string(),
-                agent_type: text(item, &["agentType", "agent_type"])
-                    .unwrap_or_default()
-                    .to_string(),
-                status,
-                unread,
-                needs_attention: status == FleetSessionStatus::Waiting || failed,
-                last_activity_ms: number(item, &["lastActiveAt", "last_active_at"]).unwrap_or(0),
-                origin: session_origin(item),
-            });
-        }
-        let total = number(page, &["totalTopLevelCount", "total_top_level_count"])
-            .unwrap_or(sessions.len() as u64)
-            .min(u32::MAX as u64) as u32;
-        let has_more = page
-            .get("hasMore")
-            .or_else(|| page.get("has_more"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        (sessions, total, has_more)
-    }
-
-    /// `dispatch` for a session a Detached Dispatch job runs, `bot` for one
-    /// an IM bot drives (from its custom metadata), else none.
-    pub fn session_origin(item: &Value) -> Option<FleetSessionOrigin> {
-        let custom = item
-            .get("customMetadata")
-            .or_else(|| item.get("custom_metadata"))?;
-        if text(custom, &["dispatchJobId", "dispatch_job_id"]).is_some() {
-            return Some(FleetSessionOrigin::Dispatch);
-        }
-        match text(custom, &["origin", "source"]) {
-            Some("dispatch") => Some(FleetSessionOrigin::Dispatch),
-            Some("bot" | "im_bot") => Some(FleetSessionOrigin::Bot),
-            _ => None,
-        }
-    }
-
-    /// Pending permission requests as prompts; the workspace is the one of
-    /// the session (or its delegating parent) in the polled sessions.
-    pub fn permission_prompts(
-        device_id: &str,
-        requests: &Value,
-        sessions: &[FleetSession],
-    ) -> Vec<FleetPrompt> {
-        let workspace_of = |session_id: &str| {
-            sessions
-                .iter()
-                .find(|session| session.session_id == session_id)
-                .map(|session| session.workspace_id.clone())
-        };
-        let mut prompts = Vec::new();
-        for (order, request) in requests.as_array().into_iter().flatten().enumerate() {
-            let Some(prompt_id) = text(request, &["requestId", "request_id"]) else {
-                continue;
-            };
-            let session_id = text(request, &["sessionId", "session_id"])
-                .unwrap_or_default()
-                .to_string();
-            let parent = request
-                .get("delegation")
-                .and_then(|delegation| text(delegation, &["parentSessionId", "parent_session_id"]));
-            let workspace_id = workspace_of(&session_id)
-                .or_else(|| parent.and_then(workspace_of))
-                .unwrap_or_default();
-            prompts.push(permission_prompt(
-                device_id,
-                workspace_id,
-                session_id,
-                prompt_id,
-                order as u64 + 1,
-                request,
-            ));
-        }
-        prompts
-    }
-
-    /// One permission request as a prompt (the core producer uses the same
-    /// shape for its own requests).
-    pub fn permission_prompt(
-        device_id: &str,
-        workspace_id: String,
-        session_id: String,
-        prompt_id: &str,
-        revision: u64,
-        request: &Value,
-    ) -> FleetPrompt {
-        let action = text(request, &["action"]).unwrap_or_default();
-        let title = request
-            .get("displayMetadata")
-            .and_then(|meta| text(meta, &["title", "summary"]))
-            .unwrap_or(action)
-            .to_string();
-        // The tool of a tool-call request is the source identity.
-        let tool_name = request
-            .get("source")
-            .and_then(|source| {
-                (text(source, &["kind"]) == Some("tool_call"))
-                    .then(|| text(source, &["identity"]))
-                    .flatten()
-                    .or_else(|| text(source, &["toolName", "tool_name"]))
-            })
-            .map(str::to_string);
-        FleetPrompt {
-            device_id: device_id.to_string(),
-            workspace_id,
-            session_id,
-            kind: FleetPromptKind::Permission,
-            prompt_id: prompt_id.to_string(),
-            revision,
-            title,
-            tool_name,
-            payload: Some(request.clone()),
-            payload_truncated: false,
-            answerable: true,
-            unanswerable_reason: None,
-            answer_route: FleetAnswerRoute::Runtime,
-            job_id: None,
-        }
     }
 }

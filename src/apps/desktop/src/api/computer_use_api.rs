@@ -55,14 +55,6 @@ pub async fn computer_use_get_status(
 }
 
 // @backend-command
-pub async fn computer_use_request_permissions() -> Result<(), String> {
-    // Compatibility command: older clients still invoke this from a user gesture.
-    crate::computer_use::permissions::request(ComputerPermissionKind::Accessibility).await?;
-    crate::computer_use::permissions::request(ComputerPermissionKind::ScreenRecording).await?;
-    Ok(())
-}
-
-// @backend-command
 pub async fn computer_use_request_permission(
     request: ComputerPermissionRequest,
 ) -> Result<ComputerPermissionReceipt, String> {

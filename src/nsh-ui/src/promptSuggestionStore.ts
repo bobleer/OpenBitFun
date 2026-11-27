@@ -87,9 +87,9 @@ export function setPromptSuggestion(
  *   that arrived for the current latest completed turn on older hosts that do
  *   not project `promptSuggestion` yet.
  */
-/** `TranscriptTurnView.status` is `"done"` in 2.0 (or `"completed"` on legacy shapes). */
+/** `TranscriptTurnView.status` for completed turns in 2.0 is `"done"`. */
 export function isCompletedTurnStatus(status: string | undefined): boolean {
-  return status === "done" || status === "completed";
+  return status === "done";
 }
 
 export function hydratePromptSuggestionFromTranscript(

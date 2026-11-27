@@ -44,7 +44,6 @@ struct WorkspaceStateSnapshot {
     opened_workspaces: Vec<WorkspaceInfoDto>,
     assistant_workspaces: Vec<WorkspaceInfoDto>,
     primary_assistant_workspace_id: Option<String>,
-    legacy_remote_workspace: Option<crate::api::RemoteWorkspace>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,7 +55,6 @@ pub struct WorkspaceStartupStateSnapshotDto {
     pub opened_workspaces: Vec<WorkspaceInfoDto>,
     pub assistant_workspaces: Vec<WorkspaceInfoDto>,
     pub primary_assistant_workspace_id: Option<String>,
-    pub legacy_remote_workspace: Option<crate::api::RemoteWorkspace>,
 }
 
 fn remote_workspace_from_info(info: &WorkspaceInfo) -> Option<crate::api::RemoteWorkspace> {
@@ -2238,7 +2236,6 @@ async fn collect_workspace_state_snapshot(state: &State<'_, AppState>) -> Worksp
         .get_primary_assistant_workspace()
         .await
         .map(|workspace| workspace.id);
-    let legacy_remote_workspace = state.get_remote_workspace_async().await;
 
     WorkspaceStateSnapshot {
         current_workspace,
@@ -2251,7 +2248,6 @@ async fn collect_workspace_state_snapshot(state: &State<'_, AppState>) -> Worksp
             .map(WorkspaceInfoDto::from_workspace_info)
             .collect(),
         primary_assistant_workspace_id,
-        legacy_remote_workspace,
     }
 }
 
@@ -2369,7 +2365,6 @@ async fn initialize_workspace_startup_state_impl(
         opened_workspaces: snapshot.opened_workspaces,
         assistant_workspaces: snapshot.assistant_workspaces,
         primary_assistant_workspace_id: snapshot.primary_assistant_workspace_id,
-        legacy_remote_workspace: snapshot.legacy_remote_workspace,
     })
 }
 

@@ -135,16 +135,12 @@ export function checkPeerCommandPolicySync(root) {
     }
   };
 
-  // The relay control plane was retired with the 1.x relay transport (2.0).
-  for (const command of ['peer_control_attach', 'peer_control_detach', 'peer_mode_ping']) {
-    expectStance(command, ['retired'], 'the relay peer control plane was retired in OpenBitFun 2.0');
-  }
   for (const operation of registry.operations ?? []) {
     if (operation.id.startsWith('dispatch_target_')) {
       expectStance(operation.id, ['host_control_plane'], 'dispatch target verbs route to the durable CLI runner before the peer bridge');
     } else if (operation.id.startsWith('dispatch_')) {
       expectStance(operation.id, ['controller_local'], 'outbound dispatch is controller-owned');
-    } else if (operation.id.startsWith('account_') && operation?.peer?.kind !== 'retired') {
+    } else if (operation.id.startsWith('account_')) {
       expectStance(operation.id, ['controller_local'], 'account identity and cloud session APIs stay on the controller');
     }
   }

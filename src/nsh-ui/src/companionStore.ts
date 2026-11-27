@@ -485,9 +485,11 @@ const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
           const key = `${device.deviceId}/${session.sessionId}`;
           const activityMs = session.lastActivityMs ?? 0;
           const liveRunning = session.status === "running" || Boolean(running[key]);
-          const waiting = session.status === "waiting" || session.needsAttention === true;
+          const waiting =
+            session.status === "waiting" ||
+            (session.needsAttention === true && !session.failed && session.status !== "error");
           const ackedHere = isAcked(key, activityMs, session.sessionId);
-          const failed = session.status === "error" && session.unread && !ackedHere;
+          const failed = (session.status === "error" || session.failed === true) && !ackedHere;
           const unread = session.unread === true && !ackedHere;
           const state: PetBubbleState | null = waiting
             ? "needs_you"

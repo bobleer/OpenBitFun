@@ -533,12 +533,39 @@ pub(crate) async fn dispatch_target_answered(command: &str, workspace_path: Opti
             }
         }
     }
+    notify_digest_changed();
+}
+
+/// Schedules a coalesced digest refresh when this host's session or workspace
+/// state changed without a lifecycle event.
+pub(crate) fn notify_digest_changed() {
     let digest = DIGEST
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     if let Some(digest) = digest {
         digest.notify_changed();
+    }
+}
+
+/// Synchronously refreshes this CLI host's fleet digest and local index
+/// partition so peers (Desktop, phone, browser) receive `fleet://digest-changed`
+/// immediately after explicit mutations such as `mark_session_seen` or
+/// `save_session_metadata`.
+pub(crate) async fn refresh_local_now() {
+    let digest = DIGEST
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(digest) = digest {
+        if let Err(error) = digest.refresh_and_announce().await {
+            tracing::debug!("Immediate CLI fleet digest refresh failed: {error}");
+        }
+    }
+    if let Some(host) = current() {
+        if let Err(error) = host.sync().refresh_local().await {
+            tracing::debug!("Immediate CLI fleet local index sync failed: {error}");
+        }
     }
 }
 

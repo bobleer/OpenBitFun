@@ -145,6 +145,7 @@ pub(crate) struct TurnAdmissionSessionFacts {
     model_pool_id: Option<String>,
     model_pool_selection_revision: u64,
     reasoning_preset: Option<String>,
+    context_window_override: Option<usize>,
     permission_mode: Option<PermissionMode>,
     max_context_tokens: usize,
     agent_type: String,
@@ -167,6 +168,7 @@ impl TurnAdmissionSessionFacts {
             model_pool_id: session.config.model_pool_id.clone(),
             model_pool_selection_revision: session.config.model_pool_selection_revision,
             reasoning_preset: session.config.reasoning_preset.clone(),
+            context_window_override: session.config.context_window_override,
             permission_mode: session.config.permission_mode,
             max_context_tokens: session.config.max_context_tokens,
             agent_type: session.agent_type.clone(),
@@ -193,6 +195,7 @@ impl TurnAdmissionSessionFacts {
             && self.model_pool_id == session.config.model_pool_id
             && self.model_pool_selection_revision == session.config.model_pool_selection_revision
             && self.reasoning_preset == session.config.reasoning_preset
+            && self.context_window_override == session.config.context_window_override
             && self.permission_mode == session.config.permission_mode
             && self.max_context_tokens == session.config.max_context_tokens
             && self.agent_type == session.agent_type
@@ -266,6 +269,7 @@ pub fn session_model_target(
         session_id: session.session_id,
         selection,
         reasoning_preset: session.config.reasoning_preset,
+        context_window_override: session.config.context_window_override,
         binding: session.config.model_pool_binding,
     }
 }
@@ -792,7 +796,10 @@ impl SessionManager {
         if session.config.model_binding_policy == SessionModelBindingPolicy::Pool {
             return None;
         }
-        let context_window = Self::session_context_window_from_ai_config(session, ai_config)?;
+        let context_window = session
+            .config
+            .context_window_override
+            .or_else(|| Self::session_context_window_from_ai_config(session, ai_config))?;
         session.config.max_context_tokens = context_window;
         Some(context_window)
     }
@@ -3763,6 +3770,27 @@ impl SessionManager {
     }
 
     /// Update session state
+    /// Clears a recoverable in-memory `SessionState::Error` back to `Idle`
+    /// without bumping activity timestamps or rewriting disk metadata (used
+    /// when a user acknowledges a session's unread failed turn).
+    pub fn clear_recoverable_error_state(&self, session_id: &str) -> bool {
+        let Some(mut session) = self.sessions.get_mut(session_id) else {
+            return false;
+        };
+        if matches!(
+            session.state,
+            SessionState::Error {
+                recoverable: true,
+                ..
+            }
+        ) {
+            session.state = SessionState::Idle;
+            true
+        } else {
+            false
+        }
+    }
+
     pub async fn update_session_state(
         &self,
         session_id: &str,
@@ -4282,12 +4310,31 @@ impl SessionManager {
         reasoning_preset: Option<&str>,
         routing_mode: Option<&str>,
     ) -> OpenBitFunResult<()> {
-        self.update_session_model_selection_in_storage_with_routing(
+        self.update_session_model_selection_with_options(
+            session_id,
+            model_id,
+            reasoning_preset,
+            routing_mode,
+            None,
+        )
+        .await
+    }
+
+    pub async fn update_session_model_selection_with_options(
+        &self,
+        session_id: &str,
+        model_id: &str,
+        reasoning_preset: Option<&str>,
+        routing_mode: Option<&str>,
+        context_window_override: Option<Option<usize>>,
+    ) -> OpenBitFunResult<()> {
+        self.update_session_model_selection_in_storage_with_options(
             None,
             session_id,
             model_id,
             reasoning_preset,
             routing_mode,
+            context_window_override,
             true,
             |_| Ok(()),
         )
@@ -4317,6 +4364,7 @@ impl SessionManager {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn update_session_model_selection_in_storage_with_routing(
         &self,
         storage_path: Option<&Path>,
@@ -4327,12 +4375,38 @@ impl SessionManager {
         include_internal: bool,
         validate_binding: impl FnOnce(&Session) -> OpenBitFunResult<()>,
     ) -> OpenBitFunResult<Session> {
+        self.update_session_model_selection_in_storage_with_options(
+            storage_path,
+            session_id,
+            model_id,
+            reasoning_preset,
+            routing_mode,
+            None,
+            include_internal,
+            validate_binding,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn update_session_model_selection_in_storage_with_options(
+        &self,
+        storage_path: Option<&Path>,
+        session_id: &str,
+        model_id: &str,
+        reasoning_preset: Option<&str>,
+        routing_mode: Option<&str>,
+        context_window_override: Option<Option<usize>>,
+        include_internal: bool,
+        validate_binding: impl FnOnce(&Session) -> OpenBitFunResult<()>,
+    ) -> OpenBitFunResult<Session> {
         self.update_session_selection_in_storage(
             storage_path,
             session_id,
             model_id,
             reasoning_preset,
             routing_mode,
+            context_window_override,
             include_internal,
             None,
             validate_binding,
@@ -4366,6 +4440,7 @@ impl SessionManager {
             model_id,
             reasoning_preset,
             None,
+            None,
             true,
             Some(selection),
             |_| Ok(()),
@@ -4381,6 +4456,7 @@ impl SessionManager {
         model_id: &str,
         reasoning_preset: Option<&str>,
         routing_mode: Option<&str>,
+        context_window_override: Option<Option<usize>>,
         include_internal: bool,
         selection: Option<&openbitfun_core_types::model_pool::ModelSelection>,
         validate_binding: impl FnOnce(&Session) -> OpenBitFunResult<()>,
@@ -4529,6 +4605,18 @@ impl SessionManager {
             .map(str::trim)
             .filter(|preset| !preset.is_empty() && !preset.eq_ignore_ascii_case("auto"))
             .map(ToOwned::to_owned);
+        if let Some(override_update) = context_window_override {
+            const MIN_SESSION_CONTEXT_TOKENS: usize = 4_096;
+            const MAX_SESSION_CONTEXT_TOKENS: usize = 10_000_000;
+            if let Some(tokens) = override_update {
+                if !(MIN_SESSION_CONTEXT_TOKENS..=MAX_SESSION_CONTEXT_TOKENS).contains(&tokens) {
+                    return Err(OpenBitFunError::Validation(format!(
+                        "Context length must be between {MIN_SESSION_CONTEXT_TOKENS} and {MAX_SESSION_CONTEXT_TOKENS} tokens"
+                    )));
+                }
+            }
+            updated_session.config.context_window_override = override_update;
+        }
         if let Some(ai_config) = ai_config.as_ref() {
             let requested_reasoning_preset = updated_session.config.reasoning_preset.clone();
             updated_session.config.reasoning_preset =
@@ -4546,6 +4634,9 @@ impl SessionManager {
             }
             resolved_context_window =
                 Self::sync_session_context_window_from_ai_config(&mut updated_session, ai_config);
+        } else if let Some(tokens) = updated_session.config.context_window_override {
+            updated_session.config.max_context_tokens = tokens;
+            resolved_context_window = Some(tokens);
         }
         if original_session.config.model_routing == updated_session.config.model_routing
             && original_session.config.model_id == updated_session.config.model_id
@@ -4553,6 +4644,8 @@ impl SessionManager {
             && original_session.config.model_binding_policy
                 == updated_session.config.model_binding_policy
             && original_session.config.reasoning_preset == updated_session.config.reasoning_preset
+            && original_session.config.context_window_override
+                == updated_session.config.context_window_override
             && original_session.config.max_context_tokens
                 == updated_session.config.max_context_tokens
         {
@@ -4592,6 +4685,7 @@ impl SessionManager {
             session.config.model_pool_binding = updated_session.config.model_pool_binding.clone();
             session.config.model_binding_policy = updated_session.config.model_binding_policy;
             session.config.reasoning_preset = updated_session.config.reasoning_preset.clone();
+            session.config.context_window_override = updated_session.config.context_window_override;
             session.config.max_context_tokens = updated_session.config.max_context_tokens;
             session.updated_at = now;
             session.last_activity_at = now;

@@ -770,7 +770,6 @@ backend_commands![
     computer_use_control_status,
     computer_use_control_stop,
     computer_use_control_preview,
-    computer_use_request_permissions,
     computer_use_request_permission,
     computer_use_share_targets,
     computer_use_share_observe,
@@ -1063,7 +1062,6 @@ backend_commands![
     get_system_info,
     get_app_version,
     backend_protocol::native_commands::check_for_updates,
-    backend_protocol::native_commands::install_update,
     backend_protocol::native_commands::download_update,
     api::update_api::cancel_app_update_download,
     backend_protocol::native_commands::get_pending_update,
@@ -1281,11 +1279,6 @@ backend_commands![
     // Device network (OpenBitFun Link in-process; OBP to other account devices)
     mesh::mesh_api::mesh_status,
     mesh::mesh_api::mesh_list_devices,
-    // Peer Device Mode over OBP on the mesh (controller side)
-    mesh::peer_link::peer_link_connect,
-    mesh::peer_link::peer_link_call,
-    mesh::peer_link::peer_link_events,
-    mesh::peer_link::peer_link_disconnect,
     // Fleet: every runtime host of the account through this one (wave 12).
     fleet::fleet_api::fleet_attention,
     fleet::fleet_api::fleet_attention_mark_read,

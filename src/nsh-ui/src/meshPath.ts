@@ -10,9 +10,7 @@ export type MeshRoute = "direct_lan" | "direct_ipv4" | "direct_ipv6" | "relayed_
 /** The fields of one `mesh_list_devices` row the path line reads. */
 export interface MeshPathFacts {
   reachable: boolean;
-  /** `"p2p" | "relayed"`; every backend sends it. */
-  path?: string;
-  /** How the mesh reaches the device (`MeshRoute`); newer backends only. */
+  /** How the mesh reaches the device (`MeshRoute`). */
   route?: string;
   /** The account device id relaying the traffic when `route` is `relayed_peer` (when the backend names it). */
   relayVia?: string | null;
@@ -21,8 +19,7 @@ export interface MeshPathFacts {
 
 /**
  * The path line. `nameOf` resolves the relaying device's directory name. A
- * backend that sends only `path` gets the coarse line; a device the mesh cannot
- * reach, or one without either field, gets no line (`""`).
+ * device the mesh cannot reach, or one without a route, gets no line (`""`).
  */
 export function meshPathLabel(
   entry: MeshPathFacts,
@@ -49,12 +46,7 @@ export function meshPathLabel(
       label = tr("devices.path.viaServer");
       break;
     default:
-      label =
-        entry.path === "p2p"
-          ? tr("devices.path.direct")
-          : entry.path === "relayed"
-            ? tr("devices.path.relayed")
-            : "";
+      label = "";
   }
   if (!label) return "";
   return typeof entry.latencyMs === "number" && Number.isFinite(entry.latencyMs)

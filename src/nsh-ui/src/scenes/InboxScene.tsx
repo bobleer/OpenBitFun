@@ -8,7 +8,7 @@
 import { Overlay, Scroll, Text, View, cleanup, safeArea } from "nsh";
 import {
   attentionError,
-  attentionServed,
+  attentionView,
   inboxSheetOpen,
   startAttentionStore,
   type AttentionEntry,
@@ -96,7 +96,7 @@ function sendPrompt() {
 }
 
 function inboxLoading(): boolean {
-  return !inboxIsLocal() && attentionServed() === null && !attentionError();
+  return !inboxIsLocal() && attentionView() === null && !attentionError();
 }
 
 function InboxHeader(props: { sheet?: boolean }) {

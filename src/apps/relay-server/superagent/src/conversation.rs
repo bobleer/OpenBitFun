@@ -74,8 +74,6 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Wait {
-    /// No device can hold a model round; resume when one can.
-    Holder,
     /// `fleet_wait`: resume when the condition holds or the deadline passes.
     Jobs {
         tool_call_id: String,

@@ -138,6 +138,7 @@ function createWorkbenchBackend(
         node: { enabled: true },
         ai: { enabled: true },
       },
+      permissionBadges: ["filesystem", "node_worker", "ai_bridge"],
       source: {
         html: "<div id=\"app\">Release Board</div>",
         css: "#app { padding: 12px; }",
@@ -161,6 +162,7 @@ function createWorkbenchBackend(
       updated_at: 1762950000000,
       runtime_profile: "market_strict",
       permissions: {},
+      permissionBadges: ["sandboxed_ui"],
       source: {
         html: "<main>Focus Pad</main>",
         css: "",
@@ -699,7 +701,7 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   const m = String(today.getMonth() + 1).padStart(2, "0");
   const targetDay = `${y}-${m}-15`;
   await app.press(`label:routines-day-${targetDay}`);
-  await app.waitFor(`Scheduled for ${targetDay}`);
+  await app.waitFor(targetDay);
 
   // Create a new Cron routine inside ModalDialog with SelectDropdown
   await app.press("label:routines-new");
@@ -822,7 +824,7 @@ test("git: trust_required recovery and not_a_repository initialize with agent", 
 });
 
 test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, history remote skip, and compact AuxPane", async () => {
-  const backend = createWorkbenchBackend({}, { quickCommitFails: true });
+  const backend = createWorkbenchBackend({});
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openToolScene(app, "git");
@@ -896,18 +898,21 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
     ),
   ).toBe(true);
 
-  // AI commit message (fallback from quick_commit_message to generate_commit_message) + Amend + Commit
+  // AI commit message via `quick_commit_message` + Amend + Commit
   await app.press("label:git-generate-message");
   await app.waitFor("Generated commit message with AI");
   expect(backend.actions()).toContain("quick_commit_message");
-  expect(backend.actions()).toContain("generate_commit_message");
+  expect(backend.actions()).not.toContain("generate_commit_message");
 
   await app.press("label:git-commit-amend");
   await app.press("label:git-commit-submit");
   expect(backend.calls.find(c => c.action === "git_commit")?.request).toMatchObject({
     workspaceId: "workspace-1",
     repositoryPath: "/repo",
-    params: { message: "chore(git): fallback generated commit", amend: true },
+    params: {
+      message: "feat(studio): polish working copy diff\n\nStage and commit cleanly.",
+      amend: true,
+    },
   });
 
   // Toolbar Pull, Push & SelectDropdown quick branch switch
@@ -1063,26 +1068,19 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   expect(app.texts()).toContain("<main>Focus Pad</main>");
   await app.press("label:space-inspector-close");
 
-  // Hero launchpad -> Create with Agent (Creative, as the desktop starts MiniApp creation)
-  await app.type("label:spaces-prompt-input", "A Pomodoro focus timer with audio chime");
-  await app.press("label:spaces-create-agent");
-  await app.waitFor("label:composer");
-  const turnCall = backend.calls.find(c => c.action === "submit_user_message");
-  expect(turnCall?.request).toMatchObject({
-    agentType: "Creative",
-  });
-  expect(String((turnCall?.request as Record<string, unknown>)?.text ?? "")).toContain(
-    "Pomodoro focus timer",
-  );
+  // Inline "Create a Space with an agent" section is removed from Spaces library.
+  expect(app.shows("label:spaces-create-section")).toBe(false);
+  expect(app.shows("label:spaces-create-agent")).toBe(false);
 });
 
-test("spaces: follows miniapp catalogue events and guards Create with Agent on remote workspaces", async () => {
+test("spaces: follows miniapp catalogue events without the retired inline creator section", async () => {
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openLibraryTab(app, "spaces");
   await app.waitFor("Release Tracker");
   expect(app.shows("label:space-running-space-board")).toBe(true);
+  expect(app.shows("label:spaces-create-section")).toBe(false);
 
   // A worker stop pushed by the host clears the running dot without a reload.
   await app.host.send("openbitfun.event", { event: "miniapp-worker-stopped", payload: { id: "space-board" } });
@@ -1096,13 +1094,6 @@ test("spaces: follows miniapp catalogue events and guards Create with Agent on r
   await app.waitUntil(
     () => backend.calls.filter(c => c.action === "list_miniapps").length > listsBefore,
   );
-
-  // Remote workspace: creation is refused loudly, nothing is started.
-  await showDevices(app);
-  await selectTreeWorkspace(app, "workspace-2");
-  await openLibraryTab(app, "spaces");
-  await app.waitFor("Creating Spaces is not supported in remote workspaces. Switch to a local workspace to create one.");
-  expect(app.enabled("label:spaces-create-agent")).toBe(false);
 });
 
 test("git: live status refresh, commit inspection, untracked additions, batch staging, upstream publish and commit & switch", async () => {
@@ -1387,16 +1378,16 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  // Routines: embedded inside Library, the calendar stays in the unified 720px column at desktop and phone widths.
+  // Routines: embedded inside Library, the calendar card stays in the unified 720px column at desktop and phone widths.
   await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
   expect(app.shows("label:routines-calendar-panel")).toBe(false);
-  expect(app.texts()).toContain("Calendar");
+  expect(app.shows("label:routines-calendar-card")).toBe(true);
   expect(app.shows("label:routines-cal-today")).toBe(true);
   await app.setViewport(390, 844);
   await app.waitFor("label:routines-cal-today");
   expect(app.shows("label:routines-calendar-panel")).toBe(false);
-  expect(app.texts()).toContain("Calendar");
+  expect(app.shows("label:routines-calendar-card")).toBe(true);
   expect(app.shows("label:routine-toggle-cron-1")).toBe(true);
   expect(app.enabled("label:routines-new")).toBe(true);
   await app.press("label:routines-new");
@@ -1404,16 +1395,14 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   await app.press("Cancel");
   await app.waitFor("label:routine-name-input", { state: "gone" });
 
-  // Spaces: the gallery collapses to one column and Create with Agent stays reachable.
+  // Spaces: the gallery collapses to one column with installed cards reachable.
   await app.setViewport(1440, 900);
   // The Library stays open across the resize; its tabs switch the scene.
   await app.press("library-tab-spaces");
   await app.waitFor("Release Tracker");
   await app.setViewport(390, 844);
-  await app.waitFor("label:spaces-create-agent");
-  expect(app.shows("label:space-open-space-board")).toBe(true);
-  await app.type("label:spaces-prompt-input", "A tiny habit tracker");
-  expect(app.enabled("label:spaces-create-agent")).toBe(true);
+  await app.waitFor("label:space-open-space-board");
+  expect(app.shows("label:spaces-create-section")).toBe(false);
 
   // Devices: the session list keeps its rows and its New workspace action at phone width
   // (the dispatch form is retired: OpenBitFun starts jobs).
@@ -1458,22 +1447,4 @@ test("routines: the editor previews and validates through the host scheduler", a
   expect(backend.calls.find(c => c.action === "create_cron_job")?.request).toMatchObject({
     schedule: { kind: "cron", expr: "0 9 * * 1-5" },
   });
-});
-
-test("routines: an older host without run previews says so and shows only the runs it reports", async () => {
-  const backend = createWorkbenchBackend({}, { cronPreviewMissing: true });
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await openLibraryTab(app, "routines");
-  await app.waitFor("Daily PR Triage");
-  await app.waitFor("label:routines-preview-unavailable");
-  // The host-reported next run of the enabled routine still lists as due.
-  expect(app.texts()).toContain("Daily PR Triage");
-
-  await app.press("label:routines-new");
-  await app.waitFor("label:routine-name-input");
-  await app.type("label:routine-name-input", "Old Host Routine");
-  await app.type("label:routine-prompt-input", "Saved without a pre-check.");
-  await app.press("label:routine-save");
-  await app.waitFor("Old Host Routine");
-  expect(backend.calls.some(c => c.action === "create_cron_job")).toBe(true);
 });

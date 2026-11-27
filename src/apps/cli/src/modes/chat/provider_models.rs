@@ -3,12 +3,11 @@ impl ChatMode {
     fn handle_provider_selection(&self, selection: ProviderSelection, chat_view: &mut ChatView) {
         match selection {
             ProviderSelection::Provider(template) => {
-                let default_model = template.models.first().cloned().unwrap_or_default();
                 chat_view.show_model_config_form_from_provider(
                     &template.name,
                     &template.base_url,
                     &template.format,
-                    &default_model,
+                    "",
                 );
             }
             ProviderSelection::Custom => chat_view.show_model_config_form_custom(),

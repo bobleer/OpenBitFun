@@ -25,18 +25,9 @@ pub(super) fn arg<T: DeserializeOwned>(
     })
 }
 
-/// The answer for a command this backend does not register. A command the
-/// Product Operation Registry retired (for example the Tauri shell's window,
-/// WebView and devtools commands) names its retirement reason, so an older
-/// client learns the command is gone rather than misspelled.
+/// The answer for a command this backend does not register.
 pub(super) fn unsupported(command: &str) -> Result<Value, String> {
-    match openbitfun_product_domains::remote_surface::retired_reason(command) {
-        Some(reason) => Err(format!(
-            "{} (retired: {reason})",
-            unsupported_in_native_host(command)
-        )),
-        None => Err(unsupported_in_native_host(command)),
-    }
+    Err(unsupported_in_native_host(command))
 }
 
 fn error_text<E: Serialize>(error: E) -> String {

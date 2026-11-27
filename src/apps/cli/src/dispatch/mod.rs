@@ -51,25 +51,6 @@ pub(crate) async fn run_dispatch_verb(
     verb: &str,
     input: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    use openbitfun_core_types::agent_identity_wire::{
-        translate_agent_identity_command, translate_agent_identity_response, AgentIdentityDialect,
-    };
-    let input = translate_agent_identity_command(verb, input, AgentIdentityDialect::Canonical)
-        .map_err(anyhow::Error::msg)?;
-    let result = run_dispatch_verb_canonical(verb, input).await?;
-    translate_agent_identity_response(
-        verb,
-        result,
-        &serde_json::Value::Null,
-        AgentIdentityDialect::Legacy,
-    )
-    .map_err(anyhow::Error::msg)
-}
-
-async fn run_dispatch_verb_canonical(
-    verb: &str,
-    input: serde_json::Value,
-) -> Result<serde_json::Value> {
     match verb {
         "probe" => {
             serde_json::to_value(probe(parse(input)?).await?).context("encode probe response")

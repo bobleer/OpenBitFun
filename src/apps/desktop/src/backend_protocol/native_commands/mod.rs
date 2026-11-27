@@ -36,7 +36,7 @@ pub(super) use pet::{
     show_agent_companion_desktop_pet,
 };
 pub(super) use update::{
-    check_for_updates, download_update, get_pending_update, install_pending_update, install_update,
+    check_for_updates, download_update, get_pending_update, install_pending_update,
 };
 
 /// Reads `args[key]` (Tauri's camelCase argument key) into `T`.

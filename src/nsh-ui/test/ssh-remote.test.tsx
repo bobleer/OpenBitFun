@@ -1107,26 +1107,6 @@ test("Remote link state follows the backend's remote://link-state events and ask
   await app.waitUntil(() => !app.shows("remote-link-auth-required"));
 });
 
-test("A host without backend link supervision gets an explicit update-the-host state, not a client reconnect loop", async () => {
-  const opened = [
-    { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
-    { id: "ws-staging", name: "staging", rootPath: "/srv/staging", workspaceKind: "remote", connectionId: "conn-staging-2", sshHost: "staging.example.com" },
-  ] as unknown as BackendOptions["openedWorkspaces"];
-  const ssh = createSshBackend({ openedWorkspaces: opened, noLinkSupervision: true });
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
-
-  await app.waitFor("nav-library");
-  await openToolScene(app, "files");
-  await app.waitFor("Explorer");
-  await showDevices(app);
-  await selectTreeWorkspace(app, "ws-staging");
-  await openToolScene(app, "files");
-  await app.waitFor("remote-link-host-outdated");
-  await app.waitFor("Staging Box: this device cannot restore remote connections");
-  expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
-  expect(app.shows("remote-link-reconnect")).toBe(false);
-});
-
 // wave22-p5: upload/download only on an SSH workspace of this machine, and the workspace icon on any workspace.
 test("an SSH workspace of this machine uploads and downloads through the backend; a local one offers neither", async () => {
   const opened = [
@@ -1261,7 +1241,7 @@ test("an account SSH profile without its key on this device says so", async () =
   expect(app.texts()).toContain("Needs a key on this device");
 });
 
-test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even when an older entry omits connectionId) and surface offline banner in Sessions", async () => {
+test("Fleet mode remote workspaces call remote_workspace_ensure_connected and surface offline banner in Sessions", async () => {
   const ssh = createSshBackend();
   const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
   const ensureCalls: Array<Record<string, unknown>> = [];
@@ -1271,12 +1251,12 @@ test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even 
     const request = asRecord(args.request);
     if (action === "remote_workspace_ensure_connected") {
       ensureCalls.push(request);
-      if (request.workspaceId === "ws-remote-legacy") {
+      if (request.workspaceId === "ws-remote-offline") {
         return {
           ok: true,
           value: {
             link: {
-              connectionId: "conn-legacy-9",
+              connectionId: "conn-offline-9",
               state: "failed",
               reason: "unreachable",
               detail: "Connection refused by 10.0.0.9",
@@ -1332,13 +1312,13 @@ test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even 
             sessions: [fleetSessionRow("dev-a", "ws-remote", "s-remote", "Remote thread")],
           },
           {
-            workspaceId: "ws-remote-legacy",
-            name: "legacy-remote",
-            rootPath: "/srv/legacy",
+            workspaceId: "ws-remote-offline",
+            name: "offline-remote",
+            rootPath: "/srv/offline",
             kind: "remote_ssh",
             sshHost: "10.0.0.9",
-            // Intentionally omits connectionId to simulate an older fleet entry.
-            sessions: [fleetSessionRow("dev-a", "ws-remote-legacy", "s-legacy", "Legacy remote thread")],
+            connectionId: "conn-offline-9",
+            sessions: [fleetSessionRow("dev-a", "ws-remote-offline", "s-offline", "Offline remote thread")],
           },
         ],
         { isClientDevice: true },
@@ -1353,7 +1333,7 @@ test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even 
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitFor("id:sidebar-session-s-remote");
 
-  // Selecting a Fleet remote workspace with connectionId activates it via remote_workspace_ensure_connected.
+  // Selecting a Fleet remote workspace activates it via remote_workspace_ensure_connected.
   await app.press("id:sidebar-session-s-remote");
   await app.waitUntil(() => ensureCalls.some(call => call.workspaceId === "ws-remote"));
   expect(ensureCalls.find(call => call.workspaceId === "ws-remote")).toMatchObject({
@@ -1363,12 +1343,13 @@ test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even 
     activate: true,
   });
 
-  // Selecting an older Fleet remote workspace without connectionId still ensures by workspaceId and renders the offline banner in SessionsScene.
-  await app.press("id:sidebar-session-s-legacy");
-  await app.waitUntil(() => ensureCalls.some(call => call.workspaceId === "ws-remote-legacy"));
-  expect(ensureCalls.find(call => call.workspaceId === "ws-remote-legacy")).toMatchObject({
-    workspaceId: "ws-remote-legacy",
-    remotePath: "/srv/legacy",
+  // Selecting an unreachable Fleet remote workspace surfaces the offline banner in SessionsScene.
+  await app.press("id:sidebar-session-s-offline");
+  await app.waitUntil(() => ensureCalls.some(call => call.workspaceId === "ws-remote-offline"));
+  expect(ensureCalls.find(call => call.workspaceId === "ws-remote-offline")).toMatchObject({
+    workspaceId: "ws-remote-offline",
+    connectionId: "conn-offline-9",
+    remotePath: "/srv/offline",
     activate: true,
   });
   await app.waitFor("remote-link-offline");

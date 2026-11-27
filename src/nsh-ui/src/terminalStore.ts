@@ -488,13 +488,7 @@ export async function openProfile(
   if (!opened) return;
   const command = profile.startupCommand.trim();
   if (!command) return;
-  // The host types the command and its newline itself, the way the desktop
-  // starts a profile; an older host without the command gets the keystrokes.
-  try {
-    await invokeCommand<unknown>("terminal_send_command", { sessionId: opened, command });
-  } catch {
-    await writeTerminal(opened, `${command}\r`);
-  }
+  await invokeCommand<unknown>("terminal_send_command", { sessionId: opened, command });
 }
 
 /** Opens one more shell for the workspace and puts it on screen. */

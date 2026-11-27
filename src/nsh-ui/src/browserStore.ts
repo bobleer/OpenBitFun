@@ -1025,10 +1025,8 @@ function readLiveView(value: unknown): BrowserLiveView {
   }
 }
 
-/** An older device: no command, or the label-only request shape. */
 function liveViewOutdated(error: unknown): boolean {
-  const message = errorMessage(error);
-  return isCommandUnavailable(error, CAPTURE_COMMAND) || /missing field `label`/.test(message);
+  return isCommandUnavailable(error, CAPTURE_COMMAND);
 }
 
 const LIVE_VIEW_MAX_BACKOFF_MS = 8_000;

@@ -437,14 +437,14 @@ test("split view keeps TurnJumpRail in both Primary and Secondary panes with uni
 
   // Picking a model from Secondary updates Secondary's session (`session-2`), not Primary's (`session-1`).
   await app.press("secondary-bot-capsule-trigger");
-  await app.waitFor("model-option-fast-small");
-  await app.press("model-option-fast-small");
+  await app.waitFor("model-option-cfg-fast");
+  await app.press("model-option-cfg-fast");
   await app.waitUntil(() =>
     backend.calls.some(
       call =>
         call.action === "update_session_model" &&
         (call.request as Record<string, unknown>)?.sessionId === "session-2" &&
-        (call.request as Record<string, unknown>)?.modelName === "fast-small",
+        (call.request as Record<string, unknown>)?.modelName === "cfg-fast",
     ),
   );
   expect(
@@ -516,13 +516,13 @@ test("/btw opens unified right-side ephemeral split pane with workspace context,
   expect(app.shows("btw-composer-plus")).toBe(true);
   expect(app.shows("btw-bot-capsule-trigger")).toBe(true);
   await app.press("btw-bot-capsule-trigger");
-  await app.waitFor("model-option-fast-small");
-  await app.press("model-option-fast-small");
+  await app.waitFor("model-option-cfg-fast");
+  await app.press("model-option-cfg-fast");
   await app.type("side-question-input", "Any blockers?");
   await app.press("side-question-ask");
   await app.waitUntil(() => btwRequests.length === 2);
   expect(btwRequests[1]?.childSessionId).toBe(firstChildId);
-  expect(btwRequests[1]?.modelId).toBe("fast-small");
+  expect(btwRequests[1]?.modelId).toBe("cfg-fast");
   await app.waitFor("btw-turn-jump-rail");
 
   // A split session replaces the side pane only after confirmation.

@@ -774,20 +774,26 @@ impl DesktopSessionApplication {
         session_id: &str,
         seen_through_ms: Option<u64>,
     ) -> DesktopSessionApplicationResult<bool> {
-        let scope = self.resolved_scope(request).await?;
-        self.ensure_runtime_ownership(&scope)?;
-        let storage_path = self.storage_path(&scope);
-        let mut changed = false;
+        let storage_path =
+            if request.workspace_id.is_some() || !request.workspace_path.trim().is_empty() {
+                let scope = self.resolved_scope(request).await?;
+                self.ensure_runtime_ownership(&scope)?;
+                self.storage_path(&scope)
+            } else {
+                self.compatibility
+                    .find_session_storage_path(&self.scope_resolver.workspace_service, session_id)
+                    .await
+                    .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))?
+                    .ok_or_else(|| {
+                        DesktopSessionApplicationError::Core(format!(
+                            "Session metadata not found: {session_id}"
+                        ))
+                    })?
+            };
         self.compatibility
-            .update_persisted_session_metadata(&storage_path, session_id, |current| {
-                changed = openbitfun_core::agentic::session_policy::acknowledge_session_unread(
-                    current,
-                    seen_through_ms,
-                );
-            })
+            .acknowledge_session_unread(&storage_path, session_id, seen_through_ms)
             .await
-            .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))?;
-        Ok(changed)
+            .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))
     }
 
     pub(crate) async fn generate_usage_report(
@@ -942,6 +948,7 @@ impl DesktopSessionApplication {
         Ok(updated_title)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn update_unloaded_session_model(
         &self,
         request: DesktopSessionScopeRequest,
@@ -950,6 +957,7 @@ impl DesktopSessionApplication {
         reasoning_preset: Option<&str>,
         include_internal: bool,
         routing_mode: Option<&str>,
+        context_window_override: Option<Option<usize>>,
     ) -> DesktopSessionApplicationResult<bool> {
         if self
             .compatibility
@@ -961,12 +969,13 @@ impl DesktopSessionApplication {
         let scope = self.resolved_scope(request).await?;
         self.ensure_runtime_ownership(&scope)?;
         self.compatibility
-            .update_session_model_selection_from_storage_path_with_routing(
+            .update_session_model_selection_from_storage_path_with_options(
                 &self.storage_path(&scope),
                 session_id,
                 model_id,
                 reasoning_preset,
                 routing_mode,
+                context_window_override,
                 include_internal,
             )
             .await

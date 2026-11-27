@@ -7,6 +7,7 @@
 // retired: what they offered lives here.
 
 import { expect, open, test } from "nsh/test";
+import { space } from "../src/theme";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, showDevices } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -329,4 +330,189 @@ test("a phone's Sessions tab is the same tree with touch-sized rows and its acti
   expect(app.shows("sidebar-new-session-workspace-1")).toBe(true);
   const row = app.layout("id:sidebar-device-row-dev-b");
   expect(row?.height ?? 0).toBeGreaterThanOrEqual(44);
+});
+
+test("opening an unread CLI session clears the sidebar checkmark immediately and sends mark_session_seen with workspaceId", async () => {
+  const futureActivityMs = Date.now() + 60_000; // simulate remote CLI host clock ahead of local clock
+  const nav = {
+    revision: 5,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 1 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "workspace-1",
+            name: "openbitfun",
+            rootPath: "/repo",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "Local thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+      fleetDeviceRow(
+        "dev-ubuntu",
+        "ubuntu",
+        [
+          {
+            workspaceId: "ws-ubuntu-assistant",
+            name: "小福",
+            rootPath: "/home/u/.openbitfun/assistant",
+            kind: "assistant",
+            sessions: [
+              {
+                ...fleetSessionRow("dev-ubuntu", "ws-ubuntu-assistant", "session-greet", "问候", futureActivityMs),
+                unread: true,
+              },
+            ],
+          },
+        ],
+        { hostKind: "cli" },
+      ),
+    ],
+  };
+  const { app, host } = await openFleet(nav);
+  await app.waitFor("id:sidebar-session-session-greet");
+  // Unread completed session starts with the green "Done" checkmark.
+  expect(app.shows("id:sidebar-session-session-greet >> label:Done")).toBe(true);
+
+  await app.press("id:sidebar-session-session-greet");
+  // Even before the peer's updated digest returns (and even with clock skew), the checkmark clears right away.
+  await app.waitUntil(() => !app.shows("id:sidebar-session-session-greet >> label:Done"));
+  await app.waitUntil(() =>
+    host.fleetCalls.some(call => call.target === "dev-ubuntu" && call.command === "mark_session_seen"),
+  );
+  const seenCall = host.fleetCalls.find(call => call.target === "dev-ubuntu" && call.command === "mark_session_seen");
+  expect((seenCall?.args.request as Record<string, unknown>)?.sessionId).toBe("session-greet");
+  expect((seenCall?.args.request as Record<string, unknown>)?.workspaceId).toBe("ws-ubuntu-assistant");
+});
+
+test("a persisted failed fleet session renders as Failed rather than Needs you and clears once opened", async () => {
+  const nav = {
+    revision: 7,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 1 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "workspace-1",
+            name: "openbitfun",
+            rootPath: "/repo",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "Local thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+      fleetDeviceRow(
+        "dev-ubuntu",
+        "ubuntu",
+        [
+          {
+            workspaceId: "ws-ubuntu",
+            name: "api",
+            rootPath: "/srv/api",
+            sessions: [
+              {
+                ...fleetSessionRow("dev-ubuntu", "ws-ubuntu", "session-failed", "Broken deploy"),
+                status: "idle",
+                unread: true,
+                failed: true,
+                needsAttention: false,
+              },
+            ],
+          },
+        ],
+        { hostKind: "cli" },
+      ),
+    ],
+  };
+  const { app } = await openFleet(nav);
+  await app.waitFor("id:sidebar-session-session-failed >> label:Failed");
+  expect(app.shows("id:sidebar-session-session-failed >> label:Needs you")).toBe(false);
+
+  await app.press("id:sidebar-session-session-failed");
+  await app.waitUntil(() => !app.shows("id:sidebar-session-session-failed >> label:Failed"));
+});
+
+test("sidebar account avatar centers on the workspace icon slot and username left-aligns with tree text", async () => {
+  const { app } = await openFleet();
+  await app.waitFor("id:sidebar-workspace-row-workspace-1");
+  await app.waitFor("id:sidebar-session-session-1");
+  await app.waitFor("id:sidebar-account-avatar");
+  await app.waitFor("id:sidebar-account-label");
+
+  const workspaceRow = app.layout("id:sidebar-workspace-row-workspace-1");
+  const workspaceLabel = app.layout("id:sidebar-workspace-row-workspace-1 >> text:openbitfun");
+  const sessionLabel = app.layout("id:sidebar-session-session-1 >> text:Fix flaky test");
+  const avatar = app.layout("id:sidebar-account-avatar");
+  const accountLabel = app.layout("id:sidebar-account-label");
+
+  expect(workspaceRow).not.toBeNull();
+  expect(workspaceLabel).not.toBeNull();
+  expect(sessionLabel).not.toBeNull();
+  expect(avatar).not.toBeNull();
+  expect(accountLabel).not.toBeNull();
+
+  // Workspace row starts with its 16 px leading icon slot (`space.lg`).
+  const workspaceIconCenterX = workspaceRow!.x + space.lg / 2;
+  const avatarCenterX = avatar!.x + avatar!.width / 2;
+  expect(avatarCenterX).toBe(workspaceIconCenterX);
+  expect(accountLabel!.x).toBe(workspaceLabel!.x);
+  expect(accountLabel!.x).toBe(sessionLabel!.x);
+});
+
+test("this-device marker renders as an inverted pill capsule on the chrome surface", async () => {
+  const { app } = await openFleet();
+  await app.waitFor("id:sidebar-device-this-device-dev-a");
+
+  const pillStyle = app.viewStyle("id:sidebar-device-this-device-dev-a");
+  const textStyleVal = app.spanStyle("id:sidebar-device-this-device-dev-a >> text:This device");
+  expect(pillStyle?.backgroundColor).toBeDefined();
+  expect(textStyleVal.color).toBeDefined();
+  expect(pillStyle?.backgroundColor).not.toBe(textStyleVal.color);
+});
+
+test("temporary dev route tag shows P2P/Relay and latency on the right side of peer device headers", async () => {
+  const nav = navigator();
+  nav.devices = nav.devices.map(device => {
+    const id = (device as { deviceId?: string }).deviceId;
+    if (id === "dev-a") return { ...device, route: { kind: "local" } };
+    if (id === "dev-b") return { ...device, route: { kind: "direct_lan", latencyMs: 12 } };
+    return device;
+  });
+  nav.devices.push({
+    ...fleetDeviceRow(
+      "dev-relay",
+      "ubuntu",
+      [{ workspaceId: "ws-r", name: "srv", rootPath: "/srv", isHostCurrent: true, sessions: [] }],
+      { hostKind: "cli" },
+    ),
+    route: { kind: "relayed_server", latencyMs: 48 },
+  });
+  const { app } = await openFleet(nav);
+  await app.waitFor("id:sidebar-device-dev-route-dev-b");
+  await app.waitFor("id:sidebar-device-dev-route-dev-relay");
+
+  expect(app.shows("id:sidebar-device-dev-route-dev-a")).toBe(false);
+  expect(app.shows("text:P2P · 12ms")).toBe(true);
+  expect(app.shows("text:Relay · 48ms")).toBe(true);
+
+  const sectionBox = app.layout("label:sidebar-device-dev-relay");
+  const nameBox = app.layout("id:sidebar-device-row-dev-relay >> text:UBUNTU");
+  const routeBox = app.layout("id:sidebar-device-dev-route-dev-relay");
+  expect(sectionBox).not.toBeNull();
+  expect(nameBox).not.toBeNull();
+  expect(routeBox).not.toBeNull();
+  expect(routeBox!.x).toBeGreaterThan(nameBox!.x + nameBox!.width);
+  expect(routeBox!.x + routeBox!.width).toBeLessThanOrEqual(sectionBox!.x + sectionBox!.width + 2);
+  expect(Math.abs((routeBox!.y + routeBox!.height / 2) - (nameBox!.y + nameBox!.height / 2))).toBeLessThanOrEqual(4);
 });

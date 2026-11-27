@@ -48,6 +48,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       defaultTools: ["Read", "Grep"],
       configProfileId: "Reviewer",
       model: "gpt-4.1",
+      canEdit: true,
+      canDelete: true,
     },
     {
       id: "OpenCodeMode",
@@ -59,6 +61,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       defaultTools: ["Bash"],
       configProfileId: "OpenCodeMode",
       model: "opencode-acp",
+      canEdit: false,
+      canDelete: false,
     },
   ];
 
@@ -75,6 +79,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       defaultTools: ["Read", "Grep"],
       effectiveEnabled: true,
       model: null,
+      canEdit: false,
+      canDelete: false,
     },
     {
       id: "HelperSub",
@@ -88,6 +94,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       defaultTools: ["Read", "Glob"],
       effectiveEnabled: true,
       model: "gpt-4.1-mini",
+      canEdit: true,
+      canDelete: true,
     },
   ];
 
@@ -145,6 +153,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       dirName: "core-guide",
       isBuiltin: true,
       isShadowed: false,
+      canDelete: false,
+      canToggle: true,
     },
     {
       key: "user::openbitfun::reviewer",
@@ -159,6 +169,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
       dirName: "reviewer",
       isBuiltin: false,
       isShadowed: false,
+      canDelete: true,
+      canToggle: true,
     },
     ...(options.includeShadowedSkill
       ? [
@@ -175,6 +187,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
             isBuiltin: false,
             isShadowed: true,
             shadowedByKey: "user::openbitfun::reviewer",
+            canDelete: true,
+            canToggle: true,
           },
         ]
       : []),
@@ -298,6 +312,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
           defaultTools: tools,
           configProfileId: id,
           model: payload.model ?? null,
+          canEdit: true,
+          canDelete: true,
         });
         customAgentDetails[id] = {
           agentId: id,
@@ -374,6 +390,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
           defaultTools: tools,
           effectiveEnabled: true,
           model: payload.model ?? null,
+          canEdit: true,
+          canDelete: true,
         });
         customSubagentDetails[id] = {
           subagentId: id,
@@ -520,6 +538,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
           dirName,
           isBuiltin: false,
           isShadowed: false,
+          canDelete: true,
+          canToggle: true,
         });
         return { handled: true, value: `Skill '${dirName}' added successfully` };
       }
@@ -574,6 +594,8 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
           dirName: shortName,
           isBuiltin: false,
           isShadowed: false,
+          canDelete: true,
+          canToggle: true,
         });
         return {
           handled: true,

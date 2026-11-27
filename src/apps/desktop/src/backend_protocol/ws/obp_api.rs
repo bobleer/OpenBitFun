@@ -20,9 +20,6 @@ use super::{
     default_web_root, global_server, unavailable_status, ObpStatus, PairingOffer, UiBundleSource,
 };
 
-/// The refusal for LAN pairing (older UIs still offer it).
-pub(crate) const LAN_PAIRING_RETIRED: &str = "obp_lan_retired: pairing on the local network was retired; join the phone to the account device mesh and scan the mesh QR code in Devices (devices on the same network connect directly through the mesh)";
-
 fn unavailable() -> String {
     unavailable_status()
         .unavailable_reason
@@ -48,14 +45,10 @@ pub struct ObpCreatePairingRequest {
     pub via: Option<String>,
 }
 
-/// A one-time pairing QR for the device-mesh listener (valid for five
-/// minutes). Older UIs that ask for `via: "lan"` get an explicit refusal.
+/// A one-time pairing QR for the device-mesh listener (valid for five minutes).
 // @backend-command
 pub async fn obp_create_pairing(request: ObpCreatePairingRequest) -> Result<PairingOffer, String> {
     let via = request.via.as_deref().map(str::trim).unwrap_or("mesh");
-    if via == "lan" {
-        return Err(LAN_PAIRING_RETIRED.to_string());
-    }
     let server = global_server().ok_or_else(unavailable)?;
     match via {
         "" | "mesh" => {
@@ -132,17 +125,6 @@ pub async fn ui_bundle_manifest(request: UiBundleManifestRequest) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn lan_pairing_is_refused_as_retired() {
-        let refused = obp_create_pairing(ObpCreatePairingRequest {
-            name: None,
-            via: Some("lan".to_string()),
-        })
-        .await
-        .unwrap_err();
-        assert!(refused.starts_with("obp_lan_retired:"), "{refused}");
-    }
 
     /// Through the generated dispatcher, as a browser's call arrives: the
     /// manifest with its recomputed id, or the explicit unavailable state

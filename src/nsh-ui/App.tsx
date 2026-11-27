@@ -201,10 +201,9 @@ import { initAccountSync } from "./src/accountSyncStore";
 import { initAccountRecords } from "./src/accountRecordsStore";
 import { keybindingOverrides, keystrokeReservedHere, loadKeybindings } from "./src/shortcutsStore"; // wave22-p5
 import { closeSpacePage, installSpaceAgentSurface } from "./src/spaceViewStore"; // wave22-p4
-import { loadQueue } from "./src/queueStore";
 import { ensureSendPolicy } from "./src/sendPolicyStore";
 import { ensureQuickActions } from "./src/quickActionStore";
-import { loadSeenSessions, statusOfSession } from "./src/sessionStatusStore";
+import { statusOfSession } from "./src/sessionStatusStore";
 
 import { openFileAt } from "./src/fileStore";
 import {
@@ -262,6 +261,7 @@ import {
   onAccountAuthChanged,
   openAccountAuthModal,
 } from "./src/ui/AccountAuthModal";
+import { RemoteDisclaimerModal } from "./src/ui/RemoteDisclaimerModal";
 import { SshWorkspaceModals } from "./src/ui/SshWorkspaceModals";
 import { AboutDialog, installAboutUpdates, openAboutDialog } from "./src/ui/AboutDialog";
 import {
@@ -783,10 +783,11 @@ function accountLabel(): string {
   return display.identity?.displayName || tr("signin.signedIn");
 }
 
-function AccountAvatar(props: { size: number }) {
+function AccountAvatar(props: { size: number; testID?: string }) {
   const onChrome = () => SurfaceContext() === "chrome";
   return (
     <View
+      testID={props.testID}
       style={{
         width: props.size,
         height: props.size,
@@ -903,6 +904,10 @@ function accountMenuItems(): DropdownMenuItem[] {
 
 /** "(B) Bob ⚙": the account menu, and Settings one press away. */
 function AccountRow() {
+  // Align the 20 px avatar center with the 16 px sidebar icon slot above
+  // (8 + 8 + 16/2 = 24) and left-align the label with workspace/session titles
+  // (8 + 8 + 16 + 8 = 40): each side sheds half the 4 px width difference.
+  const avatarInset = space.sm - space.hair;
   return (
     <View
       ref={el => accountMenuAnchor.set(el)}
@@ -917,11 +922,12 @@ function AccountRow() {
           flex: 1,
           minWidth: 0,
           height: controlHeight.md,
-          paddingHorizontal: space.sm,
+          paddingLeft: avatarInset,
+          paddingRight: space.sm,
           borderRadius: radii.md,
           flexDirection: "row",
           alignItems: "center",
-          gap: space.sm,
+          gap: avatarInset,
           cursor: "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
@@ -930,8 +936,9 @@ function AccountRow() {
         activeStyle={tactileActiveStyle(0.985, { backgroundColor: palette().chromeActive })}
         focusVisibleStyle={{ ...focusRingStyle("chrome"), outlineOffset: -1 }}
       >
-        <AccountAvatar size={20} />
+        <AccountAvatar size={space.xl} testID="sidebar-account-avatar" />
         <Text
+          testID="sidebar-account-label"
           style={{
             ...textStyle("label", { color: palette().chromeText }),
             flex: 1,
@@ -2903,10 +2910,8 @@ function StudioApp() {
   void loadContentWidth().then(() => syncContentWidthFromHost());
   initAccountSync();
   initAccountRecords();
-  void loadQueue();
   ensureSendPolicy();
   ensureQuickActions();
-  void loadSeenSessions();
   void loadAccountState();
   void loadShellLayout();
   // In fleet mode `state.ts`'s `fleetActive` effect loads workspaces from the
@@ -3287,6 +3292,7 @@ function StudioApp() {
       </If>
       <SshWorkspaceModals />
       <AccountAuthModal />
+      <RemoteDisclaimerModal />
       <SessionActionDialogs />
       <SideQuestionCloseDialog />
       <DeviceActionDialogs />

@@ -5,9 +5,7 @@
 
 import { batch, computed, signal } from "nsh";
 import {
-  cancelDialogTurn,
   createSession,
-  interruptDialogTurn,
   startDialogTurn,
   submitUserMessage,
   type ExternalCommandSubmission,
@@ -381,7 +379,12 @@ export function selectSecondarySession(
     }
   });
 
-  markSessionSeen(sessionId, sessionLastActivityMs(row) ?? fleetRow?.lastActivityMs);
+  markSessionSeen(
+    sessionId,
+    sessionLastActivityMs(row) ?? fleetRow?.lastActivityMs,
+    device,
+    resolvedWs ?? undefined,
+  );
   const secondaryWs = secondaryWorkspaceRecord();
   if (secondaryWs) void ensureRemoteConnected(secondaryWs);
   void loadSecondaryTurns(sessionId, { silent: true });
@@ -782,37 +785,9 @@ export async function sendSecondaryTurn(
         if (result.outcome === "steered") await loadSecondaryTurns(sessionId, { silent: true });
       }
     } catch (error) {
-      if (!external?.execution && isCommandUnavailable(error, "submit_user_message")) {
-        if (running) {
-          restoreDraft();
-          if (target.isVisible()) secondarySendNotice.set(tr("chat.send.hostUpdateRequired"));
-          return;
-        }
-        try {
-          const result = await startDialogTurn({
-            sessionId,
-            userInput: message.text,
-            ...(options?.turnId ? { turnId: options.turnId } : {}),
-            ...(message.displayText !== message.text ? { originalUserInput: message.displayText } : {}),
-            ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
-            agentType,
-            workspaceId: workspaceId ?? "",
-            ...(attachments.length ? { imageContexts: attachments } : {}),
-          }, route);
-          if (!result.success) throw new Error(result.message);
-          outcome = "started";
-        } catch (legacyError) {
-          restoreDraft();
-          if (target.isVisible()) {
-            clearSecondaryPendingTurn(sessionId, origin);
-            secondaryTurnError.set(legacyError instanceof Error ? legacyError.message : String(legacyError));
-          }
-        }
-        return;
-      }
+      if (!running) clearSecondaryPendingTurn(sessionId, origin);
       restoreDraft();
       if (target.isVisible()) {
-        if (!running) clearSecondaryPendingTurn(sessionId, origin);
         secondaryTurnError.set(error instanceof Error ? error.message : String(error));
       }
     }
@@ -828,20 +803,11 @@ export async function stopSecondaryTurn(): Promise<void> {
   const device = secondarySessionDevice();
 
   await runStep(async () => {
-    try {
-      await invokeCommand<{ turnId: string; method: string }>(
-        "stop_dialog_turn",
-        { sessionId, dialogTurnId: turnId },
-        secondaryRouteOptions(device),
-      );
-    } catch (error) {
-      if (!isCommandUnavailable(error, "stop_dialog_turn")) throw error;
-      try {
-        await interruptDialogTurn(sessionId, turnId);
-      } catch {
-        await cancelDialogTurn(sessionId, turnId);
-      }
-    }
+    await invokeCommand<{ turnId: string; method: string }>(
+      "stop_dialog_turn",
+      { sessionId, dialogTurnId: turnId },
+      secondaryRouteOptions(device),
+    );
     clearQuestionsForSession(sessionId, device);
     clearPermissionsForSession(sessionId, device);
     runningTurns.update(current => {

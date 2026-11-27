@@ -246,6 +246,8 @@ pub struct UpdateSessionModelRequest {
     pub model_name: String,
     #[serde(default, deserialize_with = "deserialize_present_nullable")]
     pub reasoning_preset: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
+    pub context_window_override: Option<Option<usize>>,
     /// Owning workspace ID; `workspacePath` and SSH fields are an upgrade-only projection.
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -2308,17 +2310,19 @@ pub async fn update_session_model(
                 .and_then(|value| value.as_deref()),
             request.include_internal,
             request.routing_mode.as_deref(),
+            request.context_window_override,
         )
         .await
         .map_err(|error| error.to_string())?
     {
         return Ok(());
     }
-    let reasoning_update = if request.routing_mode.is_some() {
-        Some(request.reasoning_preset.flatten())
-    } else {
-        request.reasoning_preset
-    };
+    let reasoning_update =
+        if request.routing_mode.is_some() || request.context_window_override.is_some() {
+            Some(request.reasoning_preset.flatten())
+        } else {
+            request.reasoning_preset
+        };
     let update_result = match reasoning_update {
         Some(reasoning_preset) => {
             let reasoning_preset = reasoning_preset
@@ -2334,6 +2338,7 @@ pub async fn update_session_model(
                         model_id: request.model_name,
                         reasoning_preset,
                         routing_mode: request.routing_mode,
+                        context_window_override: request.context_window_override,
                     },
                 })
                 .await
@@ -4852,10 +4857,21 @@ mod tests {
         let explicit: UpdateSessionModelRequest = serde_json::from_value(json!({
             "sessionId": "session-1",
             "modelName": "model-a",
-            "reasoningPreset": "high"
+            "reasoningPreset": "high",
+            "contextWindowOverride": 300_000
         }))
-        .expect("explicit reasoning preset");
+        .expect("explicit reasoning preset and context window");
         assert_eq!(explicit.reasoning_preset, Some(Some("high".to_string())));
+        assert_eq!(explicit.context_window_override, Some(Some(300_000)));
+        assert_eq!(omitted.context_window_override, None);
+
+        let cleared: UpdateSessionModelRequest = serde_json::from_value(json!({
+            "sessionId": "session-1",
+            "modelName": "model-a",
+            "contextWindowOverride": null
+        }))
+        .expect("null context window override");
+        assert_eq!(cleared.context_window_override, Some(None));
     }
 
     #[test]

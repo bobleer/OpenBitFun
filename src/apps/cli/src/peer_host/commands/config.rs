@@ -199,3 +199,43 @@ pub(crate) async fn get_agent_profile_configs() -> Result<Value, String> {
     serde_json::to_value(configs)
         .map_err(|e| format!("Failed to serialize agent profile configs: {e}"))
 }
+
+pub(crate) async fn export_config() -> Result<Value, String> {
+    let config_service = get_global_config_service()
+        .await
+        .map_err(|error| format!("Failed to get config service: {error}"))?;
+    let export = config_service
+        .export_config()
+        .await
+        .map_err(|error| format!("Failed to export config: {error}"))?;
+    serde_json::to_value(export)
+        .map_err(|error| format!("Failed to serialize config export: {error}"))
+}
+
+pub(crate) async fn import_config(args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let config_data = request
+        .get("configData")
+        .or_else(|| request.get("config_data"))
+        .cloned()
+        .ok_or_else(|| "Missing 'config_data' field".to_string())?;
+    let export: openbitfun_core::service::config::ConfigExport =
+        serde_json::from_value(config_data)
+            .map_err(|error| format!("Failed to parse OpenBitFun config export: {error}"))?;
+    let config_service = get_global_config_service()
+        .await
+        .map_err(|error| format!("Failed to get config service: {error}"))?;
+    let result = config_service
+        .import_config(export)
+        .await
+        .map_err(|error| format!("Failed to import config: {error}"))?;
+    if result.success {
+        if let Ok(factory) =
+            openbitfun_core::infrastructure::ai::AIClientFactory::get_global().await
+        {
+            factory.invalidate_cache();
+        }
+    }
+    serde_json::to_value(result)
+        .map_err(|error| format!("Failed to serialize import result: {error}"))
+}

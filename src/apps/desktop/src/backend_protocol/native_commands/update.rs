@@ -537,19 +537,6 @@ pub(in crate::backend_protocol) fn install_pending_update(
     })
 }
 
-/// The legacy one-step install: download, then install and restart.
-pub(in crate::backend_protocol) fn install_update(
-    host: &Arc<NativeHost>,
-    args: Value,
-) -> DispatchFuture<'_> {
-    let _ = args;
-    Box::pin(async move {
-        let pending = download(host, Default::default()).await?;
-        install(host, pending.version).await?;
-        Ok(Value::Null)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

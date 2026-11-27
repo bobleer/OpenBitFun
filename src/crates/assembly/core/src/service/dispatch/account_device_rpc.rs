@@ -11,9 +11,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openbitfun_core_types::agent_identity_wire::{
-    translate_agent_identity_command, translate_agent_identity_response, AgentIdentityDialect,
-};
 use openbitfun_services_integrations::remote_connect::mesh_route::{
     call_mesh, mesh_route, AccountDeviceMeshRoute, CAPABILITY_DISPATCH_TARGET_V1,
 };
@@ -21,24 +18,6 @@ use serde_json::Value;
 
 use super::DeviceDispatchRpc;
 use crate::service::remote_connect::account_runtime::AccountRuntime;
-
-/// The arguments a target receives for one dispatch verb (the target dialect).
-pub fn device_dispatch_wire_args(command: &str, args: Value) -> anyhow::Result<Value> {
-    translate_agent_identity_command(command, args, AgentIdentityDialect::Legacy)
-        .map_err(anyhow::Error::msg)
-}
-
-/// A target's value for one dispatch verb, translated back to the canonical
-/// dialect.
-pub fn device_dispatch_wire_value(command: &str, value: Value) -> anyhow::Result<Value> {
-    translate_agent_identity_response(
-        command,
-        value,
-        &Value::Null,
-        AgentIdentityDialect::Canonical,
-    )
-    .map_err(anyhow::Error::msg)
-}
 
 /// Runs one dispatch verb on `device_id` over the device mesh (`route`,
 /// `dispatch_target_v1`). Errors are reported, never retried elsewhere.
@@ -48,17 +27,15 @@ pub async fn invoke_device_dispatch(
     command: &str,
     args: Value,
 ) -> anyhow::Result<Value> {
-    let wire_args = device_dispatch_wire_args(command, args)?;
-    let value = call_mesh(
+    call_mesh(
         route,
         device_id,
         CAPABILITY_DISPATCH_TARGET_V1,
         command,
-        wire_args,
+        args,
     )
     .await
-    .map_err(anyhow::Error::msg)?;
-    device_dispatch_wire_value(command, value)
+    .map_err(anyhow::Error::msg)
 }
 
 /// Device dispatch for a host whose account session is held by an
@@ -155,10 +132,7 @@ mod tests {
         .unwrap();
         assert_eq!(value["protocolVersion"], 6);
         assert_eq!(value["command"], "dispatch_target_probe");
-        assert_eq!(
-            value["echo"],
-            device_dispatch_wire_args("dispatch_target_probe", args).unwrap()
-        );
+        assert_eq!(value["echo"], args);
 
         let error = invoke_device_dispatch(
             route,

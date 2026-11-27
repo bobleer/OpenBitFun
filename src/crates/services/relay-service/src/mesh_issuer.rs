@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn peer_urls_are_restricted_to_easytier_transports() {
         assert!(valid_peer_url("tcp://190.92.203.184:11010"));
-        assert!(valid_peer_url("wss://remote.openbitfun.com:443/mesh/et/"));
+        assert!(valid_peer_url("wss://super.openbitfun.com:443/mesh/et/"));
         assert!(!valid_peer_url("http://example.com"));
         assert!(!valid_peer_url("tcp://user:pw@example.com:1"));
         assert!(!valid_peer_url("tcp://example.com:1\"\nx"));
@@ -365,7 +365,7 @@ mod tests {
         router_with_verifier(
             MeshIssuerConfig {
                 key: KEY,
-                peers: vec!["wss://remote.openbitfun.com:443/mesh/et/".into()],
+                peers: vec!["wss://super.openbitfun.com:443/mesh/et/".into()],
                 easytier_version: "2.6.4".into(),
             },
             IdentityVerifier::with_url(me_url).unwrap(),
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(body["easytierVersion"], "2.6.4");
         assert_eq!(
             body["peers"],
-            serde_json::json!(["wss://remote.openbitfun.com:443/mesh/et/"])
+            serde_json::json!(["wss://super.openbitfun.com:443/mesh/et/"])
         );
 
         // No device named: credentials without a join token (older clients).

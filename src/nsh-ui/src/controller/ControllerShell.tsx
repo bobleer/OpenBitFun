@@ -8,12 +8,14 @@
 
 import { Scroll, effect, safeArea, signal, Text, untracked, View, type JSX } from "nsh";
 import { connectionState } from "../bridge";
+import { fleetDevices } from "../fleetStore";
 import { formatRelativeTime } from "../format";
 import { tr } from "../i18n";
 import { compactLayout, controlHeight, layout, motionTiming, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { Icon } from "../ui/icons";
 import { BrandSpinner, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DeviceGlyph, EmptyStateCard, focusRingStyle } from "../ui/primitives";
+import { RemoteDisclaimerModal } from "../ui/RemoteDisclaimerModal";
 import { SignInView } from "../ui/SignInView";
 import type { ControllerDevice } from "./controllerPort";
 import {
@@ -28,6 +30,7 @@ import {
   controllerPhase,
   requestControllerCode,
   restartControllerSignIn,
+  scheduleControllerUiUpdateCheck,
   signOutController,
   startController,
   verifyControllerCode,
@@ -355,6 +358,29 @@ export function ControllerShell(props: { children: () => JSX.Element }) {
       untracked(() => void checkControllerUiUpdate());
     }
   });
+  // Re-check for a newer fleet UI bundle only when an online device joins or changes version,
+  // not on routine session/workspace digest ticks.
+  let lastOnlineVersions = "";
+  effect(() => {
+    if (controllerPhase() !== "connected") {
+      lastOnlineVersions = "";
+      return;
+    }
+    const signature = fleetDevices()
+      .filter(device => device.state === "online")
+      .map(device => `${device.deviceId}@${device.version ?? ""}`)
+      .sort()
+      .join(",");
+    if (!signature) return;
+    if (!lastOnlineVersions) {
+      lastOnlineVersions = signature;
+      return;
+    }
+    if (signature !== lastOnlineVersions) {
+      lastOnlineVersions = signature;
+      untracked(() => scheduleControllerUiUpdateCheck());
+    }
+  });
   return (
     <View
       style={{
@@ -370,7 +396,14 @@ export function ControllerShell(props: { children: () => JSX.Element }) {
           </View>
         )}
       </If>
-      <If when={controllerPhase() !== "connected"}>{() => <Launcher />}</If>
+      <If when={controllerPhase() !== "connected"}>
+        {() => (
+          <>
+            <Launcher />
+            <RemoteDisclaimerModal />
+          </>
+        )}
+      </If>
     </View>
   );
 }

@@ -124,6 +124,7 @@ async fn session_model_selection_forwards_model_and_reasoning_preset_atomically(
             model_id: "provider/model".to_string(),
             reasoning_preset: Some("high".to_string()),
             routing_mode: None,
+            context_window_override: Some(Some(300_000)),
         },
     };
 

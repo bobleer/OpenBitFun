@@ -652,6 +652,9 @@ pub async fn mark_session_seen(
         )
         .await
         .map_err(|error| format!("Failed to mark session seen: {error}"))?;
+    if changed {
+        crate::fleet::refresh_local_now().await;
+    }
     Ok(MarkSessionSeenResponse { changed })
 }
 

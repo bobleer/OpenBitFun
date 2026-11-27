@@ -83,5 +83,23 @@ pub(crate) async fn list_subagents(command: &str, args: &Value) -> Result<Value,
     if let Some(source) = source {
         agents.retain(|agent| agent.subagent_source.as_ref() == Some(&source));
     }
+    if command == "list_subagents" {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SubagentListItem {
+            #[serde(flatten)]
+            info: openbitfun_core::agentic::agents::AgentInfo,
+            #[serde(flatten)]
+            mutability: openbitfun_core::agentic::agents::AgentMutability,
+        }
+        let items: Vec<SubagentListItem> = agents
+            .into_iter()
+            .map(|info| SubagentListItem {
+                mutability: info.source.mutability(external_sources_supported),
+                info,
+            })
+            .collect();
+        return serde_json::to_value(items).map_err(|error| error.to_string());
+    }
     serde_json::to_value(agents).map_err(|error| error.to_string())
 }

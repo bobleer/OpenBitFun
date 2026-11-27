@@ -168,13 +168,17 @@ export const listSessions = async (
   workspaceId: string,
   limit: number,
   cursor?: string,
-  options?: { target: string },
+  options?: { target?: string },
 ): Promise<SessionPage> => {
-  const page = await invokeCommand<SessionPage>("list_persisted_sessions_page", {
-    workspace_id: workspaceId,
-    limit,
-    ...(cursor ? { cursor } : {}),
-  }, options);
+  const page = await invokeCommand<SessionPage>(
+    "list_persisted_sessions_page",
+    {
+      workspace_id: workspaceId,
+      limit,
+      ...(cursor ? { cursor } : {}),
+    },
+    options,
+  );
   // The host derives each row's read state; an older host only has the raw
   // receipt on the row, which says the same thing without the split.
   const attention = new Map<string, { unread?: boolean; failed?: boolean }>();
@@ -616,13 +620,6 @@ export interface AgentMode {
   model?: string | null;
 }
 
-/** The agents this workspace can run, as the host resolves them for it. */
-export const getAvailableModes = (workspaceId: string, workspacePath?: string) =>
-  invokeCommand<AgentMode[]>("get_available_modes", {
-    workspaceId,
-    ...(workspacePath ? { workspacePath } : {}),
-  });
-
 /**
  * Rebinds a session that has not started yet to another agent. The host also
  * accepts it on a started session, but the desktop refuses that in the UI, so
@@ -646,6 +643,11 @@ export const updateSessionModel = (request: {
    * leaving it out keeps whatever the session already had.
    */
   reasoningPreset?: string | null;
+  /**
+   * Explicit session context length limit in tokens (e.g. `300000`).
+   * `null` clears the override; omitting leaves the existing value intact.
+   */
+  contextWindowOverride?: number | null;
   workspaceId?: string;
   workspacePath?: string;
   includeInternal?: boolean;
@@ -690,6 +692,8 @@ export interface SessionModelTargetResponse {
   selection?: { kind: string; model_ref?: string; pool_id?: string };
   /** Absent on a host older than this field, which is not the same as `null`. */
   reasoningPreset?: string | null;
+  /** Explicit session context length in tokens when overridden. */
+  contextWindowOverride?: number | null;
   binding?: { poolId?: string; modelId?: string } | null;
 }
 
@@ -759,16 +763,6 @@ export const startDialogTurn = (request: {
   }>;
 }, route?: InvokeCommandOptions) => invokeCommand<{ success: boolean; message: string }>("start_dialog_turn", request, route);
 
-/**
- * Stops a running turn. `interrupt_dialog_turn` asks the runtime to stop at a
- * safe point; `cancel_dialog_turn` is the hard stop the React surface falls back
- * to when the runtime has no interruption surface for this session.
- */
-export const interruptDialogTurn = (sessionId: string, dialogTurnId: string) =>
-  invokeCommand<unknown>("interrupt_dialog_turn", { sessionId, dialogTurnId });
-
-export const cancelDialogTurn = (sessionId: string, dialogTurnId: string) =>
-  invokeCommand<unknown>("cancel_dialog_turn", { sessionId, dialogTurnId });
 
 /**
  * Injects a message into the turn that is already running instead of waiting for
@@ -854,14 +848,11 @@ export function sessionMetadataForSave(
   };
 }
 
-/** `copy_session` answers `SessionLineageCopyResult` in camelCase; older builds used snake_case. */
+/** `copy_session` answers `SessionLineageCopyResult` in camelCase. */
 export interface CopiedSession {
   sessionId?: string;
   sessionName?: string;
   agentType?: string;
-  session_id?: string;
-  session_name?: string;
-  agent_type?: string;
 }
 
 /** Copies a session with its transcript into a new one, without changing the original. */
@@ -993,11 +984,14 @@ export const stopDialogTurn = (sessionId: string, dialogTurnId?: string) =>
     ...(dialogTurnId ? { dialogTurnId } : {}),
   });
 
-export const markSessionSeenOnHost = (request: {
-  sessionId: string;
-  workspaceId?: string;
-  seenThroughMs?: number;
-}) => invokeCommand<{ changed: boolean }>("mark_session_seen", request);
+export const markSessionSeenOnHost = (
+  request: {
+    sessionId: string;
+    workspaceId?: string;
+    seenThroughMs?: number;
+  },
+  options?: { target?: string },
+) => invokeCommand<{ changed: boolean }>("mark_session_seen", request, options);
 
 export type SnapshotPeriod = "thirtyDays" | "sevenDays" | "all";
 

@@ -56,8 +56,6 @@ export function readSelection(value: unknown): TaskModelChoice {
       return { kind: "fixed", modelId: fixed.model_id };
     }
   }
-  // A shape this surface does not know is shown as inherit rather than as a
-  // broken row; saving rewrites it in the shape the host understands.
   return { kind: "inherit", modelId: "" };
 }
 

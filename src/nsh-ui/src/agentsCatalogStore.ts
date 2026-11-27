@@ -257,20 +257,14 @@ export function isCustomSource(source: AgentSource): boolean {
   return source === "user" || source === "project";
 }
 
-/**
- * Whether this agent's definition can be edited from here. The host decides
- * (`canEdit`); a host older than the flag gets the rule it enforces itself:
- * custom agents only, and not while the workspace's files live on a remote.
- */
+/** Whether this agent's definition can be edited from here (host decision). */
 export function agentCanEdit(item: AgentCatalogItem): boolean {
-  if (item.canEdit !== undefined) return item.canEdit;
-  return isCustomSource(item.source) && !isRemoteAgentWorkspace();
+  return item.canEdit === true;
 }
 
-/** Whether this agent can be deleted from here (`canDelete`, else the older host's rule). */
+/** Whether this agent can be deleted from here (host decision). */
 export function agentCanDelete(item: AgentCatalogItem): boolean {
-  if (item.canDelete !== undefined) return item.canDelete;
-  return isCustomSource(item.source) && !isRemoteAgentWorkspace();
+  return item.canDelete === true;
 }
 
 export function effectiveToolsForAgent(item: AgentCatalogItem): string[] {

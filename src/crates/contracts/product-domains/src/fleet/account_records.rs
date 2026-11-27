@@ -48,10 +48,6 @@ pub const MCP_SERVERS_COLLECTION: &str = "mcp.servers";
 pub const SSH_PROFILES_COLLECTION: &str = "ssh.profiles";
 /// The consolidated memory document (files as blobs).
 pub const MEMORY_COLLECTION: &str = "memory";
-/// Assistant persona documents (files as blobs), a record per assistant
-/// folder. Retired: assistants stay on their device, so no host binds it;
-/// kept so records older builds publish stay within the replica's budgets.
-pub const PERSONAS_COLLECTION: &str = "assistants.personas";
 /// Desktop card definitions (geometry and fetched data stay on the device).
 pub const DESKTOP_CARDS_COLLECTION: &str = "desktop.cards";
 /// Imported pet sprite sets (`pkg:<dir>`, files as blobs) and the pet choice
@@ -100,7 +96,6 @@ pub const ACCOUNT_COLLECTIONS: &[AccountCollectionBudget] = &[
     budget(MCP_SERVERS_COLLECTION, 256, 512 * KIB, 16 * KIB, 0),
     budget(SSH_PROFILES_COLLECTION, 256, 512 * KIB, 8 * KIB, 0),
     budget(MEMORY_COLLECTION, 8, 64 * KIB, 8 * KIB, 2),
-    budget(PERSONAS_COLLECTION, 256, 512 * KIB, 8 * KIB, 2),
     budget(DESKTOP_CARDS_COLLECTION, 64, MIB, 64 * KIB, 0),
     budget(PETS_COLLECTION, 256, 512 * KIB, 8 * KIB, 2),
     budget(BOTS_COLLECTION, 16, 32 * KIB, 4 * KIB, 0),

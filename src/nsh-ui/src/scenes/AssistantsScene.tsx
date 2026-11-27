@@ -83,6 +83,7 @@ import { localizeHostError, tr } from "../i18n";
 import { deviceContext, sessionLastActivityMs } from "../state";
 import {
   compactLayout,
+  controlHeight,
   fontMono,
   layout,
   palette,
@@ -139,8 +140,8 @@ import {
   focusRingStyle,
 } from "../ui/primitives";
 
-// Persona documents (wave 22 P1): the shared visual Markdown editor, with the
-// source editor when the user asks for it or the document needs it (front matter).
+// Persona documents: editable visual Markdown by default; one toggle switches to
+// raw source (or read-only preview when fidelity guards block visual editing).
 const personaSourceMode = signal(false);
 const personaVisualAttempt = signal(0);
 /** Decided on the document as it loads, so the editor does not switch while the user types. */
@@ -171,18 +172,35 @@ const PERSONA_TAB_OPTIONS: ReadonlyArray<{
   accessibilityLabel: `persona-tab-${file}`,
 }));
 
-function formatDocumentStats(text: string): string {
-  const chars = text.length;
-  const lines = chars === 0 ? 0 : text.split(/\r?\n/).length;
-  return `${formatPlural(lines, "format.lineOne", "format.lineOther")} · ${formatPlural(chars, "format.charOne", "format.charOther")}`;
-}
-
 const studioMenuOpen = signal(false);
 const studioMenuAnchor = signal<ViewRef | null>(null);
 
 function buildAssistantMenuItems(assistant: AssistantWorkspaceView): DropdownMenuItem[] {
   const isPrimary = primaryAssistantId() === assistant.id;
+  const workspaceOpen = isAssistantWorkspaceOpen(assistant.id);
+  const workspaceBusy = Boolean(assistantWorkspaceBusy());
   return [
+    workspaceOpen
+      ? {
+          id: "close-workspace",
+          label: tr("assistants.closeWorkspace"),
+          icon: "close",
+          disabled: workspaceBusy,
+          accessibilityLabel: `assistant-close-${assistant.id}`,
+          onSelect: () => {
+            void closeAssistantWorkspace(assistant);
+          },
+        }
+      : {
+          id: "open-workspace",
+          label: tr("assistants.openWorkspace"),
+          icon: "folder-open",
+          disabled: workspaceBusy,
+          accessibilityLabel: `assistant-open-${assistant.id}`,
+          onSelect: () => {
+            void openAssistantWorkspace(assistant);
+          },
+        },
     {
       id: "set-primary",
       label: isPrimary ? tr("assistants.primaryAssistant") : tr("assistants.setAsPrimary"),
@@ -194,10 +212,21 @@ function buildAssistantMenuItems(assistant: AssistantWorkspaceView): DropdownMen
       },
     },
     {
+      id: "reset-persona-files",
+      label: tr("assistants.resetFiles"),
+      icon: "refresh",
+      separator: true,
+      disabled: personaSaving() || assistantsBusy(),
+      accessibilityLabel: "persona-reset-files",
+      onSelect: () => {
+        studioTab.set("persona");
+        confirmingPersonaReset.set(true);
+      },
+    },
+    {
       id: "reset",
       label: tr("assistants.resetWorkspace"),
       icon: "undo",
-      separator: true,
       disabled: assistantsBusy(),
       accessibilityLabel: `assistant-reset-${assistant.id}`,
       onSelect: () => {
@@ -1264,7 +1293,7 @@ function PersonaStudioPane() {
                       size="sm"
                       leadingIcon="chevron-left"
                       accessibilityLabel="assistants-back"
-                      style={{ marginLeft: -8, minHeight: STUDIO_TOUCH_MIN }}
+                      style={{ marginLeft: -space.sm, minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm }}
                       onPress={openAssistantGallery}
                     />
                   </View>
@@ -1277,22 +1306,13 @@ function PersonaStudioPane() {
                     gap: space.md,
                   }}
                 >
-                  <AvatarPicker assistant={assistant()} size={40} />
+                  <AvatarPicker assistant={assistant()} size={44} />
 
                   <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                     <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.sm }}>
                       <AssistantNameEditor assistant={assistant()} />
                       <If when={primaryAssistantId() === assistant().id && !editingAssistantName()}>
-                        <Text
-                          style={{
-                            flexShrink: 0,
-                            color: palette().textMuted,
-                            fontSize: textSize(13),
-                            lineHeight: textLineHeight(13, 1.3),
-                          }}
-                        >
-                          {tr("common.primary")}
-                        </Text>
+                        <Badge label={tr("common.primary")} size="xs" tone="accent" pill />
                       </If>
                     </View>
                     <Text
@@ -1332,35 +1352,7 @@ function PersonaStudioPane() {
                     </If>
                   </View>
 
-                  <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: space.sm }}>
-                    <If
-                      when={isAssistantWorkspaceOpen(assistant().id)}
-                      else={
-                        <Button
-                          label={tr("assistants.openWorkspace")}
-                          variant="ghost"
-                          size="sm"
-                          leadingIcon="folder-open"
-                          loading={assistantWorkspaceBusy() === assistant().id}
-                          disabled={Boolean(assistantWorkspaceBusy())}
-                          accessibilityLabel={`assistant-open-${assistant().id}`}
-                          style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-                          onPress={() => void openAssistantWorkspace(assistant())}
-                        />
-                      }
-                    >
-                      <Button
-                        label={tr("assistants.closeWorkspace")}
-                        variant="ghost"
-                        size="sm"
-                        leadingIcon="close"
-                        loading={assistantWorkspaceBusy() === assistant().id}
-                        disabled={Boolean(assistantWorkspaceBusy())}
-                        accessibilityLabel={`assistant-close-${assistant().id}`}
-                        style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-                        onPress={() => void closeAssistantWorkspace(assistant())}
-                      />
-                    </If>
+                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
                     <Button
                       label={tr("assistants.chat")}
                       variant="secondary"
@@ -1386,7 +1378,7 @@ function PersonaStudioPane() {
                       anchor={studioMenuAnchor()}
                       placement="bottom"
                       align="end"
-                      minWidth={200}
+                      minWidth={220}
                       items={buildAssistantMenuItems(assistant())}
                       onClose={() => studioMenuOpen.set(false)}
                     />
@@ -1435,13 +1427,12 @@ function PersonaStudioPane() {
               when={studioTab() === "sessions"}
               else={
                 <>
-                    {/* Persona file tabs and file actions. */}
+                    {/* Single calm document bar: file switcher on the left, unsaved status and Save on the right. */}
                     <View
                       style={{
                         paddingHorizontal: studioGutter(),
-                        paddingVertical: space.md,
-                        borderBottomWidth: 1,
-                        borderColor: palette().borderSubtle,
+                        paddingTop: space.lg,
+                        paddingBottom: space.sm,
                         backgroundColor: palette().canvas,
                         alignItems: "center",
                       }}
@@ -1451,93 +1442,51 @@ function PersonaStudioPane() {
                           width: "100%",
                           maxWidth: STUDIO_CONTENT_MAX,
                           alignSelf: "center",
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          flexWrap: "wrap",
                           gap: space.sm,
                         }}
                       >
+                        <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                          <SegmentedTabs
+                            size="sm"
+                            options={PERSONA_TAB_OPTIONS}
+                            value={activePersonaFile()}
+                            onChange={selectPersonaFile}
+                          />
+                        </Scroll>
                         <View
                           style={{
                             flexDirection: "row",
                             alignItems: "center",
-                            justifyContent: "space-between",
-                            flexWrap: "wrap",
-                            gap: space.sm,
+                            flexShrink: 0,
+                            gap: space.xs,
                           }}
                         >
-                          <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
-                            <SegmentedTabs
-                              size="sm"
-                              options={PERSONA_TAB_OPTIONS}
-                              value={activePersonaFile()}
-                              onChange={selectPersonaFile}
-                            />
-                          </Scroll>
-                          <View
-                            style={{
-                              flexDirection: "row",
-                              alignItems: "center",
-                              flexWrap: "wrap",
-                              flexShrink: 0,
-                              gap: space.sm,
-                            }}
-                          >
-                            <Button
-                              label={tr("common.reset")}
-                              variant="ghost"
-                              size="sm"
-                              disabled={personaSaving()}
-                              accessibilityLabel="persona-reset-files"
-                              style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-                              onPress={() => {
-                                confirmingPersonaReset.set(true);
+                          <If when={personaLoading() || personaDirty()}>
+                            <Text
+                              style={{
+                                ...textStyle("caption", {
+                                  color: personaDirty() ? stateColor("needs_you") : palette().textMuted,
+                                }),
+                                marginRight: space.xs,
                               }}
-                            />
-                            <Button
-                              label={personaSaving() ? tr("common.saving") : tr("common.save")}
-                              variant={personaDirty() ? "primary" : "secondary"}
-                              size="sm"
-                              loading={personaSaving()}
-                              disabled={personaSaving()}
-                              accessibilityLabel="persona-save"
-                              style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-                              onPress={() => void savePersonaFile()}
-                            />
-                          </View>
-                        </View>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
-                          <Text
-                            style={{
-                              flex: 1,
-                              minWidth: 0,
-                              color: palette().textMuted,
-                              fontFamily: fontMono(),
-                              fontSize: textSize(12),
-                              lineHeight: textLineHeight(12, 1.35),
-                              numberOfLines: 1,
-                              textOverflow: "ellipsis-middle",
-                            }}
-                          >
-                            {joinPersonaFilePath(assistant().rootPath, activePersonaFile())}
-                          </Text>
-                          <Text
-                            style={{
-                              flexShrink: 0,
-                              color: personaDirty() ? stateColor("needs_you") : palette().textMuted,
-                              fontSize: textSize(12),
-                              lineHeight: textLineHeight(12, 1.3),
-                              fontVariant: ["tabular-nums"],
-                            }}
-                          >
-                            {[
-                              studioCompact() ? "" : formatDocumentStats(personaDraft()),
-                              personaLoading()
-                                ? tr("common.loading")
-                                : personaDirty()
-                                  ? tr("assistants.unsavedChanges")
-                                  : tr("common.saved"),
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </Text>
+                            >
+                              {personaLoading() ? tr("common.loading") : tr("assistants.unsavedChanges")}
+                            </Text>
+                          </If>
+                          <Button
+                            label={personaSaving() ? tr("common.saving") : tr("common.save")}
+                            variant={personaDirty() ? "primary" : "secondary"}
+                            size="sm"
+                            loading={personaSaving()}
+                            disabled={personaSaving() || !personaDirty()}
+                            accessibilityLabel="persona-save"
+                            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+                            onPress={() => void savePersonaFile()}
+                          />
                         </View>
                       </View>
                     </View>
@@ -1550,9 +1499,7 @@ function PersonaStudioPane() {
                       <View
                         style={{
                           paddingHorizontal: studioGutter(),
-                          paddingVertical: space.sm,
-                          borderBottomWidth: 1,
-                          borderColor: palette().borderSubtle,
+                          paddingBottom: space.sm,
                           backgroundColor: palette().canvas,
                           alignItems: "center",
                         }}
@@ -1574,7 +1521,7 @@ function PersonaStudioPane() {
 
                     <If when={personaNotice()}>
                       {notice => (
-                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: space.sm, alignItems: "center" }}>
+                        <View style={{ paddingHorizontal: studioGutter(), paddingBottom: space.sm, alignItems: "center" }}>
                           <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, alignSelf: "center" }}>
                             <InlineBanner
                               tone={personaNoticeTone(notice())}
@@ -1587,7 +1534,7 @@ function PersonaStudioPane() {
                     </If>
                     <If when={personaError()}>
                       {err => (
-                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: space.sm, alignItems: "center" }}>
+                        <View style={{ paddingHorizontal: studioGutter(), paddingBottom: space.sm, alignItems: "center" }}>
                           <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, alignSelf: "center" }}>
                             <InlineBanner
                               tone="danger"
@@ -1599,17 +1546,17 @@ function PersonaStudioPane() {
                       )}
                     </If>
 
-                    {/* De-boxed Editor & Editorial Preview Canvas */}
+                    {/* Flush-aligned Editor & Preview Canvas */}
                     <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}>
                       <If
-                        when={personaPreview()}
+                        when={personaDocumentMode() === "preview"}
                         else={
                           <View
                             style={{
                               flex: 1,
                               minHeight: 0,
                               paddingHorizontal: studioGutter(),
-                              paddingVertical: space.lg,
+                              paddingBottom: space.sm,
                               alignItems: "center",
                             }}
                           >
@@ -1623,9 +1570,9 @@ function PersonaStudioPane() {
                               }}
                             >
                               <If
-                                when={personaEditsVisually()}
+                                when={personaDocumentMode() === "visual"}
                                 else={
-                                  <View style={{ flex: 1, minHeight: 0 }}>
+                                  <View style={{ flex: 1, minHeight: 0, gap: space.sm }}>
                                     <If when={personaVisualBlock()}>
                                       {block => <VisualEditNotice block={block()} inset={0} />}
                                     </If>
@@ -1640,6 +1587,7 @@ function PersonaStudioPane() {
                                       style={{
                                         flex: 1,
                                         minHeight: 190,
+                                        paddingTop: space.xs,
                                         color: palette().text,
                                         placeholderColor: palette().textMuted,
                                         caretColor: palette().accent,
@@ -1662,6 +1610,7 @@ function PersonaStudioPane() {
                                   accessibilityLabel="persona-editor-input"
                                   placeholder={tr("assistants.editorPlaceholder", { file: activePersonaFile() })}
                                   compact={true}
+                                  inset={0}
                                   imageWorkspace={personaImageWorkspace(assistant())}
                                   ai={{ documentKey: JSON.stringify(["persona", deviceContext(), assistant().id, activePersonaFile()]),
                                     target: deviceContext() || null }}
@@ -1674,7 +1623,7 @@ function PersonaStudioPane() {
                         <Scroll
                           smoothWheel
                           style={{ flex: 1, minHeight: 0 }}
-                          contentStyle={{ paddingHorizontal: studioGutter(), paddingVertical: space.xl, alignItems: "center" }}
+                          contentStyle={{ paddingHorizontal: studioGutter(), paddingTop: space.sm, paddingBottom: space.xl, alignItems: "center" }}
                         >
                           <View
                             style={{
@@ -1857,9 +1806,11 @@ function NewAssistantModal() {
 export function AssistantsScene(props: { embedded?: boolean }) {
   assistantsEmbedded.set(Boolean(props.embedded));
   cleanup(() => assistantsEmbedded.set(false));
-  // Each visit lands on the list in the compact layout, on the Persona tab.
+  // Each visit lands on the list in the compact layout, on the Persona tab in visual mode.
   openAssistantGallery();
   studioTab.set("persona");
+  personaSourceMode.set(false);
+  personaPreview.set(false);
   let initialMount = true;
   let lastDevice = untracked(() => deviceContext());
   effect(() => {

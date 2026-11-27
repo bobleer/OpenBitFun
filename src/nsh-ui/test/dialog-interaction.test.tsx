@@ -50,6 +50,8 @@ test("a stray click while the code is on its way keeps the sign-in, and reopenin
     await app.press("phone-account");
     await app.press("settings-compact-page-profile");
     await app.press("settings-account-sign-in");
+    await app.waitFor("remote-disclaimer-agree");
+    await app.press("remote-disclaimer-agree");
     await app.waitFor("label:account-auth-modal");
   };
   await app.waitFor("phone-account");
@@ -84,6 +86,8 @@ test("a wrong code is cleared from the error line as soon as the code is edited"
   const app = await open(SIGN_IN_FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
   await app.type("account-auth-code-input", "00000000");
   await app.waitFor("text:That code didn't work. Check it or send a new one.");
   await app.clear("account-auth-code-input");

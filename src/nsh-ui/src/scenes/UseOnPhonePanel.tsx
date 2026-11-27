@@ -1,20 +1,13 @@
 // Settings › Devices and chat apps › Open on your phone.
 //
 // A phone or any browser opens the OpenBitFun web controller (or the phone
-// app), signs in with this account's email and picks this computer from the
-// account's devices; the connection runs through the server gateway and is
-// end-to-end encrypted to this backend. The sheet is the QR of the address, the
-// address with Copy and Open, who is signed in now, and one security line
-// (the address only: nothing to pair, no network values).
+// app); the connection runs through the server gateway and is end-to-end
+// encrypted to this backend. The sheet is the QR of the address, the address
+// with Copy and Open, and one security line.
 
 import { Clipboard, openUrl, Text, View } from "nsh";
 import { tr } from "../i18n";
-import {
-  loadSignedInControllers,
-  signedInControllers,
-  WEB_CONTROLLER_URL,
-  webControllerLabel,
-} from "../phoneStore";
+import { WEB_CONTROLLER_URL, webControllerLabel } from "../phoneStore";
 import { compactLayout, controlHeight, palette, radii, space, textStyle } from "../theme";
 import { Icon } from "../ui/icons";
 import { pushToast } from "../ui/overlays";
@@ -89,49 +82,8 @@ function AddressRow() {
   );
 }
 
-/** Phones and browsers signed in to this account now, as one status line (never as unreachable devices). */
-function SignedInLine() {
-  return (
-    <If when={signedInControllers()?.length ? signedInControllers() : null}>
-      {controllers => (
-        <View
-          accessibilityLabel="phone-controllers"
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "center",
-            columnGap: space.chip,
-            rowGap: space.xs,
-            maxWidth: "100%",
-          }}
-        >
-          <View style={{ width: 6, height: 6, borderRadius: radii.pill, backgroundColor: palette().success }} />
-          <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("phone.signedInNow")}</Text>
-          <Each of={controllers()} key={controller => controller.deviceId}>
-            {(controller, index) => (
-              <Text
-                accessibilityLabel={`phone-controller-${controller().deviceId}`}
-                style={{
-                  ...textStyle("caption", { color: palette().textSecondary }),
-                  maxWidth: 200,
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {`${index() > 0 ? "· " : ""}${controller().name ?? tr("phone.controllerUnnamed")}`}
-              </Text>
-            )}
-          </Each>
-        </View>
-      )}
-    </If>
-  );
-}
-
 /** The body of the "Open on your phone" sheet. */
 export function UseOnPhonePanel() {
-  void loadSignedInControllers();
   return (
     <View
       accessibilityLabel="use-on-phone"
@@ -149,7 +101,6 @@ export function UseOnPhonePanel() {
       </Text>
       <QrCodeView value={WEB_CONTROLLER_URL} size={compactLayout() ? 176 : 192} accessibilityLabel="phone-qr" />
       <AddressRow />
-      <SignedInLine />
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs, maxWidth: 360 }}>
         <Icon name="shield" size={12} color={palette().textMuted} />
         <Text style={{ ...textStyle("caption", { color: palette().textMuted }), flexShrink: 1, textAlign: "center" }}>

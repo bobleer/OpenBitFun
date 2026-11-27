@@ -1718,23 +1718,18 @@ test("removed source sessions list per ecosystem and come back one at a time", a
   expect(restoreCalls).toBe(2);
 });
 
-test("an older host falls back to the legacy catalog with a read-only switch, and a host without any says so", async () => {
+test("a host without external discovery commands reports incompatible loudly", async () => {
   const { backend, recorded } = withExternalHost({}, action => {
-    if (action === "get_external_source_discovery_snapshot" || action === "get_external_source_control_snapshot") {
+    if (action === "get_external_source_discovery_snapshot") {
       throw new Error(`Command not found: ${action}`);
     }
-    if (action === "get_external_source_snapshot") return catalog({ mcpServers: undefined });
     if (action === "list_removed_external_sessions") throw new Error(`unknown command ${action}`);
     throw new Error(`unexpected ${action}`);
   });
   const app = await openExternalImport(backend.handlers);
 
-  await app.waitFor("Claude Code");
-  expect(app.texts()).toContain("This device or settings version does not support changing automatic discovery.");
-  expect(app.enabled("external-discovery-toggle")).toBe(false);
-  expect(app.texts()).toContain("No MCP servers were found in other apps.");
-  // A host without the removed-sessions command is told apart from an empty list.
   await app.waitFor("This device does not support restoring removed source sessions. Update OpenBitFun on it and retry.");
+  expect(recorded.some(item => item.action === "get_external_source_snapshot")).toBe(false);
   expect(recorded.some(item => item.action === "plan_external_mcp_import_command")).toBe(false);
 });
 

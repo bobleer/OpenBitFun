@@ -428,6 +428,7 @@ async fn model_routing_explicit_typed_target_returns_to_manual_without_restoring
                 "chosen-model",
                 None,
                 None,
+                None,
                 false,
                 Some(&target),
                 |_| Ok(()),
@@ -600,5 +601,111 @@ async fn btw_typed_model_choice_leaves_inherited_pool_without_mutating_parent() 
                 );
             },
         )
+        .await;
+}
+
+#[tokio::test]
+async fn update_session_model_persists_preserves_clears_and_validates_context_window_override() {
+    let workspace = TestWorkspace::new();
+    let persistence =
+        Arc::new(PersistenceManager::new(workspace.path_manager()).expect("persistence manager"));
+    let manager = test_manager(persistence.clone());
+    let session = manager
+        .create_session(
+            "Context length check".to_string(),
+            "Standard".to_string(),
+            SessionConfig {
+                workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                model_id: Some("chosen-model".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let id = session.session_id.clone();
+
+    let mut ai = crate::service::config::types::AIConfig::default();
+    ai.models
+        .push(crate::service::config::types::AIModelConfig {
+            id: "chosen-model".into(),
+            enabled: true,
+            ..Default::default()
+        });
+
+    TEST_MODEL_RESOLUTION_AI_CONFIG
+        .scope(ai, async {
+            // Setting a valid override updates both in-memory and on-disk session config.
+            let set = manager
+                .update_session_model_selection_in_storage_with_options(
+                    None,
+                    &id,
+                    "chosen-model",
+                    Some("high"),
+                    None,
+                    Some(Some(500_000)),
+                    false,
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(set.config.context_window_override, Some(500_000));
+            let saved = persistence
+                .load_session_header(workspace.path(), &id)
+                .await
+                .unwrap();
+            assert_eq!(saved.config.context_window_override, Some(500_000));
+
+            // Omitting (`None`) preserves the existing override for older callers.
+            let preserved = manager
+                .update_session_model_selection_in_storage_with_options(
+                    None,
+                    &id,
+                    "chosen-model",
+                    Some("high"),
+                    None,
+                    None,
+                    false,
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(preserved.config.context_window_override, Some(500_000));
+
+            // Out-of-range values are rejected without mutating the stored value.
+            assert!(manager
+                .update_session_model_selection_in_storage_with_options(
+                    None,
+                    &id,
+                    "chosen-model",
+                    Some("high"),
+                    None,
+                    Some(Some(512)),
+                    false,
+                    |_| Ok(()),
+                )
+                .await
+                .is_err());
+
+            // Explicit `Some(None)` clears the override on disk and in memory.
+            let cleared = manager
+                .update_session_model_selection_in_storage_with_options(
+                    None,
+                    &id,
+                    "chosen-model",
+                    Some("high"),
+                    None,
+                    Some(None),
+                    false,
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(cleared.config.context_window_override, None);
+            let saved_cleared = persistence
+                .load_session_header(workspace.path(), &id)
+                .await
+                .unwrap();
+            assert_eq!(saved_cleared.config.context_window_override, None);
+        })
         .await;
 }

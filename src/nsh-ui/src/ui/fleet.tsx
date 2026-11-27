@@ -348,7 +348,7 @@ export interface SessionMarkFields {
  * failed, an unread result, else idle.
  */
 export function sessionMarkState(row: SessionMarkFields): MarkState {
-  if (row.needsAttention || row.status === "waiting") return "needs_you";
+  if (row.status === "waiting" || (row.needsAttention && !row.failed && row.status !== "error")) return "needs_you";
   if (row.status === "running") return "working";
   if (row.status === "error" || row.failed) return "failed";
   if (row.unread) return "done";

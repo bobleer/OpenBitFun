@@ -719,6 +719,8 @@ export interface ConfigRowProps {
   controlAlign?: ConfigRowControlAlign;
   /** Enables tabular numerals on `description` (e.g. numeric current values). */
   descriptionTabular?: boolean;
+  /** Action aligned to the right of the label/description header when `stacked` is true. */
+  headerExtra?: JSX.Element;
   controlStyle?: StyleProp<ViewStyle>;
   style?: StyleProp<ViewStyle>;
   children?: JSX.Element;
@@ -733,6 +735,37 @@ export function ConfigRow(props: ConfigRowProps) {
   const hasControl = () => Boolean(props.children);
   const controlFillsRail = () => resolvedControlWidth() !== undefined && isStretch();
   const labelSize = configFieldMetrics.labelSize;
+  const headerText = () => (
+    <View style={{ flexGrow: stacked() && !props.headerExtra ? 0 : 1, flexShrink: 1,
+      flexBasis: !stacked() && props.wrap !== false && hasControl() ? 150 : undefined,
+      minWidth: 0, gap: configSectionMetrics.textGap }}>
+      <Text
+        style={{
+          color: palette().text,
+          fontSize: textSize(labelSize),
+          fontWeight: configFieldMetrics.labelWeight,
+          lineHeight: textLineHeight(labelSize, configFieldMetrics.labelLeading),
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.description ?? ""}>
+        {desc => (
+          <Text
+            style={{
+              color: palette().textSecondary,
+              fontSize: textSize(configFieldMetrics.descriptionSize),
+              fontVariant: props.descriptionTabular ? ["tabular-nums"] : undefined,
+              lineHeight: textLineHeight(configFieldMetrics.descriptionSize, configFieldMetrics.descriptionLeading),
+              maxWidth: hasControl() ? 450 : undefined,
+            }}
+          >
+            {desc()}
+          </Text>
+        )}
+      </If>
+    </View>
+  );
   return (
     <View
       testID={props.testID}
@@ -757,35 +790,24 @@ export function ConfigRow(props: ConfigRowProps) {
       ]}
       hoverStyle={{ backgroundColor: designControlColors()?.configRowHover ?? palette().surfaceSubtle }}
     >
-      <View style={{ flexGrow: stacked() ? 0 : 1, flexShrink: 1,
-        flexBasis: !stacked() && props.wrap !== false && hasControl() ? 150 : undefined,
-        minWidth: 0, gap: configSectionMetrics.textGap }}>
-        <Text
+      <If when={Boolean(stacked() && props.headerExtra)} else={headerText()}>
+        <View
           style={{
-            color: palette().text,
-            fontSize: textSize(labelSize),
-            fontWeight: configFieldMetrics.labelWeight,
-            lineHeight: textLineHeight(labelSize, configFieldMetrics.labelLeading),
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            columnGap: space.md,
+            rowGap: space.sm,
+            minWidth: 0,
           }}
         >
-          {props.label}
-        </Text>
-        <If when={props.description ?? ""}>
-          {desc => (
-            <Text
-              style={{
-                color: palette().textSecondary,
-                fontSize: textSize(configFieldMetrics.descriptionSize),
-                fontVariant: props.descriptionTabular ? ["tabular-nums"] : undefined,
-                lineHeight: textLineHeight(configFieldMetrics.descriptionSize, configFieldMetrics.descriptionLeading),
-                maxWidth: hasControl() ? 450 : undefined,
-              }}
-            >
-              {desc()}
-            </Text>
-          )}
-        </If>
-      </View>
+          {headerText()}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+            {props.headerExtra}
+          </View>
+        </View>
+      </If>
       <If when={hasControl()}>
         <View
           style={[

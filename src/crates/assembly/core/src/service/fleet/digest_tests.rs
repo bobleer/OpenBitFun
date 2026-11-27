@@ -347,6 +347,45 @@ fn session_status_prefers_waiting_then_running() {
 }
 
 #[test]
+fn session_summary_separates_failed_unread_from_waiting_attention() {
+    let mut metadata = openbitfun_services_core::session::types::SessionMetadata::new(
+        "s-fail".into(),
+        "Failing build".into(),
+        "Standard".into(),
+        "model".into(),
+    );
+    metadata.last_active_at = 500;
+    let failed_activity = SessionActivitySummary {
+        session_id: "s-fail".into(),
+        execution: "idle".into(),
+        active_turn_id: None,
+        pending_approvals: 0,
+        pending_questions: 0,
+        last_turn: None,
+        unread_completion: Some("error".into()),
+        unread_turn: None,
+        unread: Some(true),
+        failed: Some(true),
+    };
+    let summary = session_summary("w1", &metadata, Some(&failed_activity));
+    assert_eq!(summary.status, FleetSessionStatus::Idle);
+    assert!(summary.unread);
+    assert!(summary.failed);
+    assert!(!summary.needs_attention);
+
+    let cleared_activity = SessionActivitySummary {
+        unread_completion: None,
+        unread: Some(false),
+        failed: Some(false),
+        ..failed_activity
+    };
+    let cleared = session_summary("w1", &metadata, Some(&cleared_activity));
+    assert!(!cleared.unread);
+    assert!(!cleared.failed);
+    assert!(!cleared.needs_attention);
+}
+
+#[test]
 fn the_model_catalog_rides_every_answer_and_a_change_moves_the_revision() {
     use openbitfun_product_domains::fleet::FleetModel;
     let model = |id: &str, primary: bool| FleetModel {

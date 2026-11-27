@@ -1129,6 +1129,8 @@ export interface MarkdownDocumentEditorProps {
   accessibilityLabel?: string;
   placeholder?: string;
   compact?: boolean;
+  /** Horizontal content inset; omit for the editor's default reading margins (`0` aligns flush with an outer gutter). */
+  inset?: number;
   /** The reading column's width. */
   maxWidth?: number;
   /** The workspace owning the document and its relative image references. */
@@ -1196,10 +1198,11 @@ let editorStylesCache: {
   loc: string;
   cjk: boolean;
   compact: boolean;
+  inset: number | undefined;
   styles: RichEditorStyles;
 } | null = null;
 
-function editorStyles(compact: boolean): RichEditorStyles {
+function editorStyles(compact: boolean, inset?: number): RichEditorStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
   const loc = currentLocale();
@@ -1210,7 +1213,8 @@ function editorStyles(compact: boolean): RichEditorStyles {
     editorStylesCache.fontPx === fontPx &&
     editorStylesCache.loc === loc &&
     editorStylesCache.cjk === cjk &&
-    editorStylesCache.compact === compact
+    editorStylesCache.compact === compact &&
+    editorStylesCache.inset === inset
   ) {
     return editorStylesCache.styles;
   }
@@ -1232,8 +1236,9 @@ function editorStyles(compact: boolean): RichEditorStyles {
       letterSpacing: textTracking(base),
     },
     content: {
-      paddingHorizontal: compact ? space.lg : space.x3l,
-      paddingVertical: compact ? space.lg : space.xxl,
+      paddingHorizontal: inset ?? (compact ? space.lg : space.x3l),
+      paddingTop: inset === 0 ? space.sm : (compact ? space.lg : space.xxl),
+      paddingBottom: compact ? space.lg : space.xxl,
     },
     caret: { backgroundColor: p.accent },
     selection: { backgroundColor: p.accentSoft },
@@ -1347,7 +1352,7 @@ function editorStyles(compact: boolean): RichEditorStyles {
       link: { color: p.accent },
     },
   };
-  editorStylesCache = { palette: p, fontPx, loc, cjk, compact, styles };
+  editorStylesCache = { palette: p, fontPx, loc, cjk, compact, inset, styles };
   return styles;
 }
 
@@ -1536,7 +1541,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const width = signal(0);
   const contentWidth = () => {
     const outer = Math.min(width(), owner.maxWidth ?? width());
-    const padding = owner.compact ? space.lg : space.x3l;
+    const padding = owner.inset ?? (owner.compact ? space.lg : space.x3l);
     return outer > 0 ? Math.max(1, outer - padding * 2) : 0;
   };
   const searchHighlight = new RichEditorPlugin(FILE_SEARCH_HIGHLIGHT);
@@ -1812,16 +1817,20 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
             alignSelf: "center",
             width: "100%",
             maxWidth: owner.maxWidth,
-            paddingHorizontal: owner.compact ? space.lg : space.x3l,
-            paddingTop: space.sm,
+            paddingHorizontal: owner.inset ?? (owner.compact ? space.lg : space.x3l),
+            paddingTop: owner.inset === 0 ? 0 : space.sm,
           }}
         >
           <View
-            style={{
-              borderBottomWidth: 1,
-              borderColor: palette().borderSubtle,
-              paddingBottom: space.xs,
-            }}
+            style={
+              owner.inset === 0
+                ? { paddingBottom: space.xs }
+                : {
+                    borderBottomWidth: 1,
+                    borderColor: palette().borderSubtle,
+                    paddingBottom: space.xs,
+                  }
+            }
           >
             <View
               role="button"
@@ -1833,6 +1842,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
                 alignItems: "center",
                 gap: space.xs,
                 minHeight: 26,
+                marginHorizontal: owner.inset === 0 ? -space.xs : 0,
                 paddingHorizontal: space.xs,
                 borderRadius: radii.sm,
                 cursor: "pointer",
@@ -1908,7 +1918,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
         placeholder={owner.placeholder}
         placeholders={aiKey && !owner.compact && !inlineAiComposer()
           ? { paragraph: tr("doc.aiSpaceHint") } : undefined}
-        styles={editorStyles(Boolean(owner.compact))}
+        styles={editorStyles(Boolean(owner.compact), owner.inset)}
         style={{ flex: 1, minHeight: 0, minWidth: 0, alignSelf: "center", width: "100%", maxWidth: owner.maxWidth }}
         onChange={event => {
           emit(event.change.revision);

@@ -2585,33 +2585,6 @@ pub struct ExternalSourcePublicSnapshot {
     pub diagnostics: Vec<ExternalSourceDiagnostic>,
 }
 
-impl ExternalSourcePublicSnapshot {
-    /// Down-projects values added after the original catalog contract so an
-    /// older controller never receives an enum variant it cannot render.
-    /// New control clients use `ExternalSourceControlSnapshotV1` for the
-    /// orthogonal review state instead.
-    pub fn into_legacy_v0_compatible(mut self) -> Self {
-        for command in &mut self.commands {
-            command.candidate_id.clear();
-        }
-        for tool in &mut self.tools {
-            if matches!(tool.activation, ExternalToolActivationState::Declined) {
-                tool.activation = ExternalToolActivationState::Disabled;
-            }
-        }
-        for subagent in &mut self.subagents {
-            subagent.requested_model = Default::default();
-            subagent.requested_model_profile = None;
-            subagent.model_binding_method = Default::default();
-            subagent.model_binding_key = None;
-            subagent.unavailable_tool_labels.clear();
-        }
-        self.subagent_model_binding_groups.clear();
-        self.subagent_model_binding_options.clear();
-        self
-    }
-}
-
 impl From<ExternalSourceCatalogSnapshot> for ExternalSourcePublicSnapshot {
     fn from(snapshot: ExternalSourceCatalogSnapshot) -> Self {
         Self {

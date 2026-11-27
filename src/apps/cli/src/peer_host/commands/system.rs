@@ -21,6 +21,34 @@ pub(crate) async fn ui_bundle_manifest() -> Result<Value, String> {
     crate::ui_bundle::ui_bundle_manifest().await
 }
 
+pub(crate) async fn get_app_version() -> Result<Value, String> {
+    Ok(Value::String(env!("CARGO_PKG_VERSION").to_string()))
+}
+
+pub(crate) async fn get_memory_paths(state: &PeerHostState) -> Result<Value, String> {
+    let memories_root_dir = state.workspace_service.path_manager().memories_root_dir();
+    tokio::fs::create_dir_all(&memories_root_dir)
+        .await
+        .map_err(|error| format!("Failed to create memory directory: {error}"))?;
+    Ok(json!({
+        "memoriesRootDir": memories_root_dir.to_string_lossy().to_string(),
+    }))
+}
+
+pub(crate) async fn reset_memory(state: &PeerHostState) -> Result<Value, String> {
+    let path_manager = state.workspace_service.path_manager().clone();
+    let db = openbitfun_core::agentic::memories::db::MemoryDatabase::new(path_manager.clone());
+    db.reset_memory_state()
+        .await
+        .map_err(|error| format!("Failed to reset memory database: {error}"))?;
+    openbitfun_core::agentic::memories::workspace::reset_memory_workspace(
+        &path_manager.memories_root_dir(),
+    )
+    .await
+    .map_err(|error| format!("Failed to reset memory workspace: {error}"))?;
+    Ok(json!({ "success": true }))
+}
+
 pub(crate) async fn get_runtime_logging_info() -> Result<Value, String> {
     Ok(crate::logging::runtime_logging_info())
 }

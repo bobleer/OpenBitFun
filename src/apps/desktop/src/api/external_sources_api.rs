@@ -431,7 +431,7 @@ pub async fn get_external_source_snapshot(
     let workspace = workspace_id.as_deref();
     external_source_snapshot(workspace, request.force_refresh)
         .await
-        .map(|snapshot| ExternalSourcePublicSnapshot::from(snapshot).into_legacy_v0_compatible())
+        .map(ExternalSourcePublicSnapshot::from)
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 

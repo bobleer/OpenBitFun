@@ -1,15 +1,8 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:71a7d73c01f3eb0e",
-  "retiredCommandPrefixes": [
-    {
-      "prefix": "lsp_",
-      "reason": "the OpenBitFun LSP runtime has been retired"
-    }
-  ],
+  "digest": "fnv1a64:0e8916add572e038",
   "capabilities": {
     "ids": [
-      "gen_ui_libraries_v1",
       "model_routing_v1",
       "model_pool_selection_v1",
       "subagent_model_override_policy_v1",
@@ -71,7 +64,6 @@
       "terminal_cursor_replay_v1",
       "git_tracked_change_count_v1",
       "file_text_encoding_v1",
-      "peer_attachment_status_v1",
       "miniapp_market_listing_id_v1",
       "miniapp_market_summaries_v1"
     ],
@@ -136,7 +128,6 @@
       "ssh_none_auth_v1",
       "git_tracked_change_count_v1",
       "file_text_encoding_v1",
-      "peer_attachment_status_v1",
       "miniapp_market_listing_id_v1",
       "miniapp_market_summaries_v1"
     ],
@@ -175,8 +166,7 @@
       "user_question_interaction_v1",
       "terminal_cursor_replay_v1",
       "git_tracked_change_count_v1",
-      "file_text_encoding_v1",
-      "peer_attachment_status_v1"
+      "file_text_encoding_v1"
     ]
   },
   "operations": [
@@ -217,19 +207,6 @@
       }
     },
     {
-      "id": "account_connect_devices",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      }
-    },
-    {
       "id": "account_delete_device",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -239,19 +216,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "account_device_rpc",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -279,19 +243,6 @@
       }
     },
     {
-      "id": "account_execute_on_device",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      }
-    },
-    {
       "id": "account_get_credential_hint",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -301,19 +252,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "account_github_info",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the account's provider profile is no longer read by surfaces; account_identity answers the one identity projection every surface shows"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the account's provider profile is no longer read by surfaces; account_identity answers the one identity projection every surface shows"
       }
     },
     {
@@ -365,19 +303,6 @@
       }
     },
     {
-      "id": "account_load_older_session",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      }
-    },
-    {
       "id": "account_login",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -399,32 +324,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "account_online_devices",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      }
-    },
-    {
-      "id": "account_relay_capabilities",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -464,19 +363,6 @@
       }
     },
     {
-      "id": "account_subscribe_session",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      }
-    },
-    {
       "id": "account_token_expired",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -486,19 +372,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "account_unsubscribe_session",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -544,8 +417,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -602,8 +474,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -909,8 +780,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1106,8 +976,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1151,8 +1020,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1275,18 +1143,6 @@
       }
     },
     {
-      "id": "computer_use_request_permissions",
-      "surface": "tauri_command",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "proxied"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no browser or OS automation runtime"
-      }
-    },
-    {
       "id": "computer_use_share_control",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
@@ -1383,19 +1239,6 @@
       }
     },
     {
-      "id": "confirm_frontend_update",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      }
-    },
-    {
       "id": "control_background_command",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -1450,8 +1293,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1473,8 +1315,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1485,8 +1326,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1542,60 +1382,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "debug_close_devtools",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      }
-    },
-    {
-      "id": "debug_devtools_available",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      }
-    },
-    {
-      "id": "debug_element_picked",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      }
-    },
-    {
-      "id": "debug_open_devtools",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView devtools and the element inspector were retired with the Tauri desktop shell"
+        "kind": "handled"
       }
     },
     {
@@ -1641,8 +1428,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1653,8 +1439,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1665,8 +1450,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1699,8 +1483,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1767,8 +1550,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -1779,8 +1561,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -2359,8 +2140,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -2428,8 +2208,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -2464,8 +2243,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -2753,45 +2531,6 @@
       }
     },
     {
-      "id": "frontend_update_candidate_failed",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      }
-    },
-    {
-      "id": "frontend_update_candidate_ready",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      }
-    },
-    {
-      "id": "gen_ui_provider_call",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "RemoteUnsupported",
-      "peer": {
-        "kind": "retired",
-        "reason": "the legacy GenUI provider has been retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the legacy GenUI provider has been retired"
-      }
-    },
-    {
       "id": "generate_commit_message",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -2939,8 +2678,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -2951,8 +2689,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3066,8 +2803,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3254,19 +2990,6 @@
       }
     },
     {
-      "id": "get_frontend_update_status",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      }
-    },
-    {
       "id": "get_global_config_health",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -3357,8 +3080,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3369,8 +3091,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3381,8 +3102,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3393,8 +3113,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3417,8 +3136,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3566,8 +3284,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3636,8 +3353,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -3921,8 +3637,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -4042,17 +3757,6 @@
     {
       "id": "get_workspace_icon",
       "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "proxied"
-      },
-      "cliPeer": {
-        "kind": "handled"
-      }
-    },
-    {
-      "id": "get_workspace_info",
-      "surface": "host_invoke_only",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
@@ -4679,8 +4383,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -4802,18 +4505,6 @@
       }
     },
     {
-      "id": "install_update",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "controller_local"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
       "id": "interrupt_dialog_turn",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
@@ -4868,8 +4559,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -4914,24 +4604,12 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
       "id": "list_directory_files",
       "surface": "tauri_command",
-      "remoteWorkspace": "RemoteRouted",
-      "peer": {
-        "kind": "proxied"
-      },
-      "cliPeer": {
-        "kind": "handled"
-      }
-    },
-    {
-      "id": "list_files",
-      "surface": "host_invoke_only",
       "remoteWorkspace": "RemoteRouted",
       "peer": {
         "kind": "proxied"
@@ -4959,8 +4637,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -4971,8 +4648,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -5002,17 +4678,6 @@
       "id": "list_persisted_sessions",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
-      "peer": {
-        "kind": "proxied"
-      },
-      "cliPeer": {
-        "kind": "handled"
-      }
-    },
-    {
-      "id": "list_persisted_sessions_count",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },
@@ -5061,8 +4726,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -5073,8 +4737,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -5227,8 +4890,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -5284,19 +4946,6 @@
       },
       "cliPeer": {
         "kind": "handled"
-      }
-    },
-    {
-      "id": "local_file_download",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -5378,21 +5027,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "market_image_load",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
+        "kind": "handled"
       }
     },
     {
@@ -5405,19 +5040,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "mesh_phone_join_info",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "phones no longer join the device network with the EasyTier app; network credentials are never shown"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "phones no longer join the device network with the EasyTier app; network credentials are never shown"
       }
     },
     {
@@ -5733,19 +5355,6 @@
       }
     },
     {
-      "id": "miniapp_market_capture_window",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      }
-    },
-    {
       "id": "miniapp_market_get_listing",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -5866,19 +5475,6 @@
       }
     },
     {
-      "id": "miniapp_market_submit_installed",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      }
-    },
-    {
       "id": "miniapp_market_withdraw_submission",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -5924,19 +5520,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "miniapp_render_slide_page",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell"
       }
     },
     {
@@ -6067,8 +5650,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "soft_empty",
-        "reason": "the CLI peer host has no cron host; readiness is acknowledged so hydrate succeeds"
+        "kind": "handled"
       }
     },
     {
@@ -6120,19 +5702,6 @@
       }
     },
     {
-      "id": "obp_set_lan_enabled",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the LAN listener was retired; phones and browsers join the account device mesh and pair on the mesh listener"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the LAN listener was retired; phones and browsers join the account device mesh and pair on the mesh listener"
-      }
-    },
-    {
       "id": "open_html_file_in_browser",
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
@@ -6167,136 +5736,6 @@
       }
     },
     {
-      "id": "page_create_open_link",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_delete",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_delete_version",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_deploy",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_list",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_list_versions",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_publish",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_save_version",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_unpublish",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
-      "id": "page_update",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
-      }
-    },
-    {
       "id": "paste_files",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteUnsupported",
@@ -6306,132 +5745,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "peer_control_attach",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      }
-    },
-    {
-      "id": "peer_control_detach",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      }
-    },
-    {
-      "id": "peer_controller_set_active",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      }
-    },
-    {
-      "id": "peer_host_bridge_ready",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      }
-    },
-    {
-      "id": "peer_host_invoke_complete",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      }
-    },
-    {
-      "id": "peer_link_call",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "controller_local"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "peer_link_connect",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "controller_local"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "peer_link_disconnect",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "controller_local"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "peer_link_events",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
-      "peer": {
-        "kind": "controller_local"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "peer_mode_ping",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
@@ -6454,8 +5767,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -6593,8 +5905,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -6709,8 +6020,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -6733,8 +6043,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -6795,32 +6104,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "remote_connect_get_lan_ip",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
-      }
-    },
-    {
-      "id": "remote_connect_get_lan_network_info",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
       }
     },
     {
@@ -7154,25 +6437,13 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
       "id": "rename_file",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
-      "peer": {
-        "kind": "proxied"
-      },
-      "cliPeer": {
-        "kind": "handled"
-      }
-    },
-    {
-      "id": "rename_session",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },
@@ -7199,8 +6470,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7247,8 +6517,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7259,8 +6528,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7283,8 +6551,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7295,8 +6562,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7307,8 +6573,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7333,19 +6598,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
-      }
-    },
-    {
-      "id": "resolve_browser_dropped_file_paths",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
       }
     },
     {
@@ -7390,8 +6642,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7402,8 +6653,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7447,8 +6697,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -7654,19 +6903,6 @@
       }
     },
     {
-      "id": "rollback_frontend_update",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle"
-      }
-    },
-    {
       "id": "rollback_miniapp",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -7780,8 +7016,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -8062,8 +7297,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -8085,8 +7319,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -8211,19 +7444,6 @@
       }
     },
     {
-      "id": "set_file_drop_preview_target",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      }
-    },
-    {
       "id": "set_global_skill_disabled",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -8231,34 +7451,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "set_macos_edit_menu_mode",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      }
-    },
-    {
-      "id": "set_main_window_transient_geometry",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
+        "kind": "handled"
       }
     },
     {
@@ -8340,8 +7533,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -8944,8 +8136,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -8956,8 +8147,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9020,19 +8210,6 @@
       }
     },
     {
-      "id": "startup_window_control",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired"
-      }
-    },
-    {
       "id": "steer_dialog_turn",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -9040,8 +8217,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9064,8 +8240,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9087,8 +8262,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9134,8 +8308,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9594,8 +8767,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9606,8 +8778,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9629,8 +8800,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9708,8 +8878,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9720,8 +8889,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9732,8 +8900,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9744,8 +8911,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9813,8 +8979,7 @@
         "kind": "proxied"
       },
       "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "kind": "handled"
       }
     },
     {
@@ -9827,19 +8992,6 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
-      }
-    },
-    {
-      "id": "webdriver_bridge_result",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
-      "peer": {
-        "kind": "retired",
-        "reason": "the embedded WebView WebDriver was retired with the Tauri desktop shell"
-      },
-      "cliPeer": {
-        "kind": "unsupported",
-        "reason": "the embedded WebView WebDriver was retired with the Tauri desktop shell"
       }
     },
     {
@@ -10525,12 +9677,6 @@
       }
     },
     {
-      "id": "computer_use_request_permissions",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
       "id": "computer_use_share_control",
       "route": {
         "kind": "by_target"
@@ -12273,12 +11419,6 @@
     },
     {
       "id": "install_pending_update",
-      "route": {
-        "kind": "entry_local"
-      }
-    },
-    {
-      "id": "install_update",
       "route": {
         "kind": "entry_local"
       }
@@ -12972,30 +12112,6 @@
         "kind": "by_owner",
         "entity": "workspace",
         "path": "request.workspaceId"
-      }
-    },
-    {
-      "id": "peer_link_call",
-      "route": {
-        "kind": "entry_local"
-      }
-    },
-    {
-      "id": "peer_link_connect",
-      "route": {
-        "kind": "entry_local"
-      }
-    },
-    {
-      "id": "peer_link_disconnect",
-      "route": {
-        "kind": "entry_local"
-      }
-    },
-    {
-      "id": "peer_link_events",
-      "route": {
-        "kind": "entry_local"
       }
     },
     {
@@ -14976,7 +14092,6 @@
     "mesh://",
     "openbitfun-update-progress",
     "openbitfun://file-drop-preview",
-    "peer-host-invoke://",
     "tray://",
     "update://",
     "updater://",

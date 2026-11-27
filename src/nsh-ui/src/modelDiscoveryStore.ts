@@ -14,7 +14,6 @@ import {
   type ModelDraft,
   type StoredModel,
 } from "./modelSettingsStore";
-import { isCommandUnavailable } from "./hostCommands";
 import { isMissingCommand } from "./settingsMutations";
 import { errorMessageOf } from "./shared/errorUtils";
 import { runStep } from "./state";
@@ -103,14 +102,6 @@ export interface SubscriptionQuotaMeter {
   unlimited?: boolean;
 }
 
-/** The legacy single-window view an older fixture or host may still send. */
-export interface SubscriptionQuotaWindow {
-  label?: string;
-  used_percent?: number;
-  remaining_percent?: number;
-  reset_at?: string | number;
-}
-
 /** `SubscriptionQuotaSnapshot`: `windows` plus the optional `display.meters` view. */
 export interface SubscriptionQuotaSummary {
   account_id: string;
@@ -127,8 +118,6 @@ export interface SubscriptionQuotaSummary {
   } | null;
   display?: { version?: number; meters?: SubscriptionQuotaMeter[] } | null;
   error?: string | null;
-  primary_window?: SubscriptionQuotaWindow | null;
-  secondary_window?: SubscriptionQuotaWindow | null;
   [key: string]: unknown;
 }
 
@@ -140,8 +129,8 @@ export interface QuotaMeterRow {
   durationSeconds?: number;
   remainingPercent: number | null;
   usedPercent: number | null;
-  /** Unix seconds, or a legacy string the host sent verbatim. */
-  resetsAt: number | string | null;
+  /** Unix seconds. */
+  resetsAt: number | null;
   secondary: boolean;
   unlimited: boolean;
 }
@@ -152,9 +141,8 @@ function finiteQuota(value: unknown): number | undefined {
 
 /**
  * The meters the desktop's `quotaMeters` draws for one snapshot: the `display`
- * view when the host sent version 1 of it, otherwise the `windows` plus the
- * per-bucket windows of `details` v1. A snapshot from an older surface's
- * fixture that only has `primary_window` / `secondary_window` still reads.
+ * view when the host sent version 1 of it, otherwise `windows` plus the
+ * per-bucket windows of `details` v1.
  */
 export function quotaMeters(snapshot: SubscriptionQuotaSummary | null | undefined): QuotaMeterRow[] {
   if (!snapshot || snapshot.state === "unsupported") return [];
@@ -190,26 +178,6 @@ export function quotaMeters(snapshot: SubscriptionQuotaSummary | null | undefine
       for (const window of bucket.windows ?? []) {
         rows.push(toRow({ ...window, id: `${bucket.id}:${window.id}` }, bucket.display_name ?? null));
       }
-    }
-  }
-  if (rows.length === 0) {
-    const legacy = (win: SubscriptionQuotaWindow | null | undefined, id: string): QuotaMeterRow | null => {
-      if (!win) return null;
-      const remaining =
-        finiteQuota(win.remaining_percent) ??
-        (finiteQuota(win.used_percent) !== undefined ? 100 - (win.used_percent as number) : undefined);
-      return {
-        id,
-        name: (win.label ?? "").trim(),
-        remainingPercent: remaining === undefined ? null : Math.round(Math.max(0, Math.min(100, remaining))),
-        usedPercent: finiteQuota(win.used_percent) ?? null,
-        resetsAt: win.reset_at ?? null,
-        secondary: false,
-        unlimited: false,
-      };
-    };
-    for (const row of [legacy(snapshot.primary_window, "primary"), legacy(snapshot.secondary_window, "secondary")]) {
-      if (row) rows.push(row);
     }
   }
   return rows;
@@ -494,36 +462,6 @@ export function mergedDiscoveredOptions(draft: ModelDraft): MergedDiscoveredMode
       max_tokens: out,
       capabilities: remote.capabilities,
     });
-  }
-
-  // Include matching local catalog models when remote list is empty or incomplete.
-  const normalizedBase = draft.baseUrl.trim().replace(/\/+$/, "").toLowerCase();
-  const matchingCatalogProviders = modelCatalog().filter(
-    prov =>
-      prov.endpoints.some(
-        ep =>
-          (normalizedBase && ep.baseUrl.replace(/\/+$/, "").toLowerCase() === normalizedBase) ||
-          ep.format.toLowerCase() === draft.provider.trim().toLowerCase(),
-      ),
-  );
-  for (const prov of matchingCatalogProviders) {
-    for (const model of prov.models) {
-      const key = model.id.trim().toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      const out = advertisedMaxTokens(model.output);
-      const parts: string[] = [prov.name];
-      if (model.context) parts.push(`${Math.round(model.context / 1000)}K ctx`);
-      if (out) parts.push(`${Math.round(out / 1000)}K out`);
-      result.push({
-        id: model.id,
-        label: model.label,
-        description: parts.join(" · "),
-        source: "catalog",
-        context_window: model.context,
-        max_tokens: out,
-      });
-    }
   }
 
   return result;
@@ -915,23 +853,14 @@ export async function cancelSubscriptionSignIn(): Promise<void> {
   }
 }
 
-/**
- * Signs out / forgets one subscription account slot. Prefers the per-slot
- * `logout_subscription_account_instance` command and falls back to provider-wide
- * `logout_subscription_account` on older hosts.
- */
+/** Signs out / forgets one subscription account slot. */
 export async function signOutSubscriptionAccount(provider: string, accountId?: string): Promise<void> {
   const slotId = accountId || provider;
   if (!provider || subscriptionSigningOut() === slotId) return;
   subscriptionSigningOut.set(slotId);
   try {
     if (accountId) {
-      try {
-        await invokeCommand("logout_subscription_account_instance", { provider, accountId });
-      } catch (error) {
-        if (!isCommandUnavailable(error, "logout_subscription_account_instance")) throw error;
-        await invokeCommand("logout_subscription_account", { provider });
-      }
+      await invokeCommand("logout_subscription_account_instance", { provider, accountId });
     } else {
       await invokeCommand("logout_subscription_account", { provider });
     }

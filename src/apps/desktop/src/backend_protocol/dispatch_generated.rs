@@ -110,7 +110,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("computer_use_get_status", NativeCommandSupport::Native),
     ("computer_use_open_system_settings", NativeCommandSupport::Native),
     ("computer_use_request_permission", NativeCommandSupport::Native),
-    ("computer_use_request_permissions", NativeCommandSupport::Native),
     ("computer_use_share_control", NativeCommandSupport::Native),
     ("computer_use_share_forget_grant", NativeCommandSupport::Native),
     ("computer_use_share_grants", NativeCommandSupport::Native),
@@ -374,7 +373,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("inspect_snapshot_storage", NativeCommandSupport::Native),
     ("install_acp_client_cli", NativeCommandSupport::Native),
     ("install_pending_update", NativeCommandSupport::Adapter),
-    ("install_update", NativeCommandSupport::Adapter),
     ("interrupt_dialog_turn", NativeCommandSupport::Native),
     ("launch_review", NativeCommandSupport::Native),
     ("launch_review_remediation", NativeCommandSupport::Native),
@@ -480,10 +478,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("open_remote_workspace", NativeCommandSupport::Native),
     ("open_workspace", NativeCommandSupport::Native),
     ("paste_files", NativeCommandSupport::Native),
-    ("peer_link_call", NativeCommandSupport::Native),
-    ("peer_link_connect", NativeCommandSupport::Native),
-    ("peer_link_disconnect", NativeCommandSupport::Native),
-    ("peer_link_events", NativeCommandSupport::Native),
     ("plan_external_hook_import_command", NativeCommandSupport::Native),
     ("plan_external_mcp_import_command", NativeCommandSupport::Native),
     ("predownload_acp_client_adapter", NativeCommandSupport::Native),
@@ -855,7 +849,6 @@ pub(super) fn dispatch<'a>(
         "computer_use_get_status" => command_computer_use_get_status(host, args),
         "computer_use_open_system_settings" => command_computer_use_open_system_settings(host, args),
         "computer_use_request_permission" => command_computer_use_request_permission(host, args),
-        "computer_use_request_permissions" => command_computer_use_request_permissions(host, args),
         "computer_use_share_control" => command_computer_use_share_control(host, args),
         "computer_use_share_forget_grant" => command_computer_use_share_forget_grant(host, args),
         "computer_use_share_grants" => command_computer_use_share_grants(host, args),
@@ -1119,7 +1112,6 @@ pub(super) fn dispatch<'a>(
         "inspect_snapshot_storage" => command_inspect_snapshot_storage(host, args),
         "install_acp_client_cli" => command_install_acp_client_cli(host, args),
         "install_pending_update" => super::native_commands::install_pending_update(host, args),
-        "install_update" => super::native_commands::install_update(host, args),
         "interrupt_dialog_turn" => command_interrupt_dialog_turn(host, args),
         "launch_review" => command_launch_review(host, args),
         "launch_review_remediation" => command_launch_review_remediation(host, args),
@@ -1225,10 +1217,6 @@ pub(super) fn dispatch<'a>(
         "open_remote_workspace" => command_open_remote_workspace(host, args),
         "open_workspace" => command_open_workspace(host, args),
         "paste_files" => command_paste_files(host, args),
-        "peer_link_call" => command_peer_link_call(host, args),
-        "peer_link_connect" => command_peer_link_connect(host, args),
-        "peer_link_disconnect" => command_peer_link_disconnect(host, args),
-        "peer_link_events" => command_peer_link_events(host, args),
         "plan_external_hook_import_command" => command_plan_external_hook_import_command(host, args),
         "plan_external_mcp_import_command" => command_plan_external_mcp_import_command(host, args),
         "predownload_acp_client_adapter" => command_predownload_acp_client_adapter(host, args),
@@ -2294,14 +2282,6 @@ fn command_computer_use_request_permission(host: &Arc<NativeHost>, args: Value) 
         let result = crate::computer_use_request_permission(
             arg(&args, "request", "computer_use_request_permission")?,
         ).await;
-        CommandResponse(result).finish()
-    })
-}
-
-#[inline(never)]
-fn command_computer_use_request_permissions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::computer_use_request_permissions().await;
         CommandResponse(result).finish()
     })
 }
@@ -6141,46 +6121,6 @@ fn command_paste_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
     Box::pin(async move {
         let result = crate::paste_files(
             arg(&args, "request", "paste_files")?,
-        ).await;
-        CommandResponse(result).finish()
-    })
-}
-
-#[inline(never)]
-fn command_peer_link_call(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::mesh::peer_link::peer_link_call(
-            arg(&args, "request", "peer_link_call")?,
-        ).await;
-        CommandResponse(result).finish()
-    })
-}
-
-#[inline(never)]
-fn command_peer_link_connect(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::mesh::peer_link::peer_link_connect(
-            arg(&args, "request", "peer_link_connect")?,
-        ).await;
-        CommandResponse(result).finish()
-    })
-}
-
-#[inline(never)]
-fn command_peer_link_disconnect(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::mesh::peer_link::peer_link_disconnect(
-            arg(&args, "request", "peer_link_disconnect")?,
-        ).await;
-        CommandResponse(result).finish()
-    })
-}
-
-#[inline(never)]
-fn command_peer_link_events(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::mesh::peer_link::peer_link_events(
-            arg(&args, "request", "peer_link_events")?,
         ).await;
         CommandResponse(result).finish()
     })

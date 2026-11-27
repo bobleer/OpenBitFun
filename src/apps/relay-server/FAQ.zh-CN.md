@@ -4,12 +4,10 @@
 
 ## 需要自己部署服务器吗？
 
-不需要。发布版客户端默认通过官方 Relay 实现同账号设备互控。在宿主与控制端
-登录同一个 OpenBitFun 账号，按 Remote Connect 的邀请或设备选择流程连接即可。
-宿主需要保持运行且可连接。官方端点为 `https://remote.openbitfun.com/relay?v=1.0.10`，
-版本号通过查询参数传递；旧的 `https://remote.openbitfun.com/v/1.0.2/` 路径仍然可用，
-两者共用同一个账号数据库；
-路径中的版本是服务协议前缀，不代表当前桌面客户端版本。
+不需要。OpenBitFun 2.0 客户端默认使用官方服务域名 `https://super.openbitfun.com`
+（账号设备目录位于 `https://super.openbitfun.com/directory`，见
+[`deploy/super/README.md`](../../../deploy/super/README.md)）。在宿主与客户端
+登录同一个 OpenBitFun 账号，并保持宿主运行且可连接即可。
 
 | 连接方式 | 使用条件 |
 | --- | --- |

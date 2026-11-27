@@ -126,21 +126,31 @@ test("a session on another device reads the catalog relative to that device", as
 test("the reasoning settings in a remote session model menu update the session's owner", async () => {
   const { app, host } = await openFleet(CATALOG);
   await openSession(app, "Build release");
-  await app.waitFor("reasoning-picker");
+  await app.waitFor("bot-capsule-trigger");
+  expect(app.shows("reasoning-picker")).toBe(false);
   await app.press("bot-capsule-trigger");
-  await app.press("model-picker-reasoning");
+  await app.waitFor("label:model-option-big");
+  await app.hover("label:model-option-big");
+  await app.waitFor("id:model-config-side-panel");
+  await app.waitFor("reasoning-option-high");
   await app.press("reasoning-option-high");
-  await app.waitFor("label:model-picker-reasoning >> text:High");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { reasoningPreset?: string | null })?.reasoningPreset === "high",
+    ),
+  );
   const reads = host.fleetCalls.filter(call => call.command === "get_session_model_target"
     && (call.args.request as { sessionId?: string })?.sessionId === "session-5");
   expect(reads).toHaveLength(1);
   expect(reads[0].target).toBe("dev-b");
-  expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{
+  expect(host.fleetCalls.filter(call => call.command === "update_session_model").at(-1)).toMatchObject({
     target: "dev-b", args: { request: { sessionId: "session-5", workspaceId: "workspace-2", reasoningPreset: "high" } },
-  }]);
+  });
 });
 
-test("editing the context window of a fleet model writes to the model owner instead of the session owner", async () => {
+test("setting context length for a cross-device fleet model writes to the session owner", async () => {
   const { app, host } = await openFleet(CATALOG, { configs: { "ai.models": [{
     id: "big", name: "Big model", provider: "openai", model_name: "big",
     base_url: "https://fixture.invalid/v1", enabled: true, capabilities: ["text_chat"],
@@ -149,17 +159,20 @@ test("editing the context window of a fleet model writes to the model owner inst
   await app.press("bot-capsule-trigger");
   await app.press("label:model-option-fleet:dev-b/big");
   await app.waitFor("label:bot-capsule-trigger >> text:Big model · linux-box");
-  await app.press("bot-capsule-trigger");
-  await app.press("model-picker-context");
-  await app.clear("model-picker-context-input");
-  await app.type("model-picker-context-input", "96000");
-  await app.press("model-picker-context-save");
-  await app.waitFor("label:model-picker-context >> text:96.0K");
-
-  expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{ target: "dev-a" }]);
-  expect(host.fleetCalls.filter(call => call.command === "ai_model_upsert")).toEqual([{
-    target: "dev-b", command: "ai_model_upsert", args: { request: { models: [{ id: "big", contextWindow: 96_000 }] } },
-  }]);
+  await app.waitFor("id:model-config-side-panel");
+  await app.press("context-option-500000");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { contextWindowOverride?: number })?.contextWindowOverride === 500_000,
+    ),
+  );
+  const lastWrite = host.fleetCalls.filter(call => call.command === "update_session_model").pop();
+  expect(lastWrite).toMatchObject({
+    target: "dev-a",
+    args: { request: { modelName: "fleet:dev-b/big", contextWindowOverride: 500_000 } },
+  });
 });
 
 test("an entry without fleet_models keeps the local model list", async () => {
@@ -188,19 +201,19 @@ test("model search combines device and model terms, filters providers and select
   const { app, host } = await openFleet(catalog);
   await openSession(app, "Fix flaky test");
   await app.press("bot-capsule-trigger");
-  await app.press("model-picker-search-open");
-  await app.type("model-picker-search-input", "old-laptop opus");
+  await app.waitFor("model-picker-search");
+  await app.type("model-picker-search", "old-laptop opus");
   await app.waitFor("label:model-option-fleet:dev-c/opus");
   expect(app.enabled("label:model-option-fleet:dev-c/opus")).toBe(false);
   await app.keyboard.press("enter");
   expect(host.fleetCalls.some(call => call.command === "update_session_model")).toBe(false);
 
-  await app.clear("model-picker-search-input");
+  await app.clear("model-picker-search");
   await app.press("model-picker-provider-filter");
   await app.press("model-provider-openai");
   await app.waitFor("id:model-device-dev-b", { state: "gone" });
-  await app.type("model-picker-search-input", "LINUX-BOX claude");
-  await app.waitFor("No models match your search.");
+  await app.type("model-picker-search", "LINUX-BOX claude");
+  await app.waitFor("No matching models");
   await app.press("model-picker-provider-filter");
   await app.press("model-provider-anthropic");
   await app.waitFor("label:model-option-fleet:dev-b/sonnet");
@@ -211,7 +224,7 @@ test("model search combines device and model terms, filters providers and select
   await app.keyboard.press("enter");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
   const write = host.fleetCalls.filter(call => call.command === "update_session_model");
-  expect(write).toMatchObject([{ target: "dev-a", args: { request: { modelName: "fleet:dev-b/haiku" } } }]);
+  expect(write[0]).toMatchObject({ target: "dev-a", args: { request: { modelName: "fleet:dev-b/haiku" } } });
 });
 
 test("the split composer searches the catalog relative to its own device", async () => {
@@ -226,8 +239,7 @@ test("the split composer searches the catalog relative to its own device", async
   expect(app.shows("label:model-option-fleet:dev-a/cfg-primary")).toBe(true);
   expect(app.shows("label:model-option-fleet:dev-b/big")).toBe(false);
   expect(fleetModelsRequests(host)).toContainEqual({ deviceId: "dev-b" });
-  await app.press("model-picker-search-open");
-  await app.type("model-picker-search-input", "big linux-box");
+  await app.type("model-picker-search", "big linux-box");
   await app.keyboard.press("enter");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
   expect(host.fleetCalls.filter(call => call.command === "update_session_model")).toMatchObject([{
@@ -239,24 +251,22 @@ test("escaping model search clears the query and the provider filter on an older
   const { app } = await openFleet();
   await openSession(app, "Fix flaky test");
   await app.press("bot-capsule-trigger");
-  await app.press("model-picker-search-open");
-  await app.type("model-picker-search-input", "cfg-fast small");
-  await app.waitFor("model-option-fast-small");
-  expect(app.shows("model-option-gpt-4.1-mini")).toBe(false);
+  await app.waitFor("model-picker-search");
+  await app.type("model-picker-search", "cfg-fast small");
+  await app.waitFor("model-option-cfg-fast");
+  expect(app.shows("model-option-cfg-primary")).toBe(false);
   await app.press("model-picker-provider-filter");
   await app.waitFor("model-provider-openai");
   await app.keyboard.press("escape");
   await app.waitFor("model-provider-openai", { state: "gone" });
-  expect(app.value("model-picker-search-input")).toBe("cfg-fast small");
+  expect(app.value("model-picker-search")).toBe("cfg-fast small");
   await app.press("model-picker-provider-filter");
   await app.press("model-provider-openai");
   await app.wait(200);
   await app.keyboard.press("escape");
-  await app.waitFor("model-picker-search-open");
-  await app.waitFor("model-option-gpt-4.1-mini");
-  await app.press("model-picker-search-open");
-  expect(app.value("model-picker-search-input")).toBe("");
-  expect(app.shows("model-option-fast-small")).toBe(true);
+  await app.waitFor("model-option-cfg-primary");
+  expect(app.value("model-picker-search")).toBe("");
+  expect(app.shows("model-option-cfg-fast")).toBe(true);
 });
 
 test("rows show the host's label and provider, and two models that read the same stay distinguishable", async () => {
@@ -299,4 +309,118 @@ test("rows show the host's label and provider, and two models that read the same
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
   // The chip names the model and its device.
   await app.waitFor("label:bot-capsule-trigger >> text:glm-4.6 · linux-box");
+});
+
+test("model picker supports search, hover/click reasoning (default high) & context length presets + custom", async () => {
+  const { app, host } = await openFleet(CATALOG);
+  await openSession(app, "Fix flaky test");
+  await app.waitFor("Message");
+  expect(app.shows("reasoning-picker")).toBe(false);
+
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("model-picker-search");
+
+  // Search narrows across models and hides non-matching device groups.
+  await app.type("model-picker-search", "linux-box");
+  await app.waitFor("id:model-device-dev-b");
+  expect(app.shows("id:model-device-dev-a")).toBe(false);
+
+  // Non-matching query shows clean empty state.
+  await app.clear("model-picker-search");
+  await app.type("model-picker-search", "nonexistent-xyz-999");
+  await app.waitFor("text:No matching models");
+
+  // Clearing search restores all device groups.
+  await app.clear("model-picker-search");
+  await app.waitFor("id:model-device-dev-a");
+
+  // Hovering a model pops the right-side config submenu with reasoning & context length presets.
+  await app.hover("label:model-option-cfg-fast");
+  await app.waitFor("id:model-config-side-panel");
+  await app.waitFor("reasoning-option-high");
+  expect(app.shows("context-option-128000")).toBe(true);
+  expect(app.shows("context-option-256000")).toBe(true);
+  expect(app.shows("context-option-300000")).toBe(true);
+  expect(app.shows("context-option-500000")).toBe(true);
+  expect(app.shows("context-option-1000000")).toBe(true);
+  expect(app.shows("context-option-custom")).toBe(true);
+
+  // Clicking a model selects it with default high reasoning (when offered) and default 300K context.
+  await app.press("label:model-option-cfg-fast");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { modelName?: string })?.modelName === "cfg-fast",
+    ),
+  );
+  const pickCall = host.fleetCalls
+    .filter(call => call.command === "update_session_model")
+    .pop()!;
+  expect(pickCall.args.request).toMatchObject({
+    modelName: "cfg-fast",
+    reasoningPreset: "high",
+    contextWindowOverride: 300_000,
+  });
+
+  // Selecting a preset context length (1M) persists 1_000_000.
+  await app.press("context-option-1000000");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { contextWindowOverride?: number })?.contextWindowOverride === 1_000_000,
+    ),
+  );
+
+  // Custom context length validates invalid values and saves valid ones (400K -> 400_000).
+  await app.press("context-option-custom");
+  await app.waitFor("context-custom-input");
+  await app.type("context-custom-input", "abc");
+  await app.press("context-custom-apply");
+  await app.waitFor("text:Enter 4K – 10M tokens (e.g. 400K)");
+
+  await app.clear("context-custom-input");
+  await app.type("context-custom-input", "400K");
+  await app.press("context-custom-apply");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { contextWindowOverride?: number })?.contextWindowOverride === 400_000,
+    ),
+  );
+});
+
+test("mobile composer keeps model selector outside the + menu and opens inline config on tap", async () => {
+  const { app, host } = await openFleet(CATALOG);
+  await openSession(app, "Fix flaky test");
+  await app.waitFor("Message");
+
+  // Switch to phone width (< 720).
+  await app.setViewport(390, 844);
+  await app.waitFor("composer-plus");
+  expect(app.shows("bot-capsule-trigger")).toBe(true);
+  expect(app.shows("reasoning-picker")).toBe(false);
+
+  // Opening "+" must not duplicate model or reasoning entries.
+  await app.press("composer-plus");
+  await app.waitFor("attach-image-file");
+  expect(app.shows("reasoning-picker")).toBe(false);
+  await app.press("composer-plus");
+
+  // Tapping the inline model selector opens the picker; tapping a model opens the inline config tray.
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("label:model-option-cfg-fast");
+  await app.press("label:model-option-cfg-fast");
+  await app.waitFor("id:model-config-inline-panel");
+  await app.waitFor("context-option-500000");
+  await app.press("context-option-500000");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(
+      call =>
+        call.command === "update_session_model" &&
+        (call.args.request as { contextWindowOverride?: number })?.contextWindowOverride === 500_000,
+    ),
+  );
 });

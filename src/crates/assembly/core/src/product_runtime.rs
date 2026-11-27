@@ -985,6 +985,17 @@ pub struct CoreAgentRuntimeCompatibility {
 }
 
 impl CoreAgentRuntimeCompatibility {
+    pub fn dialog_scheduler(&self) -> &Arc<DialogScheduler> {
+        &self.scheduler
+    }
+
+    pub fn session_agent_type(&self, session_id: &str) -> Option<String> {
+        self.coordinator
+            .get_session_manager()
+            .get_session(session_id)
+            .map(|session| session.agent_type.clone())
+    }
+
     pub async fn retry_model_pool_member(&self, model_id: &str) -> OpenBitFunResult<()> {
         self.coordinator.retry_model_pool_member(model_id).await
     }
@@ -2163,6 +2174,90 @@ impl CoreAgentRuntimeCompatibility {
             .await
     }
 
+    /// Acknowledges a session's unread completion receipt on disk and clears
+    /// any recoverable in-memory `SessionState::Error` so every client (and
+    /// fleet digest) agrees the session has been read.
+    pub async fn acknowledge_session_unread(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+        seen_through_ms: Option<u64>,
+    ) -> OpenBitFunResult<bool> {
+        validate_persisted_session_id(session_id)?;
+        let mut metadata_changed = false;
+        self.persistence
+            .update_session_metadata(workspace_path, session_id, |current| {
+                metadata_changed = crate::agentic::session_policy::acknowledge_session_unread(
+                    current,
+                    seen_through_ms,
+                );
+            })
+            .await?;
+        let state_cleared = if metadata_changed || seen_through_ms.is_none() {
+            self.coordinator
+                .get_session_manager()
+                .clear_recoverable_error_state(session_id)
+        } else {
+            false
+        };
+        Ok(metadata_changed || state_cleared)
+    }
+
+    /// Resolves the persisted session storage path for `session_id` when a
+    /// caller omitted workspace scope: checks the loaded session first, then
+    /// scans the host's opened and recent workspaces.
+    pub async fn find_session_storage_path(
+        &self,
+        workspace_service: &crate::service::workspace::WorkspaceService,
+        session_id: &str,
+    ) -> OpenBitFunResult<Option<PathBuf>> {
+        use openbitfun_runtime_ports::SessionStorePort;
+        validate_persisted_session_id(session_id)?;
+        let store = crate::agentic::session::CoreSessionStorePort::default();
+        if let Some(session) = self
+            .coordinator
+            .get_session_manager()
+            .get_session(session_id)
+        {
+            if let Some(workspace_id) = session.config.workspace_id.as_deref() {
+                if let Ok(resolution) = store.resolve_workspace_storage(workspace_id).await {
+                    if self
+                        .persistence
+                        .load_session_metadata(&resolution.effective_storage_path, session_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        return Ok(Some(resolution.effective_storage_path));
+                    }
+                }
+            }
+        }
+        let mut candidates = workspace_service.get_opened_workspaces().await;
+        candidates.extend(workspace_service.get_recent_workspaces().await);
+        let mut seen = std::collections::HashSet::new();
+        for workspace in candidates {
+            if !seen.insert(workspace.id.clone()) {
+                continue;
+            }
+            let Ok(resolution) = store.resolve_workspace_storage(&workspace.id).await else {
+                continue;
+            };
+            if self
+                .persistence
+                .load_session_metadata(&resolution.effective_storage_path, session_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return Ok(Some(resolution.effective_storage_path));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn is_session_loaded_in_memory(&self, session_id: &str) -> OpenBitFunResult<bool> {
         validate_persisted_session_id(session_id)?;
         Ok(self
@@ -2289,6 +2384,30 @@ impl CoreAgentRuntimeCompatibility {
                 model_id,
                 reasoning_preset,
                 routing_mode,
+                include_internal,
+            )
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_session_model_selection_from_storage_path_with_options(
+        &self,
+        storage_path: &Path,
+        session_id: &str,
+        model_id: &str,
+        reasoning_preset: Option<&str>,
+        routing_mode: Option<&str>,
+        context_window_override: Option<Option<usize>>,
+        include_internal: bool,
+    ) -> OpenBitFunResult<Session> {
+        self.coordinator
+            .update_session_model_selection_from_storage_path_with_options(
+                storage_path,
+                session_id,
+                model_id,
+                reasoning_preset,
+                routing_mode,
+                context_window_override,
                 include_internal,
             )
             .await

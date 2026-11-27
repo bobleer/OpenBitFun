@@ -159,7 +159,7 @@ impl AccountDeviceMeshRoute for DesktopMeshRoute {
             .any(|capability| capability == required_capability)
         {
             log::debug!(
-                "Mesh device lacks {}; using the legacy relay path: device={}",
+                "Mesh device lacks required capability {}: device={}",
                 required_capability,
                 device_id
             );

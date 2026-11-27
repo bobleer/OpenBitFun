@@ -131,14 +131,13 @@ pub(super) async fn workspace_id(
 fn public_snapshot(
     snapshot: openbitfun_core::external_sources::ExternalSourceCatalogSnapshot,
 ) -> ExternalSourceOperationResult<Value> {
-    serde_json::to_value(ExternalSourcePublicSnapshot::from(snapshot).into_legacy_v0_compatible())
-        .map_err(|_| {
-            ExternalSourceOperationError::new(
-                ExternalSourceOperationErrorCode::Internal,
-                "External source response could not be encoded",
-                false,
-            )
-        })
+    serde_json::to_value(ExternalSourcePublicSnapshot::from(snapshot)).map_err(|_| {
+        ExternalSourceOperationError::new(
+            ExternalSourceOperationErrorCode::Internal,
+            "External source response could not be encoded",
+            false,
+        )
+    })
 }
 
 pub(crate) async fn dispatch(
@@ -358,6 +357,75 @@ async fn dispatch_inner(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)?;
 
     public_snapshot(snapshot)
+}
+
+pub(crate) async fn plan_external_mcp_import_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let plan = openbitfun_core::external_mcp_import::plan_external_mcp_import(workspace)
+        .await
+        .map_err(|error| error.encode())?;
+    serde_json::to_value(plan).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn apply_external_mcp_import_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let import_request_val = request
+        .get("importRequest")
+        .or_else(|| request.get("import_request"))
+        .cloned()
+        .ok_or_else(|| {
+            ExternalSourceOperationError::invalid_request("Missing 'importRequest'").encode()
+        })?;
+    let import_request: openbitfun_product_domains::external_sources::ExternalMcpImportApplyRequestV1 =
+        serde_json::from_value(import_request_val).map_err(|error| {
+            ExternalSourceOperationError::invalid_request(format!(
+                "Invalid importRequest: {error}"
+            ))
+            .encode()
+        })?;
+    let result =
+        openbitfun_core::external_mcp_import::apply_external_mcp_import(workspace, import_request)
+            .await
+            .map_err(|error| error.encode())?;
+    serde_json::to_value(result).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn list_removed_external_sessions(args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let ecosystem_id = required_string(request, "ecosystemId")
+        .or_else(|_| required_string(request, "ecosystem_id"))
+        .map_err(|error| error.encode())?;
+    let sessions =
+        openbitfun_core::external_session_import::list_removed_external_sessions(&ecosystem_id)
+            .await
+            .map_err(|error| error.encode())?;
+    serde_json::to_value(sessions).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn restore_removed_external_session(args: &Value) -> Result<Value, String> {
+    let request: openbitfun_product_domains::session_import::RestoreRemovedExternalSessionRequest =
+        serde_json::from_value(request_value(args).clone()).map_err(|error| {
+            ExternalSourceOperationError::invalid_request(format!(
+                "Invalid restore_removed_external_session request: {error}"
+            ))
+            .encode()
+        })?;
+    openbitfun_core::external_session_import::restore_removed_external_session(request)
+        .await
+        .map_err(|error| error.encode())?;
+    Ok(Value::Null)
 }
 
 fn control_request(

@@ -10,11 +10,11 @@ import { listSessions, type SessionSummary } from "./api";
 import { fleetActive } from "./bridge";
 import { localDeviceId } from "./devicePrefsStore";
 import { fleetDevices } from "./fleetStore";
-import type { FleetDevice } from "./fleetTypes";
+import type { FleetDevice, FleetRouteKind } from "./fleetTypes";
 import { tr } from "./i18n";
 import { loadAgentModes } from "./agentModeStore";
 import { reuseRows, sameRecord } from "./rowReuse";
-import { statusOfSession } from "./sessionStatusStore";
+import { isSessionAcknowledged, statusOfSession } from "./sessionStatusStore";
 import { createSecondarySession, selectSecondarySession } from "./splitSessionStore";
 import { remoteWorkspaceAliasOf } from "./sshRemoteStore";
 import {
@@ -69,6 +69,9 @@ export interface DeviceTreeNode {
   state: string;
   asOfMs?: number;
   version?: string;
+  // TEMPORARY (dev diagnostics): Link route kind & latency for the sidebar header tag; remove/comment out before release.
+  routeKind?: FleetRouteKind;
+  routeLatencyMs?: number;
   rollup: MarkState | null;
   expandedHint: boolean;
   workspaces: DeviceTreeWorkspace[];
@@ -142,7 +145,8 @@ export function loadWorkspaceSessions(deviceId: string, workspaceId: string, cou
   if (running) return running;
   const load = (async () => {
     try {
-      const page = await listSessions(workspaceId, count, undefined, deviceId ? { target: deviceId } : undefined);
+      const target = fleetActive() && deviceId ? { target: deviceId } : undefined;
+      const page = await listSessions(workspaceId, count, undefined, target);
       const rows = (page.sessions ?? []).filter(row => !isSessionArchived(row));
       const total = Math.max(rows.length, page.totalTopLevelCount ?? 0);
       workspacePages.update(all => ({ ...all, [key]: { rows, total } }));
@@ -168,23 +172,62 @@ function deviceUiHint(device: FleetDevice): { expanded?: boolean; rollup?: strin
   return ui ?? {};
 }
 
-function pagedRow(row: SessionSummary, untitled: string, status: ReturnType<typeof statusOfSession>): DeviceTreeSession {
+function pagedRow(
+  row: SessionSummary,
+  untitled: string,
+  status: ReturnType<typeof statusOfSession>,
+  deviceId: string,
+): DeviceTreeSession {
+  const activityMs = sessionLastActivityMs(row);
+  const live = status(row.sessionId, activityMs, row.messageCount, deviceId);
+  let mark = localSessionMarkState(live?.kind);
+  if (mark === "idle" && !isSessionAcknowledged(row.sessionId, activityMs, deviceId)) {
+    if (row.failed) mark = "failed";
+    else if (row.unread) mark = "done";
+  }
   return {
     sessionId: row.sessionId,
     title: row.sessionName || untitled,
-    mark: localSessionMarkState(status(row.sessionId)?.kind),
-    ageMs: sessionLastActivityMs(row),
+    mark,
+    ageMs: activityMs,
   };
+}
+
+function fleetPreviewMark(
+  row: FleetDevice["workspaces"][number]["sessions"][number],
+  deviceId: string,
+  status: ReturnType<typeof statusOfSession>,
+): MarkState {
+  const live = status(row.sessionId, row.lastActivityMs, undefined, deviceId);
+  if (live?.kind === "approval") return "needs_you";
+  if (row.status === "waiting" || (row.needsAttention && !row.failed && row.status !== "error")) {
+    return "needs_you";
+  }
+  if (live?.kind === "running" || row.status === "running") return "working";
+  if (live?.kind === "queued") return "queued";
+  const acked = isSessionAcknowledged(row.sessionId, row.lastActivityMs, deviceId);
+  if (live?.kind === "failed") return "failed";
+  if (acked) return "idle";
+  return sessionMarkState(row);
 }
 
 /**
  * The navigator's preview rows, then any further rows a page read: the preview
  * keeps its live states, the page only adds what the preview did not list.
  */
-function withPage(preview: DeviceTreeSession[], page: WorkspacePage | undefined, untitled: string, status: ReturnType<typeof statusOfSession>): DeviceTreeSession[] {
+function withPage(
+  preview: DeviceTreeSession[],
+  page: WorkspacePage | undefined,
+  untitled: string,
+  status: ReturnType<typeof statusOfSession>,
+  deviceId: string,
+): DeviceTreeSession[] {
   if (!page || page.rows.length <= preview.length) return preview;
   const listed = new Set(preview.map(row => row.sessionId));
-  return [...preview, ...page.rows.filter(row => !listed.has(row.sessionId)).map(row => pagedRow(row, untitled, status))];
+  return [
+    ...preview,
+    ...page.rows.filter(row => !listed.has(row.sessionId)).map(row => pagedRow(row, untitled, status, deviceId)),
+  ];
 }
 
 function buildDeviceTree(): DeviceTreeNode[] {
@@ -204,6 +247,9 @@ function buildDeviceTree(): DeviceTreeNode[] {
           state: device.state,
           asOfMs: device.asOfMs,
           version: device.version,
+          // TEMPORARY (dev diagnostics): Link route kind & latency for the sidebar header tag.
+          routeKind: device.route?.kind,
+          routeLatencyMs: device.route?.latencyMs,
           rollup: rollupMarkState(hint.rollup),
           // Devices fold except this one and those the backend flags expanded.
           expandedHint: hint.expanded ?? device.isClientDevice,
@@ -212,7 +258,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
             const preview = workspace.sessions.map(row => ({
               sessionId: row.sessionId,
               title: row.title || untitled,
-              mark: sessionMarkState(row),
+              mark: fleetPreviewMark(row, device.deviceId, status),
               ageMs: row.lastActivityMs,
             }));
             return {
@@ -224,7 +270,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
               connectionId: workspace.connectionId,
               connectionName: workspace.connectionName,
               total: Math.max(workspace.sessionTotal, page?.total ?? 0),
-              sessions: withPage(preview, page, untitled, status),
+              sessions: withPage(preview, page, untitled, status, device.deviceId),
             };
           }),
         };
@@ -245,7 +291,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
         const page = pages[pageKey(deviceId, workspace.id)];
         const open = workspace.id === activeWorkspaceId();
         const rows = open ? sessions().filter(row => !isSessionArchived(row)) : page?.rows ?? [];
-        const preview = rows.map(row => pagedRow(row, untitled, status));
+        const preview = rows.map(row => pagedRow(row, untitled, status, ""));
         return {
           workspaceId: workspace.id,
           name: workspaceLabel(workspace),
@@ -255,7 +301,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
           connectionId: workspace.connectionId ?? (workspace as { remoteConnectionId?: string }).remoteConnectionId,
           connectionName: workspace.connectionName,
           total: Math.max(rows.length, page?.total ?? 0),
-          sessions: open ? withPage(preview, page, untitled, status) : preview,
+          sessions: open ? withPage(preview, page, untitled, status, "") : preview,
         };
       }),
     },

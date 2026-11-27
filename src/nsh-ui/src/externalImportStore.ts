@@ -410,31 +410,16 @@ function mapDiscoverySnapshot(raw: unknown): ExternalImportSnapshot {
   });
 }
 
-/**
- * Reads the newest snapshot the host offers: the discovery snapshot, then the
- * control snapshot, then the legacy catalog. Only the first carries the
- * automatic-discovery switch; the older two draw it read-only.
- */
+/** Reads the host's external-source discovery snapshot. */
 async function readSnapshot(request: Record<string, unknown>): Promise<ExternalImportSnapshot | null> {
   try {
     return mapDiscoverySnapshot(
       await invokeCommand<unknown>("get_external_source_discovery_snapshot", request),
     );
   } catch (error) {
-    if (!isCommandMissing("get_external_source_discovery_snapshot", error)) throw error;
+    if (isCommandMissing("get_external_source_discovery_snapshot", error)) return null;
+    throw error;
   }
-  try {
-    const surface = asRecord(await invokeCommand<unknown>("get_external_source_control_snapshot", request));
-    return mapCatalog(surface.catalog, null);
-  } catch (error) {
-    if (!isCommandMissing("get_external_source_control_snapshot", error)) throw error;
-  }
-  try {
-    return mapCatalog(await invokeCommand<unknown>("get_external_source_snapshot", request), null);
-  } catch (error) {
-    if (!isCommandMissing("get_external_source_snapshot", error)) throw error;
-  }
-  return null;
 }
 
 /** Clears everything a previous host or workspace answered. */

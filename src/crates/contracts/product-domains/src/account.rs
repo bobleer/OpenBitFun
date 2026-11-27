@@ -15,16 +15,13 @@ pub const RELAY_SERVICE_VERSION: &str = "1.0.10";
 /// because both reach one process and one SQLite file.
 pub const LIVE_RELAY_ENDPOINT_PATHS: &[&str] = &["/relay", "/v/1.0.2"];
 
-/// Hosted Relay deployment for the GitHub account/device-key protocol.
+/// Hosted account/device-key directory endpoint for OpenBitFun 2.0.
 ///
-/// The version travels as a GET parameter so a release no longer needs a new
-/// proxy location, while `remote.openbitfun.com` keeps one root page. Callers
-/// must join API paths onto [`relay_endpoint_base`], never onto this string.
-///
-/// OpenBitFun 2.0 uses only its own service host: this is the same base as
-/// [`DEFAULT_ACCOUNT_DIRECTORY_URL`] (and must stay byte-equal to it, so the
-/// device key scoped by this URL is the key the directory session
-/// registers). `remote.openbitfun.com` serves released 1.0 clients only.
+/// Callers must join API paths onto [`relay_endpoint_base`], never onto this
+/// string. This is the same base as [`DEFAULT_ACCOUNT_DIRECTORY_URL`] (and
+/// must stay byte-equal to it, so the device key scoped by this URL is the
+/// key the directory session registers). `remote.openbitfun.com` serves
+/// released 1.0 clients only.
 pub const DEFAULT_RELAY_URL: &str = "https://super.openbitfun.com/directory";
 
 /// The new version's account directory: device rows and X25519 keys of the
@@ -682,16 +679,16 @@ mod relay_endpoint_tests {
     #[test]
     fn base_strips_version_query_and_fragment() {
         assert_eq!(
-            relay_endpoint_base("https://remote.openbitfun.com/relay?v=1.0.9"),
-            "https://remote.openbitfun.com/relay"
+            relay_endpoint_base("https://relay.example.com/relay?v=1.0.9"),
+            "https://relay.example.com/relay"
         );
         assert_eq!(
-            relay_endpoint_base("https://remote.openbitfun.com/relay/?v=1.0.9"),
-            "https://remote.openbitfun.com/relay"
+            relay_endpoint_base("https://relay.example.com/relay/?v=1.0.9"),
+            "https://relay.example.com/relay"
         );
         assert_eq!(
-            relay_endpoint_base("https://remote.openbitfun.com/v/1.0.2/"),
-            "https://remote.openbitfun.com/v/1.0.2"
+            relay_endpoint_base("https://relay.example.com/v/1.0.2/"),
+            "https://relay.example.com/v/1.0.2"
         );
         assert_eq!(
             relay_endpoint_base("https://relay.example.com/prefix#/pair"),
@@ -702,15 +699,15 @@ mod relay_endpoint_tests {
     #[test]
     fn version_is_read_from_the_query_only() {
         assert_eq!(
-            relay_endpoint_version("https://remote.openbitfun.com/relay?v=1.0.9"),
+            relay_endpoint_version("https://relay.example.com/relay?v=1.0.9"),
             Some("1.0.9")
         );
         assert_eq!(
-            relay_endpoint_version("https://remote.openbitfun.com/relay?v=1.0.9#/pair?did=x"),
+            relay_endpoint_version("https://relay.example.com/relay?v=1.0.9#/pair?did=x"),
             Some("1.0.9")
         );
         assert_eq!(
-            relay_endpoint_version("https://remote.openbitfun.com/v/1.0.2"),
+            relay_endpoint_version("https://relay.example.com/v/1.0.2"),
             None
         );
     }
@@ -718,39 +715,36 @@ mod relay_endpoint_tests {
     #[test]
     fn live_aliases_share_one_deployment_but_other_releases_do_not() {
         assert!(same_relay_deployment(
-            "https://remote.openbitfun.com/relay?v=1.0.9",
-            "https://remote.openbitfun.com/v/1.0.2",
+            "https://relay.example.com/relay?v=1.0.9",
+            "https://relay.example.com/v/1.0.2",
         ));
         assert!(same_relay_deployment(
-            "https://remote.openbitfun.com/relay",
-            "https://remote.openbitfun.com/relay/",
+            "https://relay.example.com/relay",
+            "https://relay.example.com/relay/",
         ));
         assert!(!same_relay_deployment(
-            "https://remote.openbitfun.com/v/1.0.1",
-            "https://remote.openbitfun.com/relay",
+            "https://relay.example.com/v/1.0.1",
+            "https://relay.example.com/relay",
         ));
         assert!(!same_relay_deployment(
             "https://other.example.com/relay",
-            "https://remote.openbitfun.com/relay",
+            "https://relay.example.com/relay",
         ));
         assert!(!same_relay_deployment(
-            "http://remote.openbitfun.com/relay",
-            "https://remote.openbitfun.com/relay",
+            "http://relay.example.com/relay",
+            "https://relay.example.com/relay",
         ));
     }
 
     #[test]
     fn page_url_keeps_version_before_the_fragment() {
         assert_eq!(
-            relay_page_url(
-                "https://remote.openbitfun.com/relay?v=1.0.9",
-                "#/pair?did=abc"
-            ),
-            "https://remote.openbitfun.com/relay/?v=1.0.9#/pair?did=abc"
+            relay_page_url("https://relay.example.com/relay?v=1.0.9", "#/pair?did=abc"),
+            "https://relay.example.com/relay/?v=1.0.9#/pair?did=abc"
         );
         assert_eq!(
-            relay_page_url("https://remote.openbitfun.com/v/1.0.2", "#/pair?did=abc"),
-            "https://remote.openbitfun.com/v/1.0.2/#/pair?did=abc"
+            relay_page_url("https://relay.example.com/v/1.0.2", "#/pair?did=abc"),
+            "https://relay.example.com/v/1.0.2/#/pair?did=abc"
         );
     }
 }

@@ -24,7 +24,6 @@ pub(crate) struct ProviderTemplate {
     pub base_url: String,
     /// "openai" or "anthropic"
     pub format: String,
-    pub models: Vec<String>,
     pub description: String,
 }
 
@@ -51,7 +50,6 @@ fn provider_templates(provider_catalog: ProviderCatalog) -> Vec<ProviderTemplate
                 name: provider.name,
                 base_url: endpoint.base_url.clone(),
                 format: endpoint.api_format.clone(),
-                models: provider.models.into_iter().map(|model| model.id).collect(),
                 description: provider.description,
             })
         })

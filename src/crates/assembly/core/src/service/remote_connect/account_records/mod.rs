@@ -318,8 +318,8 @@ mod tests {
             .iter()
             .map(|collection| collection.collection())
             .collect();
-        // One device's assistant persona must never replace another device's.
-        assert!(!names.contains(&PERSONAS_COLLECTION));
+        // Assistants stay per-device and have no synced collection.
+        assert!(!names.contains(&"assistants.personas"));
         assert!(names.contains(&MEMORY_COLLECTION));
     }
 }

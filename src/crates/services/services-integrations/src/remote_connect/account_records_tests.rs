@@ -4,7 +4,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
-const COLLECTION: &str = PERSONAS_COLLECTION;
+const COLLECTION: &str = SKILLS_COLLECTION;
 
 /// An owner's store: items by id, with what the binder applied.
 #[derive(Default)]

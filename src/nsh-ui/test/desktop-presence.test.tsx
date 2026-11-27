@@ -384,6 +384,15 @@ test("the native desktop announces the pet operations, answers them, and Setting
   await app.press("nav-settings-page-pet");
   await app.waitFor("label:pet-enabled");
   await app.waitFor("label:pet-choose-bitblob");
+  await app.waitFor("label:pet-import");
+  expect(app.shows("text:Built-in characters and packs imported from petdex.dev.")).toBe(true);
+  const charLabelBox = app.layout("text:Character");
+  const importBtnBox = app.layout("label:pet-import");
+  expect(charLabelBox).not.toBeNull();
+  expect(importBtnBox).not.toBeNull();
+  // Import button sits on the right of the Character row header, not above the section card.
+  expect(importBtnBox!.x).toBeGreaterThan(charLabelBox!.x);
+  expect(Math.abs(importBtnBox!.y - charLabelBox!.y)).toBeLessThan(24);
   // Every character shows its still at once, the chosen one and the rest alike, with no hover.
   await app.waitFor("label:pet-still-image-bitblob");
   await app.waitFor("label:pet-still-image-capy");

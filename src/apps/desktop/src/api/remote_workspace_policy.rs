@@ -112,27 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_tauri_shell_commands_are_tombstones_with_a_reason() {
-        let registered = registered_commands();
-        for command in [
-            "frontend_update_candidate_ready",
-            "confirm_frontend_update",
-            "debug_open_devtools",
-            "startup_window_control",
-            "webdriver_bridge_result",
-        ] {
-            assert!(!registered.contains(command), "{command} must stay retired");
-            assert!(
-                openbitfun_product_domains::remote_surface::retired_reason(command).is_some(),
-                "{command} must answer older clients with its retirement reason"
-            );
-        }
-    }
-
-    #[test]
-    fn desktop_cards_and_the_pet_answer_again_in_the_native_desktop() {
-        // Retired with the Tauri shell, restored on the NSH shell (wave 22):
-        // older clients that got a tombstone now get real answers.
+    fn desktop_cards_and_the_pet_are_registered_in_the_native_desktop() {
         let registered = registered_commands();
         for command in [
             "desktop_card_list",
@@ -150,10 +130,6 @@ mod tests {
             "load_agent_companion_pet_still",
         ] {
             assert!(registered.contains(command), "{command} must be registered");
-            assert!(
-                openbitfun_product_domains::remote_surface::retired_reason(command).is_none(),
-                "{command} must not answer with a retirement reason"
-            );
         }
     }
 

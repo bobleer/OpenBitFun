@@ -355,21 +355,44 @@ fn refresh_latest_turn(metadata: &mut SessionMetadata, turn: &DialogTurnData) {
                 .recovery_pending
                 .is_none_or(|pending| next.recovery_pending == Some(pending))
     });
+    let background_delivery =
+        openbitfun_core_types::background_delivery::BackgroundDelivery::from_metadata(
+            turn.user_message.metadata.as_ref(),
+            &turn.turn_id,
+        );
     let quiet = turn.status == TurnStatus::Completed
-        && openbitfun_core_types::background_delivery::BackgroundDelivery::from_metadata(turn.user_message.metadata.as_ref(), &turn.turn_id)
-            .is_some_and(|delivery| delivery.execution_generation == turn.recovery_epoch.unwrap_or(0)
-                && delivery.disposition == openbitfun_core_types::background_delivery::BackgroundReportDisposition::Quiet && delivery.suppresses_report());
+        && background_delivery.as_ref().is_some_and(|delivery| {
+            delivery.execution_generation == turn.recovery_epoch.unwrap_or(0)
+                && delivery.disposition
+                    == openbitfun_core_types::background_delivery::BackgroundReportDisposition::Quiet
+                && delivery.suppresses_report()
+        });
     let mut unread_target = previous_unread_target;
     if !same_outcome && !quiet {
-        if let Some(outcome) = match turn.status {
-            TurnStatus::Completed => Some("completed"),
-            TurnStatus::Error => Some("error"),
-            TurnStatus::Cancelled => Some("interrupted"),
-            TurnStatus::InProgress => None,
-        } {
-            metadata.unread_completion = Some(outcome.to_string());
-            metadata.needs_user_attention = None;
-            unread_target = Some(next.clone());
+        match turn.status {
+            TurnStatus::Completed => {
+                metadata.unread_completion = Some("completed".to_string());
+                metadata.needs_user_attention = None;
+                unread_target = Some(next.clone());
+            }
+            TurnStatus::Error => {
+                metadata.unread_completion = Some("error".to_string());
+                metadata.needs_user_attention = None;
+                unread_target = Some(next.clone());
+            }
+            TurnStatus::Cancelled => {
+                metadata.unread_completion = Some("interrupted".to_string());
+                metadata.needs_user_attention = None;
+                unread_target = Some(next.clone());
+            }
+            TurnStatus::InProgress if background_delivery.is_none() => {
+                // Starting a fresh interactive user turn in this session
+                // supersedes any prior unread completion receipt. Background
+                // runs keep the previous unread receipt untouched.
+                metadata.unread_completion = None;
+                unread_target = None;
+            }
+            TurnStatus::InProgress => {}
         }
     }
     let custom = metadata
@@ -524,6 +547,26 @@ mod background_delivery_contracts {
             unread_completion_target(&decoded).unwrap().turn_id,
             "future"
         );
+    }
+
+    #[test]
+    fn new_interactive_user_turn_clears_prior_unread_completion() {
+        let mut metadata = SessionMetadata::new(
+            "session".into(),
+            "Chat".into(),
+            "Standard".into(),
+            "model".into(),
+        );
+        refresh_latest_turn(&mut metadata, &turn("t1", 0, false));
+        assert_eq!(metadata.unread_completion.as_deref(), Some("completed"));
+        assert_eq!(unread_completion_target(&metadata).unwrap().turn_id, "t1");
+
+        let mut next = turn("t2", 1, false);
+        next.status = TurnStatus::InProgress;
+        next.end_time = None;
+        refresh_latest_turn(&mut metadata, &next);
+        assert!(metadata.unread_completion.is_none());
+        assert!(unread_completion_target(&metadata).is_none());
     }
 }
 

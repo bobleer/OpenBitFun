@@ -102,8 +102,6 @@ struct DeviceEntry {
     health: LinkHealth,
     health_reason: Option<String>,
     link: Option<FleetPeerLinkInfo>,
-    /// Indexed by polling (a mesh host without `fleet_v1`).
-    legacy: bool,
     /// Self facts the host reported (fleet protocol, capabilities).
     self_facts: Option<FleetDeviceFacts>,
     /// Display name from the account directory for `self_device_id` (alias first,
@@ -522,7 +520,6 @@ impl FleetIndex {
                 return;
             };
             let before = entry.facts(device_id);
-            entry.legacy = !link.serves_fleet();
             entry.cached_fleet_protocol = link.serves_fleet().then_some(FLEET_PROTOCOL_VERSION);
             entry.cached_capabilities = link.host_capabilities.clone();
             entry.link = Some(link);
@@ -789,7 +786,6 @@ impl FleetIndex {
                     host_kind: device.host_kind,
                     version: device.version,
                     mesh: true,
-                    legacy: device.legacy,
                     cached_fleet_protocol: device.fleet_protocol,
                     cached_capabilities: device.host_capabilities,
                     partition,
@@ -830,7 +826,6 @@ impl FleetIndex {
                         fleet_protocol: facts.fleet_protocol,
                         host_capabilities: facts.host_capabilities,
                         as_of_ms: entry.fresh_at_ms,
-                        legacy: entry.legacy,
                         partition: entry.partition.clone(),
                     })
                     .ok()
@@ -1193,7 +1188,5 @@ struct CachedDevice {
     host_capabilities: Vec<String>,
     #[serde(deserialize_with = "null_default")]
     as_of_ms: u64,
-    #[serde(deserialize_with = "null_default")]
-    legacy: bool,
     partition: Option<FleetDigest>,
 }

@@ -9,8 +9,7 @@
 //! See `docs/architecture/remote-surface-contract.md`.
 
 use openbitfun_product_domains::remote_surface::{
-    peer_host_verdict, peer_stance, retired_reason, PeerHostKind, PeerHostVerdict, PeerRefusal,
-    PeerStance,
+    peer_host_verdict, peer_stance, PeerHostKind, PeerHostVerdict, PeerRefusal, PeerStance,
 };
 
 /// Whether this host must refuse the command on a controller's behalf
@@ -20,11 +19,6 @@ pub(crate) fn is_local_only_command(command: &str) -> bool {
         peer_stance(command),
         Some(PeerStance::ControllerLocal | PeerStance::OperatorOnly)
     )
-}
-
-/// Commands kept as protocol tombstones after their runtime owner was removed.
-pub(crate) fn is_retired_command(command: &str) -> bool {
-    retired_reason(command).is_some()
 }
 
 /// Whether the registry declares the command unsupported on a CLI peer host
@@ -38,13 +32,7 @@ pub(crate) fn is_cli_unsupported_command(command: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cli_unsupported_command, is_local_only_command, is_retired_command};
-
-    #[test]
-    fn retired_lsp_commands_are_matched_without_overmatching_external_names() {
-        assert!(is_retired_command("lsp_open_workspace"));
-        assert!(!is_retired_command("custom_lsp_wrapper"));
-    }
+    use super::{is_cli_unsupported_command, is_local_only_command};
 
     #[test]
     fn session_content_search_executes_on_the_peer_host() {
@@ -109,30 +97,6 @@ mod tests {
         ));
     }
 
-    /// WebView frontend hot updates were retired with the Tauri shell: a
-    /// controller asking a CLI host for them gets the retirement, never a
-    /// dispatch.
-    #[test]
-    fn retired_frontend_update_decisions_are_refused_as_retired() {
-        use openbitfun_product_domains::remote_surface::{
-            peer_host_verdict, PeerHostKind, PeerHostVerdict, PeerRefusal,
-        };
-        for command in [
-            "frontend_update_candidate_ready",
-            "get_frontend_update_status",
-            "confirm_frontend_update",
-            "rollback_frontend_update",
-        ] {
-            assert!(
-                matches!(
-                    peer_host_verdict(command, PeerHostKind::Cli),
-                    PeerHostVerdict::Refuse(PeerRefusal::Retired { .. })
-                ),
-                "{command}"
-            );
-        }
-    }
-
     #[test]
     fn product_control_presentation_callbacks_stay_on_the_controller_device() {
         for command in [
@@ -178,7 +142,7 @@ mod tests {
         for command in [
             "browser_control_launch",
             "computer_use_get_status",
-            "computer_use_request_permissions",
+            "computer_use_request_permission",
         ] {
             assert!(!is_local_only_command(command), "{command}");
             assert!(is_cli_unsupported_command(command), "{command}");

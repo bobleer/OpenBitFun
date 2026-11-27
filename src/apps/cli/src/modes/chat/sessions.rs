@@ -140,8 +140,83 @@ impl ChatMode {
         // Reset view state
         chat_view.scroll_to_bottom();
         chat_view.set_status(Some(format!("Switched to session: {}", new_session_id)));
+        self.acknowledge_active_session_seen(chat_state, rt_handle);
 
         Ok(())
+    }
+
+    /// Acknowledges the session currently displayed in CLI TUI so turns read
+    /// or watched to completion here do not linger as completed-unread on
+    /// other devices (Desktop, phone, browser).
+    fn acknowledge_active_session_seen(
+        &self,
+        chat_state: &ChatState,
+        rt_handle: &tokio::runtime::Handle,
+    ) {
+        let session_id = chat_state.core_session_id.clone();
+        if session_id.trim().is_empty() {
+            return;
+        }
+        let workspace_id = chat_state
+            .workspace_binding
+            .as_ref()
+            .and_then(|binding| binding.workspace_id.clone())
+            .or_else(|| chat_state.project_workspace_id().map(str::to_string));
+        let workspace_path = chat_state
+            .workspace_binding
+            .as_ref()
+            .map(|binding| binding.workspace_path.clone())
+            .or_else(|| chat_state.workspace.clone());
+        rt_handle.spawn(async move {
+            use openbitfun_runtime_ports::SessionStorePort;
+            let storage_path = if let Some(id) = workspace_id.as_deref() {
+                openbitfun_core::agentic::session::CoreSessionStorePort::default()
+                    .resolve_workspace_storage(id)
+                    .await
+                    .ok()
+                    .map(|resolution| resolution.effective_storage_path)
+            } else {
+                None
+            }
+            .or_else(|| workspace_path.map(std::path::PathBuf::from));
+            let Some(storage_path) = storage_path else {
+                return;
+            };
+            let Ok(path_manager) = openbitfun_core::infrastructure::PathManager::new() else {
+                return;
+            };
+            let Ok(persistence) = openbitfun_core::agentic::persistence::PersistenceManager::new(
+                std::sync::Arc::new(path_manager),
+            ) else {
+                return;
+            };
+            let mut changed = false;
+            if let Err(error) = persistence
+                .update_session_metadata_if_present(&storage_path, &session_id, |metadata| {
+                    changed = openbitfun_core::agentic::session_policy::acknowledge_session_unread(
+                        metadata, None,
+                    );
+                    Ok(())
+                })
+                .await
+            {
+                tracing::debug!(
+                    "CLI TUI failed to acknowledge session unread state: session_id={}, error={}",
+                    session_id,
+                    error
+                );
+                return;
+            }
+            let cleared_error = openbitfun_core::agentic::coordination::get_global_coordinator()
+                .is_some_and(|coordinator| {
+                    coordinator
+                        .get_session_manager()
+                        .clear_recoverable_error_state(&session_id)
+                });
+            if changed || cleared_error {
+                crate::fleet_host::notify_digest_changed();
+            }
+        });
     }
 
     /// Create a new session: reset state and start fresh

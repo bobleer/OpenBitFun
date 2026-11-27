@@ -947,13 +947,13 @@ mod account_collections {
         let (b, sync_b) = device(&network, "b");
         let port_a = port(&a, Some(Arc::clone(&sync_a)));
         let port_b = port(&b, Some(Arc::clone(&sync_b)));
-        let content = b"# Persona\nCalm and precise.\n".to_vec();
+        let content = b"# Skill\nCalm and precise.\n".to_vec();
         let hash = port_a.put_blob(&content, true).unwrap();
         port_a
             .put(
-                "assistants.personas",
-                "default",
-                json!({ "files": [{ "path": "SOUL.md", "chunks": [hash] }] }),
+                "skills",
+                "skill:demo",
+                json!({ "files": [{ "path": "SKILL.md", "chunks": [hash] }] }),
                 &[AccountBlobRef {
                     hash: hash.clone(),
                     bytes: content.len() as u64,
@@ -962,10 +962,7 @@ mod account_collections {
             )
             .unwrap();
         sync_a.pass().await;
-        assert_eq!(
-            port_b.records("assistants.personas")[0].blobs,
-            vec![hash.clone()]
-        );
+        assert_eq!(port_b.records("skills")[0].blobs, vec![hash.clone()]);
         assert_eq!(port_b.fetch_blob(&hash, true).await, Some(content));
         assert!(b.is_pinned(&hash));
     }

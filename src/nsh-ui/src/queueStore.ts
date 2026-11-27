@@ -6,19 +6,14 @@
 // surface and keeps its place next to whatever another surface (mobile, a bot,
 // another desktop) queued. Whether a message is queued at all is decided by the
 // host too (`submit_user_message`), not here.
-//
-// There is no local fallback: a host or peer without the queue gets an explicit
-// "update the host" state instead of a list that only drains while this window
-// is open. Rows an earlier build kept under `openbitfun.nsh.pending-queue.v1` are
-// handed to the host queue once (migration) and then forgotten.
 
-import { Storage, signal } from "nsh";
+import { signal } from "nsh";
 import type { ImageAttachment } from "./attachmentStore";
 import { invokeCommand } from "./bridge";
 import { queuedCounts } from "./sessionStatusStore";
 import { tr } from "./i18n";
 import { sessionReferenceDraft, type SessionReferenceDraft } from "./sessionReferences";
-import { activeSessionId, agentTypeOf, deviceOfSession, runningTurnId } from "./state";
+import { activeSessionId, deviceOfSession, runningTurnId } from "./state";
 
 export interface QueuedMessage {
   id: string;
@@ -58,8 +53,6 @@ interface HostQueueSnapshot {
   used?: number;
   ownerDevice?: string;
 }
-
-const LEGACY_STORAGE_KEY = "openbitfun.nsh.pending-queue.v1";
 
 export const queuedMessages = signal<QueuedMessage[]>([]);
 export const queueNotice = signal("");
@@ -319,62 +312,6 @@ export async function loadQueueForSession(sessionId: string | null, force = fals
       markQueueUnavailable(sessionId);
     }
   }
-}
-
-/**
- * Hands the rows an earlier build kept in this surface's storage to the host
- * queue, once. A row the host refuses stays stored for the next run, so nothing
- * the user wrote is dropped; the key is removed only when every row was taken.
- */
-export async function loadQueue(): Promise<void> {
-  let raw: string | null = null;
-  try {
-    raw = await Storage.getItem(LEGACY_STORAGE_KEY);
-  } catch {
-    return;
-  }
-  if (!raw) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return;
-  }
-  const rows = (Array.isArray(parsed) ? parsed : []).filter(
-    (entry): entry is { id?: unknown; sessionId: string; content: string } =>
-      typeof (entry as { sessionId?: unknown })?.sessionId === "string"
-      && typeof (entry as { content?: unknown })?.content === "string"
-      && Boolean((entry as { content: string }).content.trim()),
-  );
-  const kept: unknown[] = [];
-  for (const row of rows) {
-    const turnId = typeof row.id === "string" && row.id ? row.id : `nsh-migrated-${Date.now().toString(36)}-${nextId++}`;
-    try {
-      const listed = await invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
-        sessionId: row.sessionId,
-        action: "list",
-      });
-      await invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
-        sessionId: row.sessionId,
-        queueEpoch: listed.queueEpoch,
-        action: "submit",
-        message: {
-          turnId,
-          content: row.content,
-          displayContent: row.content,
-          agentType: agentTypeOf(row.sessionId),
-          attachments: [],
-          metadata: {},
-        },
-      });
-    } catch {
-      kept.push(row);
-    }
-  }
-  const write = kept.length
-    ? Storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(kept))
-    : Storage.removeItem(LEGACY_STORAGE_KEY);
-  await Promise.resolve(write).catch(() => undefined);
 }
 
 export async function removeQueued(id: string): Promise<void> {

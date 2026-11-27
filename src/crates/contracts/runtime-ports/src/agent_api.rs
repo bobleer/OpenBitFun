@@ -258,6 +258,14 @@ pub struct AgentSessionModelUpdateRequest {
     pub model_id: String,
 }
 
+fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// Atomically selects a model and an optional reasoning preset for the next
 /// turn. The legacy model-only request remains available for older clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +277,14 @@ pub struct AgentSessionModelSelection {
     /// Explicit manual/smart strategy; omitted callers preserve the current strategy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_mode: Option<String>,
+    /// Explicit session context length override in tokens:
+    /// `None` preserves existing override, `Some(None)` clears it, `Some(Some(n))` sets it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_window_override: Option<Option<usize>>,
 }
 
 /// Explicit model or pool choice applied when creating a child session.
@@ -1762,6 +1778,7 @@ pub trait AgentSessionModelPort: Send + Sync {
                 model_id: request.model_id,
                 reasoning_preset: None,
                 routing_mode: None,
+                context_window_override: None,
             },
         })
         .await

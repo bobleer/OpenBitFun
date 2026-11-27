@@ -38,6 +38,7 @@ import {
 } from "../homeStore";
 import { tr } from "../i18n";
 import { superAgentUi } from "../productGates";
+import { ensureRemoteDisclaimer, remoteDisclaimerAgreed } from "../remoteDisclaimerStore";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { deviceException } from "./fleet";
 import { ModalDialog, pushToast } from "./overlays";
@@ -148,8 +149,7 @@ function startAutoPoll(visible: () => boolean): void {
   });
 }
 
-/** Opens the account dialog from any scene or control; safe signed in or out. */
-export function openAccountAuthModal(options?: OpenAccountAuthModalOptions): void {
+function showAccountAuthModal(options?: OpenAccountAuthModalOptions): void {
   pendingOnSuccess = options?.onSuccess ?? null;
   if (!githubAuthFlow() && !emailChallenge()) {
     authError.set("");
@@ -161,6 +161,23 @@ export function openAccountAuthModal(options?: OpenAccountAuthModalOptions): voi
   if (accountStatus() === null && !controllerPort()) {
     void loadAccountState();
   }
+}
+
+/**
+ * Opens the account dialog from any scene or control; safe signed in or out.
+ * When signed out and the Remote Connect disclaimer has not been accepted yet,
+ * shows the disclaimer first and opens the sign-in dialog only after agreement.
+ */
+export function openAccountAuthModal(options?: OpenAccountAuthModalOptions): void {
+  if (accountDisplay().signedIn || emailChallenge() || githubAuthFlow() || remoteDisclaimerAgreed()) {
+    showAccountAuthModal(options);
+    return;
+  }
+  void ensureRemoteDisclaimer(() => {
+    showAccountAuthModal(options);
+  }).then(allowed => {
+    if (allowed) showAccountAuthModal(options);
+  });
 }
 
 /**

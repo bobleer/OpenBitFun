@@ -1,29 +1,17 @@
 //! Typed peer host capability advertisement.
 //!
-//! `peer_mode_ping` answers with a `capabilities` object whose keys a
-//! controller consults before sending a command that an older host may not
-//! implement. Both peer hosts used to hand-write that object, which is how the
-//! Desktop and CLI lists drifted apart and how keys ended up advertised but
-//! never consulted. This module is the single list: a host publishes exactly
-//! `advertised_by(host)`, and the generated frontend artifact carries the same
-//! ids so a controller cannot probe for a key that no host will ever send.
-//!
-//! Wire rule: a host publishes only the keys it supports, each with value
-//! `true`. A missing key means "older host, unknown"; controllers resolve that
-//! through `host_type`. Publishing `false` would change that meaning, so
-//! `capability_map` never emits it.
+//! Each peer host advertises its supported capability ids (`advertised_by(host)`)
+//! in OBP `hello`, so controllers and the fleet layer know which host-profile
+//! features (such as Desktop-only capabilities vs CLI hosts) are available.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use super::PeerHostKind;
 
-/// A capability a peer host may advertise in `peer_mode_ping`.
+/// A capability a peer host may advertise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerHostCapability {
-    /// Recognize older peers that can select a library for the retired GenUI tool.
-    GenUiLibrariesV1,
     ModelRoutingV1,
     ModelPoolSelectionV1,
     SubagentModelOverridePolicyV1,
@@ -148,9 +136,6 @@ pub enum PeerHostCapability {
     GitTrackedChangeCountV1,
     /// `read_file_content` accepts `textEncoding` and returns a checked byte identity.
     FileTextEncodingV1,
-    /// `peer_mode_ping` reports `caller_attached`: whether the calling
-    /// controller is still a DeviceEvent delivery target on this host.
-    PeerAttachmentStatusV1,
     /// The marketplace detail command accepts the installed origin's listing ID.
     MiniappMarketListingIdV1,
     /// Marketplace browse can request the public summaries of explicit listing IDs.
@@ -160,7 +145,6 @@ pub enum PeerHostCapability {
 impl PeerHostCapability {
     /// Every capability id, in wire order.
     pub const ALL: &'static [PeerHostCapability] = &[
-        Self::GenUiLibrariesV1,
         Self::ModelRoutingV1,
         Self::ModelPoolSelectionV1,
         Self::SubagentModelOverridePolicyV1,
@@ -222,15 +206,13 @@ impl PeerHostCapability {
         Self::TerminalCursorReplayV1,
         Self::GitTrackedChangeCountV1,
         Self::FileTextEncodingV1,
-        Self::PeerAttachmentStatusV1,
         Self::MiniappMarketListingIdV1,
         Self::MiniappMarketSummariesV1,
     ];
 
-    /// The key used in the `peer_mode_ping` `capabilities` object.
+    /// The wire key of this capability.
     pub const fn key(self) -> &'static str {
         match self {
-            Self::GenUiLibrariesV1 => "gen_ui_libraries_v1",
             Self::ModelRoutingV1 => "model_routing_v1",
             Self::ModelPoolSelectionV1 => "model_pool_selection_v1",
             Self::SubagentModelOverridePolicyV1 => "subagent_model_override_policy_v1",
@@ -292,7 +274,6 @@ impl PeerHostCapability {
             Self::TerminalCursorReplayV1 => "terminal_cursor_replay_v1",
             Self::GitTrackedChangeCountV1 => "git_tracked_change_count_v1",
             Self::FileTextEncodingV1 => "file_text_encoding_v1",
-            Self::PeerAttachmentStatusV1 => "peer_attachment_status_v1",
             Self::MiniappMarketListingIdV1 => "miniapp_market_listing_id_v1",
             Self::MiniappMarketSummariesV1 => "miniapp_market_summaries_v1",
         }
@@ -367,7 +348,6 @@ const DESKTOP_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::SshNoneAuthV1,
     PeerHostCapability::GitTrackedChangeCountV1,
     PeerHostCapability::FileTextEncodingV1,
-    PeerHostCapability::PeerAttachmentStatusV1,
     PeerHostCapability::MiniappMarketListingIdV1,
     PeerHostCapability::MiniappMarketSummariesV1,
 ];
@@ -410,7 +390,6 @@ const CLI_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::TerminalCursorReplayV1,
     PeerHostCapability::GitTrackedChangeCountV1,
     PeerHostCapability::FileTextEncodingV1,
-    PeerHostCapability::PeerAttachmentStatusV1,
 ];
 
 /// The capabilities a peer host of the given kind publishes.
@@ -429,17 +408,10 @@ pub fn advertises(host: PeerHostKind, capability: PeerHostCapability) -> bool {
     advertised_by(host).contains(&capability)
 }
 
-/// The `capabilities` object for `peer_mode_ping`: only advertised keys, all `true`.
-pub fn capability_map(host: PeerHostKind) -> Map<String, Value> {
-    advertised_by(host)
-        .iter()
-        .map(|capability| (capability.key().to_string(), Value::Bool(true)))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn capability_keys_are_unique_snake_case_and_round_trip() {
@@ -470,10 +442,7 @@ mod tests {
                 capability.key()
             );
         }
-        let desktop_exclusions = [
-            PeerHostCapability::TerminalCursorReplayV1,
-            PeerHostCapability::GenUiLibrariesV1,
-        ];
+        let desktop_exclusions = [PeerHostCapability::TerminalCursorReplayV1];
         for capability in PeerHostCapability::ALL {
             assert_eq!(
                 advertises(PeerHostKind::Desktop, *capability),
@@ -494,64 +463,21 @@ mod tests {
             PeerHostKind::Cli,
             PeerHostCapability::TerminalCursorReplayV1
         ));
+        assert!(!advertises(
+            PeerHostKind::Cli,
+            PeerHostCapability::MiniappAgentImagesV1
+        ));
         assert!(advertises(
             PeerHostKind::Desktop,
-            PeerHostCapability::BtwInitialModelSelectionV1
+            PeerHostCapability::MiniappAgentImagesV1
+        ));
+        assert!(!advertises(
+            PeerHostKind::Cli,
+            PeerHostCapability::ReviewPlatformV1
         ));
         assert!(advertises(
-            PeerHostKind::Cli,
-            PeerHostCapability::BtwInitialModelSelectionV1
+            PeerHostKind::Desktop,
+            PeerHostCapability::ReviewPlatformV1
         ));
-        assert!(advertises(
-            PeerHostKind::Cli,
-            PeerHostCapability::BtwModelPoolSelectionV1
-        ));
-        for host in [PeerHostKind::Desktop, PeerHostKind::Cli] {
-            assert!(advertises(host, PeerHostCapability::BtwModelDefaultsV1));
-        }
-    }
-
-    #[test]
-    fn capability_map_emits_only_true_for_advertised_keys() {
-        for host in [PeerHostKind::Desktop, PeerHostKind::Cli] {
-            let map = capability_map(host);
-            assert_eq!(map.len(), advertised_by(host).len());
-            for (key, value) in &map {
-                assert_eq!(value, &Value::Bool(true), "{key} must be published as true");
-                assert!(PeerHostCapability::from_key(key).is_some());
-            }
-        }
-        let cli = capability_map(PeerHostKind::Cli);
-        assert!(!cli.contains_key("miniapp_agent_context_files_v1"));
-        assert!(!cli.contains_key("miniapp_agent_images_v1"));
-        assert_eq!(
-            capability_map(PeerHostKind::Desktop)["miniapp_agent_images_v1"],
-            true
-        );
-        assert!(!cli.contains_key("product_control_native_v1"));
-        assert!(!cli.contains_key("ssh_port_scoped_identity_v1"));
-        assert_eq!(
-            capability_map(PeerHostKind::Desktop).get("ssh_port_scoped_identity_v1"),
-            Some(&Value::Bool(true))
-        );
-        assert!(!cli.contains_key("product_control_presentation_v1"));
-        // CLI hosts gained `copy_session` and `fork_session` together.
-        assert_eq!(cli["whole_session_copy_v1"], true);
-        assert_eq!(cli["session_fork_v1"], true);
-        assert_eq!(cli["recoverable_interruption_v1"], true);
-        assert!(!cli.contains_key("review_platform_v1"));
-        assert!(!cli.contains_key("host_terminal_workspace_v1"));
-        assert_eq!(
-            capability_map(PeerHostKind::Desktop).get("review_platform_v1"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            capability_map(PeerHostKind::Desktop).get("host_terminal_workspace_v1"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            capability_map(PeerHostKind::Desktop).get("whole_session_copy_v1"),
-            Some(&Value::Bool(true))
-        );
     }
 }

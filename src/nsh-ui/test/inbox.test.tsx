@@ -87,6 +87,60 @@ function prompts() {
   };
 }
 
+function defaultAttentionFromPrompts(promptData: {
+  revision: number;
+  prompts: Array<{
+    deviceId: string;
+    workspaceId: string;
+    sessionId: string;
+    kind: string;
+    promptId: string;
+    title: string;
+    jobId?: string;
+    [key: string]: unknown;
+  }>;
+} = prompts()) {
+  const nav = navigator();
+  const deviceById = new Map(nav.devices.map(device => [device.deviceId, device]));
+  const sessionTitle = (deviceId: string, sessionId: string) => {
+    const workspaces = (deviceById.get(deviceId)?.workspaces ?? []) as Array<{
+      sessions: Array<{ sessionId: string; title: string }>;
+    }>;
+    for (const ws of workspaces) {
+      const found = ws.sessions.find(s => s.sessionId === sessionId);
+      if (found) return found.title;
+    }
+    return "";
+  };
+  return {
+    revision: promptData.revision,
+    badge: promptData.prompts.length,
+    groups: [
+      {
+        id: "needs_you",
+        items: promptData.prompts.map(prompt => {
+          const device = deviceById.get(prompt.deviceId);
+          return {
+            itemId: `${prompt.deviceId}/${prompt.promptId}`,
+            kind: prompt.kind,
+            source: {
+              deviceId: prompt.deviceId,
+              workspaceId: prompt.workspaceId,
+              sessionId: prompt.sessionId,
+              ...(prompt.jobId ? { jobId: prompt.jobId } : {}),
+            },
+            title: sessionTitle(prompt.deviceId, prompt.sessionId) || prompt.title,
+            deviceName: device?.name,
+            hostKind: device?.hostKind,
+            prompt,
+            answerable: prompt.answerable,
+          };
+        }),
+      },
+    ],
+  };
+}
+
 /** Answers the commands the simulated backend has no fixture for (the answers and the Inbox view). */
 function withAnswers(backend: Backend, attention?: () => unknown): Backend {
   const original = backend.handlers["openbitfun.invoke"];
@@ -95,7 +149,7 @@ function withAnswers(backend: Backend, attention?: () => unknown): Backend {
     if (action === "dispatch_target_answer") return { ok: true, value: { accepted: true } };
     if (action === "submit_user_answers") return { ok: true, value: null };
     if (action === "fleet_attention") {
-      return attention ? { ok: true, value: attention() } : { ok: false, error: "unknown command: fleet_attention" };
+      return { ok: true, value: attention ? attention() : defaultAttentionFromPrompts() };
     }
     if (action === "fleet_attention_mark_read") return { ok: true, value: null };
     return original(data);
@@ -155,39 +209,40 @@ test("prompts from three devices are answered in place, each on the device that 
 });
 
 test("a Detached Dispatch job's question is answered through its job's question mailbox", async () => {
-  const backend = withAnswers(createBackend());
+  const customPrompts = {
+    revision: 8,
+    prompts: [
+      {
+        deviceId: "dev-c",
+        workspaceId: "ws-1",
+        sessionId: "s-c1",
+        kind: "question" as const,
+        promptId: "tool-dq",
+        revision: 1,
+        title: "Which database?",
+        toolName: "AskUserQuestion",
+        payload: {
+          questions: [
+            {
+              question: "Which database?",
+              header: "Database",
+              multiSelect: false,
+              options: [{ label: "sqlite" }, { label: "postgres" }],
+            },
+          ],
+        },
+        payloadTruncated: false,
+        answerable: true,
+        answerRoute: "dispatch" as const,
+        jobId: "job-q",
+      },
+    ],
+  };
+  const backend = withAnswers(createBackend(), () => defaultAttentionFromPrompts(customPrompts));
   const host = fleetObpHost(backend, {
     fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
     navigator: navigator(),
-    prompts: {
-      revision: 8,
-      prompts: [
-        {
-          deviceId: "dev-c",
-          workspaceId: "ws-1",
-          sessionId: "s-c1",
-          kind: "question",
-          promptId: "tool-dq",
-          revision: 1,
-          title: "Which database?",
-          toolName: "AskUserQuestion",
-          payload: {
-            questions: [
-              {
-                question: "Which database?",
-                header: "Database",
-                multiSelect: false,
-                options: [{ label: "sqlite" }, { label: "postgres" }],
-              },
-            ],
-          },
-          payloadTruncated: false,
-          answerable: true,
-          answerRoute: "dispatch",
-          jobId: "job-q",
-        },
-      ],
-    },
+    prompts: customPrompts,
   });
   const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitFor("id:inbox-item-dev-c/tool-dq >> text:Which database?");

@@ -2708,6 +2708,17 @@ impl PersistenceManager {
             "reasoning_preset".into(),
             serde_json::to_value(&session.config.reasoning_preset)?,
         );
+        match session.config.context_window_override {
+            Some(tokens) => {
+                config.insert(
+                    "context_window_override".into(),
+                    serde_json::to_value(tokens)?,
+                );
+            }
+            None => {
+                config.remove("context_window_override");
+            }
+        }
         config.insert(
             "model_pool_selection_revision".into(),
             serde_json::to_value(session.config.model_pool_selection_revision)?,

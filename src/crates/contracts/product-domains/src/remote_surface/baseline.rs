@@ -236,5 +236,4 @@ pub(super) const SOFT_EMPTY_BASELINE: &[&str] = &[
     "list_background_command_activities",
     "list_miniapps",
     "miniapp_worker_list_running",
-    "notify_cron_host_ready",
 ];

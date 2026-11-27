@@ -705,17 +705,6 @@ impl LinkRpc {
         args: Value,
     ) -> Result<Value, RpcError> {
         let connection = self.connection(account_id, device_id).await?;
-        let dispatch = command.starts_with("dispatch_target_");
-        let args = if dispatch {
-            openbitfun_core_types::agent_identity_wire::translate_agent_identity_command(
-                command,
-                args,
-                openbitfun_core_types::agent_identity_wire::AgentIdentityDialect::Legacy,
-            )
-            .map_err(RpcError::Refused)?
-        } else {
-            args
-        };
         let answer = tokio::time::timeout(CALL_TIMEOUT, connection.call(command, args)).await;
         let answer = match answer {
             Ok(answer) => answer,
@@ -725,15 +714,6 @@ impl LinkRpc {
             }
         };
         match answer {
-            Ok(value) if dispatch => {
-                openbitfun_core_types::agent_identity_wire::translate_agent_identity_response(
-                    command,
-                    value,
-                    &Value::Null,
-                    openbitfun_core_types::agent_identity_wire::AgentIdentityDialect::Canonical,
-                )
-                .map_err(RpcError::Refused)
-            }
             Ok(value) => Ok(value),
             Err(error) if error.is_transport() => {
                 self.drop_connection(account_id, device_id, &connection);

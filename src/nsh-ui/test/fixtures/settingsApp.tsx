@@ -6,7 +6,9 @@ import "./installObpSocket";
 import "../../src/agentEvents";
 import { mount, View } from "nsh";
 import { openHostEventChannel } from "../../src/bridge";
+import { DeviceRenameDialog } from "../../src/deviceActions";
 import { SettingsScene } from "../../src/scenes/SettingsScene";
+import { RemoteDisclaimerModal } from "../../src/ui/RemoteDisclaimerModal";
 import { loadWorkspaces } from "../../src/state";
 import { compactLayout, layout, palette } from "../../src/theme";
 
@@ -21,6 +23,8 @@ function SettingsHarness() {
       style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}
     >
       <SettingsScene />
+      <DeviceRenameDialog />
+      <RemoteDisclaimerModal />
     </View>
   );
 }

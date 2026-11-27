@@ -196,12 +196,80 @@ export function launchStateOf(page: PageLaunchState | null | undefined): Control
   return { deviceId, showDevices: page?.showDevices === true, failure };
 }
 
+const SEMVER_RE = /^[vV]?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+.*)?$/;
+
+/**
+ * Parses `MAJOR.MINOR.PATCH[-prerelease][+build]` the same way the Rust fleet
+ * host (`parse_version` in `obp::fleet::host`) orders UI bundle versions:
+ * releases sort after prereleases of the same triple.
+ */
+function parseManifestVersion(raw: string | null | undefined): [number, number, number, number] | null {
+  if (!raw) return null;
+  const match = SEMVER_RE.exec(raw.trim());
+  if (!match) return null;
+  const major = Number.parseInt(match[1], 10);
+  const minor = Number.parseInt(match[2], 10);
+  const patch = Number.parseInt(match[3], 10);
+  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) {
+    return null;
+  }
+  return [major, minor, patch, match[4] ? 0 : 1];
+}
+
+/**
+ * Compares two manifest semver strings (`> 0` when `candidate` is strictly newer
+ * than `running`, `0` when equal, `< 0` when older, `null` if either is unparseable).
+ */
+export function compareManifestVersions(candidate: string | null | undefined, running: string | null | undefined): number | null {
+  const left = parseManifestVersion(candidate);
+  const right = parseManifestVersion(running);
+  if (!left || !right) return null;
+  for (let i = 0; i < 4; i += 1) {
+    if (left[i] !== right[i]) return left[i] - right[i];
+  }
+  return 0;
+}
+
+export interface UiUpdateDecisionInput {
+  runningBundleId: string;
+  runningVersion: string | null;
+  runningOwnerDeviceId: string | null;
+  candidateBundleId: string;
+  candidateVersion: string | null;
+  candidateOwnerDeviceId: string;
+}
+
+/**
+ * Whether a background check should offer a "Reload" notice for `candidate`.
+ *
+ * - Never offers the same bundle or an older version (downgrade after a newer
+ *   peer disconnects or times out).
+ * - Always offers a strictly newer release version (`2.0.1 > 2.0.0`).
+ * - At the same version (e.g. multiple `2.0.0` devices shipping different build
+ *   hashes across macOS/Windows/Linux), only offers an update when the SAME
+ *   owning device replaced its own bundle (dev rebuild / restart), never when
+ *   fleet failover or a peer timeout shifts tie-breaking to another device.
+ */
+export function shouldOfferUiUpdate(input: UiUpdateDecisionInput): boolean {
+  if (!input.runningBundleId || !input.candidateBundleId) return false;
+  if (input.candidateBundleId === input.runningBundleId) return false;
+  const versionCmp = compareManifestVersions(input.candidateVersion, input.runningVersion);
+  if (versionCmp !== null) {
+    if (versionCmp < 0) return false;
+    if (versionCmp > 0) return true;
+  }
+  return Boolean(input.runningOwnerDeviceId) && input.candidateOwnerDeviceId === input.runningOwnerDeviceId;
+}
+
 export function createWebController(options: WebControllerOptions): ControllerPort {
   const api = resolveControllerUrl(options.api, false);
   const gateway = resolveControllerUrl(options.gateway, true);
   const connectTimeoutMs = options.connectTimeoutMs ?? 45_000;
   /** Where the gateway says the account's cloud node is reached (`GET /devices` `cloudNode`). */
   let cloudNode: { deviceId: string; path: string } | null = null;
+  /** The running page's manifest version and bundle owner, captured when `placeUi` stays here. */
+  let runningVersion: string | null = null;
+  let runningOwnerDeviceId: string | null = null;
 
   function rememberCloudNode(value: unknown): void {
     const node = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -350,9 +418,13 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       }
     },
     async placeUi(connection): Promise<ControllerUiPlacement> {
-      const resolved = await resolveUiBundle(connection);
+      const resolved = await resolveUiBundle(connection, { allowTransientFallback: true });
       const prepared = await prepareBundleOnLoader(resolved);
-      if (options.uiBundleId && prepared.bundleId === options.uiBundleId) return { kind: "here" };
+      if (options.uiBundleId && prepared.bundleId === options.uiBundleId) {
+        runningVersion = asString((resolved.manifest as Record<string, unknown>)?.version);
+        runningOwnerDeviceId = resolved.ownerDeviceId;
+        return { kind: "here" };
+      }
       // The pool's cookie path (`/cas`) is re-issued with the session.
       const session = await request("/session");
       if (session.signedIn !== true) throw new ControllerError("signed_out", "The session ended");
@@ -370,20 +442,35 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     },
     async checkUiUpdate(connection): Promise<ControllerUiUpdate | null> {
       if (!options.uiBundleId) return null;
-      let resolved: ResolvedUiBundle;
-      try {
-        resolved = await resolveUiBundle(connection);
-      } catch {
-        return null;
-      }
-      let prepared: { bundleId: string };
-      try {
-        prepared = await prepareBundleOnLoader(resolved);
-      } catch {
-        return null;
-      }
-      if (prepared.bundleId === options.uiBundleId) return null;
+      // On a background check, a transient fleet error throws so the caller keeps
+      // its current banner state rather than falling back to a single host's older manifest.
+      const resolved = await resolveUiBundle(connection, { allowTransientFallback: false });
       const version = asString((resolved.manifest as Record<string, unknown>)?.version);
+      const versionCmp = compareManifestVersions(version, runningVersion);
+      if (versionCmp !== null) {
+        if (versionCmp < 0) return null;
+        if (versionCmp === 0 && (!runningOwnerDeviceId || resolved.ownerDeviceId !== runningOwnerDeviceId)) {
+          return null;
+        }
+      } else if (!runningOwnerDeviceId || resolved.ownerDeviceId !== runningOwnerDeviceId) {
+        return null;
+      }
+      if (resolved.statedBundleId && resolved.statedBundleId === options.uiBundleId) {
+        return null;
+      }
+      const prepared = await prepareBundleOnLoader(resolved);
+      if (
+        !shouldOfferUiUpdate({
+          runningBundleId: options.uiBundleId,
+          runningVersion,
+          runningOwnerDeviceId,
+          candidateBundleId: prepared.bundleId,
+          candidateVersion: version,
+          candidateOwnerDeviceId: resolved.ownerDeviceId,
+        })
+      ) {
+        return null;
+      }
       const deviceId = connection.deviceId;
       return {
         bundleId: prepared.bundleId,
@@ -431,7 +518,10 @@ export function createWebController(options: WebControllerOptions): ControllerPo
    * desktop entry) with all its holders; falls back to `ui_bundle_manifest`
    * on non-fleet or older hosts.
    */
-  async function resolveUiBundle(connection: ControllerConnection): Promise<ResolvedUiBundle> {
+  async function resolveUiBundle(
+    connection: ControllerConnection,
+    resolveOptions: { allowTransientFallback: boolean },
+  ): Promise<ResolvedUiBundle> {
     if (connection.fleet?.()) {
       try {
         const fleetAnswer = (await connection.invoke("fleet_ui_bundle", { request: {} })) as {
@@ -454,8 +544,10 @@ export function createWebController(options: WebControllerOptions): ControllerPo
         // Older entries without `fleet_ui_bundle`, or entries with no fleet
         // peers yet: fall back to the entry's own `ui_bundle_manifest`.
         const message = error instanceof Error ? error.message : String(error);
-        if (!/unknown|unsupported|forbidden_for_scope|not found|no handler|ui_bundle_unavailable/i.test(message)) {
-          // Even transient fleet errors still have a valid direct fallback on this entry.
+        const unsupported = /unknown|unsupported|forbidden_for_scope|not found|no handler|ui_bundle_unavailable/i.test(message);
+        if (!unsupported) {
+          if (!resolveOptions.allowTransientFallback) throw error;
+          // During initial launch, transient fleet errors still have a direct fallback on this entry.
           console.warn(`fleet_ui_bundle failed, falling back to ui_bundle_manifest: ${message}`);
         }
       }

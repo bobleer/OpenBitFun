@@ -15,6 +15,7 @@ import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatCount, formatTimestamp, formatTokens } from "./format";
 import { currentLocale, localizeHostError, tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
+import { ensureRemoteDisclaimer } from "./remoteDisclaimerStore";
 import {
   readUsageActivity,
   type UsageActivityCell,
@@ -349,6 +350,7 @@ function emailSignInError(error: unknown): string {
 /** Sends a sign-in code to `email` (also "send a new code"); the code step follows. */
 export async function requestEmailCode(email: string): Promise<void> {
   if (authLoading() || !email.trim()) return;
+  if (!(await ensureRemoteDisclaimer(() => requestEmailCode(email)))) return;
   authLoading.set(true);
   authError.set("");
   authNotice.set("");
@@ -411,6 +413,7 @@ export function cancelEmailSignIn(): void {
 
 export async function startGitHubSignIn(): Promise<void> {
   if (authLoading()) return;
+  if (!(await ensureRemoteDisclaimer(startGitHubSignIn))) return;
   emailChallenge.set(null);
   authLoading.set(true);
   authError.set("");

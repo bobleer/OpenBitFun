@@ -803,16 +803,9 @@ export async function generateAiCommitMessage(): Promise<void> {
   gitError.set("");
   gitNotice.set("");
   try {
-    let reply: Record<string, unknown>;
-    try {
-      reply = await invokeCommand<Record<string, unknown>>("quick_commit_message", {
-        repoPath: ws.rootPath,
-      });
-    } catch {
-      reply = await invokeCommand<Record<string, unknown>>("generate_commit_message", {
-        repoPath: ws.rootPath,
-      });
-    }
+    const reply = await invokeCommand<Record<string, unknown>>("quick_commit_message", {
+      repoPath: ws.rootPath,
+    });
     const full = readStr(reply ?? {}, "fullMessage", "full_message");
     const title = readStr(reply ?? {}, "title");
     const body = readStr(reply ?? {}, "body");

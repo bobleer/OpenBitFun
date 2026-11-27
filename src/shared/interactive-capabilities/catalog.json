@@ -519,11 +519,7 @@
     "deviceMeshTransport": [
       "mesh_list_devices",
       "mesh_status",
-      "ui_bundle_manifest",
-      "peer_link_call",
-      "peer_link_connect",
-      "peer_link_disconnect",
-      "peer_link_events"
+      "ui_bundle_manifest"
     ],
     "fleetLayer": [
       "fleet_prompts",
@@ -534,9 +530,6 @@
       "fleet_recent_sessions",
       "fleet_device_detail",
       "fleet_models"
-    ],
-    "legacyUpdateCompatibility": [
-      "install_update"
     ],
     "commandDiscovery": [
       "check_command_exists",
@@ -4041,7 +4034,6 @@
             "reasonEn": "\"Request required operating-system permissions for desktop control\" must be confirmed personally in the operating system’s native consent prompt; the Agent opens the setup page and never grants permissions itself."
           },
           "evidence": [
-            "command:computer_use_request_permissions",
             "command:computer_use_request_permission"
           ]
         },
@@ -9643,7 +9635,7 @@
             ]
           },
           "evidence": [
-            "source:src/nsh-ui/src/settingsStore.ts#\"memories.generate_for_btw_sessions\""
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"generate_for_btw_sessions\""
           ]
         },
         {
@@ -10830,7 +10822,7 @@
           },
           "evidence": [
             "command:computer_use_get_status",
-            "command:computer_use_request_permissions"
+            "command:computer_use_request_permission"
           ]
         },
         {
@@ -11247,7 +11239,7 @@
           },
           "evidence": [
             "command:computer_use_get_status",
-            "command:computer_use_request_permissions"
+            "command:computer_use_request_permission"
           ]
         },
         {
@@ -13448,9 +13440,6 @@
       "capabilityId": "feature.remote-connect"
     },
     "mesh": {
-      "capabilityId": "feature.remote-connect"
-    },
-    "peer_link": {
       "capabilityId": "feature.remote-connect"
     },
     "fleet": {

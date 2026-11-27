@@ -20,6 +20,9 @@ pub struct SessionModelTarget {
     /// must keep the legacy write path when this field is absent on the wire.
     #[serde(default)]
     pub reasoning_preset: Option<String>,
+    /// Explicit session context length override in tokens (`None` uses default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<ModelPoolBinding>,
 }
@@ -96,8 +99,10 @@ mod tests {
             target
         );
         target.reasoning_preset = Some("high".into());
+        target.context_window_override = Some(300_000);
         let current = serde_json::to_value(&target).unwrap();
         assert_eq!(current["reasoningPreset"], "high");
+        assert_eq!(current["contextWindowOverride"], 300_000);
         assert_eq!(
             serde_json::from_value::<SessionModelTarget>(current).unwrap(),
             target

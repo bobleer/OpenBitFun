@@ -512,6 +512,61 @@ test("Account › Devices and chat apps lists the account's devices, this device
   await app.waitFor("account-phone-sheet");
 });
 
+test("Account › Devices places a rename button right next to each device name and renames via the shared dialog", async () => {
+  const nav = fleetNavigator();
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"]!;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = (data ?? {}) as { action?: string; request?: { device_id?: string; device_alias?: string | null } };
+    if (req.action === "account_update_device_alias" && req.request?.device_id) {
+      nav.revision += 1;
+      for (const device of nav.devices) {
+        if ((device as { deviceId?: string }).deviceId === req.request.device_id) {
+          (device as { name: string }).name = req.request.device_alias || "linux-box";
+        }
+      }
+    }
+    return baseInvoke(data);
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: nav,
+  });
+  const app = await open(HARNESS_SUPER_AGENT, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("nav-settings-page-devices");
+  await app.waitFor("account-device-rename-dev-b");
+
+  // Cloud superagent row has no rename button; local and peer runtime rows do.
+  expect(app.shows("account-device-rename-cloud-1")).toBe(false);
+  expect(app.shows("account-device-rename-dev-a")).toBe(true);
+
+  const nameBox = app.layout("text:linux-box");
+  const renameBox = app.layout("account-device-rename-dev-b");
+  const rowBox = app.layout("account-device-dev-b");
+  expect(nameBox).toBeTruthy();
+  expect(renameBox).toBeTruthy();
+  expect(rowBox).toBeTruthy();
+  // Placed directly to the right of the device name on the same line, not pushed to the far right edge.
+  expect(renameBox!.x).toBeGreaterThanOrEqual(nameBox!.x + nameBox!.width);
+  expect(renameBox!.x - (nameBox!.x + nameBox!.width)).toBeLessThanOrEqual(16);
+  const nameMidY = nameBox!.y + nameBox!.height / 2;
+  const renameMidY = renameBox!.y + renameBox!.height / 2;
+  expect(Math.abs(nameMidY - renameMidY)).toBeLessThanOrEqual(4);
+  expect(renameBox!.x + renameBox!.width).toBeLessThan(rowBox!.x + rowBox!.width - 100);
+
+  await app.press("account-device-rename-dev-b");
+  await app.waitFor("device-rename-field");
+  await app.clear("device-rename-field");
+  await app.type("device-rename-field", "gpu-box");
+  await app.press("device-rename-save");
+  await app.waitUntil(() => backend.calls.some(call => call.action === "account_update_device_alias"));
+  expect(backend.calls.find(call => call.action === "account_update_device_alias")?.request).toMatchObject({
+    device_id: "dev-b",
+    device_alias: "gpu-box",
+  });
+  await app.waitFor("text:gpu-box");
+});
+
 test("the phone lists the scopes first, hides desktop-only Pet, and pushes one page with a pages switcher", async () => {
   const { app } = await openSettings({}, PHONE);
   await app.waitFor("settings-compact-page-general");

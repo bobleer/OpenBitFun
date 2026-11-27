@@ -4,7 +4,6 @@
 //! product assembly dependencies here.
 
 pub mod agent_identity;
-pub mod agent_identity_wire;
 pub mod ai;
 pub mod background_delivery;
 pub mod errors;

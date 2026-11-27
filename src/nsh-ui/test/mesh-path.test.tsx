@@ -4,7 +4,7 @@
 import { expect, test } from "nsh/test";
 import { meshPathLabel, type MeshPathFacts } from "../src/meshPath";
 
-test("path label: one short line per mesh route, and an older backend's path", () => {
+test("path label: one short line per mesh route", () => {
   const names: Record<string, string> = { "device-mac": "Studio" };
   const label = (entry: Partial<MeshPathFacts>) =>
     meshPathLabel({ reachable: true, ...entry }, id => names[id] ?? null);
@@ -14,18 +14,12 @@ test("path label: one short line per mesh route, and an older backend's path", (
   expect(label({ route: "relayed_peer", relayVia: "device-mac" })).toBe("Relayed via Studio");
   expect(label({ route: "relayed_peer", relayVia: "device-unknown" })).toBe("Relayed via another device");
   expect(label({ route: "relayed_peer" })).toBe("Relayed via another device");
-  expect(label({ route: "relayed_server", path: "relayed" })).toBe("Relayed via OpenBitFun server");
-  // The route wins over the coarse path.
-  expect(label({ route: "direct_lan", path: "p2p" })).toBe("Direct · same network");
-  // An older backend sends only `path`.
-  expect(label({ path: "p2p" })).toBe("Direct");
-  expect(label({ path: "relayed" })).toBe("Relayed");
-  // A route this build does not know yet falls back to the path.
-  expect(label({ route: "satellite", path: "relayed" })).toBe("Relayed");
+  expect(label({ route: "relayed_server" })).toBe("Relayed via OpenBitFun server");
   // Latency is a short suffix on the same line.
   expect(label({ route: "direct_lan", latencyMs: 0.3 })).toBe("Direct · same network · 1 ms");
-  expect(label({ path: "p2p", latencyMs: 12.4 })).toBe("Direct · 12 ms");
-  // Nothing to say: no route and no path, or a device the mesh cannot reach.
+  expect(label({ route: "direct_ipv4", latencyMs: 12.4 })).toBe("Direct · 12 ms");
+  // Nothing to say: no route, unknown route, or a device the mesh cannot reach.
   expect(label({})).toBe("");
+  expect(label({ route: "satellite" })).toBe("");
   expect(meshPathLabel({ reachable: false, route: "direct_lan" })).toBe("");
 });

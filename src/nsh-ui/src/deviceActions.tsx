@@ -34,6 +34,12 @@ const updateTarget = signal<{ deviceId: string; name: string; reason?: string } 
 const updateDetail = signal<DeviceUpdate | null>(null);
 const detailUnsupportedEntries = new Set<string>();
 
+/** Opens the shared device rename dialog for `deviceId` (mounted by `DeviceActionDialogs`). */
+export function openRenameDevice(deviceId: string, name: string): void {
+  renameDraft.set(name);
+  renameTarget.set({ deviceId, name });
+}
+
 async function onDevice(node: DeviceTreeNode): Promise<void> {
   if (fleetActive() && node.deviceId) await selectDeviceContext(node.deviceId);
 }
@@ -160,10 +166,7 @@ export function deviceMenuItems(node: DeviceTreeNode): DropdownMenuItem[] {
         label: tr("device.menuRename"),
         icon: "edit",
         accessibilityLabel: `device-menu-rename-${id}`,
-        onSelect: () => {
-          renameDraft.set(node.name);
-          renameTarget.set({ deviceId: node.deviceId, name: node.name });
-        },
+        onSelect: () => openRenameDevice(node.deviceId, node.name),
       },
       {
         id: `device-copy-id-${id}`,
@@ -190,7 +193,7 @@ export function deviceMenuItems(node: DeviceTreeNode): DropdownMenuItem[] {
   return items;
 }
 
-function RenameDialog(): JSX.Element {
+export function DeviceRenameDialog(): JSX.Element {
   const canSave = () => {
     const target = renameTarget();
     const trimmed = renameDraft().trim();
@@ -294,7 +297,7 @@ function UpdateDialog(): JSX.Element {
 export function DeviceActionDialogs(): JSX.Element {
   return (
     <>
-      <RenameDialog />
+      <DeviceRenameDialog />
       <UpdateDialog />
       <If when={!controllerPort()}>
         <DeviceJobsSheet />

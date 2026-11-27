@@ -146,6 +146,9 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
 
   await app.press("label:account-row");
   await app.press("label:sidebar-account-sign-in");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
+  await app.waitFor("label:account-auth-modal");
   // Email is the in-app sign-in; GitHub is the secondary one, in the browser.
   await app.press("label:account-auth-github");
 
@@ -378,7 +381,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("assistant-card-asst-1");
   expect(app.texts()).toContain("Calm & precise");
   await app.press("assistant-card-asst-1");
-  await app.waitFor("/tmp/assistants/asst-1/IDENTITY.md");
+  await app.waitFor("persona-tab-IDENTITY.md");
 
   // Primary assistant's Delete item is disabled inside its DropdownMenu.
   await app.press("assistant-actions-asst-1");
@@ -415,8 +418,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
 
   // Switch to SOUL.md, edit and save.
   await app.press("persona-tab-SOUL.md");
-  await app.waitFor("/tmp/assistants/asst-1/SOUL.md");
-  expect(app.value("persona-editor-input")).toBe("# Soul\n\nConcise and helpful.");
+  await app.waitUntil(() => app.value("persona-editor-input") === "# Soul\n\nConcise and helpful.");
   await app.clear("persona-editor-input");
   await app.type("persona-editor-input", "# Soul v2\n\nDirect and grounded.");
   await app.press("persona-save");
@@ -428,7 +430,9 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("USER.md does not exist yet — save to create it.");
   expect(app.value("persona-editor-input")).toBe("");
 
-  // Reset persona files via InlineConfirmBar.
+  // Reset persona files via the assistant overflow menu and InlineConfirmBar.
+  await app.press("assistant-actions-asst-1");
+  await app.waitFor("persona-reset-files");
   await app.press("persona-reset-files");
   await app.waitFor("Confirm reset files");
   await app.press("Confirm reset files");
@@ -714,10 +718,12 @@ test("an assistant workspace opens and closes on the host from its studio header
   // The saved emoji is the avatar, as on the desktop.
   expect(app.texts()).toContain("🦉");
   await app.press("assistant-card-asst-7");
+  await app.press("assistant-actions-asst-7");
   await app.waitFor("assistant-open-asst-7");
   await app.press("assistant-open-asst-7");
   await app.waitUntil(() => recorded.some(c => c.action === "set_active_workspace"));
   expect(recorded.find(c => c.action === "set_active_workspace")?.payload).toMatchObject({ workspaceId: "asst-7" });
+  await app.press("assistant-actions-asst-7");
   await app.waitFor("assistant-close-asst-7");
   await app.press("assistant-close-asst-7");
   await app.waitUntil(() => recorded.some(c => c.action === "close_workspace"));
@@ -763,7 +769,7 @@ test("assistants switch to the compact single-column layout at phone width", asy
   await app.waitFor("assistant-card-asst-2");
   expect(app.shows("persona-editor-input")).toBe(false);
   await app.press("assistant-card-asst-2");
-  await app.waitFor("/tmp/assistants/asst-2/IDENTITY.md");
+  await app.waitFor("persona-tab-IDENTITY.md");
   expect(app.shows("assistant-card-asst-1")).toBe(false);
   await app.press("assistants-back");
   await app.waitFor("assistant-card-asst-1");

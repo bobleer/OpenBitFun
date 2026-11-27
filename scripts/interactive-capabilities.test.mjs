@@ -498,8 +498,6 @@ test('the remote surface bindings are a projection of the compiled Product Opera
 
   assert.match(rendered, /export const REMOTE_SURFACE_REGISTRY_DIGEST = "fnv1a64:[0-9a-f]{16}" as const;/u);
   assert.ok(rendered.includes('"account_login",'));
-  assert.equal(registry.operations.find(({ id }) => id === 'peer_mode_ping')?.peer.kind, 'retired');
-  assert.equal(rendered.includes('"peer_mode_ping",'), false, 'retired relay commands stay outside the fleet projection');
   assert.equal(rendered.includes('"git_trust_repository",'), false, 'operator-only rows stay forwarded');
   assert.equal(rendered.includes('"dispatch_target_submit",'), false, 'HostInvoke-only rows never enter the FE local set');
 });

@@ -853,3 +853,293 @@ pub(crate) async fn manage_dialog_queue(
         .map_err(|e| e.into_message())?;
     serde_json::to_value(snapshot).map_err(|e| e.to_string())
 }
+
+fn peer_attachments_from_key(
+    request: &Value,
+    key: &str,
+) -> Result<Vec<AgentInputAttachment>, String> {
+    let images = match request.get(key) {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(value) => serde_json::from_value::<
+            Vec<openbitfun_core::agentic::image_analysis::ImageContextData>,
+        >(value.clone())
+        .map_err(|error| format!("Invalid {key}: {error}"))?,
+    };
+    images
+        .into_iter()
+        .map(|image| {
+            if image.data_url.as_deref().is_none_or(str::is_empty)
+                && image.image_path.as_deref().is_none_or(str::is_empty)
+            {
+                return Err("An image attachment requires data_url or image_path".to_string());
+            }
+            let mut metadata = serde_json::Map::new();
+            if let Some(path) = image.image_path {
+                metadata.insert("imagePath".into(), json!(path));
+            }
+            if let Some(data) = image.data_url {
+                metadata.insert("dataUrl".into(), json!(data));
+            }
+            metadata.insert("mimeType".into(), json!(image.mime_type));
+            if let Some(details) = image.metadata {
+                metadata.insert("metadata".into(), details);
+            }
+            Ok(AgentInputAttachment {
+                kind: "remote_image".into(),
+                id: image.id,
+                metadata,
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn submit_user_message(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::agentic::coordination::{
+        submit_user_message_with_runtime, UserMessageSubmitOutcome,
+    };
+    use openbitfun_core::service::config::types::ChatInputSendDuringTurn;
+    use openbitfun_runtime_ports::AgentDialogTurnExecution;
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+
+    let workspace_id = optional_string(request, "workspaceId");
+    let workspace_path = optional_string(request, "workspacePath");
+    let remote_connection_id = optional_string(request, "remoteConnectionId");
+    let remote_ssh_host = optional_string(request, "remoteSshHost");
+    if workspace_id.is_some() || workspace_path.is_some() {
+        super::session::ensure_coordinator_session(state, args).await?;
+    }
+
+    let text = request
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let display_text = optional_string(request, "displayText");
+    let turn_id = optional_string(request, "turnId");
+    let agent_type = optional_string(request, "agentType")
+        .or_else(|| state.compatibility.session_agent_type(&session_id))
+        .unwrap_or_default();
+    let attachments = if request.get("attachments").is_some() {
+        peer_attachments_from_key(request, "attachments")?
+    } else {
+        peer_image_attachments(request)?
+    };
+    let send_during_turn = request
+        .get("sendDuringTurn")
+        .or_else(|| request.get("send_during_turn"))
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value::<ChatInputSendDuringTurn>(value.clone()))
+        .transpose()
+        .map_err(|error| format!("Invalid sendDuringTurn: {error}"))?;
+    let metadata = peer_dialog_metadata(request)?;
+
+    let outcome = submit_user_message_with_runtime(
+        &state.agent_runtime,
+        state.compatibility.dialog_scheduler(),
+        AgentDialogTurnRequest {
+            session_id,
+            message: text,
+            output_schema: None,
+            original_message: display_text,
+            turn_id,
+            execution: AgentDialogTurnExecution::default(),
+            agent_type,
+            workspace_path,
+            workspace_id,
+            remote_connection_id,
+            remote_ssh_host,
+            policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi),
+            reply_route: None,
+            prepended_reminders: Vec::new(),
+            attachments,
+            metadata,
+        },
+        send_during_turn,
+    )
+    .await
+    .map_err(|error| format!("Failed to submit message: {}", error.message))?;
+
+    Ok(match outcome {
+        UserMessageSubmitOutcome::Started { turn_id, .. } => json!({
+            "outcome": "started",
+            "turnId": turn_id,
+        }),
+        UserMessageSubmitOutcome::Steered {
+            turn_id,
+            steering_id,
+            ..
+        } => json!({
+            "outcome": "steered",
+            "turnId": turn_id,
+            "steeringId": steering_id,
+        }),
+        UserMessageSubmitOutcome::Queued { turn_id, .. } => json!({
+            "outcome": "queued",
+            "turnId": turn_id,
+            "queueItemId": turn_id,
+        }),
+    })
+}
+
+pub(crate) async fn steer_dialog_turn(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_runtime_ports::{AgentDialogSteerRequest, DialogSteerOutcome};
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let dialog_turn_id = get_string(request, "dialogTurnId")?;
+    let content = request
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let display_content = optional_string(request, "displayContent");
+    let attachments = peer_image_attachments(request)?;
+    if content.trim().is_empty() && attachments.is_empty() {
+        return Err("Steering content cannot be empty".to_string());
+    }
+    let metadata = peer_dialog_metadata(request)?;
+    let outcome = state
+        .agent_runtime
+        .steer_dialog_turn(AgentDialogSteerRequest {
+            session_id,
+            turn_id: dialog_turn_id,
+            content,
+            display_content,
+            attachments,
+            metadata,
+        })
+        .await
+        .map_err(|error| format!("Failed to steer dialog turn: {}", error.into_message()))?;
+    let steering_id = match outcome {
+        DialogSteerOutcome::Buffered { steering_id, .. } => steering_id,
+    };
+    Ok(json!({
+        "success": true,
+        "steeringId": steering_id,
+    }))
+}
+
+pub(crate) async fn stop_dialog_turn(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    let turn_id = optional_string(request, "dialogTurnId")
+        .or_else(|| {
+            state
+                .compatibility
+                .dialog_scheduler()
+                .active_dialog_turn_id(&session_id)
+        })
+        .ok_or_else(|| format!("No running turn to stop for session: {session_id}"))?;
+
+    let interruption = state
+        .agent_runtime
+        .interrupt_turn(AgentTurnInterruptionRequest {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            source: Some(AgentSubmissionSource::DesktopUi),
+            wait_timeout_ms: Some(30_000),
+        })
+        .await;
+    let reason = match interruption {
+        Ok(_) => {
+            return Ok(json!({
+                "turnId": turn_id,
+                "method": "interrupted",
+            }));
+        }
+        Err(error) => error.into_message(),
+    };
+    state
+        .agent_runtime
+        .cancel_turn(AgentTurnCancellationRequest {
+            session_id,
+            turn_id: Some(turn_id.clone()),
+            source: Some(AgentSubmissionSource::DesktopUi),
+            requester_session_id: None,
+            reason: Some(format!("recoverable interruption unavailable: {reason}")),
+            wait_timeout_ms: None,
+            cancel_descendants: true,
+        })
+        .await
+        .map_err(|error| format!("Failed to stop dialog turn: {}", error.into_message()))?;
+    Ok(json!({
+        "turnId": turn_id,
+        "method": "cancelled",
+    }))
+}
+
+pub(crate) async fn list_session_commands(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let running = optional_string(request, "sessionId").is_some_and(|session_id| {
+        state
+            .compatibility
+            .dialog_scheduler()
+            .is_session_busy_or_queued(&session_id)
+    });
+    let commands = openbitfun_core::agentic::session_policy::session_commands(running);
+    serde_json::to_value(commands).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn execute_session_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::agentic::coordination::SessionCommandOutcome;
+    use openbitfun_core::agentic::session_policy::SessionCommandId;
+
+    let request = request_value(args);
+    let raw_id = get_string(request, "id")?;
+    let id = SessionCommandId::parse(&raw_id)
+        .ok_or_else(|| format!("unknown_session_command: {}", raw_id.trim()))?;
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim().to_string();
+    let arg = optional_string(request, "arg");
+    if optional_string(request, "workspaceId").is_some()
+        || optional_string(request, "workspacePath").is_some()
+    {
+        super::session::ensure_coordinator_session(state, args).await?;
+    }
+    let outcome = state
+        .compatibility
+        .dialog_scheduler()
+        .execute_session_command(
+            &session_id,
+            id,
+            arg.as_deref(),
+            DialogTriggerSource::DesktopUi,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut payload = json!({
+        "id": id,
+        "outcome": match outcome {
+            SessionCommandOutcome::CompactionStarted { .. } => "compaction_started",
+            SessionCommandOutcome::InitStarted { .. } => "init_started",
+            SessionCommandOutcome::Reloaded { .. } => "reloaded",
+        },
+    });
+    if let Some(turn_id) = outcome.turn_id() {
+        payload["turnId"] = json!(turn_id);
+    }
+    Ok(payload)
+}

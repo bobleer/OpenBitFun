@@ -306,15 +306,17 @@ test("layered 3-band chat input dock supports attachments, agent selector, unifi
   await app.press("remove-attachment-attachment-drop-1");
   expect(app.shows("attachment-preview-attachment-drop-1")).toBe(false);
 
-  // Band 3 selectors open anchored Overlays cleanly.
+  // Band 3 selectors open anchored Overlays cleanly; reasoning & context live in the model picker submenu.
+  expect(app.shows("reasoning-picker")).toBe(false);
   await app.press("bot-capsule-trigger");
   await app.waitFor("text:Fast model");
-  await app.press("reasoning-picker");
-  expect(app.texts()).not.toContain("Fast model");
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
   await app.waitFor("reasoning-option-high");
+  await app.waitFor("context-option-300000");
 
   await app.press("agent-picker");
-  expect(app.texts()).not.toContain("reasoning-option-high");
+  expect(app.shows("id:model-config-side-panel")).toBe(false);
   await app.waitFor("Profiles");
   await app.waitFor("Agents");
 
@@ -892,47 +894,6 @@ test("the host decides whether a mid-turn message steers or queues", async () =>
   expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
 });
 
-test("a host without a queue or submit_user_message is told to update, nothing is kept here", async () => {
-  const backend = createBackend();
-  const handlers = {
-    ...backend.handlers,
-    "openbitfun.invoke": (data: unknown) => {
-      if ((data as { action?: string })?.action === "submit_user_message") {
-        return { ok: false, error: "Command not found: submit_user_message" };
-      }
-      return backend.handlers["openbitfun.invoke"]!(data);
-    },
-  };
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
-  await openSession(app, "NSH skeleton");
-  await app.waitFor("Port the session list.");
-
-  // An idle session still starts its turn on the older host.
-  await app.type("composer", "Start here");
-  await app.press("Send");
-  await app.waitUntil(() => backend.actions().includes("start_dialog_turn"));
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
-    sessionId: "session-1",
-    userInput: "Start here",
-    workspaceId: "workspace-1",
-  });
-
-  // During a turn the message stays in the composer with the update notice.
-  await app.host.send("openbitfun.event", {
-    event: "agentic://dialog-turn-started",
-    payload: { sessionId: "session-1", turnId: "turn-9" },
-  });
-  await app.waitFor("Queue follow-up…");
-  // Without the host queue there is an explicit state, not a local list.
-  await app.waitFor("This device has no message queue. Update OpenBitFun on it to queue messages during a turn.");
-  await app.type("composer", "Mid-turn note");
-  await app.submit("composer");
-  await app.waitFor("send-host-update");
-  expect(app.value("composer")).toBe("Mid-turn note");
-  expect(backend.actions()).not.toContain("steer_dialog_turn");
-  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
-});
-
 test("stop goes through the host's stop, which picks interrupt or cancel", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
@@ -954,28 +915,18 @@ test("stop goes through the host's stop, which picks interrupt or cancel", async
   expect(backend.actions()).not.toContain("cancel_dialog_turn");
 });
 
-test("unread marks are the host's, and legacy local seen marks are handed over once", async () => {
+test("unread marks are owned by the host and acknowledged without local storage", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", {
     ...DESKTOP,
     host: { handlers: backend.handlers },
-    storage: { "openbitfun.nsh.session-seen.v1": JSON.stringify({ "session-2": 1762950000000 }) },
   });
-  await showAllSessions(app, "NSH skeleton");
-  // The legacy stamp travels to the host with the row's workspace, once.
-  await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-2"));
-  expect(backend.seenMarks.find(mark => mark.sessionId === "session-2")).toMatchObject({
-    sessionId: "session-2",
-    seenThroughMs: 1762950000000,
-  });
-  await app.waitUntil(() => app.storage()["openbitfun.nsh.session-seen.v1"] === undefined);
-  expect(backend.calls.find(call => call.action === "mark_session_seen")?.request).toMatchObject({
-    workspaceId: "workspace-1",
-  });
-
-  // Opening a session acknowledges the host receipt; no local stamp is written.
   await openSession(app, "NSH skeleton");
   await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-1"));
+  expect(backend.calls.find(call => call.action === "mark_session_seen")?.request).toMatchObject({
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+  });
   expect(app.storage()["openbitfun.nsh.session-seen.v1"]).toBeUndefined();
 });
 
@@ -1177,11 +1128,13 @@ test("a narrow chat runs full width with the composer controls in its + menu", a
   await app.waitFor("agent-picker", { state: "gone" });
   expect(app.shows("agent-picker")).toBe(false);
   expect(app.shows("composer-plus")).toBe(true);
-  // On a narrow column the row keeps only "+" and Send (both 44 pt touch targets).
+  // On a narrow/mobile column the model selector stays directly outside the "+" menu.
+  expect(app.shows("bot-capsule-trigger")).toBe(true);
+  expect(app.shows("reasoning-picker")).toBe(false);
   expect(app.shows("Send")).toBe(true);
   expect(app.shows("thread-actions-trigger")).toBe(true);
 
-  // The "+" menu holds image picker, reference, permission, agent and model controls.
+  // The "+" menu holds image picker, reference, permission, and agent controls (not model/reasoning).
   await app.press("composer-plus");
   await app.waitFor("attach-image-file");
   expect(app.shows("Attach")).toBe(false);
@@ -1285,10 +1238,11 @@ test("first /model opens above the composer without first pressing the model sel
   await app.waitFor("id:model-picker");
   expect(Math.abs(app.layout("id:model-picker")!.x - trigger.x)).toBeLessThan(2);
 
-  // The query opens search inside the picker. Return to the model list before dismissing it.
-  expect(app.value("model-picker-search-input")).toBe("missing-model");
-  await app.press("model-picker-search-back");
-  await app.waitFor("model-picker-search-input", { state: "gone" });
+  // The query pre-fills search inside the picker. Escape clears search first, then closes it.
+  expect(app.value("model-picker-search")).toBe("missing-model");
+  await app.keyboard.press("escape");
+  await app.waitUntil(() => app.value("model-picker-search") === "");
+  await app.wait(200);
   await app.keyboard.press("escape");
   await app.waitFor("id:model-picker", { state: "gone" });
   await openSession(app, "Terminal migration");
@@ -1298,17 +1252,16 @@ test("first /model opens above the composer without first pressing the model sel
   expect(Math.abs(app.layout("id:model-picker")!.x - app.layout("bot-capsule-trigger")!.x)).toBeLessThan(2);
   await app.keyboard.press("escape");
   await app.waitFor("id:model-picker", { state: "gone" });
-  // Narrow composers hide the model pill; the visible '+' becomes the anchor.
+  // Narrow composers keep the model pill inline and anchor the picker to it.
   await app.setViewport(520, 900);
-  expect(app.shows("bot-capsule-trigger")).toBe(false);
+  expect(app.shows("bot-capsule-trigger")).toBe(true);
   await app.type("composer", "/model");
   await app.submit("composer");
   await app.waitFor("id:model-picker");
-  const plus = app.layout("composer-plus")!;
+  const compactTrigger = app.layout("bot-capsule-trigger")!;
   const compactPicker = app.layout("id:model-picker")!;
-  expect(Math.abs(compactPicker.x - plus.x)).toBeLessThan(2);
-  expect(compactPicker.y + compactPicker.height).toBeLessThanOrEqual(plus.y);
-  expect(plus.y - (compactPicker.y + compactPicker.height)).toBeLessThan(16);
+  expect(compactPicker.y + compactPicker.height).toBeLessThanOrEqual(compactTrigger.y);
+  expect(compactTrigger.y - (compactPicker.y + compactPicker.height)).toBeLessThan(16);
 });
 
 test("/model switches models locally, bare /goal & /btw open dialogs, and visualize/Skill cards render cleanly", async () => {
@@ -1381,8 +1334,8 @@ test("an ambiguous model command opens the same picker with its search already f
   await openSession(app, "NSH skeleton");
   await app.type("composer", "/model openai");
   await app.submit("composer");
-  await app.waitFor("model-picker-search-input");
-  expect(app.value("model-picker-search-input")).toBe("openai");
+  await app.waitFor("model-picker-search");
+  expect(app.value("model-picker-search")).toBe("openai");
   expect(backend.actions()).not.toContain("update_session_model");
   expect(backend.actions()).not.toContain("submit_user_message");
 });
@@ -1586,22 +1539,35 @@ test("composer syncs session model from get_session_model_target, omits open ske
   // No transcript loading skeleton appears when opening a session.
   expect(app.shows("transcript-loading")).toBe(false);
 
-  // Composer must reflect the session's authoritative bound model (`Fast model`),
-  // not fall back to `Primary model`.
+  // Composer must reflect the session's authoritative bound model (`Fast model`) and its reasoning (`High`),
+  // with no standalone reasoning button.
   await app.waitFor("label:bot-capsule-trigger >> text:Fast model");
-  await app.waitFor("label:reasoning-picker >> text:High");
+  await app.waitFor("label:bot-capsule-trigger >> text:High");
+  expect(app.shows("reasoning-picker")).toBe(false);
 
-  // Changing reasoning sends the session's real model (`fast-small`), never `gpt-4.1-mini`.
-  await app.press("reasoning-picker");
+  // Changing reasoning from inside the model picker sends the session's real model (`cfg-fast`), never `cfg-primary`.
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("label:model-option-cfg-fast");
+  await app.press("label:model-option-cfg-fast");
+  await app.waitFor("id:model-config-side-panel");
   await app.waitFor("reasoning-option-low");
   await app.press("reasoning-option-low");
-  await app.waitUntil(() => base.calls.some(call => call.action === "update_session_model"));
-  const write = base.calls.find(call => call.action === "update_session_model");
+  await app.waitUntil(() =>
+    base.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as { reasoningPreset?: string | null })?.reasoningPreset === "low",
+    ),
+  );
+  const write = base.calls
+    .filter(call => call.action === "update_session_model")
+    .pop();
   expect(write?.request).toMatchObject({
     sessionId: "sess-1",
-    modelName: "fast-small",
+    modelName: "cfg-fast",
     reasoningPreset: "low",
   });
+  await app.press("model-config-close");
 
   // While a turn is running, the redundant footer caption ("Steering the running turn")
   // is not rendered underneath the composer.
@@ -1628,11 +1594,11 @@ test("the model menu keeps reasoning selected until its device accepts the new p
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
-  await app.waitFor("label:reasoning-picker >> text:High");
+  await app.waitFor("label:bot-capsule-trigger >> text:High");
   await app.press("bot-capsule-trigger");
-  await app.waitFor("model-picker-reasoning");
-  expect(app.shows("reasoning-preset-segments")).toBe(false);
-  await app.press("model-picker-reasoning");
+  await app.waitFor("label:model-option-cfg-primary");
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
   await app.waitFor("reasoning-option-low");
   expect(String(app.accessibility("reasoning-option-high")?.pressed)).toBe("true");
 
@@ -1650,65 +1616,39 @@ test("the model menu keeps reasoning selected until its device accepts the new p
   await app.waitUntil(() => requests.length === 2);
   respond?.({ ok: true, value: null });
   await retry;
-  await app.waitFor("reasoning-preset-segments", { state: "gone" });
-  await app.waitFor("label:model-picker-reasoning >> text:Low");
+  await app.waitFor("label:bot-capsule-trigger >> text:Low");
   expect(requests).toMatchObject([
     { sessionId: "session-1", workspaceId: "workspace-1", reasoningPreset: "low" },
     { sessionId: "session-1", workspaceId: "workspace-1", reasoningPreset: "low" },
   ]);
 });
 
-test("the model menu validates, cancels and retries a context-only model update", async () => {
-  const model = {
-    id: "cfg-primary", name: "Primary model", provider: "openai", model_name: "gpt-4.1-mini",
-    base_url: "https://fixture.invalid/v1", enabled: true, capabilities: ["text_chat"],
-    context_window: 128_000, max_tokens: 50_000,
-  };
-  const backend = createBackend({ configs: { "ai.models": [model] } });
-  const invoke = backend.handlers["openbitfun.invoke"];
-  const updates: unknown[] = [];
-  backend.handlers["openbitfun.invoke"] = data => {
-    const call = data as { action?: string; request?: unknown };
-    if (call.action === "get_ai_model_catalog") {
-      const presets = updates.length >= 2 ? ["low"] : ["low", "high"];
-      return { ok: true, value: { models: [{ ...model, reasoning: { status: "supported",
-        presets: presets.map((id, order) => ({ id, order, source: "model_config", label: id, actions: [] })),
-      } }], default_models: { primary: model.id } } };
-    }
-    if (call.action === "ai_model_upsert") {
-      updates.push(call.request);
-      if (updates.length === 1) return { ok: false, error: "This model could not be updated right now" };
-    }
-    return invoke(data);
-  };
+test("the model menu validates and applies custom session context length", async () => {
+  const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
   await app.press("bot-capsule-trigger");
-  await app.waitFor("label:model-picker-context >> text:128K");
-  await app.press("model-picker-context");
-  expect(app.value("model-picker-context-input")).toBe("128000");
-  await app.clear("model-picker-context-input");
-  await app.type("model-picker-context-input", "31000");
-  await app.press("model-picker-context-save");
-  await app.waitFor("Enter a whole number between 32,000 and 2,000,000 tokens.");
-  expect(updates).toHaveLength(0);
+  await app.waitFor("label:model-option-cfg-primary");
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
+  await app.press("context-option-custom");
+  await app.waitFor("context-custom-input");
+  await app.type("context-custom-input", "3000");
+  await app.press("context-custom-apply");
+  await app.waitFor("text:Enter 4K – 10M tokens (e.g. 400K)");
+  expect(backend.calls.filter(call => call.action === "update_session_model")).toHaveLength(0);
 
-  await app.keyboard.press("escape");
-  await app.waitFor("label:model-picker-context >> text:128K");
-  expect(app.shows("model-picker-context-input")).toBe(false);
-  await app.press("model-picker-context");
-  await app.clear("model-picker-context-input");
-  await app.type("model-picker-context-input", "64000");
-  await app.press("model-picker-context-save");
-  await app.waitFor("This model could not be updated right now");
-  expect(app.value("model-picker-context-input")).toBe("64000");
-  await app.press("model-picker-context-save");
-  await app.waitFor("label:model-picker-context >> text:64.0K");
-  await app.waitFor("The output limit was lowered to what the context window allows.");
-  expect(updates).toEqual(Array.from({ length: 2 }, () => ({ models: [{ id: "cfg-primary", contextWindow: 64_000 }] })));
-  await app.press("model-picker-reasoning");
-  await app.waitFor("reasoning-option-low");
-  expect(app.shows("reasoning-option-high")).toBe(false);
+  await app.clear("context-custom-input");
+  await app.type("context-custom-input", "64000");
+  await app.press("context-custom-apply");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as { contextWindowOverride?: number })?.contextWindowOverride === 64_000,
+    ),
+  );
+  await app.waitFor("label:bot-capsule-trigger >> text:64K");
 });
 
 test("left-side turn jump rail previews a turn on hover and jumps on press", async () => {

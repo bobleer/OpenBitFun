@@ -464,7 +464,7 @@ test("an older desktop without the live view request gets an update sentence", a
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
     const { action } = data as { action: string };
     if (action === "browser_webview_capture_preview") {
-      return { ok: false, error: "invalid args `request` for command `browser_webview_capture_preview`: missing field `label`" };
+      return { ok: false, error: "Command not found: browser_webview_capture_preview" };
     }
     return invoke(data);
   };

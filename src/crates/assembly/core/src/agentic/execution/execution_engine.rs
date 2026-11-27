@@ -4,7 +4,7 @@
 
 mod context_estimate;
 
-use super::context_budget::{request_budget, CompressionTriggerBudget};
+use super::context_budget::{request_budget_with_override, CompressionTriggerBudget};
 use super::model_exchange_trace::{
     prepare_model_exchange_trace_for_workspace, ModelExchangeTraceOperation,
 };
@@ -2815,8 +2815,11 @@ impl ExecutionEngine {
                 } else {
                     None
                 };
-            let compression_trigger_budget =
-                request_budget(&scaffold.ai_client.config, pool_budget);
+            let compression_trigger_budget = request_budget_with_override(
+                &scaffold.ai_client.config,
+                pool_budget,
+                session.config.context_window_override,
+            );
             let context_window = compression_trigger_budget.context_window;
             *resolved_context_window = Some(context_window);
             let prepended_reminders = scaffold.prepended_prompt_reminders.ordered_reminders();
@@ -3521,11 +3524,12 @@ impl ExecutionEngine {
         .await;
         let mut primary_supports_image_understanding = primary_model_facts.supports_image_inputs;
 
-        let mut compression_trigger_budget = request_budget(
+        let mut compression_trigger_budget = request_budget_with_override(
             &ai_client.config,
             initial_pool_attempt
                 .as_ref()
                 .map(|(attempt, _)| attempt.context_budget),
+            session.config.context_window_override,
         );
 
         // 3. Get available tools list (read tool configuration for current mode from global config)
@@ -4095,7 +4099,11 @@ impl ExecutionEngine {
                     primary_model_facts = selected_model.model_facts;
                     primary_supports_image_understanding =
                         primary_model_facts.supports_image_inputs;
-                    compression_trigger_budget = request_budget(&ai_client.config, None);
+                    compression_trigger_budget = request_budget_with_override(
+                        &ai_client.config,
+                        None,
+                        session.config.context_window_override,
+                    );
 
                     execution_context_vars.insert(
                         "max_context_tokens".into(),
