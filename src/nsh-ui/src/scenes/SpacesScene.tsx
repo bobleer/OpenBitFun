@@ -1,14 +1,19 @@
-import { cleanup, effect, Scroll, Text, View } from "nsh";
+import { cleanup, computed, effect, Image, Scroll, signal, Text, untracked, View, type JSX, type ScrollRef, type ViewRef } from "nsh";
+import { backendConnection } from "../bridge";
+import { rendererAssets } from "../documentRenderers";
 import { Editor } from "nsh/base";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
+import { installedSpaceRows } from "../installedSpaceCatalog";
 import {
   cancelDeleteSpace,
   closeSpaceInspector,
   confirmDeleteSpace,
   confirmingDeleteSpaceId,
   createSpaceWithAgent,
+  hasCurrentSpaceCatalog,
   inspectSpace,
+  localizedSpace,
   loadSpaces,
   requestDeleteSpace,
   runningSpaceWorkers,
@@ -21,7 +26,9 @@ import {
   spacePrompt,
   spaces,
   spacesBusy,
+  spacesCatalogDevice,
   spacesError,
+  spaceInCurrentCatalog,
   spacesNotice,
   spaceSourceTab,
   spaceCreating,
@@ -36,6 +43,7 @@ import {
   spaceOpening,
   spaceWindowBlockedReason,
 } from "../spacesStore";
+import { loadSpacePins, pinnedSpaceIds, setSpacePinned, spacePinsReady } from "../spaceNavigationStore";
 import {
   compactLayout,
   fontMono,
@@ -45,35 +53,46 @@ import {
   space,
   textLineHeight,
   textSize,
-  touchSlop,
+  textStyle,
 } from "../theme";
 import { deviceContext } from "../state";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
-import { StateMark, stateColor } from "../ui/fleet";
+import { CatalogCard } from "../ui/CatalogCard";
+import { stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import { createEditorStyles, inferCodeLanguage } from "../ui/markdown";
-import { MOTION_DURATION, paintTransition, pressTransition, Spinner, tactileActiveStyle } from "../ui/motion";
+import { Spinner } from "../ui/motion";
 import { ModalDialog, type DropdownMenuItem } from "../ui/overlays";
 import {
+  MarketListingDetails,
   MiniAppMarketView,
   MiniAppSubmissionsView,
   PackageImportModal,
-  SpaceIcon,
-  spaceIconName,
+  SpaceCatalogToolbar,
 } from "../ui/MiniAppMarket";
 import {
+  clearDeletedMarketInstall,
+  closeMarketListing,
   enterMarket,
+  installedMarketSummaries,
+  installedMarketSummariesSupported,
+  loadInstalledMarketSummaries,
   loadMarketOrigins,
   loadSubmissions,
+  marketDetailSlug,
+  marketDetailTarget,
   marketOrigins,
+  openMarketListing,
   openPackageImport,
   spacesView,
+  type MarketCategory,
+  type MarketSort,
   type SpacesView,
 } from "../miniAppMarketStore";
 import {
+  Badge,
   Button,
   ConfigSection,
-  focusRingStyle,
   IconButton,
   InlineBanner,
   InlineDeleteConfirm,
@@ -89,17 +108,19 @@ import {
   StudioEmpty,
   StudioHeader,
   StudioSection,
-  galleryCardHoverStyle,
-  galleryCardStyle,
   studioCompact,
   trackStudioWidth,
 } from "../ui/studio";
 import { CardsSection } from "../ui/cardView"; // wave22-p3
+import { SpacePinButton, SpaceSystemAppActions, SpaceWindowButton } from "../ui/SpaceDetailActions";
+import { SpaceIcon, spaceIconName } from "../ui/SpaceIcon";
+import { changeSpaceSystemApp, spaceSystemAppBusy, spaceSystemAppScope } from "../spaceSystemAppStore";
 import { cardsDeviceForLibrary } from "../desktopCardsStore"; // wave22-p3
 import { ElsewhereList, SpacePage } from "../ui/miniAppFrame"; // wave22-p4
 import {
-  accountCatalog,
+  accountCatalogLoading,
   closeSpacePage,
+  openInstalledSpace,
   loadAccountCatalog,
   openSpace,
   openSpacePage,
@@ -148,7 +169,6 @@ function localizePermission(id: string): string {
   return id;
 }
 
-const CARD_PERMISSION_CAP = 3;
 const INSPECTOR_TAG_CAP = 8;
 
 function sourceTabFilename(tab: SpaceSourceTab): string {
@@ -210,21 +230,6 @@ function QuietList(props: { label: string; items: ReadonlyArray<string>; overflo
   );
 }
 
-/** The release a Space was installed from, when the host reports a market origin for it. */
-function spaceMarketRelease(appId: string): number | null {
-  for (const origin of Object.values(marketOrigins())) {
-    if (origin.appId === appId) return origin.releaseNumber;
-  }
-  return null;
-}
-
-function spaceMetaLine(space: SpaceMeta): string {
-  const parts = [space.category, `v${space.version}`, space.runtimeProfile];
-  const release = spaceMarketRelease(space.id);
-  if (release !== null) parts.push(tr("market.fromMarket", { release }));
-  return parts.join(" · ");
-}
-
 function viewTabs(): ReadonlyArray<SegmentedTabOption<SpacesView>> {
   return [
     { value: "library", label: tr("spaces.p4.apps"), accessibilityLabel: "spaces-view-library" },
@@ -245,17 +250,6 @@ function refreshCurrentView(): void {
   }
 }
 
-/** Opens a Space inside the app on the device in context, with its placements. */
-function openInstalledSpace(item: SpaceMeta): void {
-  const catalogApp = accountCatalog()?.apps.find(app => app.appId === item.id);
-  openSpacePage({
-    appId: item.id,
-    name: item.name,
-    devices: catalogApp?.devices.map(device => device.deviceId),
-    needsDevice: catalogApp?.needsDevice,
-  });
-}
-
 function openElsewhereSpace(appId: string, deviceId: string): void {
   const app = spacesElsewhere().find(item => item.appId === appId);
   if (!app) return;
@@ -268,7 +262,22 @@ function openElsewhereSpace(appId: string, deviceId: string): void {
   });
 }
 
-function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] {
+async function deleteSpaceAndUpdateListing(appId: string): Promise<void> {
+  if (spaceSystemAppBusy() === appId) return;
+  const device = deviceContext();
+  const connection = backendConnection();
+  const isCurrent = () => device === deviceContext() && connection === backendConnection();
+  if (!await confirmDeleteSpace(appId) || !isCurrent()) return;
+  clearDeletedMarketInstall(appId);
+  await loadSpacePins();
+  if (isCurrent()) setSpacePinned(appId, false, device);
+}
+
+function spaceMenuItems(space: SpaceMeta, running: boolean, onManage?: () => void): DropdownMenuItem[] {
+  const owner = deviceContext();
+  const pinned = pinnedSpaceIds().includes(space.id);
+  const systemAppBlocked = Boolean(spaceSystemAppScope().blocked);
+  const systemAppBusy = spaceSystemAppBusy();
   return [
     {
       id: "open",
@@ -276,7 +285,7 @@ function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] 
       icon: "layout-grid",
       disabled: Boolean(spaceOpenBlockedReason()),
       accessibilityLabel: `space-menu-open-inline-${space.id}`,
-      onSelect: () => openInstalledSpace(space),
+      onSelect: () => openInstalledSpace({ id: space.id, name: localizedSpace(space).name }, owner),
     },
     {
       id: "open-window",
@@ -287,17 +296,41 @@ function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] 
       onSelect: () => void openSpaceWindow(space.id),
     },
     {
+      id: "add-system-app",
+      label: tr("spaces.systemApp.add"),
+      icon: "download",
+      hint: systemAppBlocked ? tr("spaces.systemApp.unsupported") : undefined,
+      disabled: systemAppBlocked || systemAppBusy !== null,
+      accessibilityLabel: `space-menu-system-add-${space.id}`,
+      onSelect: () => void changeSpaceSystemApp(space, "install"),
+    },
+    {
       id: "inspect",
       label: tr("spaces.inspectSource"),
       icon: "code",
       accessibilityLabel: `space-menu-inspect-${space.id}`,
       onSelect: () => void inspectSpace(space.id),
     },
+    ...(onManage ? [{
+      id: "manage",
+      label: tr("market.manage"),
+      icon: "layout-grid" as const,
+      accessibilityLabel: `space-menu-manage-${space.id}`,
+      onSelect: onManage,
+    }] : []),
+    {
+      id: "pin",
+      label: tr(pinned ? "spaces.unpinFromSidebar" : "spaces.pinToSidebar"),
+      icon: "pin",
+      disabled: !spacePinsReady() || spacesCatalogDevice() !== owner,
+      accessibilityLabel: `space-menu-pin-${space.id}`,
+      onSelect: () => setSpacePinned(space.id, !pinned, owner),
+    },
     {
       id: "stop",
       label: tr("spaces.stopWorkerTitle"),
       icon: "stop",
-      disabled: !running,
+      disabled: !running || spacesBusy(),
       accessibilityLabel: `space-menu-stop-${space.id}`,
       onSelect: () => void stopSpaceWorker(space.id),
     },
@@ -307,150 +340,192 @@ function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] 
       label: tr("spaces.deleteSpace"),
       icon: "trash",
       danger: true,
+      disabled: spacesBusy() || systemAppBusy === space.id,
       confirmDelete: true,
       confirmAccessibilityLabel: `space-delete-confirm-${space.id}`,
       accessibilityLabel: `space-menu-delete-${space.id}`,
-      onSelect: () => void confirmDeleteSpace(space.id),
+      onSelect: () => void deleteSpaceAndUpdateListing(space.id),
     },
   ];
 }
 
-/**
- * A flat gallery card. The card body opens the inspector; the "…" menu sits
- * beside it as a sibling so a press never reaches both.
- */
-function SpaceCard(props: { space: () => SpaceMeta }) {
-  const isRunning = () => runningWorkerSet().has(props.space().id);
-  const isSelected = () => selectedSpaceId() === props.space().id;
-  const permissionLine = () => {
-    const all = spacePermissionBadges(props.space()).map(localizePermission);
-    const shown = all.slice(0, CARD_PERMISSION_CAP).join(" · ");
-    const overflow = all.length - CARD_PERMISSION_CAP;
-    return overflow > 0 ? `${shown} +${overflow}` : shown;
-  };
-
+function SpaceCard(props: {
+  space: () => SpaceMeta;
+  updateAvailable: boolean;
+  onManage?: () => void;
+  onDetails: () => void;
+  onRef: (node: ViewRef | null) => void;
+}) {
+  const app = props.space;
+  const copy = () => localizedSpace(app());
+  const running = () => runningWorkerSet().has(app().id);
   return (
-    <View
-      style={{
-        ...galleryCardStyle(),
-        padding: 0,
-        gap: 0,
-        borderColor: isSelected() ? palette().borderFocus : palette().borderSubtle,
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={compactLayout() ? undefined : galleryCardHoverStyle()}
+    <CatalogCard
+      testID={`space-details-${app().id}`}
+      label={tr("spaces.detail.open", { name: copy().name })}
+      description={copy().description}
+      viewRef={props.onRef}
+      onOpen={props.onDetails}
+      actionPlacement="trailing"
+      actions={<View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+        <IconButton icon="play" size={compactLayout() ? "lg" : "sm"}
+          accessibilityLabel={`space-open-${app().id}`} tooltip={spaceOpenBlockedReason() || tr("spaces.p4.open")}
+          disabled={Boolean(spaceOpenBlockedReason())}
+          onPress={() => openInstalledSpace({ id: app().id, name: copy().name })} />
+        <MoreMenu accessibilityLabel={`space-more-${app().id}`} tooltip={tr("spaces.spaceActions")}
+          minWidth={210} items={spaceMenuItems(app(), running(), props.onManage)} />
+      </View>}
     >
-      <View style={{ flexDirection: "row", alignItems: "flex-start", minWidth: 0 }}>
-        <View
-          role="button"
-          accessibilityLabel={`space-open-${props.space().id}`}
-          hitSlop={touchSlop(layout.touchTarget)}
-          onPress={() => openInstalledSpace(props.space())}
-          style={{
-            flex: 1,
-            minHeight: 132,
-            padding: space.lg,
-            paddingRight: space.sm,
-            gap: space.xs,
-            minWidth: 0,
-            cursor: "pointer",
-            borderRadius: radii.lg,
-            ...pressTransition(),
-          }}
-          activeStyle={tactileActiveStyle(0.99)}
-          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
-        >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
-            <SpaceIcon icon={props.space().icon} color={palette().textSecondary} />
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                color: palette().text,
-                fontSize: textSize(14),
-                fontWeight: "600",
-                lineHeight: textLineHeight(14, 1.35),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {props.space().name}
-            </Text>
-            <If when={isRunning()}>
-              <View
-                accessibilityLabel={`space-running-${props.space().id}`}
-                tooltip={compactLayout() ? undefined : tr("spaces.workerRunning")}
-                style={{ flexShrink: 0, padding: space.hair }}
-              >
-                <StateMark state="working" size={12} />
-              </View>
-            </If>
-          </View>
-          <Text
-            style={{
-              minWidth: 0,
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(12, 1.4),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {spaceMetaLine(props.space())}
-          </Text>
-          <Text
-            style={{
-              marginTop: space.xs,
-              minWidth: 0,
-              color: palette().textSecondary,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.5),
-              numberOfLines: 2,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {props.space().description || tr("common.noDescription")}
-          </Text>
-          <If when={permissionLine()}>
-            {line => (
-              <Text
-                style={{
-                  marginTop: space.xs,
-                  minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.4),
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {line()}
-              </Text>
-            )}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
+        <SpaceIcon icon={app().icon} color={palette().textSecondary} size={24} />
+        <Text style={{ ...textStyle("sectionTitle"), flexShrink: 1, numberOfLines: 1, textOverflow: "ellipsis" }}>
+          {copy().name}
+        </Text>
+      </View>
+      <If when={running() || props.updateAvailable}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+          <If when={running()}>
+            <View accessibilityLabel={`space-running-${app().id}`}>
+              <Badge tone="accent" label={tr("spaces.workerRunning")} />
+            </View>
+          </If>
+          <If when={props.updateAvailable}>
+            <Badge tone="warning" accessibilityLabel={`space-update-${app().id}`}
+              label={tr("market.updateAvailable")} />
           </If>
         </View>
+      </If>
+      <If when={copy().description}>
+        {description => <Text style={{ ...textStyle("body"), color: palette().textSecondary, numberOfLines: 2 }}>
+          {description()}
+        </Text>}
+      </If>
+    </CatalogCard>
+  );
+}
 
-        <View style={{ paddingTop: space.md, paddingRight: space.md, flexShrink: 0 }}>
-          <MoreMenu
-            accessibilityLabel={`space-more-${props.space().id}`}
-            tooltip={tr("spaces.spaceActions")}
-            minWidth={210}
-            items={spaceMenuItems(props.space(), isRunning())}
-          />
+function SpaceDetailsFrame(props: {
+  accessibilityLabel: string;
+  backLabel: string;
+  backText?: string;
+  onBack: () => void;
+  children: JSX.Element;
+}) {
+  return (
+    <Scroll smoothWheel accessibilityLabel={props.accessibilityLabel} style={{ flex: 1, minHeight: 0 }}>
+      <StudioBody style={libraryBodyStyle()}>
+        <View style={{ paddingTop: space.lg, alignSelf: "flex-start" }}>
+          <Button label={props.backText ?? tr("spaces.p4.back")} leadingIcon="chevron-left" variant="ghost"
+            size={compactLayout() ? "md" : "sm"} accessibilityLabel={props.backLabel} onPress={props.onBack} />
         </View>
-      </View>
-    </View>
+        {props.children}
+      </StudioBody>
+    </Scroll>
+  );
+}
+
+function InstalledSpaceDetails(props: {
+  space: () => SpaceMeta;
+  backText?: string;
+  onBack: () => void;
+  onViewListing?: (listingId: string) => void;
+  listingButtonRef?: (node: ViewRef | null) => void;
+}) {
+  const app = props.space;
+  const copy = () => localizedSpace(app());
+  const origin = () => Object.values(marketOrigins()).find(value => value.appId === app().id);
+  const source = () => tr(app().id.startsWith("builtin-") ? "spaces.detail.builtIn"
+    : origin() ? "spaces.detail.market" : "spaces.detail.installed");
+  const version = () => `v${origin()?.releaseNumber ?? app().version}`;
+  const running = () => runningWorkerSet().has(app().id);
+  const launch = () => openInstalledSpace({ id: app().id, name: copy().name });
+  const actionSize = () => compactLayout() ? "md" : "sm";
+  return (
+    <SpaceDetailsFrame accessibilityLabel="space-installed-details" backLabel="space-detail-back"
+      backText={props.backText} onBack={props.onBack}>
+        <View style={{ gap: space.lg }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+            <SpaceIcon icon={app().icon} color={palette().textSecondary} size={32} />
+            <Text role="header" style={{ ...textStyle("pageTitle"), flex: 1, minWidth: 0 }}>{copy().name}</Text>
+          </View>
+          <If when={copy().description}>
+            {description => <Text style={textStyle("prose")}>{description()}</Text>}
+          </If>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+            <Badge tone="neutral" label={source()} />
+            <Badge tone="neutral" label={version()} />
+            <Each of={[...new Set(copy().tags)]} key={tag => tag}>
+              {tag => <Badge tone="neutral" label={tag()} />}
+            </Each>
+          </View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+            <Button label={tr("spaces.p4.open")} leadingIcon="play" variant="primary" size={actionSize()}
+              accessibilityLabel="space-detail-launch" disabled={Boolean(spaceOpenBlockedReason())} onPress={launch} />
+            <SpacePinButton appId={app().id} accessibilityLabel="space-detail-pin" />
+            <SpaceWindowButton appId={app().id} accessibilityLabel="space-detail-window" />
+            <SpaceSystemAppActions app={app} />
+            <If when={props.onViewListing && origin()?.listingId}>
+              {listingId => <Button label={tr("market.viewListing")} leadingIcon="package"
+                variant="outline" size={actionSize()} accessibilityLabel="space-detail-market-listing"
+                buttonRef={props.listingButtonRef} onPress={() => props.onViewListing?.(listingId())} />}
+            </If>
+            <Button label={tr("spaces.inspectSource")} leadingIcon="code" variant="outline" size={actionSize()}
+              accessibilityLabel="space-detail-source" onPress={() => void inspectSpace(app().id)} />
+            <If when={running()}>
+              <Button label={tr("spaces.stopWorkerTitle")} leadingIcon="stop" variant="outline" size={actionSize()} disabled={spacesBusy()}
+                accessibilityLabel="space-detail-stop" onPress={() => void stopSpaceWorker(app().id)} />
+            </If>
+            <InlineDeleteConfirm label={tr("spaces.deleteSpace")} icon="trash" variant="danger" size={actionSize()}
+              confirming={confirmingDeleteSpaceId() === app().id} disabled={spacesBusy() || spaceSystemAppBusy() === app().id}
+              onConfirmingChange={next => next ? requestDeleteSpace(app().id) : cancelDeleteSpace()}
+              accessibilityLabel="space-detail-delete" confirmAccessibilityLabel="space-detail-delete-confirm"
+              onConfirm={() => void deleteSpaceAndUpdateListing(app().id)} />
+          </View>
+          <If when={spaceOpenBlockedReason()}>
+            {reason => <InlineBanner tone="neutral" message={reason()} />}
+          </If>
+          <If when={spacesError()}>
+            {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
+          </If>
+        </View>
+        <If when={rendererAssets()?.spaceShowcases?.[app().id]}>
+          {showcase => <Image src={showcase()} accessibilityLabel={tr("spaces.detail.showcase", { name: copy().name })}
+            style={{ width: "100%", aspectRatio: 16 / 9, borderRadius: radii.lg, backgroundColor: palette().surfaceSubtle }} />}
+        </If>
+        <StudioSection title={tr("spaces.polish.permissions")}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+            <Each of={spacePermissionBadges(app())} key={badge => badge}>
+              {badge => <Badge tone="neutral" label={localizePermission(badge())} />}
+            </Each>
+            <If when={spacePermissionBadges(app()).length === 0}>
+              <Text style={textStyle("body")}>{tr("spaces.detail.noPermissions")}</Text>
+            </If>
+          </View>
+        </StudioSection>
+        <StudioSection title={tr("spaces.detail.information")}>
+          <QuietList label={tr("spaces.detail.version")} items={[version()]} />
+          <QuietList label={tr("spaces.detail.source")} items={[source()]} />
+          <QuietList label={tr("spaces.detail.status")} items={[tr(running() ? "spaces.workerRunning" : "spaces.detail.installed")]} />
+        </StudioSection>
+    </SpaceDetailsFrame>
   );
 }
 
 function SpaceInspectorModal() {
   const lineCount = () => sourceLineCount(selectedSpaceSourceCode());
+  const copy = () => {
+    const detail = selectedSpaceDetail();
+    return detail ? localizedSpace(detail) : undefined;
+  };
+  const visibleTags = () => {
+    const tags = copy()?.tags;
+    return tags?.length ? tags : undefined;
+  };
 
   return (
     <ModalDialog
       open={Boolean(selectedSpaceId())}
-      title={selectedSpaceDetail()?.name ?? tr("spaces.inspectTitle")}
+      title={copy()?.name ?? tr("spaces.inspectTitle")}
       subtitle={
         selectedSpaceDetail()
           ? `${selectedSpaceDetail()!.category} · v${selectedSpaceDetail()!.version} · ${selectedSpaceDetail()!.runtimeProfile}`
@@ -472,12 +547,12 @@ function SpaceInspectorModal() {
               icon="trash"
               variant="danger"
               size="md"
-              disabled={spacesBusy()}
+              disabled={spacesBusy() || spaceSystemAppBusy() === selectedSpaceId()}
               accessibilityLabel="space-inspector-delete"
               confirmAccessibilityLabel="space-inspector-delete-confirm"
               onConfirm={() => {
                 const id = selectedSpaceId();
-                if (id) void confirmDeleteSpace(id);
+                if (id) void deleteSpaceAndUpdateListing(id);
               }}
             />
           </If>
@@ -581,7 +656,7 @@ function SpaceInspectorModal() {
                   lineHeight: textLineHeight(13, 1.5),
                 }}
               >
-                {detail().description || tr("spaces.noManifestDesc")}
+                {copy()?.description || tr("spaces.noManifestDesc")}
               </Text>
 
               <View style={{ gap: space.xs }}>
@@ -589,18 +664,18 @@ function SpaceInspectorModal() {
                   label={tr("spaces.polish.permissions")}
                   items={spacePermissionBadges(detail()).map(localizePermission)}
                 />
-                <If when={detail().tags.length > 0}>
-                  <QuietList
+                <If when={visibleTags()}>
+                  {tags => <QuietList
                     label={tr("spaces.polish.tags")}
-                    items={detail().tags.slice(0, INSPECTOR_TAG_CAP)}
+                    items={tags().slice(0, INSPECTOR_TAG_CAP)}
                     overflow={
-                      detail().tags.length > INSPECTOR_TAG_CAP
+                      tags().length > INSPECTOR_TAG_CAP
                         ? tr("spaces.overflowTags", {
-                            count: formatCount(detail().tags.length - INSPECTOR_TAG_CAP),
+                            count: formatCount(tags().length - INSPECTOR_TAG_CAP),
                           })
                         : ""
                     }
-                  />
+                  />}
                 </If>
               </View>
 
@@ -805,6 +880,114 @@ function installedSummary(): string {
 const SPACE_GALLERY_MIN_COLUMN = 280;
 
 export function SpacesScene(props: { embedded?: boolean }) {
+  void loadSpacePins();
+  const installedDetail = signal<{ appId: string; from: "library" | "market" } | null>(null);
+  const marketFromAppCard = signal<string | null>(null);
+  const query = signal("");
+  const category = signal<MarketCategory>("all");
+  const installedSort = signal<MarketSort>("downloads");
+  const keyword = computed(() => query().trim().toLowerCase());
+  const hasFilters = () => Boolean(keyword()) || category() !== "all";
+  const matchesCategory = (value: string) => category() === "all" || value?.toLowerCase() === category();
+  const matchesText = (fields: string[]) => fields.some(value => value?.toLowerCase().includes(keyword()));
+  const installedListingIds = computed(() => {
+    if (!hasCurrentSpaceCatalog()) return [];
+    const appIds = new Set(spaces().map(app => app.id));
+    return Object.values(marketOrigins()).filter(origin => appIds.has(origin.appId))
+      .map(origin => origin.listingId).sort();
+  });
+  const rankingsAvailable = () => installedMarketSummaries().items.size > 0;
+  const effectiveSort = (): MarketSort => rankingsAvailable() ? installedSort() : "newest";
+  const visibleInstalled = computed(() => installedSpaceRows(
+    spaces(), marketOrigins(), installedMarketSummaries().items,
+    { keyword: keyword(), category: category(), sort: effectiveSort() },
+  ));
+  const visibleElsewhere = computed(() => spacesElsewhere().filter(app =>
+    matchesCategory(app.category) && (!keyword() || matchesText([app.name, app.description]))));
+  const resetFilters = () => {
+    query.set("");
+    category.set("all");
+  };
+  const marketFromInstalled = () => spacesView() === "library" && installedDetail()?.from === "library"
+    && Boolean(marketDetailTarget());
+  const detailedMarket = () => Boolean(marketDetailTarget())
+    && (spacesView() === "market" || (spacesView() === "library" && (marketFromInstalled() || Boolean(marketFromAppCard()))));
+  const detailedSpace = () => {
+    const detail = installedDetail();
+    if (!detail || (detail.from === "market" ? !detailedMarket() : spacesView() !== "library")) return;
+    return spaceInCurrentCatalog(detail.appId);
+  };
+  const marketCovered = () => Boolean(openSpace() || (installedDetail()?.from === "market" && detailedSpace()));
+  const installedCovered = () => Boolean(openSpace() || marketFromInstalled());
+  let manageButton: ViewRef | null = null;
+  let listingButton: ViewRef | null = null;
+  let catalogOffset = 0;
+  let restoreOffset: number | null = null;
+  let appliedOffset: number | null = null;
+  let viewport: ScrollRef | null = null;
+  let viewportHeight = 0;
+  let contentHeight = 0;
+  let focusOnReturn: { view: SpacesView; key: string } | null = null;
+  function stopRestoringCatalog() {
+    restoreOffset = null;
+    appliedOffset = null;
+  }
+  function restoreCatalog() {
+    if (!viewport || restoreOffset === null || !viewportHeight || !contentHeight) return;
+    const offset = Math.min(restoreOffset, Math.max(0, contentHeight - viewportHeight));
+    if (offset === appliedOffset) return;
+    appliedOffset = offset;
+    viewport.scrollTo({ y: offset, animated: false });
+    if (offset === 0) stopRestoringCatalog();
+  }
+  function rememberCatalogReturn(view: SpacesView, key: string | null) {
+    focusOnReturn = key === null ? null : { view, key };
+    restoreOffset = catalogOffset;
+  }
+  function restoreCardFocus(view: SpacesView, key: string, node: ViewRef | null) {
+    if (!node || focusOnReturn?.view !== view || focusOnReturn.key !== key) return;
+    focusOnReturn = null;
+    queueMicrotask(() => node.focus());
+  }
+  function backFromInstalledDetails() {
+    const detail = installedDetail();
+    if (detail?.from === "market") queueMicrotask(() => manageButton?.focus());
+    else rememberCatalogReturn("library", detail?.appId ?? null);
+    closeSpaceInspector();
+    installedDetail.set(null);
+  }
+  function backToMarket() {
+    if (marketFromInstalled()) queueMicrotask(() => listingButton?.focus());
+    else if (marketFromAppCard()) rememberCatalogReturn("library", marketFromAppCard());
+    else rememberCatalogReturn("market", marketDetailSlug());
+    marketFromAppCard.set(null);
+    closeMarketListing();
+  }
+  let catalogDevice = deviceContext();
+  let catalogConnection = backendConnection();
+  effect(() => {
+    const device = deviceContext();
+    const connection = backendConnection();
+    if (device === catalogDevice && connection === catalogConnection) return;
+    catalogDevice = device;
+    catalogConnection = connection;
+    catalogOffset = 0;
+    stopRestoringCatalog();
+    focusOnReturn = null;
+    installedDetail.set(null);
+    marketFromAppCard.set(null);
+    closeMarketListing();
+    resetFilters();
+    installedSort.set("downloads");
+  });
+  effect(() => {
+    const detail = installedDetail();
+    if (detail && !spacesBusy() && hasCurrentSpaceCatalog() && !spaceInCurrentCatalog(detail.appId)) {
+      if (detail.from === "market") untracked(() => clearDeletedMarketInstall(detail.appId));
+      else if (marketFromInstalled()) closeMarketListing();
+      installedDetail.set(null);
+    }
+  });
   const refreshControls = () => (
     <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
       <If when={spacesBusy() && !spacesInitialLoad()}>
@@ -837,24 +1020,41 @@ export function SpacesScene(props: { embedded?: boolean }) {
   );
   effect(() => {
     // The device the Library looks at (fleet) or the driven peer (older backends).
-    const scopeKey = `local:${deviceContext()}`;
-    void scopeKey;
-    void loadSpaces();
-    void loadMarketOrigins();
-    void loadAccountCatalog(); // wave22-p4
+    void deviceContext();
+    void backendConnection();
+    untracked(() => {
+      void loadSpaces();
+      void loadMarketOrigins();
+      void loadAccountCatalog();
+    });
   });
   // Each view reads its own host state when it is shown (and again when the
   // driven device changes), so a hidden view costs nothing.
   effect(() => {
-    // The device the Library looks at (fleet) or the driven peer (older backends).
-    const scopeKey = `local:${deviceContext()}`;
-    void scopeKey;
+    void deviceContext();
+    void backendConnection();
     const view = spacesView();
-    if (view === "market") enterMarket();
-    else if (view === "submissions") void loadSubmissions();
+    untracked(() => {
+      if (installedDetail()?.from !== view) installedDetail.set(null);
+      if (view === "market") enterMarket();
+      else {
+        marketFromAppCard.set(null);
+        closeMarketListing();
+        if (view === "submissions") void loadSubmissions();
+      }
+    });
+  });
+  effect(() => {
+    if (spacesView() !== "library") return;
+    const ids = installedListingIds();
+    void installedMarketSummariesSupported();
+    untracked(() => void loadInstalledMarketSummaries(ids));
   });
   const unsubscribe = subscribeSpaceEvents();
-  cleanup(() => unsubscribe());
+  cleanup(() => {
+    unsubscribe();
+    closeMarketListing();
+  });
   // wave22-p4: a Space page belongs to the device it opened on.
   let openedFor = deviceContext();
   effect(() => {
@@ -873,8 +1073,46 @@ export function SpacesScene(props: { embedded?: boolean }) {
       <If when={openSpace()}>
         <SpacePage permissionLabel={localizePermission} />
       </If>
-      <If when={!openSpace()}>
-      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
+      <If when={detailedSpace()}>
+        {app => <View accessibilityElementsHidden={installedCovered()}
+          style={{ flex: 1, minHeight: 0, display: installedCovered() ? "none" : "flex" }}>
+          <InstalledSpaceDetails space={app} onBack={backFromInstalledDetails}
+            backText={installedDetail()?.from === "market" ? tr("market.backToListing") : undefined}
+            listingButtonRef={node => { listingButton = node; }}
+            onViewListing={installedDetail()?.from === "library" ? listingId => {
+              if (spaceInCurrentCatalog(app().id)) void openMarketListing({ listingId });
+            } : undefined} />
+        </View>}
+      </If>
+      <If when={detailedMarket()}>
+        <View accessibilityElementsHidden={marketCovered()}
+          style={{ flex: 1, minHeight: 0, display: marketCovered() ? "none" : "flex" }}>
+          <SpaceDetailsFrame accessibilityLabel="market-listing" backLabel="market-close"
+            backText={marketFromInstalled() ? tr("market.backToInstalled") : undefined} onBack={backToMarket}>
+            <MarketListingDetails manageButtonRef={node => { manageButton = node; }}
+              onManage={appId => {
+                if (!spaceInCurrentCatalog(appId) || !detailedMarket()) return;
+                if (marketFromInstalled()) backToMarket();
+                else installedDetail.set({ appId, from: "market" });
+              }} />
+          </SpaceDetailsFrame>
+        </View>
+      </If>
+      <If when={!openSpace() && !detailedSpace() && !detailedMarket()}>
+      <Scroll testID="spaces-catalog-scroll" smoothWheel
+        ref={node => {
+          viewport = node;
+          if (!node) { viewportHeight = 0; contentHeight = 0; }
+        }}
+        onLayout={event => { viewportHeight = event.bounds.size.height; queueMicrotask(restoreCatalog); }}
+        onWheel={stopRestoringCatalog} onTouchStart={stopRestoringCatalog}
+        onKeyDown={stopRestoringCatalog} onScrollDragStart={stopRestoringCatalog}
+        onScroll={event => {
+          if (appliedOffset !== null && Math.abs(event.offset.y - appliedOffset) < 1) stopRestoringCatalog();
+          if (!installedDetail() && !marketDetailTarget() && restoreOffset === null) catalogOffset = Math.max(0, event.offset.y);
+        }}
+        style={{ flex: 1, minHeight: 0 }}>
+        <View onLayout={event => { contentHeight = event.bounds.size.height; queueMicrotask(restoreCatalog); }}>
         <If
           when={props.embedded}
           else={
@@ -902,7 +1140,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
           </If>
 
           <If when={spacesView() === "market"}>
-            <MiniAppMarketView />
+            <MiniAppMarketView onCardRef={(slug, node) => restoreCardFocus("market", slug, node)} />
           </If>
           <If when={spacesView() === "submissions"}>
             <MiniAppSubmissionsView />
@@ -913,6 +1151,18 @@ export function SpacesScene(props: { embedded?: boolean }) {
           </If>
           <If when={spacesView() === "library"}>
           <CreateSpaceSection />
+
+          <SpaceCatalogToolbar scope="spaces" query={query()} placeholder={tr("spaces.searchPlaceholder")}
+            onQueryChange={query.set} category={category()} onCategoryChange={category.set}
+            sort={{ value: effectiveSort(), onChange: installedSort.set, rankingsAvailable: rankingsAvailable() }} />
+
+          <If when={installedMarketSummaries().status === "unsupported"}>
+            <InlineBanner tone="neutral" message={tr("market.installedRankingsOutdated")} />
+          </If>
+          <If when={installedMarketSummaries().status === "unavailable"}>
+            <InlineBanner tone="neutral" message={tr("market.installedRankingsUnavailable")} actionLabel={tr("common.retry")}
+              onAction={() => void loadInstalledMarketSummaries(installedListingIds())} />
+          </If>
 
           <StudioSection
             title={tr("spaces.polish.installedSection")}
@@ -942,33 +1192,60 @@ export function SpacesScene(props: { embedded?: boolean }) {
             }
           >
             <If when={spaces().length === 0 && spacesBusy() && spacesInitialLoad()}>
-              <GallerySkeleton count={4} height={132} />
+              <GallerySkeleton count={4} />
             </If>
-            <If when={spaces().length === 0 && !spacesError() && !(spacesBusy() && spacesInitialLoad())}>
+            <If when={!hasFilters() && spaces().length === 0 && !spacesError() && !(spacesBusy() && spacesInitialLoad())}>
               <StudioEmpty
                 icon="layout-grid"
                 message={tr("spaces.emptyTitle")}
                 detail={tr("spaces.emptySubtitle")}
               />
             </If>
-            <If when={spaces().length > 0}>
+            <If when={hasFilters() && !spacesBusy() && !accountCatalogLoading() && !spacesError()
+              && installedMarketSummaries().status !== "loading"
+              && visibleInstalled().length === 0 && visibleElsewhere().length === 0}>
+              <StudioEmpty
+                accessibilityLabel="spaces-no-matches"
+                icon="search"
+                message={tr("market.emptyTitle")}
+                detail={tr("market.emptyFiltered")}
+                action={<Button label={tr("common.resetFilter")} variant="secondary" size="md"
+                  accessibilityLabel="spaces-reset-filters"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={resetFilters} />}
+              />
+            </If>
+            <If when={visibleInstalled().length > 0}>
               <GalleryGrid minColumn={props.embedded ? SPACE_GALLERY_MIN_COLUMN : undefined} gap={space.md}>
-                <Each of={spaces()} key={item => item.id}>
-                  {item => <SpaceCard space={item} />}
+                <Each of={visibleInstalled()} key={item => item.app.id}>
+                  {item => <SpaceCard space={() => item().app} updateAvailable={item().updateAvailable}
+                    onManage={item().listing ? () => {
+                      if (spaceInCurrentCatalog(item().app.id)) installedDetail.set({ appId: item().app.id, from: "library" });
+                    } : undefined}
+                    onDetails={() => {
+                      const { app, listing } = item();
+                      if (!spaceInCurrentCatalog(app.id)) return;
+                      if (listing) {
+                        marketFromAppCard.set(app.id);
+                        void openMarketListing({ listingId: listing.listingId });
+                      } else installedDetail.set({ appId: app.id, from: "library" });
+                    }}
+                    onRef={node => restoreCardFocus("library", item().app.id, node)} />}
                 </Each>
               </GalleryGrid>
             </If>
           </StudioSection>
 
           {/* wave22-p4: the account's Spaces that live on other devices. */}
-          <If when={spacesElsewhere().length > 0}>
+          <If when={visibleElsewhere().length > 0}>
             <StudioSection title={tr("spaces.p4.elsewhereTitle")} accessibilityLabel="spaces-elsewhere-section">
-              <ElsewhereList apps={spacesElsewhere()} onOpen={openElsewhereSpace} />
+              <ElsewhereList apps={visibleElsewhere()} onOpen={openElsewhereSpace} />
             </StudioSection>
           </If>
           {/* wave22-p4: Spaces open inside the app everywhere; only "Open in window" is desktop-only. */}
           </If>
         </StudioBody>
+        </View>
       </Scroll>
       </If>
 

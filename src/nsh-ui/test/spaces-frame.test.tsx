@@ -24,6 +24,7 @@ const BOARD = {
   runtime_profile: "compatibility",
   permissions: { fs: { read: ["."], write: [] }, node: { enabled: true } },
   permission_badges: ["filesystem", "node_worker"],
+  i18n: { locales: { "en-US": { description: "Keeps release blockers visible.", tags: ["Releases"] } } },
 };
 
 interface SpacesState {
@@ -31,7 +32,7 @@ interface SpacesState {
   draftSynced: boolean;
 }
 
-function withSpaces(backend: Backend, state: SpacesState): Backend {
+function withSpaces(backend: Backend, state: SpacesState, apps = [BOARD]): Backend {
   const original = backend.handlers["openbitfun.invoke"];
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
     const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: Record<string, unknown> };
@@ -44,7 +45,7 @@ function withSpaces(backend: Backend, state: SpacesState): Backend {
     };
     switch (action) {
       case "list_miniapps":
-        return ok([BOARD]);
+        return ok(apps);
       case "miniapp_worker_list_running":
         return ok([]);
       case "get_miniapp_versions":
@@ -55,7 +56,7 @@ function withSpaces(backend: Backend, state: SpacesState): Backend {
           thisDevice: "desk",
           apps: [
             { appId: "space-board", name: "Release Tracker", description: "", icon: "", category: "", version: 3, updatedAt: 3, runtimeProfile: "compatibility", needsDevice: true, installedHere: true, devices: [{ deviceId: "desk", version: 3, updatedAt: 3 }, { deviceId: "laptop-1", version: 2, updatedAt: 2 }] },
-            { appId: "space-far", name: "Garden Log", description: "Plant notes", icon: "", category: "", version: 1, updatedAt: 1, runtimeProfile: "compatibility", needsDevice: false, installedHere: false, devices: [{ deviceId: "laptop-1", version: 1, updatedAt: 1 }] },
+            { appId: "space-far", name: "Garden Log", description: "Plant notes", icon: "", category: "utilities", version: 1, updatedAt: 1, runtimeProfile: "compatibility", needsDevice: false, installedHere: false, devices: [{ deviceId: "laptop-1", version: 1, updatedAt: 1 }] },
           ],
         });
       case "miniapp_inline": {
@@ -101,9 +102,60 @@ async function openSpaces(app: Awaited<ReturnType<typeof open>>): Promise<void> 
   await app.waitFor("Release Tracker");
 }
 
+test("installed Space search matches localized copy and account apps, preserves filters on back, and resets", async () => {
+  const backend = withSpaces(createBackend(), { inline: [], draftSynced: false }, [
+    BOARD,
+    { ...BOARD, id: "space-notebook", name: "Notebook", category: "productivity",
+      description: "Daily notes", created_at: BOARD.created_at + 1,
+      i18n: { locales: { "en-US": { description: "Daily notes", tags: [] } } } },
+  ]);
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSpaces(app);
+  await app.waitFor("Garden Log");
+  expect(app.texts().indexOf("Notebook")).toBeGreaterThanOrEqual(0);
+  expect(app.texts().indexOf("Notebook")).toBeLessThan(app.texts().indexOf("Release Tracker"));
+  const catalogReads = () => backend.calls.filter(call =>
+    ["list_miniapps", "miniapp_account_catalog", "miniapp_market_browse"].includes(call.action)).length;
+  const readsBeforeTyping = catalogReads();
+
+  await app.type("label:spaces-search", "  RELEASES  ");
+  await app.waitUntil(() => !app.shows("label:space-elsewhere-space-far") && !app.shows("id:space-details-space-notebook"));
+  await app.press("label:spaces-category");
+  await app.press("label:spaces-category-developer");
+  await app.press("id:space-details-space-board");
+  await app.waitFor("label:space-installed-details");
+  await app.press("label:space-detail-back");
+  await app.waitFor("id:space-details-space-board");
+  expect(app.value("label:spaces-search")).toBe("  RELEASES  ");
+  expect(app.shows("id:space-details-space-notebook")).toBe(false);
+
+  await app.press("label:Clear search");
+  expect(app.shows("id:space-details-space-board")).toBe(true);
+  expect(app.shows("id:space-details-space-notebook")).toBe(false);
+  await app.press("label:spaces-category");
+  await app.press("label:spaces-category-utilities");
+  await app.type("label:spaces-search", "plant notes");
+  await app.waitFor("label:space-elsewhere-space-far");
+  expect(app.shows("id:space-details-space-board")).toBe(false);
+  expect(app.shows("label:spaces-no-matches")).toBe(false);
+
+  await app.type("label:spaces-search", "missing");
+  await app.waitFor("label:spaces-no-matches");
+  await app.press("label:spaces-reset-filters");
+  await app.waitFor("id:space-details-space-board");
+  expect(app.shows("id:space-details-space-notebook")).toBe(true);
+  expect(app.shows("label:space-elsewhere-space-far")).toBe(true);
+  expect(app.value("label:spaces-search")).toBe("");
+  expect(catalogReads()).toBe(readsBeforeTyping);
+});
+
 test("frame bridge: SDK calls become miniapp_inline rpc on the device, locale is local, agent requests are claimed and answered", async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const delivered: unknown[] = [];
+  let notifyAgentRequest!: () => void;
+  let notifyWorkerEvent!: () => void;
+  const agentRequestDelivered = new Promise<void>(resolve => { notifyAgentRequest = resolve; });
+  const workerEventDelivered = new Promise<void>(resolve => { notifyWorkerEvent = resolve; });
   let polls = 0;
   let ready = false;
   const session = new SpaceFrameSession("space-board", "/work/repo", {
@@ -134,7 +186,12 @@ test("frame bridge: SDK calls become miniapp_inline rpc on the device, locale is
       if (method === "rpc") return { ok: true, echo: params.method };
       return null;
     },
-    deliver: message => delivered.push(message),
+    deliver: message => {
+      delivered.push(message);
+      const event = message as { type?: string; requestId?: string; event?: string };
+      if (event.type === "openbitfun:miniapp-agent-request" && event.requestId === "r-1") notifyAgentRequest();
+      if (event.type === "openbitfun:event" && event.event === "worker:event") notifyWorkerEvent();
+    },
     pollWaitMs: 0,
   });
   await session.open("light");
@@ -170,7 +227,7 @@ test("frame bridge: SDK calls become miniapp_inline rpc on the device, locale is
   expect(refusal.error?.message ?? "").toContain("own window");
 
   // The polled agent request was claimed and forwarded into the page …
-  await new Promise(resolve => setTimeout(resolve, 60));
+  await agentRequestDelivered;
   expect(calls.some(call => call.method === "agentClaim" && call.params.requestId === "r-1")).toBe(true);
   expect(delivered).toContainEqual({ type: "openbitfun:miniapp-agent-request", schemaVersion: "agent.v1", requestId: "r-1", method: "observe" });
   expect(session.agentLog()[0]).toMatchObject({ requestId: "r-1", method: "observe", outcome: "pending" });
@@ -185,12 +242,12 @@ test("frame bridge: SDK calls become miniapp_inline rpc on the device, locale is
     actions: ["next"],
   });
   expect(session.agentLog()[0].outcome).toBe("answered");
-  for (let i = 0; i < 50 && polls < 3; i += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  await workerEventDelivered;
   expect(delivered).toContainEqual({ type: "openbitfun:event", event: "worker:event", payload: { event: "tick", data: 1 } });
 
   await session.close();
   expect(calls.some(call => call.method === "close")).toBe(true);
-});
+}, 5000);
 
 test("frame bridge: another screen taking the view over is reported, not retried", async () => {
   const session = new SpaceFrameSession("space-board", null, {
@@ -228,7 +285,17 @@ test("spaces: a Space opens inside the app, versions roll back, and a draft show
   await app.waitFor("On your other devices");
   expect(app.shows("label:space-elsewhere-space-far")).toBe(true);
 
-  await app.press("label:space-open-space-board");
+  await app.press("id:space-details-space-board");
+  await app.waitFor("label:space-installed-details");
+  expect(app.texts()).toContain("Keeps release blockers visible.");
+  expect(app.texts()).toContain("Releases");
+  expect(app.texts()).toContain("v3");
+  expect(state.inline).toHaveLength(0);
+  expect(backend.calls.some(call => call.action === "get_miniapp")).toBe(false);
+  await app.press("label:space-detail-back");
+  await app.waitFor("label:space-open-space-board");
+  await app.press("id:space-details-space-board");
+  await app.press("label:space-detail-launch");
   await app.waitFor("label:space-page");
   await app.waitUntil(() => state.inline.some(call => call.method === "open"));
   const opened = state.inline.find(call => call.method === "open")!;
@@ -266,6 +333,8 @@ test("spaces: a Space opens inside the app, versions roll back, and a draft show
   // Back closes the view on the device.
   await app.press("label:space-page-back");
   await app.waitUntil(() => state.inline.some(call => call.method === "close"));
+  await app.waitFor("label:space-installed-details");
+  await app.press("label:space-detail-back");
   await app.waitFor("Release Tracker");
 });
 
@@ -276,6 +345,101 @@ test("spaces: the Cards tab holds the device's cards", async () => {
   expect(app.shows("label:cards-section")).toBe(false);
   await app.press("label:spaces-view-cards");
   await app.waitFor("label:cards-section");
+});
+
+test("Space shortcuts persist, open the installed Space, and can be removed without affecting the app", async () => {
+  const initial = withSpaces(createBackend(), { inline: [], draftSynced: false });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: initial.handlers } });
+  await openSpaces(app);
+  await app.press("label:space-more-space-board");
+  await app.press("label:space-menu-pin-space-board");
+  await app.waitFor("label:space-shortcut-space-board");
+  const storageKey = "openbitfun-miniapp-navigation";
+  await app.waitUntil(() => Boolean(app.storage()[storageKey]));
+  expect(JSON.parse(app.storage()[storageKey]!)).toEqual({
+    state: { pinnedAppIdsBySurface: { local: ["space-board"] } },
+    version: 0,
+  });
+
+  const state: SpacesState = { inline: [], draftSynced: false };
+  const restartedHost = withSpaces(createBackend(), state);
+  const invoke = restartedHost.handlers["openbitfun.invoke"];
+  let waitingForCatalog = true;
+  let catalogRead = false;
+  restartedHost.handlers["openbitfun.invoke"] = data => {
+    if (waitingForCatalog && (data as { action?: string }).action === "list_miniapps") {
+      catalogRead = true;
+      return { ok: true, value: [], transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const restarted = await open("../App.tsx", {
+    ...DESKTOP,
+    storage: app.storage(),
+    host: { handlers: restartedHost.handlers },
+  });
+  await restarted.waitUntil(() => catalogRead);
+  expect(restarted.shows("label:space-shortcut-space-board")).toBe(false);
+  expect(restarted.storage()[storageKey]).toBe(app.storage()[storageKey]);
+  waitingForCatalog = false;
+  await restarted.host.send("openbitfun.event", { event: "miniapp-created", payload: { id: "space-board" } });
+  await restarted.waitFor("label:space-shortcut-space-board");
+  expect(restarted.shows("label:space-open-space-board")).toBe(false);
+  await restarted.press("label:space-shortcut-space-board");
+  await restarted.waitFor("label:space-frame");
+  expect(state.inline[0]).toMatchObject({ method: "open", params: { appId: "space-board" } });
+  expect(restarted.accessibility("label:space-shortcut-space-board")?.selected).toBe(true);
+  expect(restarted.accessibility("label:nav-library")?.selected).toBe(false);
+  await restarted.press("label:nav-library");
+  await restarted.waitFor("label:space-open-space-board");
+  await restarted.press("label:space-shortcut-space-board");
+  await restarted.waitFor("label:space-frame");
+  await restarted.press("label:space-page-more");
+  await restarted.press("label:space-page-pin");
+  await restarted.waitFor("label:space-shortcut-space-board", { state: "gone" });
+  expect(restarted.shows("label:space-frame")).toBe(true);
+  expect(restartedHost.calls.some(call => call.action === "delete_miniapp")).toBe(false);
+});
+
+test("Space shortcuts are isolated by fleet device even when installations share an app id", async () => {
+  const backend = withSpaces(createBackend(), { inline: [], draftSynced: false });
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "desk" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [],
+      devices: [
+        fleetDeviceRow("desk", "Desk Mac", [], { hostKind: "desktop" }),
+        fleetDeviceRow("laptop-1", "Travel Laptop", [], { hostKind: "desktop" }),
+      ],
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSpaces(app);
+  await app.press("label:space-more-space-board");
+  await app.press("label:space-menu-pin-space-board");
+  await app.waitFor("label:space-shortcut-space-board");
+  await app.press("library-scope-chip");
+  await app.press("library-scope-laptop-1");
+  await app.waitFor("On Travel Laptop");
+  await app.waitFor("label:space-open-space-board");
+  expect(app.shows("label:space-shortcut-space-board")).toBe(false);
+
+  await app.press("label:space-more-space-board");
+  await app.press("label:space-menu-pin-space-board");
+  await app.press("label:space-shortcut-space-board");
+  await app.waitFor("label:space-frame");
+  const opened = host.fleetCalls.find(call => call.command === "miniapp_inline");
+  expect(opened).toMatchObject({
+    target: "laptop-1",
+    args: { request: { method: "open", params: { appId: "space-board" } } },
+  });
+
+  await app.press("label:space-shortcut-remove-space-board");
+  await app.waitFor("label:space-shortcut-space-board", { state: "gone" });
+  await app.press("label:space-page-back");
+  await app.press("library-scope-chip");
+  await app.press("library-scope-desk");
+  await app.waitFor("label:space-shortcut-space-board");
 });
 
 test("spaces: on a phone a Space opens inside the app too", async () => {
@@ -337,4 +501,74 @@ test("spaces over the fleet: a Space on another device opens there, and one with
         (call.args.request as Record<string, any>).params.appId === "space-board",
     ),
   );
+});
+
+test("Space filters, details and delayed catalog and worker receipts stay with their device", async () => {
+  const backend = withSpaces(createBackend(), { inline: [], draftSynced: false });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const action = (data as { action?: string }).action;
+    if (action === "miniapp_worker_list_running") return { ok: true, value: ["space-board"] };
+    if (action === "miniapp_worker_stop") return { ok: true, value: null };
+    return invoke(data);
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "desk" },
+    navigator: { revision: 1, full: true, removedDeviceIds: [], totals: { running: 0, unread: 0, waiting: 0 }, devices: [
+      fleetDeviceRow("desk", "Desk", [], { hostKind: "desktop" }),
+      fleetDeviceRow("laptop", "Laptop", [], { hostKind: "desktop" }),
+    ] },
+  });
+  let heldStop: unknown;
+  let heldCatalog: unknown;
+  const send = host.handlers["openbitfun.obpSend"];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const answer = send(data) as string[];
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const call = frame.params?.args?.request;
+    if (call?.target === "desk" && call.command === "miniapp_worker_stop") {
+      heldStop = answer;
+      return [];
+    }
+    if (call?.target === "desk" && call.command === "miniapp_account_catalog") {
+      heldCatalog = answer;
+      return [];
+    }
+    if (call?.target === "laptop" && call.command === "list_miniapps") {
+      return answer.map(line => JSON.stringify({ ...JSON.parse(line),
+        result: [{ ...BOARD, name: "Travel Tracker", i18n: null }],
+      }));
+    }
+    if (call?.target === "laptop" && call.command === "miniapp_account_catalog") {
+      return answer.map(line => JSON.stringify({ ...JSON.parse(line),
+        result: { scope: "account", thisDevice: "laptop", apps: [{
+          appId: "space-desk-notes", name: "Desk Notes", description: "Desk notebook", icon: "",
+          category: "productivity", version: 1, updatedAt: 1, runtimeProfile: "compatibility",
+          needsDevice: false, installedHere: false, devices: [{ deviceId: "desk", version: 1, updatedAt: 1 }],
+        }] },
+      }));
+    }
+    return answer;
+  };
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSpaces(app);
+  await app.waitUntil(() => heldCatalog !== undefined);
+  await app.type("label:spaces-search", "releases");
+  await app.press("id:space-details-space-board");
+  await app.press("label:space-detail-stop");
+  await app.waitUntil(() => heldStop !== undefined);
+  await app.press("label:library-scope-chip");
+  await app.press("label:library-scope-laptop");
+  await app.waitFor("Travel Tracker");
+  await app.waitFor("Desk Notes");
+  expect(app.shows("label:space-installed-details")).toBe(false);
+  expect(app.value("label:spaces-search")).toBe("");
+  await app.host.send("openbitfun.obpFrames", heldCatalog);
+  expect(app.shows("label:space-elsewhere-space-far")).toBe(false);
+  expect(app.shows("label:space-elsewhere-space-desk-notes")).toBe(true);
+  await app.press("id:space-details-space-board");
+  await app.waitFor("label:space-detail-stop");
+  await app.host.send("openbitfun.obpFrames", heldStop);
+  expect(app.shows("label:space-detail-stop")).toBe(true);
+  expect(host.fleetCalls.filter(call => call.command === "miniapp_worker_stop").map(call => call.target)).toEqual(["desk"]);
 });

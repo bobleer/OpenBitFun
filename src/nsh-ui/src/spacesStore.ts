@@ -1,11 +1,12 @@
 // Spaces (MiniApps) hub state and host IPC operations.
 
 import { computed, signal } from "nsh";
-import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
-import { tr } from "./i18n";
+import { backendConnection, fleetActive, invokeCommand, invokeRawCommand, listenEvent, windowShellId, type EventMeta } from "./bridge";
+import { currentLocale, tr } from "./i18n";
+import localeContract from "../../shared/i18n/contract/locales.json";
 import { isDesktopLocalShell, isRemotePeerContext } from "./shared/deviceScope";
 import { isRemoteWorkspace } from "./shared/workspaceUtils";
-import { activeWorkspace, startQuickPromptInSession } from "./state";
+import { activeWorkspace, deviceContext, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
 export interface SpaceMeta {
@@ -22,6 +23,7 @@ export interface SpaceMeta {
   permissions: Record<string, unknown>;
   /** Badge ids the host derives from the manifest (wave 4); `null` on an older host. */
   permissionBadges: string[] | null;
+  localized?: Record<string, { name?: string; description?: string; tags?: string[] }>;
 }
 
 export interface SpaceSource {
@@ -45,6 +47,7 @@ export interface SpaceDetail extends SpaceMeta {
 export type SpaceSourceTab = "html" | "css" | "ui_js" | "worker_js";
 
 export const spaces = signal<SpaceMeta[]>([]);
+export const spacesCatalogDevice = signal<string | null>(null);
 export const runningSpaceWorkers = signal<string[]>([]);
 export const selectedSpaceId = signal<string | null>(null);
 export const selectedSpaceDetail = signal<SpaceDetail | null>(null);
@@ -99,6 +102,32 @@ function normalizeSpaceMeta(raw: Record<string, unknown>): SpaceMeta {
     permissionBadges: Array.isArray(raw.permissionBadges)
       ? raw.permissionBadges.filter((id): id is string => typeof id === "string")
       : null,
+    localized: normalizeSpaceLocales(raw.i18n),
+  };
+}
+
+export function normalizeSpaceLocales(raw: unknown): SpaceMeta["localized"] {
+  const locales = (raw as { locales?: Record<string, unknown> } | undefined)?.locales;
+  if (!locales || typeof locales !== "object" || Array.isArray(locales)) return;
+  return Object.fromEntries(Object.entries(locales).flatMap(([locale, entry]) => {
+    if (!entry || typeof entry !== "object") return [];
+    const value = entry as Record<string, unknown>;
+    return [[locale, {
+      name: readStr(value, "name") || undefined,
+      description: readStr(value, "description") || undefined,
+      tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === "string" && !!tag) : undefined,
+    }]];
+  }));
+}
+
+export function localizedSpace(space: Pick<SpaceMeta, "name" | "description" | "tags" | "localized">) {
+  const locale = currentLocale();
+  const fallbacks = localeContract.locales.find(entry => entry.id === locale)?.contentFallbacks ?? [];
+  const candidates = [locale, ...fallbacks].map(key => space.localized?.[key]);
+  return {
+    name: candidates.find(value => value?.name)?.name ?? space.name,
+    description: candidates.find(value => value?.description)?.description ?? space.description,
+    tags: candidates.find(value => value?.tags?.length)?.tags ?? space.tags,
   };
 }
 
@@ -198,18 +227,56 @@ export const selectedSpaceSourceCode = computed(() => {
   return detail.source.html || `<!-- ${tr("spaces.noHtml")} -->`;
 });
 
-export async function loadSpaces(): Promise<void> {
+type CatalogConnection = ReturnType<typeof backendConnection>;
+let catalogConnection: CatalogConnection | null = null;
+let spacesRequest: { deviceId: string; connection: CatalogConnection; promise: Promise<void> } | null = null;
+let spacesTicket = 0;
+
+export function hasCurrentSpaceCatalog(): boolean {
+  return spacesCatalogDevice() === deviceContext() && catalogConnection === backendConnection();
+}
+
+export function spaceInCurrentCatalog(appId: string | null | undefined): SpaceMeta | undefined {
+  if (!appId || !hasCurrentSpaceCatalog()) return;
+  return spaces().find(space => space.id === appId);
+}
+
+export function loadSpaces(refresh = false): Promise<void> {
+  const deviceId = deviceContext();
+  const connection = backendConnection();
+  if (!refresh && spacesRequest?.deviceId === deviceId && spacesRequest.connection === connection) return spacesRequest.promise;
+  if (spacesCatalogDevice() !== deviceId || catalogConnection !== connection) {
+    spacesCatalogDevice.set(null);
+    spaces.set([]);
+    runningSpaceWorkers.set([]);
+    spacesInitialLoad.set(true);
+    closeSpaceInspector();
+  }
+  const promise = readSpaces(deviceId, connection, ++spacesTicket);
+  spacesRequest = { deviceId, connection, promise };
+  void promise.finally(() => {
+    if (spacesRequest?.promise === promise) spacesRequest = null;
+  });
+  return promise;
+}
+
+async function readSpaces(deviceId: string, connection: CatalogConnection, ticket: number): Promise<void> {
+  const options = deviceId ? { target: deviceId } : undefined;
+  const isCurrent = () => backendConnection() === connection && deviceId === deviceContext() && ticket === spacesTicket;
   spacesBusy.set(true);
   spacesError.set("");
   try {
     const [rawList, rawWorkers] = await Promise.all([
-      invokeRawCommand<Array<Record<string, unknown>>>("list_miniapps", {}),
-      invokeRawCommand<string[]>("miniapp_worker_list_running", {}).catch(() => [] as string[]),
+      invokeRawCommand<Array<Record<string, unknown>>>("list_miniapps", {}, options),
+      invokeRawCommand<string[]>("miniapp_worker_list_running", {}, options).catch(() => [] as string[]),
     ]);
+    if (!isCurrent()) return;
     const normalized = (Array.isArray(rawList) ? rawList : [])
       .map(item => normalizeSpaceMeta(item ?? {}))
       .filter(item => Boolean(item.id));
     spaces.set(normalized);
+    catalogConnection = connection;
+    spacesCatalogDevice.set(deviceId);
     runningSpaceWorkers.set(Array.isArray(rawWorkers) ? rawWorkers.filter(Boolean) : []);
 
     const currentId = selectedSpaceId();
@@ -219,17 +286,20 @@ export async function loadSpaces(): Promise<void> {
       selectedSpaceVersions.set([]);
     }
   } catch (error) {
-    spacesError.set(error instanceof Error ? error.message : String(error));
+    if (isCurrent()) spacesError.set(error instanceof Error ? error.message : String(error));
   } finally {
-    spacesBusy.set(false);
-    spacesInitialLoad.set(false);
+    if (isCurrent()) {
+      spacesBusy.set(false);
+      spacesInitialLoad.set(false);
+    }
   }
 }
 
 async function refreshRunningWorkers(): Promise<void> {
+  const deviceId = deviceContext();
   try {
-    const raw = await invokeRawCommand<string[]>("miniapp_worker_list_running", {});
-    runningSpaceWorkers.set(Array.isArray(raw) ? raw.filter(Boolean) : []);
+    const raw = await invokeRawCommand<string[]>("miniapp_worker_list_running", {}, deviceId ? { target: deviceId } : undefined);
+    if (deviceId === deviceContext()) runningSpaceWorkers.set(Array.isArray(raw) ? raw.filter(Boolean) : []);
   } catch {
     // An older host without the worker list keeps the last known set.
   }
@@ -248,16 +318,35 @@ function eventAppId(payload: unknown): string {
  * sync does: created / updated / deleted re-read the list, worker restarts and
  * stops move the running set. Returns the unsubscribe.
  */
+let spaceEventSubscribers = 0;
+let removeSpaceEventListeners: (() => void) | undefined;
+
 export function subscribeSpaceEvents(): () => void {
+  if (++spaceEventSubscribers === 1) removeSpaceEventListeners = listenToSpaceEvents();
+  return () => {
+    if (--spaceEventSubscribers === 0) {
+      removeSpaceEventListeners?.();
+      removeSpaceEventListeners = undefined;
+    }
+  };
+}
+
+function listenToSpaceEvents(): () => void {
+  const fromCurrentDevice = (meta: EventMeta) => !fleetActive() || !meta.origin || meta.origin === deviceContext();
+  const reload = (_payload: unknown, meta: EventMeta) => {
+    if (fromCurrentDevice(meta)) void loadSpaces(true);
+  };
   const offs = [
-    listenEvent<unknown>("miniapp-created", () => void loadSpaces()),
-    listenEvent<unknown>("miniapp-updated", () => void loadSpaces()),
-    listenEvent<unknown>("miniapp-deleted", payload => {
+    listenEvent<unknown>("miniapp-created", reload),
+    listenEvent<unknown>("miniapp-updated", reload),
+    listenEvent<unknown>("miniapp-deleted", (payload, meta) => {
+      if (!fromCurrentDevice(meta)) return;
       const id = eventAppId(payload);
       if (id) runningSpaceWorkers.update(ids => ids.filter(item => item !== id));
-      void loadSpaces();
+      void loadSpaces(true);
     }),
-    listenEvent<unknown>("miniapp-worker-restarted", payload => {
+    listenEvent<unknown>("miniapp-worker-restarted", (payload, meta) => {
+      if (!fromCurrentDevice(meta)) return;
       const id = eventAppId(payload);
       if (id) {
         runningSpaceWorkers.update(ids => (ids.includes(id) ? ids : [...ids, id]));
@@ -265,7 +354,8 @@ export function subscribeSpaceEvents(): () => void {
         void refreshRunningWorkers();
       }
     }),
-    listenEvent<unknown>("miniapp-worker-stopped", payload => {
+    listenEvent<unknown>("miniapp-worker-stopped", (payload, meta) => {
+      if (!fromCurrentDevice(meta)) return;
       const id = eventAppId(payload);
       if (id) {
         runningSpaceWorkers.update(ids => ids.filter(item => item !== id));
@@ -279,10 +369,20 @@ export function subscribeSpaceEvents(): () => void {
   };
 }
 
+let inspectorTicket = 0;
+
 export async function inspectSpace(appId: string): Promise<void> {
   if (!appId) return;
+  const ticket = ++inspectorTicket;
+  const deviceId = deviceContext();
+  const connection = backendConnection();
+  const options = deviceId ? { target: deviceId } : undefined;
+  const isCurrent = () => backendConnection() === connection && ticket === inspectorTicket &&
+    deviceId === deviceContext() && selectedSpaceId() === appId;
   if (selectedSpaceId() !== appId) {
     spaceSourceTab.set("html");
+    selectedSpaceDetail.set(null);
+    selectedSpaceVersions.set([]);
   }
   selectedSpaceId.set(appId);
   spaceInspectorBusy.set(true);
@@ -290,54 +390,70 @@ export async function inspectSpace(appId: string): Promise<void> {
   confirmingDeleteSpaceId.set(null);
   try {
     const [detailRaw, versionsRaw] = await Promise.all([
-      invokeCommand<Record<string, unknown>>("get_miniapp", { appId }),
+      invokeCommand<Record<string, unknown>>("get_miniapp", { appId }, options),
       invokeRawCommand<Array<number | Record<string, unknown>>>("get_miniapp_versions", {
         appId,
-      }).catch(() => [] as Array<number | Record<string, unknown>>),
+      }, options).catch(() => [] as Array<number | Record<string, unknown>>),
     ]);
-    if (selectedSpaceId() !== appId) return;
+    if (!isCurrent()) return;
     selectedSpaceDetail.set(normalizeSpaceDetail(detailRaw ?? {}));
     selectedSpaceVersions.set(normalizeVersions(versionsRaw));
   } catch (error) {
-    if (selectedSpaceId() === appId) {
+    if (isCurrent()) {
       spacesError.set(error instanceof Error ? error.message : String(error));
     }
   } finally {
-    if (selectedSpaceId() === appId) {
+    if (isCurrent()) {
       spaceInspectorBusy.set(false);
     }
   }
 }
 
 export function closeSpaceInspector(): void {
+  inspectorTicket++;
   selectedSpaceId.set(null);
   selectedSpaceDetail.set(null);
   selectedSpaceVersions.set([]);
   confirmingDeleteSpaceId.set(null);
+  spaceInspectorBusy.set(false);
+}
+
+function spaceCatalogOperation() {
+  const deviceId = deviceContext();
+  const connection = backendConnection();
+  return {
+    options: deviceId ? { target: deviceId } : undefined,
+    current: () => backendConnection() === connection && catalogConnection === connection &&
+      deviceContext() === deviceId && spacesCatalogDevice() === deviceId,
+  };
 }
 
 export async function stopSpaceWorker(appId: string): Promise<void> {
-  if (!appId) return;
+  const owner = spaceCatalogOperation();
+  if (!appId || !owner.current() || spacesBusy()) return;
   spacesBusy.set(true);
   spacesError.set("");
   spacesNotice.set("");
   try {
-    await invokeRawCommand<unknown>("miniapp_worker_stop", { appId });
+    await invokeRawCommand<unknown>("miniapp_worker_stop", { appId }, owner.options);
+    if (!owner.current()) return;
     runningSpaceWorkers.update(ids => ids.filter(id => id !== appId));
-    const refreshed = await invokeRawCommand<string[]>("miniapp_worker_list_running", {}).catch(
+    const refreshed = await invokeRawCommand<string[]>("miniapp_worker_list_running", {}, owner.options).catch(
       () => runningSpaceWorkers(),
     );
+    if (!owner.current()) return;
     runningSpaceWorkers.set(Array.isArray(refreshed) ? refreshed : []);
     const name = spaces().find(item => item.id === appId)?.name ?? appId;
     const msg = tr("spaces.workerStopped", { name });
     spacesNotice.set(msg);
     pushToast(msg, "success");
   } catch (error) {
+    if (!owner.current()) return;
     const errMsg = error instanceof Error ? error.message : String(error);
     spacesError.set(errMsg);
     pushToast(errMsg, "error");
   } finally {
-    spacesBusy.set(false);
+    if (owner.current()) spacesBusy.set(false);
   }
 }
 
@@ -349,29 +465,32 @@ export function cancelDeleteSpace(): void {
   confirmingDeleteSpaceId.set(null);
 }
 
-export async function confirmDeleteSpace(appId: string): Promise<void> {
-  if (!appId) return;
+export async function confirmDeleteSpace(appId: string): Promise<boolean> {
+  const owner = spaceCatalogOperation();
+  if (!appId || !owner.current() || spacesBusy()) return false;
   spacesBusy.set(true);
   spacesError.set("");
   spacesNotice.set("");
   try {
-    await invokeRawCommand<unknown>("delete_miniapp", { appId });
+    await invokeRawCommand<unknown>("delete_miniapp", { appId }, owner.options);
+    if (!owner.current()) return false;
     confirmingDeleteSpaceId.set(null);
     spaces.update(list => list.filter(s => s.id !== appId));
     runningSpaceWorkers.update(ids => ids.filter(id => id !== appId));
     if (selectedSpaceId() === appId) {
-      selectedSpaceId.set(null);
-      selectedSpaceDetail.set(null);
-      selectedSpaceVersions.set([]);
+      closeSpaceInspector();
     }
     spacesNotice.set(tr("spaces.deleted"));
     pushToast(tr("spaces.deleted"), "success");
+    return true;
   } catch (error) {
+    if (!owner.current()) return false;
     const errMsg = error instanceof Error ? error.message : String(error);
     spacesError.set(errMsg);
     pushToast(errMsg, "error");
+    return false;
   } finally {
-    spacesBusy.set(false);
+    if (owner.current()) spacesBusy.set(false);
   }
 }
 

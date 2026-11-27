@@ -10,7 +10,7 @@ import { cleanup, Clipboard, signal, Text, View, WebView, type WebViewRef } from
 import { localizeHostError, tr } from "../i18n";
 import { fleetActive } from "../bridge";
 import { fleetDeviceById } from "../fleetStore";
-import { showDevice } from "../state";
+import { deviceContext, showDevice } from "../state";
 import {
   compactLayout,
   concentricRadius,
@@ -44,7 +44,8 @@ import {
   spaceWindowAvailable,
   startSpaceDraft,
 } from "../spaceViewStore";
-import { openSpaceWindow, spaceOpening, spacePermissionBadges, spaces, stopSpaceWorker } from "../spacesStore";
+import { openSpaceWindow, spaceOpening, spacePermissionBadges, spaces, spacesCatalogDevice, stopSpaceWorker } from "../spacesStore";
+import { pinnedSpaceIds, setSpacePinned, spacePinsReady } from "../spaceNavigationStore";
 import { SPACE_FRAME_SHIM, type SpaceFrameSession } from "../spaceFrame";
 import { DeviceBadge, StateMark, deviceException } from "./fleet";
 import { Icon } from "./icons";
@@ -512,6 +513,18 @@ function pageMenuItems(): DropdownMenuItem[] {
       disabled: spaceOpening() !== null,
       accessibilityLabel: "space-page-open-window",
       onSelect: () => void openSpaceWindow(current.appId),
+    });
+  }
+  const owner = current.deviceId;
+  if (owner === deviceContext() && spacesCatalogDevice() === owner && spaces().some(app => app.id === current.appId)) {
+    const pinned = pinnedSpaceIds().includes(current.appId);
+    items.push({
+      id: "pin",
+      label: tr(pinned ? "spaces.unpinFromSidebar" : "spaces.pinToSidebar"),
+      icon: "pin",
+      disabled: !spacePinsReady(),
+      accessibilityLabel: "space-page-pin",
+      onSelect: () => setSpacePinned(current.appId, !pinned, owner),
     });
   }
   items.push(

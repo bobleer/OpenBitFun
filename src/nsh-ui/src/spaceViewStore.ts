@@ -11,7 +11,7 @@
 // stay on that device.
 
 import { computed, Clipboard, openUrl, signal } from "nsh";
-import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
+import { backendConnection, invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
 import { fleetActive, entryDeviceId } from "./bridge";
 import { tr } from "./i18n";
 import { isDesktopLocalShell, isRemotePeerContext } from "./shared/deviceScope";
@@ -48,8 +48,19 @@ export interface AccountCatalog {
   apps: CatalogApp[];
 }
 
+const accountCatalogSnapshot = signal<{
+  device: string;
+  connection: ReturnType<typeof backendConnection>;
+  catalog: AccountCatalog | null;
+} | null>(null);
+const scopedAccountCatalog = computed(() => {
+  const snapshot = accountCatalogSnapshot();
+  return snapshot && snapshot.device === deviceContext() && snapshot.connection === backendConnection()
+    ? snapshot : null;
+});
 /** The catalog of the device in context; `null` until read or on an older host. */
-export const accountCatalog = signal<AccountCatalog | null>(null);
+export const accountCatalog = computed(() => scopedAccountCatalog()?.catalog ?? null);
+export const accountCatalogLoading = computed(() => scopedAccountCatalog() === null);
 /** The device in context does not know `miniapp_account_catalog` (older build). */
 export const accountCatalogUnsupported = signal(false);
 
@@ -61,13 +72,21 @@ function unknownCommand(error: unknown): boolean {
   return /unknown (command|action)|not (a )?registered|unsupported command|no handler/i.test(message);
 }
 
+let accountCatalogTicket = 0;
+
 export async function loadAccountCatalog(): Promise<void> {
+  const ticket = ++accountCatalogTicket;
+  const device = deviceContext();
+  const connection = backendConnection();
+  const isCurrent = () => ticket === accountCatalogTicket && device === deviceContext() && connection === backendConnection();
   try {
     const answer = await invokeCommand<AccountCatalog>("miniapp_account_catalog", {});
-    accountCatalog.set(answer && Array.isArray(answer.apps) ? answer : null);
+    if (!isCurrent()) return;
+    accountCatalogSnapshot.set({ device, connection, catalog: answer && Array.isArray(answer.apps) ? answer : null });
     accountCatalogUnsupported.set(false);
   } catch (error) {
-    accountCatalog.set(null);
+    if (!isCurrent()) return;
+    accountCatalogSnapshot.set({ device, connection, catalog: null });
     accountCatalogUnsupported.set(unknownCommand(error));
   }
 }
@@ -122,6 +141,21 @@ function workspaceForDevice(deviceId: string): string | null {
   // A workspace path is a fact of its device; never hand it to another one.
   if (fleetActive() && deviceId && deviceId !== deviceContext()) return null;
   return workspace.rootPath || null;
+}
+
+/** The Library's installed cards and sidebar shortcuts use the same Space route. */
+export function openInstalledSpace(item: { id: string; name: string }, deviceId = deviceContext()): void {
+  const catalog = accountCatalog();
+  const placement = catalog && (!deviceId || catalog.thisDevice === deviceId)
+    ? catalog.apps.find(app => app.appId === item.id)
+    : undefined;
+  openSpacePage({
+    appId: item.id,
+    name: item.name,
+    deviceId,
+    devices: placement?.devices.map(device => device.deviceId),
+    needsDevice: placement?.needsDevice,
+  });
 }
 
 /** Opens a Space inside the app, on `deviceId` (default: the device in context). */
