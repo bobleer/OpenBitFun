@@ -2,6 +2,7 @@
 
 import type { TranscriptItemView, TranscriptToolView, TranscriptTurnView } from "./api";
 import { currentLocale, tr, type AppLocale, type MessageKey } from "./i18n";
+import { effectiveToolInvocation, isProminentToolCall, normalizeToolName, toolAwaitsApproval } from "./toolPresentation";
 
 /**
  * Readers over the host's transcript view (`get_session_transcript_view`).
@@ -63,6 +64,7 @@ export interface ToolCallView {
   input?: unknown;
   /** Persisted execution status (e.g. `completed`, `error`, `running`, `cancelled`). */
   status?: string;
+  interruptionReason?: string;
   /** Whether the tool succeeded, when a `toolResult` is present. */
   success?: boolean;
   /** Error message returned by a failed tool call. */
@@ -82,6 +84,9 @@ export interface ToolCallView {
   subagentItems?: TranscriptItemView[];
   /** A GenerativeUI call's source as it streamed (`GenUIStream`), before its arguments closed. */
   genuiStream?: { source: string; title?: string; format: string };
+  /** Bounded argument stream for plan-producing tools before Started gives the complete input. */
+  planParameters?: string;
+  plan?: TranscriptToolView["plan"];
 }
 
 function summarizeInput(value: unknown, limit = 160): string {
@@ -123,18 +128,21 @@ function summarizeInput(value: unknown, limit = 160): string {
 /** A tool item of the view as a card reads it. */
 export function toolCallOf(tool: TranscriptToolView, turn?: TranscriptTurnView): ToolCallView {
   const preview = typeof tool.inputPreview === "string" && tool.inputPreview.trim() ? tool.inputPreview.trim() : "";
+  const { name, input } = effectiveToolInvocation(tool.name, tool.input);
   return {
     ...(tool.id ? { id: tool.id } : {}),
-    name: tool.name,
-    detail: preview || summarizeInput(tool.input),
-    ...(tool.input === undefined || tool.input === null ? {} : { input: tool.input }),
+    name,
+    detail: (name === tool.name ? preview : "") || summarizeInput(input),
+    ...(input === undefined || input === null ? {} : { input }),
     ...(tool.status ? { status: tool.status } : {}),
+    ...(tool.interruptionReason ? { interruptionReason: tool.interruptionReason } : {}),
     ...(typeof tool.success === "boolean" ? { success: tool.success } : {}),
     ...(tool.error ? { error: tool.error } : {}),
     ...(tool.result === undefined || tool.result === null ? {} : { result: tool.result }),
     ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
     ...(tool.detailOmitted && turn ? { detailOmitted: true, detailTurn: turn } : {}),
     ...(tool.diffStats ? { diffStats: tool.diffStats } : {}),
+    ...(tool.plan ? { plan: tool.plan } : {}),
     ...(typeof tool.durationMs === "number" ? { durationMs: tool.durationMs } : {}),
     ...(tool.subagentItems?.length ? { subagentItems: tool.subagentItems } : {}),
   };
@@ -222,7 +230,7 @@ function readTurnItems(view: TranscriptTurnView): TranscriptItem[] {
 
 /** The tool names that only look around: reading, searching and listing. */
 export function isExploreTool(name: string): boolean {
-  const lower = name.toLowerCase().replace(/[^a-z]/g, "");
+  const lower = normalizeToolName(name);
   return (
     lower === "read" ||
     lower === "readfile" ||
@@ -240,39 +248,22 @@ export function isExploreTool(name: string): boolean {
   );
 }
 
-const NON_FOLDABLE_TOOL_NAMES = new Set(["GenerativeUI", "generative_ui", "GenUI"]);
-
 /**
- * Whether a tool call can join a collapsed non-text activity run. GenerativeUI
- * surfaces, failed/rejected calls, and tools awaiting user confirmation stay
- * visible at top level so errors and user-facing actions are never hidden.
+ * Consequential operations and attention states remain visible in the transcript.
+ * Adjacent ambient calls can share a collapsed activity row.
  */
 export function isFoldableToolCall(call: ToolCallView): boolean {
-  if (NON_FOLDABLE_TOOL_NAMES.has(call.name)) return false;
+  if (isProminentToolCall(call)) return false;
   const status = (call.status ?? "").toLowerCase();
-  if (
-    Boolean(call.error) ||
-    call.success === false ||
-    status === "failed" ||
-    status === "error" ||
-    status === "rejected" ||
-    status === "confirmation" ||
-    status === "awaiting_confirmation"
-  ) {
-    return false;
-  }
-  const normalized = call.name.toLowerCase().replace(/[^a-z]/g, "");
-  if (normalized === "askuserquestion" && (status === "running" || status === "waiting" || status === "in_progress")) {
-    return false;
-  }
-  return true;
+  return !call.error && call.success !== false && !toolAwaitsApproval(status) &&
+    status !== "failed" && status !== "error" && status !== "rejected" &&
+    status !== "cancelled" && status !== "interrupted";
 }
 
 /**
  * Folds two or more consecutive non-text items (thinking blocks and foldable
  * tool calls, with no visible text between them) into one collapsed group row.
- * Failed/rejected calls, pending approvals, and GenerativeUI cards break the
- * run and remain visible on their own.
+ * Prominent calls and attention states break the run and stay visible.
  */
 export function groupExploreItems(items: TranscriptItem[]): TranscriptItem[] {
   const grouped: TranscriptItem[] = [];

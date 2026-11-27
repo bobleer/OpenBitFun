@@ -41,12 +41,24 @@ function installWebHistory(): void {
   // The browser moved: the scene follows, and the entry it moved to stays.
   let browserMoves = 0;
   const stop = UrlScheme.on("change", change => {
+    let moved: boolean;
     if (change.reason === "back" && untracked(navIndex) > 0) {
       browserMoves += 1;
-      goBackScene();
+      moved = goBackScene();
     } else if (change.reason === "forward" && untracked(navIndex) < untracked(navHistory).length - 1) {
       browserMoves += 1;
-      goForwardScene();
+      moved = goForwardScene();
+    } else {
+      return;
+    }
+    if (!moved) {
+      // Settings may hold the scene change while it asks about an unsaved draft.
+      browserMoves -= 1;
+      const url = UrlScheme.url();
+      const scene = untracked(navHistory)[untracked(navIndex)];
+      if (url && scene) {
+        UrlScheme.setUrl(addressForScene(url, scene), { history: change.reason === "back" ? "push" : "replace" });
+      }
     }
   });
   cleanup(stop);

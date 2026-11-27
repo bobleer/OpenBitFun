@@ -71,6 +71,7 @@ const appliedListeners = new Set<(keys: string[]) => void>();
 /** Runs `listener` after account values were applied on this device. */
 export function onAccountSettingsApplied(listener: (keys: string[]) => void): () => void {
   appliedListeners.add(listener);
+  subscribe();
   return () => appliedListeners.delete(listener);
 }
 

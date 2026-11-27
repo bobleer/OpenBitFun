@@ -24,6 +24,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_FILE, readUiBundleManifest, writeUiBundleManifest } from './write-ui-bundle-manifest.mjs';
+import { prepareFigureAtlasAssets, prepareFigureRendererAsset, preparePdfRendererAsset } from './sync-nsh-vendor-assets.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_OUT_DIR = path.join(ROOT, 'target', 'desktop-nsh', 'web');
@@ -79,7 +80,7 @@ export function collectSourceFiles(dir, prefix = '', out = [], skipDirs = SKIP_D
 }
 
 /**
- * Deterministic content fingerprint over `src/nsh-ui` runtime sources,
+ * Deterministic content fingerprint over `src/nsh-ui`, the shared atlas runtime and locale contract,
  * `package.json`'s `version`, `scripts/write-ui-bundle-manifest.mjs`, and the
  * active NSH CLI version.
  */
@@ -107,6 +108,18 @@ export function computeDesktopWebSourceFingerprint({
   for (const entry of collectSourceFiles(uiDir)) {
     hash.update(`file:src/nsh-ui/${entry.relative}\0`);
     hash.update(readFileSync(entry.full));
+    hash.update('\0');
+  }
+  const atlas = 'src/shared/visualize';
+  for (const entry of collectSourceFiles(path.join(rootDir, atlas))) {
+    hash.update(`file:${atlas}/${entry.relative}\0`);
+    hash.update(readFileSync(entry.full));
+    hash.update('\0');
+  }
+  const localeContract = 'src/shared/i18n/contract/locales.json';
+  if (existsSync(path.join(rootDir, localeContract))) {
+    hash.update(`file:${localeContract}\0`);
+    hash.update(readFileSync(path.join(rootDir, localeContract)));
     hash.update('\0');
   }
   return hash.digest('hex');
@@ -176,6 +189,14 @@ export function swapBundleDirectory(stagedBundleDir, targetOutDir) {
   return { bundleDirName, finalBundleDir };
 }
 
+function prepareDesktopRendererAssets(rootDir) {
+  if (rootDir === ROOT) {
+    preparePdfRendererAsset();
+    prepareFigureRendererAsset();
+    prepareFigureAtlasAssets();
+  }
+}
+
 function finalizeStagedWebBundle({ rootDir, outDir, stagingDir, fingerprint, nsh, product }) {
   const { bundleDir: stagedBundleDir, bundleId } = writeUiBundleManifest(stagingDir, {
     nsh,
@@ -199,6 +220,7 @@ export function buildDesktopWebUi({
 } = {}) {
   const nshEnv = resolveNshEnvironment(env);
   const nsh = readNshVersion(nshEnv);
+  prepareDesktopRendererAssets(rootDir);
   const fingerprint = computeDesktopWebSourceFingerprint({ rootDir, nshVersion: nsh, product });
   const plan = planDesktopWebBuild({ outDir, fingerprint, force, env: nshEnv });
   if (!plan.shouldBuild) {
@@ -244,6 +266,7 @@ export async function buildDesktopWebUiAsync({
 } = {}) {
   const nshEnv = resolveNshEnvironment(env);
   const nsh = readNshVersion(nshEnv);
+  prepareDesktopRendererAssets(rootDir);
   const fingerprint = computeDesktopWebSourceFingerprint({ rootDir, nshVersion: nsh, product });
   const plan = planDesktopWebBuild({ outDir, fingerprint, force, env: nshEnv });
   if (!plan.shouldBuild) {

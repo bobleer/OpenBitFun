@@ -704,6 +704,13 @@ interface SubscriptionAccountInstance {
   account?: Omit<SubscriptionAccountSummary, "account_id">;
 }
 
+/** Reads provider status without fetching quota or starting an authorization flow. */
+export async function readSubscriptionProviders(): Promise<Array<Omit<SubscriptionAccountSummary, "account_id">>> {
+  const response = await invokeRawCommand<Array<Omit<SubscriptionAccountSummary, "account_id">>>("list_subscription_accounts", {});
+  if (!Array.isArray(response)) throw new Error("invalid_response");
+  return response;
+}
+
 /**
  * Reads the subscription providers and accounts, and each connected one's quota.
  * `list_subscription_accounts` names every provider the host supports (signed in
@@ -717,10 +724,7 @@ export async function loadSubscriptions(force = false): Promise<void> {
   subscriptionsLoadedOnce = true;
   subscriptionsLoading.set(true);
   try {
-    const providers = await invokeRawCommand<Array<Omit<SubscriptionAccountSummary, "account_id">>>(
-      "list_subscription_accounts",
-      {},
-    ).catch(() => [] as Array<Omit<SubscriptionAccountSummary, "account_id">>);
+    const providers = await readSubscriptionProviders().catch(() => []);
     let instances: SubscriptionAccountInstance[] | null = null;
     try {
       const raw = await invokeRawCommand<SubscriptionAccountInstance[]>("list_subscription_account_instances", {});

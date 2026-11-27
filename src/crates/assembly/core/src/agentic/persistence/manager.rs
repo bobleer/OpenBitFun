@@ -18,6 +18,10 @@ use crate::agentic::core::{
     PersistedSessionStateFile as StoredSessionStateFile, Session, SessionConfig, SessionState,
     SessionSummary,
 };
+use crate::agentic::deep_review::outcome::{
+    persisted_review_target, rebuild_review_outcome, refresh_review_outcome_for_saved_turn,
+};
+use crate::agentic::deep_review::revision::{lock_review_record, PullRequestReviewRevision};
 use crate::agentic::memories::db::{MemoryDatabase, MEMORY_PHASE2_GLOBAL_JOB_KEY};
 use crate::agentic::memories::external_context::dialog_turn_uses_external_context;
 use crate::agentic::session::revert::{SessionRevertState, SESSION_REVERT_SCHEMA_VERSION};
@@ -1254,6 +1258,20 @@ impl PersistenceManager {
         .filter(|metadata| !metadata.should_hide_from_user_lists())
         .collect();
         Ok(metadata)
+    }
+
+    pub(crate) async fn project_indexed_session_metadata<T>(
+        &self,
+        workspace_path: &Path,
+        project: impl Fn(&SessionMetadata) -> Option<T>,
+    ) -> OpenBitFunResult<Vec<T>> {
+        if self.existing_project_sessions_dir(workspace_path).is_none() {
+            return Ok(Vec::new());
+        }
+        self.session_metadata_store(workspace_path)
+            .project_indexed_metadata(project)
+            .await
+            .map_err(Self::session_metadata_store_error)
     }
 
     pub async fn session_metadata_by_ids(
@@ -3273,6 +3291,32 @@ impl PersistenceManager {
         session_id: &str,
     ) -> OpenBitFunResult<()> {
         Self::validate_session_id(session_id)?;
+        let _review_record_guard = if let Some(metadata) = self
+            .load_session_metadata(workspace_path, session_id)
+            .await?
+            .filter(|metadata| {
+                persisted_review_target(metadata)
+                    .is_some_and(|target| target.pull_request().is_some())
+            }) {
+            let record =
+                PullRequestReviewRevision::read(&metadata).map_err(OpenBitFunError::validation)?;
+            let guard = lock_review_record(&record.record_id).await;
+            let siblings = self
+                .project_indexed_session_metadata(workspace_path, |candidate| {
+                    if candidate.session_id == session_id {
+                        return None;
+                    }
+                    let revision = PullRequestReviewRevision::read(candidate).ok()?;
+                    (revision.record_id == record.record_id).then_some(())
+                })
+                .await?;
+            if !siblings.is_empty() {
+                return Err(OpenBitFunError::validation("This Review belongs to a record with multiple revisions. Individual revisions cannot be deleted."));
+            }
+            Some(guard)
+        } else {
+            None
+        };
         let _session_write = self.lock_session_write_operation(workspace_path, session_id)?;
         let persistence_lock = self
             .get_session_persistence_lock(workspace_path, session_id)
@@ -4096,6 +4140,7 @@ impl PersistenceManager {
         let mut metadata_refresh_mode = "incremental";
         let workspace_path_text = workspace_path.to_string_lossy();
         if previous_turn_load_failed
+            || !refresh_review_outcome_for_saved_turn(&mut metadata, turn)
             || !try_refresh_session_metadata_for_saved_turn(
                 &mut metadata,
                 workspace_path_text.as_ref(),
@@ -4114,6 +4159,7 @@ impl PersistenceManager {
                 &turns,
                 last_active_at,
             );
+            rebuild_review_outcome(&mut metadata, &turns);
         }
         let uses_external_context = dialog_turn_uses_external_context(turn);
         let should_pollute_memory = memory_pollution_guard_enabled().await && uses_external_context;
@@ -4789,6 +4835,7 @@ impl PersistenceManager {
                         &turns,
                         Self::system_time_to_unix_ms(SystemTime::now()),
                     );
+                    rebuild_review_outcome(metadata, &turns);
                     Ok(())
                 },
             )
@@ -5337,6 +5384,7 @@ impl PersistenceManager {
                         &remaining_turns,
                         Self::system_time_to_unix_ms(SystemTime::now()),
                     );
+                    rebuild_review_outcome(metadata, &remaining_turns);
                     Ok(())
                 },
             )
@@ -5406,6 +5454,7 @@ impl PersistenceManager {
                         &remaining_turns,
                         Self::system_time_to_unix_ms(SystemTime::now()),
                     );
+                    rebuild_review_outcome(metadata, &remaining_turns);
                     Ok(())
                 },
             )

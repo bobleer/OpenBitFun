@@ -33,9 +33,19 @@ import {
 } from "nsh";
 import { admitRuntimeEvent } from "./runtimeEventReplay";
 import { applyToolEvent, type LiveRoundMeta, type LiveToolItem } from "./liveToolEvents";
-export type { LiveToolItem } from "./liveToolEvents";
+export { liveToolToCallView, type LiveToolItem } from "./liveToolEvents";
 import type { RunningTurnSnapshot } from "./api";
 import { backendConnection, listenEvent, windowShellId } from "./bridge";
+import { forgetComposerDraft } from "./composerDraftStore";
+import type { ToolCallView } from "./format";
+import { recordPlanBuildTurn } from "./planBuildStore";
+import {
+  applyReviewQueueSample,
+  clearReviewQueue,
+  clearReviewQueueOrigins,
+  removeReviewWait,
+  type ReviewQueueSample,
+} from "./reviewQueueStore";
 import {
   hasPendingSteeringForSession,
   loadQueueForSession,
@@ -90,6 +100,7 @@ export interface LiveModelRound {
   thinkingEnded?: boolean;
   text: string;
   tools: LiveToolItem[];
+  reviewTools?: ReadonlyMap<string, ToolCallView>;
   completed: boolean;
   durationMs?: number;
 }
@@ -101,6 +112,8 @@ export interface LiveTurnState {
   turnId: string | null;
   userText: string;
   rounds: LiveModelRound[];
+  /** Already-projected review calls. Kept by reference across unrelated stream updates. */
+  reviewTools?: readonly ToolCallView[];
   /** True between `dialog-turn-completed` and the durable disk-persistence fence. */
   settling: boolean;
 }
@@ -868,6 +881,7 @@ function makeLiveRound(meta: LiveRoundMeta, entry: RoundStreamEntry): LiveModelR
     tools: meta.tools,
     completed: meta.completed,
   };
+  if (meta.reviewTools) round.reviewTools = meta.reviewTools;
   if (meta.attemptId !== undefined) round.attemptId = meta.attemptId;
   if (meta.effectiveModelName !== undefined) round.effectiveModelName = meta.effectiveModelName;
   if (meta.reasoningKind !== undefined) round.reasoningKind = meta.reasoningKind;
@@ -906,9 +920,23 @@ function extractRoundMeta(round: LiveModelRound): LiveRoundMeta {
     ...(round.reasoningKind !== undefined ? { reasoningKind: round.reasoningKind } : {}),
     ...(round.thinkingEnded !== undefined ? { thinkingEnded: round.thinkingEnded } : {}),
     tools: round.tools,
+    reviewTools: round.reviewTools,
     completed: round.completed,
     ...(round.durationMs !== undefined ? { durationMs: round.durationMs } : {}),
   };
+}
+
+function reviewToolsInRounds(rounds: readonly LiveModelRound[]): readonly ToolCallView[] | undefined {
+  const calls = rounds.flatMap(round => round.reviewTools ? [...round.reviewTools.values()] : []);
+  return calls.length ? calls : undefined;
+}
+
+function withLiveRound(state: LiveTurnState, index: number, round: LiveModelRound): LiveTurnState {
+  const rounds = [...state.rounds];
+  rounds[index < 0 ? rounds.length : index] = round;
+  const reviewTools = state.rounds[index]?.reviewTools === round.reviewTools
+    ? state.reviewTools : reviewToolsInRounds(rounds);
+  return { ...state, rounds, reviewTools };
 }
 
 interface TextChunkPayload {
@@ -941,6 +969,7 @@ interface TurnEventPayload {
   reason?: string;
   message?: string;
   error?: string;
+  success?: boolean;
 }
 
 interface ModelRoundEventPayload {
@@ -1140,6 +1169,7 @@ function restoreParkedTurn(sessionId: string | null, key: string | null): void {
       turnId: parked.turnId,
       userText: parked.userText,
       rounds,
+      reviewTools: reviewToolsInRounds(rounds),
       settling: false,
     });
     if (parked.userText) {
@@ -1207,7 +1237,7 @@ function parkEvent(kind: "chunk" | "roundStarted" | "roundCompleted" | "supersed
       if (!round) return;
       round.text = "";
       round.thinking = "";
-      round.meta = { ...round.meta, tools: [], attemptId: undefined };
+      round.meta = { ...round.meta, tools: [], reviewTools: undefined, attemptId: undefined };
       return;
     }
     case "tool": {
@@ -1297,9 +1327,7 @@ function upsertSecondaryRoundMeta(
     const prevMeta = extractRoundMeta(state.rounds[index]);
     const updatedMeta = updater(prevMeta);
     if (updatedMeta === prevMeta) return state;
-    const rounds = [...state.rounds];
-    rounds[index] = makeLiveRound(updatedMeta, entry);
-    return { ...state, rounds };
+    return withLiveRound(state, index, makeLiveRound(updatedMeta, entry));
   }
   const createdMeta = updater({
     roundId,
@@ -1312,7 +1340,7 @@ function upsertSecondaryRoundMeta(
   if (!secondaryRoundOrder.includes(roundId)) {
     secondaryRoundOrder.push(roundId);
   }
-  return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
+  return withLiveRound(state, index, makeLiveRound(createdMeta, entry));
 }
 
 function parkSecondaryTurn(sessionId: string | null, key: string | null): void {
@@ -1374,6 +1402,7 @@ function restoreParkedSecondaryTurn(sessionId: string | null, key: string | null
       turnId: parked.turnId,
       userText: parked.userText,
       rounds,
+      reviewTools: reviewToolsInRounds(rounds),
       settling: false,
     });
     if (parked.userText) {
@@ -1432,9 +1461,7 @@ function upsertRoundMeta(
     const prevMeta = extractRoundMeta(state.rounds[index]);
     const updatedMeta = updater(prevMeta);
     if (updatedMeta === prevMeta) return state;
-    const rounds = [...state.rounds];
-    rounds[index] = makeLiveRound(updatedMeta, entry);
-    return { ...state, rounds };
+    return withLiveRound(state, index, makeLiveRound(updatedMeta, entry));
   }
   const createdMeta = updater({
     roundId,
@@ -1447,7 +1474,7 @@ function upsertRoundMeta(
   if (!roundOrder.includes(roundId)) {
     roundOrder.push(roundId);
   }
-  return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
+  return withLiveRound(state, index, makeLiveRound(createdMeta, entry));
 }
 
 /**
@@ -1520,6 +1547,7 @@ function endTurn(payload: TurnEventPayload | null): void {
   const key = keyOf(sessionId);
   const eventTurnId = turnOf(payload);
   if (!matchesSessionActiveTurn(sessionId, eventTurnId, key)) return;
+  clearReviewQueue(key, eventTurnId ?? undefined);
   turnStarts.delete(key);
   runningTurns.update(current => {
     if (!(key in current)) return current;
@@ -1599,8 +1627,10 @@ export function settleLiveTurnFromView(sessionId: string): void {
   if ((live.deviceId ?? "") !== activeSessionDevice()) return;
   const matched = sessionTurns().find(turn => turn.turnId === live.turnId);
   if (!matched?.settled) return;
-  settlingTurns.delete(keyOf(sessionId, activeSessionDevice()));
+  const key = keyOf(sessionId, activeSessionDevice());
+  settlingTurns.delete(key);
   batch(() => {
+    clearReviewQueue(key, live.turnId ?? undefined);
     if (runningTurnId() === live.turnId) runningTurnId.set(null);
     clearAllRoundStreams();
     liveTurn.set(null);
@@ -1669,6 +1699,7 @@ export function settleSecondaryLiveTurnFromView(sessionId: string): void {
   const key = keyOf(sessionId, secondarySessionDevice());
   settlingTurns.delete(key);
   batch(() => {
+    clearReviewQueue(key, live.turnId ?? undefined);
     clearSecondaryRoundStreams();
     secondaryLiveTurn.set(null);
     bridge.clearPendingTurn(sessionId, key);
@@ -1773,6 +1804,7 @@ export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnaps
     batch(() => {
       clearAllRoundStreams();
       liveTurn.set(null);
+      clearReviewQueue(keyOf(sessionId));
     });
     parkedTurns.delete(keyOf(sessionId));
     for (const event of snapshot.events ?? []) {
@@ -1814,6 +1846,7 @@ export function hydrateSecondaryRunningTurn(
     batch(() => {
       clearSecondaryRoundStreams();
       secondaryLiveTurn.set(null);
+      clearReviewQueue(keyOf(sessionId));
     });
     parkedTurns.delete(keyOf(sessionId));
     for (const event of snapshot.events ?? []) {
@@ -1842,7 +1875,10 @@ export function subscribeAgentEvents(): void {
   onSessionSwitch((phase, sessionId, key) => {
     if (phase === "leave") parkActiveTurn(sessionId, key);
     else if (phase === "enter") restoreParkedTurn(sessionId, key);
-    else resetParkedTurns();
+    else {
+      clearReviewQueueOrigins(null);
+      resetParkedTurns();
+    }
   });
 
   onSecondarySessionSwitch((phase, sessionId, key) => {
@@ -2173,6 +2209,7 @@ export function subscribeAgentEvents(): void {
         const updated = upsertSecondaryRoundMeta(current, roundId, meta => ({
           ...meta,
           tools: [],
+          reviewTools: undefined,
           attemptId: undefined,
           thinkingEnded: undefined,
         }));
@@ -2201,6 +2238,7 @@ export function subscribeAgentEvents(): void {
       const updated = upsertRoundMeta(current, roundId, meta => ({
         ...meta,
         tools: [],
+        reviewTools: undefined,
         attemptId: undefined,
         thinkingEnded: undefined,
       }));
@@ -2214,12 +2252,29 @@ export function subscribeAgentEvents(): void {
     });
   });
 
+  onAgentEvent<{ sessionId?: string; turnId?: string; queueState?: ReviewQueueSample }>(
+    "agentic://deep-review-queue-state-changed", payload => {
+      const sessionId = sessionOf(payload);
+      const turnId = turnOf(payload);
+      if (!sessionId || !turnId || !payload?.queueState || activeTurnIdOf(sessionId) !== turnId) return;
+      applyReviewQueueSample(keyOf(sessionId), eventOrigin, turnId, payload.queueState);
+    },
+  );
+
   onAgentEvent<ToolEventEnvelope>("agentic://tool-event", payload => {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
-    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+    const reviewTurn = turnOf(payload);
+    if (isStaleTurnStreamEvent(rawSession, reviewTurn)) return;
+    const reviewTool = (payload.toolEvent ?? payload.tool_event) as Record<string, unknown> | undefined;
+    const reviewToolId = reviewTool?.tool_id ?? reviewTool?.toolId;
+    const reviewToolEvent = String(reviewTool?.event_type ?? reviewTool?.eventType ?? "").toLowerCase();
+    if (reviewTurn && typeof reviewToolId === "string"
+      && /^(completed|failed|error|cancelled|canceled|rejected|timed_?out)$/.test(reviewToolEvent)) {
+      removeReviewWait(keyOf(rawSession), reviewTurn, reviewToolId);
+    }
     if (isSecondary(rawSession)) {
       const rawTool = payload.toolEvent ?? payload.tool_event;
       if (!rawTool || typeof rawTool !== "object") return;
@@ -2313,6 +2368,7 @@ export function subscribeAgentEvents(): void {
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
+    if (sessionId && running) recordPlanBuildTurn(keyOf(sessionId), running, "building");
     if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
     const queueSession = sessionId || activeSessionId() || "";
     let dequeuedImages: ReturnType<typeof markQueuedTurnStarted> = [];
@@ -2331,6 +2387,7 @@ export function subscribeAgentEvents(): void {
     const key = keyOf(sessionId);
     if (sessionId) turnStarts.set(key, Date.now());
     if (sessionId) {
+      clearReviewQueue(key);
       runningTurns.update(current => {
         const next = { ...current };
         if (running) next[key] = running;
@@ -2404,6 +2461,9 @@ export function subscribeAgentEvents(): void {
     const sessionId = rawSession || activeSessionId() || "";
     const eventTurnId = turnOf(payload);
     const drainQueue = kind !== "interrupted";
+    if (rawSession && eventTurnId) {
+      recordPlanBuildTurn(keyOf(rawSession), eventTurnId, kind === "completed" && payload?.success !== false ? "built" : "failed");
+    }
 
     if (sessionId && !matchesSessionActiveTurn(sessionId, eventTurnId)) {
       // Non-active turn (e.g. cancelled queued message): never touch the active turn!
@@ -2581,8 +2641,12 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<TurnEventPayload>("agentic://session-deleted", payload => {
     const sessionId = sessionOf(payload);
-    if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
+    if (sessionId) {
+      clearPromptSuggestion(sessionId, eventOrigin);
+      forgetComposerDraft(sessionKey(sessionId, eventOrigin));
+      clearReviewQueue(keyOf(sessionId));
+    }
     if (!sessionId || eventOrigin !== deviceContext()) return;
-    removeSessionFromEvent(sessionId);
+    removeSessionFromEvent(sessionId, eventOrigin);
   });
 }

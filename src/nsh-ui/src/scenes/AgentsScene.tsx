@@ -1,6 +1,7 @@
 import { computed, effect, lifecycle, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
 import {
   agentKindFilter,
+  agentInspectorScopeCurrent,
   agentSearchQuery,
   agentSourceFilter,
   agentsCatalogError,
@@ -16,20 +17,23 @@ import {
   parentSubagentsError,
   parentSubagentsFor,
   parentSubagentsLoading,
-  parentSubagentSaving,
-  setParentSubagentEnabled,
+  parentSubagentsSaving,
+  parentSubagentsScopeCurrent,
+  loadParentSubagents,
+  saveParentSubagentSelection,
   modeSkills,
   modeSkillsError,
   modeSkillsFor,
   modeSkillsLoading,
   modeSkillsSaving,
+  modeSkillsScopeCurrent,
+  loadModeSkills,
   resetModeSkills,
-  setModeSkillEnabled,
+  saveModeSkillSelection,
   builderError,
   builderLoading,
   builderOpen,
   builderSaving,
-  clearBuilderTools,
   closeBuilder,
   confirmDeleteAgentUid,
   deleteCatalogAgent,
@@ -46,18 +50,17 @@ import {
   reloadAgentsCatalog,
   resetProfileConfig,
   saveBuilderBot,
-  saveProfileConfig,
+  saveProfileToolSelection,
   saveSubagentRuntimeConfig,
-  selectAllBuilderTools,
   selectableToolNames,
   startThreadWithMode,
-  toggleBuilderTool,
   toolCatalogError,
   updateBuilderDraft,
   type AgentCatalogItem,
   type AgentSource,
   type AgentSourceFilter,
 } from "../agentsCatalogStore";
+import { setToolSelection } from "../agentToolGroups";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import { loadModels, modelOptionText, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
@@ -72,10 +75,16 @@ import {
   space,
   textLineHeight,
   textSize,
-  textTracking,
+  textStyle,
 } from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
-import { Icon } from "../ui/icons";
+import { AgentSkillGroups } from "./AgentSkillGroups";
+import { AgentToolGroups } from "./AgentToolGroups";
+import { designTokens } from "../generated/designTokens";
+import { CatalogCard } from "../ui/CatalogCard";
+import { ChoiceCheckbox } from "../ui/ChoiceIndicator";
+import { Icon, type IconName } from "../ui/icons";
+import type { MessageKey } from "../locales/en-US";
 import { MOTION_DURATION, paintTransition, pressTransition, Spinner, tactileActiveStyle } from "../ui/motion";
 import {
   GalleryGrid,
@@ -87,7 +96,6 @@ import {
   StudioHeader,
   StudioSection,
   StudioToolbar,
-  galleryCardStyle,
   studioCompact,
   trackStudioWidth,
 } from "../ui/studio";
@@ -105,6 +113,7 @@ import {
   ConfigSection,
   IconButton,
   InlineBanner,
+  InlineConfirmBar,
   InputBox,
   SearchInput,
   SegmentedTabs,
@@ -144,14 +153,6 @@ function cardBadgeLabel(item: AgentCatalogItem): string {
   if (item.source === "builtin") return tr("common.builtin");
   if (item.source === "external") return tr("common.external");
   return tr("common.custom");
-}
-
-function editActionLabel(item: AgentCatalogItem): string {
-  if (isCustomSource(item.source)) {
-    return agentCanEdit(item) ? tr("common.edit") : tr("common.inspect");
-  }
-  if (item.source === "external") return tr("common.inspect");
-  return tr("common.configure");
 }
 
 function distinctSubtitle(item: AgentCatalogItem): string {
@@ -202,26 +203,6 @@ function botSummaryLine(item: AgentCatalogItem): string {
   return parts.join(" · ");
 }
 
-const toolSearchQuery = signal("");
-const toolShowSelectedOnly = signal(false);
-
-function resetToolFilterState(): void {
-  toolSearchQuery.set("");
-  toolShowSelectedOnly.set(false);
-}
-
-const filteredSelectableTools = computed(() => {
-  const query = toolSearchQuery().trim().toLowerCase();
-  const selectedOnly = toolShowSelectedOnly();
-  const selectedSet = selectedOnly ? new Set(builderDraft().tools) : null;
-  const names = selectableToolNames();
-  return names.filter(name => {
-    if (selectedSet && !selectedSet.has(name)) return false;
-    if (query && !name.toLowerCase().includes(query)) return false;
-    return true;
-  });
-});
-
 const hasActiveFilter = computed(
   () => agentKindFilter() !== "all" || agentSourceFilter() !== "all" || agentSearchQuery().trim().length > 0,
 );
@@ -239,7 +220,6 @@ function cardMetaLine(item: AgentCatalogItem): string {
 
 function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
   const open = () => {
-    resetToolFilterState();
     void openAgentInspector(item);
   };
   const remote = !agentCanEdit(item);
@@ -287,140 +267,43 @@ function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
   return items;
 }
 
-/** A flat gallery card: monochrome icon, name, quiet metadata, description, actions. */
+/** The card opens its details and keeps session and menu actions separate. */
 function BotCard(props: { item: AgentCatalogItem }) {
-  const isDisabledSubagent = () => props.item.kind === "subagent" && !props.item.effectiveEnabled;
-  const phone = () => compactLayout();
-
+  const unavailable = () => props.item.kind === "subagent" && !props.item.effectiveEnabled;
+  const metrics = designTokens.metrics.card;
+  const description = () => plainDescriptionText(props.item.description) || tr("common.noDescription");
   return (
-    <View
-      style={{
-        ...galleryCardStyle(),
-        height: "100%",
-        justifyContent: "space-between",
-        gap: space.md,
-      }}
-    >
-      <View style={{ gap: space.sm, minWidth: 0 }}>
-        {/* Glyph and the trailing state sit on the name line; the metadata hangs under the name. */}
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.md, minWidth: 0 }}>
-          <View
-            style={{
-              flexShrink: 0,
-              height: textLineHeight(14, 1.3),
-              justifyContent: "center",
-              opacity: isDisabledSubagent() ? 0.55 : 1,
-            }}
-          >
-            <Icon
-              name={props.item.kind === "subagent" ? "sparkles" : "bot"}
-              size={16}
-              color={palette().textSecondary}
-            />
-          </View>
-
-          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-            <Text
-              style={{
-                minWidth: 0,
-                color: palette().text,
-                fontSize: textSize(14),
-                fontWeight: "600",
-                letterSpacing: textTracking(14),
-                lineHeight: textLineHeight(14, 1.3),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {props.item.name}
-            </Text>
-            <Text
-              style={{
-                minWidth: 0,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {cardMetaLine(props.item)}
-            </Text>
-          </View>
-
-          <If when={isDisabledSubagent()}>
-            <Text
-              style={{
-                flexShrink: 0,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(14, 1.3),
-              }}
-            >
-              {tr("common.disabled")}
-            </Text>
+    <CatalogCard label={props.item.name} description={description()} testID={`agent-configure-${props.item.id}`}
+      onOpen={() => void openAgentInspector(props.item)}
+      actions={
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: metrics.footerGap, minWidth: 0 }}>
+          <If when={props.item.kind === "mode"} else={<View style={{ flex: 1 }} />}>
+            <Button label={tr("agents.startThread")} variant="secondary" size="sm" leadingIcon="chat"
+              accessibilityLabel={`agent-start-thread-${props.item.id}`}
+              style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+              onPress={() => startThreadWithMode(props.item.id)} />
           </If>
+          <MoreMenu accessibilityLabel={`agent-actions-${props.item.id}`}
+            tooltip={tr("agents.botActions")} items={botMenuItems(props.item)} />
         </View>
-
-        <Text
-          style={{
-            minWidth: 0,
-            color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.5),
-            numberOfLines: 2,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {plainDescriptionText(props.item.description) || tr("common.noDescription")}
-        </Text>
-
-        <Text
-          style={{
-            minWidth: 0,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            fontVariant: ["tabular-nums"],
-            lineHeight: textLineHeight(12, 1.4),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {botSummaryLine(props.item)}
-        </Text>
-      </View>
-
-      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: phone() ? "wrap" : "nowrap", gap: space.sm, minWidth: 0 }}>
-        <If when={props.item.kind === "mode"}>
-          <Button
-            label={tr("agents.startThread")}
-            variant="secondary"
-            size="sm"
-            leadingIcon="chat"
-            accessibilityLabel={`agent-start-thread-${props.item.id}`}
-            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-            onPress={() => startThreadWithMode(props.item.id)}
-          />
+      }>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: metrics.headerGap, minWidth: 0 }}>
+        <Icon name={props.item.kind === "subagent" ? "sparkles" : "bot"} size={16} color={palette().textSecondary} />
+        <View style={{ flex: 1, minWidth: 0, gap: metrics.titleGap }}>
+          <Text style={{ ...textStyle("cardTitle"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.item.name}</Text>
+          <Text style={{ ...textStyle("caption"), numberOfLines: 1, textOverflow: "ellipsis" }}>{cardMetaLine(props.item)}</Text>
+        </View>
+        <If when={unavailable()}>
+          <Text style={textStyle("caption")}>{tr("common.disabled")}</Text>
         </If>
-        <Button
-          label={editActionLabel(props.item)}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel={`agent-configure-${props.item.id}`}
-          style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-          onPress={() => {
-            resetToolFilterState();
-            void openAgentInspector(props.item);
-          }}
-        />
-        <View style={{ flex: 1, minWidth: 0 }} />
-        <MoreMenu
-          accessibilityLabel={`agent-actions-${props.item.id}`}
-          tooltip={tr("agents.botActions")}
-          items={botMenuItems(props.item)}
-        />
       </View>
-    </View>
+      <Text style={{ ...textStyle("smallBody", { color: palette().textSecondary }), numberOfLines: 2, textOverflow: "ellipsis" }}>
+        {description()}
+      </Text>
+      <Text style={{ ...textStyle("caption", { tabular: true }), numberOfLines: 1, textOverflow: "ellipsis" }}>
+        {botSummaryLine(props.item)}
+      </Text>
+    </CatalogCard>
   );
 }
 
@@ -466,221 +349,155 @@ function FilterMenu<T extends string>(props: {
   );
 }
 
-function ToolMultiSelect() {
-  const phone = () => compactLayout();
-  return (
-    <ConfigSection
-      title={tr("agents.toolPermissionsTitle", {
-        selected: formatCount(builderDraft().tools.length),
-        total: formatCount(selectableToolNames().length),
-      })}
-      subtitle={
-        toolCatalogError()
-          ? tr("agents.toolPermissionsCatalogUnavailable")
-          : tr("agents.toolPermissionsSubtitle")
-      }
-      extra={
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.xs, flexShrink: 0 }}>
-          <If when={selectableToolNames().length > 6}>
-            <Button
-              label={`${tr("common.selected")} (${formatCount(builderDraft().tools.length)})`}
-              variant={toolShowSelectedOnly() ? "secondary" : "ghost"}
-              size="xs"
-              accessibilityLabel="builder-tools-selected-only"
-              onPress={() => toolShowSelectedOnly.update(v => !v)}
-            />
-          </If>
-          <Button
-            label={tr("common.all")}
-            variant="ghost"
-            size="xs"
-            disabled={selectableToolNames().length === 0}
-            accessibilityLabel="builder-tools-select-all"
-            onPress={selectAllBuilderTools}
-          />
-          <Button
-            label={tr("common.clear")}
-            variant="ghost"
-            size="xs"
-            disabled={builderDraft().tools.length === 0}
-            accessibilityLabel="builder-tools-clear"
-            onPress={() => {
-              toolShowSelectedOnly.set(false);
-              clearBuilderTools();
-            }}
-          />
-        </View>
-      }
-    >
-      <View style={{ gap: space.sm }}>
-        <If when={toolCatalogError() ?? ""}>
-          {message => <InlineBanner tone="warning" message={localizeHostError(message())} />}
-        </If>
+type AgentCapability = "tools" | "skills" | "subagents";
 
-        <If when={selectableToolNames().length > 6}>
-          <SearchInput
-            value={toolSearchQuery()}
-            size={phone() ? "lg" : "md"}
-            placeholder={tr("agents.filterTools")}
-            countLabel={`${formatCount(filteredSelectableTools().length)}/${formatCount(selectableToolNames().length)}`}
-            accessibilityLabel="builder-tools-search"
-            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-            onChange={val => toolSearchQuery.set(val)}
-          />
-        </If>
+const capabilityCopy = {
+  tools: {
+    title: "agents.toolsTitle", description: "agents.toolPermissionsSubtitle", edit: "agents.toolsDraftHint",
+    discard: "agents.toolsDiscardConfirm", icon: "wrench", id: "profile",
+  },
+  skills: {
+    title: "agents.modeSkillsTitle", description: "agents.modeSkillsHint", edit: "agents.modeSkillsDraftHint",
+    discard: "agents.modeSkillsDiscardConfirm", icon: "sparkles", id: "mode-skills",
+  },
+  subagents: {
+    title: "agents.parentSubagentsTitle", description: "agents.parentSubagentsHint", edit: "agents.subagentsDraftHint",
+    discard: "agents.subagentsDiscardConfirm", icon: "bot", id: "mode-subagents",
+  },
+} as const satisfies Record<AgentCapability, {
+  title: MessageKey;
+  description: MessageKey;
+  edit: MessageKey;
+  discard: MessageKey;
+  icon: IconName;
+  id: string;
+}>;
 
-        <If when={selectableToolNames().length === 0}>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.45),
-            }}
-          >
-            {tr("agents.noTools")}
-          </Text>
-        </If>
+function capabilityAvailable(capability: AgentCapability): boolean {
+  const draft = builderDraft();
+  if (draft.kind !== "mode" || !agentInspectorScopeCurrent()) return false;
+  if (capability === "tools") return draft.mode === "configure-profile";
+  if (draft.mode !== "configure-profile" && draft.mode !== "edit-custom") return false;
+  return capability === "skills"
+    ? modeSkillsFor() === draft.id && modeSkillsScopeCurrent()
+    : parentSubagentsFor() === draft.id && parentSubagentsScopeCurrent();
+}
 
-        <If when={selectableToolNames().length > 0 && filteredSelectableTools().length === 0}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.sm, paddingVertical: space.xs }}>
-            <Text
-              style={{
-                flex: 1,
-                minWidth: 0,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.45),
-              }}
-            >
-              {toolShowSelectedOnly() && !toolSearchQuery().trim()
-                ? tr("agents.noToolsSelected")
-                : tr("agents.noToolsMatch")}
-            </Text>
-            <Button
-              label={tr("common.resetFilter")}
-              variant="ghost"
-              size="xs"
-              onPress={resetToolFilterState}
-            />
-          </View>
-        </If>
+function savedCapabilitySelection(capability: AgentCapability): readonly string[] {
+  if (capability === "tools") return builderDraft().tools;
+  if (capability === "skills") return modeSkills().filter(skill => skill.effectiveEnabled).map(skill => skill.key);
+  return parentSubagents().filter(agent => agent.effectiveEnabled).map(agent => agent.id);
+}
 
-        <If when={filteredSelectableTools().length > 0}>
-          <Scroll
-            smoothWheel
-            style={{ maxHeight: 224, minHeight: 0 }}
-            scrollbar={true}
-          >
-            <InsetGroup>
-              <Each of={filteredSelectableTools()} key={tool => tool}>
-                {(tool, index) => {
-                  const checked = () => builderDraft().tools.includes(tool());
-                  return (
-                    <View
-                      role="button"
-                      accessibilityLabel={`builder-tool-${tool()}`}
-                      accessibilityState={{ selected: checked() }}
-                      onPress={() => toggleBuilderTool(tool())}
-                      hoverStyle={phone() ? undefined : { backgroundColor: palette().panelHover }}
-                      activeStyle={tactileActiveStyle(0.985)}
-                      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
-                      style={{
-                        position: "relative",
-                        minHeight: phone() ? layout.touchTarget : 36,
-                        paddingHorizontal: space.md,
-                        paddingVertical: space.xs,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: space.sm,
-                        backgroundColor: checked() ? palette().accentSoft : "transparent",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        ...pressTransition(MOTION_DURATION.fast),
-                      }}
-                    >
-                      <If when={index() > 0}>
-                        <View
-                          style={{
-                            position: "absolute",
-                            top: 0,
-                            left: space.md,
-                            right: 0,
-                            height: 1,
-                            backgroundColor: palette().borderSubtle,
-                            pointerEvents: "none",
-                          }}
-                        />
-                      </If>
-                      <View
-                        style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: radii.xs,
-                          borderWidth: 1,
-                          borderColor: checked() ? palette().accent : palette().borderStrong,
-                          backgroundColor: checked() ? palette().accentSoft : "transparent",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
-                        <If when={checked()}>
-                          <Icon name="check" size={10} color={palette().accent} />
-                        </If>
-                      </View>
-                      <Text
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          fontFamily: fontMono(),
-                          color: checked() ? palette().text : palette().textSecondary,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.4),
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {tool()}
-                      </Text>
-                    </View>
-                  );
-                }}
-              </Each>
-            </InsetGroup>
-          </Scroll>
-        </If>
-      </View>
-    </ConfigSection>
-  );
+function capabilityAvailableCount(capability: AgentCapability): number {
+  if (capability === "tools") return selectableToolNames().length;
+  if (capability === "skills") return modeSkills().length;
+  return parentSubagents().length;
+}
+
+function capabilityLoading(capability: AgentCapability): boolean {
+  if (capability === "tools") return agentsLoading();
+  return capability === "skills" ? modeSkillsLoading() : parentSubagentsLoading();
+}
+
+function capabilityError(capability: AgentCapability): string | null {
+  if (capability === "tools") return toolCatalogError();
+  return capability === "skills" ? modeSkillsError() : parentSubagentsError();
 }
 
 function AgentBuilderModal() {
+  const capability = signal<AgentCapability | null>(null);
+  const selectionDraft = signal<ReadonlyMap<string, boolean> | null>(null);
+  const confirmDiscard = signal(false);
+  const inCapability = () => capability() !== null;
+  const copy = () => capabilityCopy[capability() ?? "skills"];
+  const editing = () => selectionDraft() !== null;
+  const saving = () => builderSaving() || modeSkillsSaving() || parentSubagentsSaving();
+  const busy = () => saving() || capabilityLoading(capability() ?? "skills");
+  const canManage = () => {
+    const active = capability();
+    if (!active || busy() || isRemoteAgentWorkspace()) return false;
+    if (active === "tools") return !toolCatalogError() && selectableToolNames().length > 0;
+    if (active === "skills") return modeSkills().some(skill => skill.globallyEnabled);
+    return parentSubagents().some(agent => agent.source !== "external");
+  };
+  const leaveCapability = () => {
+    selectionDraft.set(null);
+    confirmDiscard.set(false);
+    capability.set(null);
+  };
+  const openCapability = (next: AgentCapability) => capability.set(next);
+  const cancelEdit = () => {
+    if (saving()) return;
+    if (selectionDraft()?.size) confirmDiscard.set(true);
+    else selectionDraft.set(null);
+  };
+  const stage = (keys: readonly string[], enabled: boolean) => {
+    const active = capability();
+    const draft = selectionDraft();
+    if (!active || !draft || !canManage() || !capabilityAvailable(active)) return;
+    const changes = new Map(draft);
+    const selected = new Set(savedCapabilitySelection(active));
+    for (const key of keys) {
+      if (selected.has(key) === enabled) changes.delete(key);
+      else changes.set(key, enabled);
+    }
+    selectionDraft.set(changes);
+  };
+  const save = async () => {
+    const active = capability();
+    const draft = selectionDraft();
+    if (!active || !draft?.size || busy() || !capabilityAvailable(active)) return;
+    if (active === "subagents") {
+      const remaining = await saveParentSubagentSelection(builderDraft().id, draft);
+      if (remaining && selectionDraft() === draft) selectionDraft.set(remaining.size ? remaining : null);
+      return;
+    }
+    const saved = active === "skills"
+      ? await saveModeSkillSelection(builderDraft().id, draft)
+      : await saveProfileToolSelection(draft);
+    if (saved && selectionDraft() === draft) selectionDraft.set(null);
+  };
+  const subagentDefaults = () => parentSubagents()
+    .filter(agent => agent.source !== "external" && agent.defaultEnabled !== undefined && agent.defaultEnabled !== agent.effectiveEnabled);
+  const reset = async () => {
+    const active = capability();
+    if (!active || busy() || !capabilityAvailable(active) || isRemoteAgentWorkspace()) return;
+    if (active === "tools") await resetProfileConfig();
+    else if (active === "skills") await resetModeSkills(builderDraft().id);
+    else {
+      const changes = new Map(subagentDefaults().map(agent => [agent.id, agent.defaultEnabled === true]));
+      const remaining = await saveParentSubagentSelection(builderDraft().id, changes);
+      if (remaining?.size && capability() === active) selectionDraft.set(remaining);
+    }
+  };
+  effect(() => {
+    const active = capability();
+    if (!builderOpen()) untracked(leaveCapability);
+    else if (!agentInspectorScopeCurrent()) untracked(() => { leaveCapability(); closeBuilder(); });
+    else if (active && !capabilityAvailable(active)) untracked(leaveCapability);
+  });
   const handleClose = () => {
-    resetToolFilterState();
+    if (saving()) return;
+    if (inCapability()) {
+      if (editing()) cancelEdit();
+      else leaveCapability();
+      return;
+    }
     closeBuilder();
   };
 
   return (
     <ModalDialog
       open={builderOpen()}
-      title={builderTitle()}
-      subtitle={builderSubtitle()}
+      title={inCapability() ? tr(copy().title) : builderTitle()}
+      subtitle={inCapability() ? tr(editing() ? copy().edit : copy().description) : builderSubtitle()}
       size="lg"
+      keepOpenOnBackdrop={inCapability()}
       accessibilityLabel="agent-builder-dialog"
       onClose={handleClose}
-      footer={
+      footer={<If when={inCapability()} else={
         <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <If when={builderDraft().mode === "configure-profile"}>
-            <Button
-              label={tr("common.resetDefaults")}
-              variant="secondary"
-              size="md"
-              disabled={builderSaving()}
-              accessibilityLabel="profile-reset"
-              onPress={() => void resetProfileConfig()}
-            />
-          </If>
-
           <View style={{ flex: 1, minWidth: 8 }} />
 
           <If when={builderDraft().mode === "create" || builderDraft().mode === "edit-custom"}>
@@ -719,15 +536,6 @@ function AgentBuilderModal() {
                 accessibilityLabel="agent-builder-close"
                 onPress={handleClose}
               />
-              <Button
-                label={builderSaving() ? tr("common.saving") : tr("agents.saveProfile")}
-                variant="primary"
-                size="md"
-                loading={builderSaving()}
-                disabled={builderSaving()}
-                accessibilityLabel="profile-save"
-                onPress={() => void saveProfileConfig()}
-              />
             </View>
           </If>
 
@@ -762,9 +570,40 @@ function AgentBuilderModal() {
             />
           </If>
         </View>
-      }
+      }>
+        <If when={confirmDiscard()} else={
+          <View style={{ flex: 1, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: space.sm }}>
+            <If when={editing()} else={
+              <>
+                <Button label={tr("common.resetDefaults")} variant="secondary" size="md" accessibilityLabel={`${copy().id}-reset`}
+                  disabled={busy() || isRemoteAgentWorkspace() ||
+                    (capability() === "tools" && Boolean(toolCatalogError())) ||
+                    (capability() === "subagents" && subagentDefaults().length === 0)}
+                  onPress={() => void reset()} />
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+                  <Button label={tr("common.back")} variant="secondary" size="md" accessibilityLabel={`${copy().id}-back`}
+                    disabled={saving()} onPress={handleClose} />
+                  <Button label={tr("common.manage")} variant="primary" size="md" accessibilityLabel={`${copy().id}-manage`}
+                    disabled={!canManage()} onPress={() => selectionDraft.set(new Map())} />
+                </View>
+              </>
+            }>
+              <View style={{ flex: 1 }} />
+              <Button label={tr("common.cancel")} variant="secondary" size="md" accessibilityLabel={`${copy().id}-cancel`}
+                disabled={saving()} onPress={cancelEdit} />
+              <Button label={tr("common.saveChanges")} variant="primary" size="md" accessibilityLabel={`${copy().id}-save`}
+                loading={saving()} disabled={busy() || !selectionDraft()?.size} onPress={() => void save()} />
+            </If>
+          </View>
+        }>
+          <InlineConfirmBar message={tr(copy().discard)} danger
+            confirmLabel={tr("common.discardChanges")} cancelLabel={tr("common.cancel")}
+            onConfirm={() => { selectionDraft.set(null); confirmDiscard.set(false); }}
+            onCancel={() => confirmDiscard.set(false)} />
+        </If>
+      </If>}
     >
-      <View style={{ gap: space.lg }}>
+      <If when={inCapability()} else={<View style={{ gap: space.lg }}>
         <If when={builderLoading()}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Spinner size={14} />
@@ -904,9 +743,10 @@ function AgentBuilderModal() {
               </ConfigRow>
             </ConfigSection>
 
-            <ToolMultiSelect />
-            <ParentSubagentsSection />
-            <ModeSkillsSection />
+            <AgentCapabilityCards onOpen={openCapability} />
+            <AgentToolGroups tools={builderDraft().tools} editing
+              disabled={builderSaving() || builderLoading() || agentsLoading() || Boolean(toolCatalogError())}
+              onChange={(names, enabled) => updateBuilderDraft({ tools: setToolSelection(builderDraft().tools, names, enabled) })} />
 
             <If when={builderDraft().mode === "edit-custom" && builderDraft().kind === "subagent"}>
               <ConfigSection
@@ -987,9 +827,7 @@ function AgentBuilderModal() {
               </ConfigRow>
             </ConfigSection>
 
-            <ToolMultiSelect />
-            <ParentSubagentsSection />
-            <ModeSkillsSection />
+            <AgentCapabilityCards onOpen={openCapability} />
           </View>
         </If>
 
@@ -1075,7 +913,21 @@ function AgentBuilderModal() {
             </View>
           </ConfigSection>
         </If>
-      </View>
+      </View>}>
+        <If when={capability() === "tools"}>
+          <View style={{ gap: space.md }}>
+            <If when={builderError()}>{error => <InlineBanner tone="danger" message={localizeHostError(error())} />}</If>
+            <AgentToolGroups tools={builderDraft().tools} changes={selectionDraft() ?? undefined}
+              editing={editing()} disabled={busy()} onChange={stage} />
+          </View>
+        </If>
+        <If when={capability() === "skills"}>
+          <ModeSkillsPanel changes={selectionDraft() ?? undefined} onChange={stage} />
+        </If>
+        <If when={capability() === "subagents"}>
+          <ParentSubagentsPanel changes={selectionDraft() ?? undefined} disabled={busy()} onChange={stage} />
+        </If>
+      </If>
     </ModalDialog>
   );
 }
@@ -1097,129 +949,141 @@ function ToolListText(props: { empty: string }) {
   );
 }
 
-/** The skills one primary agent runs with; each switch rewrites that agent's selection. */
-function ModeSkillsSection() {
-  const visible = () =>
-    builderDraft().kind === "mode" &&
-    (builderDraft().mode === "configure-profile" || builderDraft().mode === "edit-custom") &&
-    modeSkillsFor() === builderDraft().id;
+function AgentCapabilityCards(props: { onOpen: (capability: AgentCapability) => void }) {
+  const cards = computed(() => (["tools", "skills", "subagents"] as const).filter(capabilityAvailable));
+  // AgentDetailDialog switches to one column at a 460 px content width.
+  const narrow = signal(compactLayout());
   return (
-    <If when={visible()}>
-      <ConfigSection
-        title={tr("agents.modeSkillsTitle")}
-        subtitle={tr("agents.modeSkillsHint")}
-        flush
-        controlWidth={120}
-        extra={
-          <Button
-            label={tr("common.reset")}
-            variant="ghost"
-            size="sm"
-            disabled={modeSkillsSaving() || isRemoteAgentWorkspace()}
-            accessibilityLabel="mode-skills-reset"
-            onPress={() => void resetModeSkills(builderDraft().id)}
-          />
-        }
-      >
-        <If when={modeSkillsError() ?? ""}>
-          {err => (
-            <View style={{ padding: space.md }}>
-              <InlineBanner tone="danger" message={localizeHostError(err())} />
-            </View>
-          )}
-        </If>
-        <If when={modeSkillsLoading() && modeSkills().length === 0}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, padding: space.md }}>
-            <Spinner size={14} />
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-              {tr("common.loading")}
-            </Text>
-          </View>
-        </If>
-        <If when={!modeSkillsLoading() && modeSkills().length === 0 && !modeSkillsError()}>
-          <View style={{ padding: space.md }}>
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-              {tr("agents.modeSkillsEmpty")}
-            </Text>
-          </View>
-        </If>
-        <Each of={modeSkills()} key={row => row.key}>
-          {(row, index) => (
-            <ConfigRow
-              label={row().name}
-              description={
-                row().globallyEnabled ? row().description : tr("agents.modeSkillGloballyOff")
-              }
-              divider={index() < modeSkills().length - 1}
-            >
-              <ToggleSwitch
-                value={row().effectiveEnabled}
-                disabled={modeSkillsSaving() || !row().globallyEnabled || isRemoteAgentWorkspace()}
-                accessibilityLabel={`mode-skill-${row().key}`}
-                onChange={next => void setModeSkillEnabled(builderDraft().id, row().key, next)}
-              />
-            </ConfigRow>
-          )}
+    <If when={cards().length > 0}>
+      <View role="group" style={{ display: "grid", minWidth: 0, gap: space.md,
+        gridTemplateColumns: narrow() ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))" }}
+        onLayout={event => narrow.set(event.bounds.size.width <= 460)}>
+        <Each of={cards()} key={card => card}>
+          {(card, index) => {
+            const copy = () => capabilityCopy[card()];
+            const lastOddCard = () => !narrow() && cards().length % 2 === 1 && index() === cards().length - 1;
+            return (
+                <CatalogCard label={tr(copy().title)} description={tr(copy().description)}
+                  style={{ minHeight: 112, gridColumn: lastOddCard() ? "1 / 3" : undefined }}
+                  testID={`agent-capability-${card()}`} onOpen={() => props.onOpen(card())}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: designTokens.metrics.card.headerGap }}>
+                    <Icon name={copy().icon} size={16} color={palette().textSecondary} />
+                    <Text style={{ ...textStyle("cardTitle"), flex: 1, numberOfLines: 1, textOverflow: "ellipsis" }}>{tr(copy().title)}</Text>
+                    <If when={!capabilityLoading(card()) && !capabilityError(card())}>
+                      <Text style={textStyle("caption", { tabular: true })}>
+                        {formatCount(savedCapabilitySelection(card()).length)}/{formatCount(capabilityAvailableCount(card()))}
+                      </Text>
+                    </If>
+                    <Icon name="chevron-right" size={14} color={palette().textMuted} />
+                  </View>
+                  <Text style={{ ...textStyle("smallBody", { color: palette().textSecondary }), flexGrow: 1 }}>
+                    {tr(copy().description)}
+                  </Text>
+                </CatalogCard>
+            );
+          }}
         </Each>
-      </ConfigSection>
+      </View>
     </If>
   );
 }
 
-/** The subagents a primary agent may call, each switchable for that agent only. */
-function ParentSubagentsSection() {
-  const visible = () =>
-    builderDraft().kind === "mode" &&
-    (builderDraft().mode === "configure-profile" || builderDraft().mode === "edit-custom") &&
-    parentSubagentsFor() === builderDraft().id;
+function CapabilitySelection(props: { entries: ReadonlyArray<{ id: string; label: string }> }) {
   return (
-    <If when={visible()}>
-      <ConfigSection
-        title={tr("agents.parentSubagentsTitle")}
-        subtitle={tr("agents.parentSubagentsHint")}
-        flush
-        controlWidth={120}
-      >
-        <If when={parentSubagentsError() ?? ""}>
-          {err => (
-            <View style={{ padding: 12 }}>
-              <InlineBanner tone="danger" message={localizeHostError(err())} />
-            </View>
-          )}
-        </If>
-        <If when={parentSubagentsLoading() && parentSubagents().length === 0}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 14 }}>
-            <Spinner size={14} />
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-              {tr("common.loading")}
-            </Text>
-          </View>
-        </If>
-        <If when={!parentSubagentsLoading() && parentSubagents().length === 0 && !parentSubagentsError()}>
-          <View style={{ padding: 14 }}>
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-              {tr("agents.parentSubagentsEmpty")}
-            </Text>
-          </View>
-        </If>
-        <Each of={parentSubagents()} key={item => item.uid}>
-          {(item, index) => (
-            <ConfigRow
-              label={item().name}
-              description={plainDescriptionText(item().description) || item().id}
-              divider={index() < parentSubagents().length - 1}
-            >
-              <ToggleSwitch
-                value={item().effectiveEnabled}
-                disabled={Boolean(parentSubagentSaving()) || isRemoteAgentWorkspace()}
-                accessibilityLabel={`parent-subagent-${item().id}`}
-                onChange={next => void setParentSubagentEnabled(builderDraft().id, item().id, next)}
-              />
-            </ConfigRow>
-          )}
-        </Each>
-      </ConfigSection>
+    <If when={props.entries.length > 0} else={<Text style={textStyle("caption")}>{tr("common.none")}</Text>}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+        <Each of={props.entries} key={entry => entry.id}>{entry => <Badge label={entry().label} tone="neutral" />}</Each>
+      </View>
     </If>
+  );
+}
+
+function ModeSkillsPanel(props: {
+  changes?: ReadonlyMap<string, boolean>;
+  onChange: (keys: readonly string[], enabled: boolean) => void;
+}) {
+  return (
+    <View style={{ gap: space.md }}>
+      <If when={modeSkillsError()}>
+        {err => (
+          <View style={{ gap: space.sm, alignItems: "flex-start" }}>
+            <InlineBanner tone="danger" message={localizeHostError(err())} />
+            <If when={!modeSkills().length}>
+              <Button label={tr("common.retry")} variant="secondary" size="sm" onPress={() => void loadModeSkills(builderDraft().id)} />
+            </If>
+          </View>
+        )}
+      </If>
+      <If when={modeSkillsLoading() && !modeSkills().length}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Spinner size={14} />
+          <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+        </View>
+      </If>
+      <If when={!modeSkillsLoading() && !modeSkills().length && !modeSkillsError()}>
+        <Text style={textStyle("caption")}>{tr("agents.modeSkillsEmpty")}</Text>
+      </If>
+      <If when={modeSkills().length > 0}>
+        <AgentSkillGroups skills={modeSkills()} changes={props.changes}
+          disabled={modeSkillsSaving() || modeSkillsLoading() || isRemoteAgentWorkspace()} onChange={props.onChange} />
+      </If>
+    </View>
+  );
+}
+
+function ParentSubagentsPanel(props: {
+  changes?: ReadonlyMap<string, boolean>;
+  disabled: boolean;
+  onChange: (keys: readonly string[], enabled: boolean) => void;
+}) {
+  const rowLabel = (agent: AgentCatalogItem) => agent.source === "external"
+    ? `${agent.name} · ${tr("common.external")}`
+    : agent.name;
+  const selected = () => parentSubagents().filter(agent => agent.effectiveEnabled)
+    .map(agent => ({ id: agent.uid, label: rowLabel(agent) }));
+  return (
+    <View style={{ gap: space.md }}>
+      <If when={parentSubagentsError()}>
+        {error => (
+          <View style={{ gap: space.sm, alignItems: "flex-start" }}>
+            <InlineBanner tone="danger" message={localizeHostError(error())} />
+            <If when={!parentSubagents().length && !props.changes}>
+              <Button label={tr("common.retry")} variant="secondary" size="sm" onPress={() => void loadParentSubagents(builderDraft().id)} />
+            </If>
+          </View>
+        )}
+      </If>
+      <If when={parentSubagentsLoading() && !parentSubagents().length}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Spinner size={14} />
+          <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+        </View>
+      </If>
+      <If when={!parentSubagentsLoading() && !parentSubagents().length && !parentSubagentsError()}>
+        <Text style={textStyle("caption")}>{tr("agents.parentSubagentsEmpty")}</Text>
+      </If>
+      <If when={parentSubagents().length > 0}>
+        <If when={props.changes} else={<CapabilitySelection entries={selected()} />}>
+          <InsetGroup>
+            <Each of={parentSubagents()} key={item => item.uid}>
+              {(item, index) => (
+                <ChoiceCheckbox checked={props.changes?.get(item().id) ?? item().effectiveEnabled}
+                  disabled={props.disabled || item().source === "external"}
+                  accessibilityLabel={rowLabel(item())} testID={`parent-subagent-${item().id}`}
+                  style={{ paddingVertical: space.sm, paddingHorizontal: space.md,
+                    borderTopWidth: index() > 0 ? 1 : 0, borderColor: palette().borderSubtle }}
+                  onChange={enabled => props.onChange([item().id], enabled)}>
+                  <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+                    <Text style={textStyle("label")}>{rowLabel(item())}</Text>
+                    <Text style={textStyle("caption")}>{plainDescriptionText(item().description) || item().id}</Text>
+                  </View>
+                </ChoiceCheckbox>
+              )}
+            </Each>
+          </InsetGroup>
+        </If>
+      </If>
+    </View>
   );
 }
 
@@ -1307,7 +1171,6 @@ export function AgentsScene(props: { embedded?: boolean }) {
   });
 
   const openCreate = () => {
-    resetToolFilterState();
     openCreateBotBuilder("mode");
   };
 

@@ -3,8 +3,9 @@ use crate::account_identity::{
     MarketClientError, MarketMe,
 };
 use openbitfun_product_domains::miniapp::market::{
-    CursorPage, MarketListingDetail, MarketListingSummary, MarketSort, MarketSubmission,
-    MarketSubmissionDraftRequest, ReviewDecisionRequest, MARKET_PACKAGE_CONTENT_TYPE,
+    CursorPage, MarketListingDetail, MarketListingLookupRequest, MarketListingSummary, MarketSort,
+    MarketSubmission, MarketSubmissionDraftRequest, ReviewDecisionRequest, MARKET_MAX_PAGE_SIZE,
+    MARKET_PACKAGE_CONTENT_TYPE,
 };
 use reqwest::{Method, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
@@ -23,6 +24,8 @@ pub struct MarketBrowseRequest {
     pub sort: MarketSort,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listing_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,10 +124,51 @@ impl MarketClient {
     }
 
     pub async fn listing(&mut self, slug: &str) -> Result<MarketListingDetail, MarketClientError> {
+        self.listing_at(&format!("/listings/{}", urlencoding::encode(slug)))
+            .await
+    }
+
+    pub async fn lookup_listing_summaries(
+        &mut self,
+        listing_ids: Vec<String>,
+    ) -> Result<CursorPage<MarketListingSummary>, MarketClientError> {
+        if listing_ids.is_empty()
+            || listing_ids.len() > MARKET_MAX_PAGE_SIZE as usize
+            || listing_ids
+                .iter()
+                .any(|id| id.trim().is_empty() || id.len() > 128)
+        {
+            return Err(local_error(
+                "invalid_listing_ids",
+                "Provide up to 50 non-empty marketplace listing IDs.",
+            ));
+        }
         let token = self.identity.access_token().await?;
         let request = self
             .client
-            .get(self.url(&format!("/listings/{}", urlencoding::encode(slug))));
+            .post(self.url("/listings/lookup/summaries"))
+            .json(&MarketListingLookupRequest { listing_ids });
+        self.json(match token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        })
+        .await
+    }
+
+    pub async fn listing_by_id(
+        &mut self,
+        listing_id: &str,
+    ) -> Result<MarketListingDetail, MarketClientError> {
+        self.listing_at(&format!(
+            "/listings/by-id/{}",
+            urlencoding::encode(listing_id)
+        ))
+        .await
+    }
+
+    async fn listing_at(&mut self, path: &str) -> Result<MarketListingDetail, MarketClientError> {
+        let token = self.identity.access_token().await?;
+        let request = self.client.get(self.url(path));
         self.json(match token {
             Some(token) => request.bearer_auth(token),
             None => request,

@@ -21,10 +21,11 @@ use base64::Engine;
 use chrono::Utc;
 use openbitfun_product_domains::miniapp::market::{
     compute_review_bundle_hash, validate_market_category, validate_market_slug, CursorPage,
-    MarketLicense, MarketListingDetail, MarketListingSummary, MarketRelease, MarketSort,
-    MarketSubmission, MarketSubmissionDraftRequest, MarketSubmissionStatus, MarketUserSummary,
-    ReviewDecision, ReviewDecisionRequest, MARKET_CATEGORIES, MARKET_DEFAULT_PAGE_SIZE,
-    MARKET_MAX_PAGE_SIZE, MARKET_MAX_SCREENSHOTS, MARKET_PACKAGE_CONTENT_TYPE,
+    MarketLicense, MarketListingDetail, MarketListingLookupRequest, MarketListingSummary,
+    MarketRelease, MarketSort, MarketSubmission, MarketSubmissionDraftRequest,
+    MarketSubmissionStatus, MarketUserSummary, ReviewDecision, ReviewDecisionRequest,
+    MARKET_CATEGORIES, MARKET_DEFAULT_PAGE_SIZE, MARKET_MAX_PAGE_SIZE, MARKET_MAX_SCREENSHOTS,
+    MARKET_PACKAGE_CONTENT_TYPE,
 };
 use openbitfun_product_domains::miniapp::types::{
     MiniAppI18n, MiniAppPermissions, NodePermissions,
@@ -172,7 +173,9 @@ pub(crate) fn api_router(state: Arc<MarketState>) -> Router {
         .route("/config", get(config))
         .route("/categories", get(categories))
         .route("/listings", get(list_listings))
+        .route("/listings/lookup/summaries", post(lookup_listing_summaries))
         .route("/listings/{slug}", get(get_listing))
+        .route("/listings/by-id/{listing_id}", get(get_listing_by_id))
         .route(
             "/listings/{slug}/releases/{release_number}/download",
             get(download_release),
@@ -317,8 +320,44 @@ async fn list_listings(
     headers: HeaderMap,
     Query(query): Query<ListingQuery>,
 ) -> MarketResult<Json<CursorPage<MarketListingSummary>>> {
-    let auth = state.auth.optional_auth(&headers).await?;
-    ensure_public_browse(&state, auth.as_ref())?;
+    Ok(Json(list_listing_page(&state, &headers, query, &[]).await?))
+}
+
+async fn lookup_listing_summaries(
+    State(state): State<Arc<MarketState>>,
+    headers: HeaderMap,
+    Json(request): Json<MarketListingLookupRequest>,
+) -> MarketResult<Json<CursorPage<MarketListingSummary>>> {
+    let ids = request.listing_ids;
+    if ids.is_empty()
+        || ids.len() > MARKET_MAX_PAGE_SIZE as usize
+        || ids.iter().any(|id| id.trim().is_empty() || id.len() > 128)
+    {
+        return Err(MarketError::bad_request(
+            "invalid_listing_ids",
+            "Provide up to 50 non-empty marketplace listing IDs.",
+        ));
+    }
+    let query = ListingQuery {
+        q: None,
+        category: None,
+        sort: None,
+        cursor: None,
+        limit: Some(ids.len() as u32),
+    };
+    Ok(Json(
+        list_listing_page(&state, &headers, query, &ids).await?,
+    ))
+}
+
+async fn list_listing_page(
+    state: &MarketState,
+    headers: &HeaderMap,
+    query: ListingQuery,
+    listing_ids: &[String],
+) -> MarketResult<CursorPage<MarketListingSummary>> {
+    let auth = state.auth.optional_auth(headers).await?;
+    ensure_public_browse(state, auth.as_ref())?;
     let user_id = auth
         .as_ref()
         .map(|auth| auth.user.internal_id)
@@ -354,6 +393,14 @@ async fn list_listings(
          JOIN users u ON u.id = l.owner_user_id
          WHERE l.is_published = 1 AND r.yanked_at IS NULL",
     );
+    if !listing_ids.is_empty() {
+        builder.push(" AND l.id IN (");
+        let mut ids = builder.separated(", ");
+        for id in listing_ids {
+            ids.push_bind(id);
+        }
+        ids.push_unseparated(")");
+    }
     if let Some(category) = query.category.filter(|value| !value.is_empty()) {
         if !validate_market_category(&category) {
             return Err(MarketError::bad_request(
@@ -393,12 +440,12 @@ async fn list_listings(
     let has_more = rows.len() > limit as usize;
     let mut items = Vec::with_capacity(rows.len().min(limit as usize));
     for row in rows.into_iter().take(limit as usize) {
-        items.push(summary_from_row(&state, row).await?);
+        items.push(summary_from_row(state, row).await?);
     }
-    Ok(Json(CursorPage {
+    Ok(CursorPage {
         items,
         next_cursor: has_more.then(|| encode_cursor(offset + limit as u64)),
-    }))
+    })
 }
 
 async fn get_listing(
@@ -406,13 +453,34 @@ async fn get_listing(
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> MarketResult<Json<MarketListingDetail>> {
-    let auth = state.auth.optional_auth(&headers).await?;
-    ensure_public_browse(&state, auth.as_ref())?;
+    get_public_listing(&state, &headers, ListingKey::Slug(&slug)).await
+}
+
+async fn get_listing_by_id(
+    State(state): State<Arc<MarketState>>,
+    headers: HeaderMap,
+    Path(listing_id): Path<String>,
+) -> MarketResult<Json<MarketListingDetail>> {
+    get_public_listing(&state, &headers, ListingKey::Id(&listing_id)).await
+}
+
+enum ListingKey<'a> {
+    Slug(&'a str),
+    Id(&'a str),
+}
+
+async fn get_public_listing(
+    state: &MarketState,
+    headers: &HeaderMap,
+    key: ListingKey<'_>,
+) -> MarketResult<Json<MarketListingDetail>> {
+    let auth = state.auth.optional_auth(headers).await?;
+    ensure_public_browse(state, auth.as_ref())?;
     let user_id = auth
         .as_ref()
         .map(|auth| auth.user.internal_id)
         .unwrap_or(-1);
-    Ok(Json(listing_detail_by_slug(&state, &slug, user_id).await?))
+    Ok(Json(listing_detail(state, key, user_id).await?))
 }
 
 async fn download_release(
@@ -1354,11 +1422,15 @@ async fn summary_from_row(
     })
 }
 
-async fn listing_detail_by_slug(
+async fn listing_detail(
     state: &MarketState,
-    slug: &str,
+    key: ListingKey<'_>,
     user_id: i64,
 ) -> MarketResult<MarketListingDetail> {
+    let (slug, listing_id) = match key {
+        ListingKey::Slug(slug) => (Some(slug), None),
+        ListingKey::Id(listing_id) => (None, Some(listing_id)),
+    };
     let row = sqlx::query(
         "SELECT l.id AS listing_id, l.slug, r.id AS release_id, r.release_number,
                 r.metadata_json, r.package_sha256, r.package_size,
@@ -1373,11 +1445,12 @@ async fn listing_detail_by_slug(
          FROM listings l
          JOIN releases r ON r.id = l.latest_release_id
          JOIN users u ON u.id = l.owner_user_id
-         WHERE l.slug = ? AND l.is_published = 1 AND r.yanked_at IS NULL",
+         WHERE (l.slug = ? OR l.id = ?) AND l.is_published = 1 AND r.yanked_at IS NULL",
     )
     .bind(user_id)
     .bind(user_id)
     .bind(slug)
+    .bind(listing_id)
     .fetch_optional(state.db.pool())
     .await
     .map_err(MarketError::internal)?
@@ -2488,9 +2561,57 @@ mod tests {
         assert_eq!(page.items[0].latest_release, 1);
         assert_eq!(page.items[0].screenshot_urls.len(), 1);
 
-        let detail = listing_detail_by_slug(state.as_ref(), "regex-workshop", -1)
+        let detail = listing_detail(state.as_ref(), ListingKey::Slug("regex-workshop"), -1)
             .await
             .unwrap();
+        use tower::ServiceExt;
+        let listing_response = || async {
+            api_router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/listings/by-id/{}", detail.summary.listing_id))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+        let response = listing_response().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let by_id: MarketListingDetail = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(by_id, detail);
+        let summaries = || async {
+            let response = api_router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/listings/lookup/summaries")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&MarketListingLookupRequest {
+                                listing_ids: vec![
+                                    detail.summary.listing_id.clone(),
+                                    "missing-listing".to_owned(),
+                                ],
+                            })
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            serde_json::from_slice::<CursorPage<MarketListingSummary>>(&bytes).unwrap()
+        };
+        let selected = summaries().await;
+        assert_eq!(selected.items, vec![detail.summary.clone()]);
+        assert_eq!(selected.next_cursor, None);
         assert_eq!(detail.releases.len(), 1);
         assert_eq!(
             detail.releases[0].review_bundle_hash,
@@ -2519,13 +2640,8 @@ mod tests {
             .unwrap(),
             StatusCode::NO_CONTENT
         );
-        assert_eq!(
-            listing_detail_by_slug(state.as_ref(), "regex-workshop", -1)
-                .await
-                .unwrap_err()
-                .status,
-            StatusCode::NOT_FOUND
-        );
+        assert_eq!(listing_response().await.status(), StatusCode::NOT_FOUND);
+        assert!(summaries().await.items.is_empty());
         let audit_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM audit_log WHERE target_kind IN ('submission', 'release')",
         )
@@ -2628,9 +2744,10 @@ mod tests {
             .await
             .unwrap();
 
-        let initial_detail = listing_detail_by_slug(state.as_ref(), "owner-preserving-app", -1)
-            .await
-            .unwrap();
+        let initial_detail =
+            listing_detail(state.as_ref(), ListingKey::Slug("owner-preserving-app"), -1)
+                .await
+                .unwrap();
         let listing_id = initial_detail.summary.listing_id.clone();
         assert_eq!(initial_detail.summary.owner.login, "original-owner");
         assert_eq!(
@@ -2697,9 +2814,10 @@ mod tests {
             .await
             .unwrap();
 
-        let updated_detail = listing_detail_by_slug(state.as_ref(), "owner-preserving-app", -1)
-            .await
-            .unwrap();
+        let updated_detail =
+            listing_detail(state.as_ref(), ListingKey::Slug("owner-preserving-app"), -1)
+                .await
+                .unwrap();
         assert_eq!(updated_detail.summary.latest_release, 2);
         assert_eq!(updated_detail.summary.owner.login, "original-owner");
         assert_eq!(
@@ -2823,9 +2941,13 @@ mod tests {
         approve_submission(state.as_ref(), &admin, &id)
             .await
             .unwrap();
-        let detail = listing_detail_by_slug(state.as_ref(), "email-owner-app", owner_id)
-            .await
-            .unwrap();
+        let detail = listing_detail(
+            state.as_ref(),
+            ListingKey::Slug("email-owner-app"),
+            owner_id,
+        )
+        .await
+        .unwrap();
         assert_eq!(detail.summary.owner.login, "author@example.com");
         assert_eq!(detail.summary.owner.github_id, 0);
         use tower::ServiceExt;

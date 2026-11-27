@@ -14,6 +14,14 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use openbitfun_agent_runtime::deep_review::{
+    remediation::{
+        PostFixReviewScope, ReviewFixItemState, ReviewFixRun, ReviewFixRunState,
+        ReviewRemediationPlan, ReviewRemediationProgress, ReviewRemediationTracking,
+        REMEDIATION_TRACKING_KEY,
+    },
+    ReviewTargetEvidence, ReviewTargetEvidenceSource, REVIEW_FIXER_AGENT_TYPE,
+};
 use openbitfun_agent_runtime::permission::PermissionRequestManager;
 use openbitfun_agent_runtime::sdk::{
     AgentEventReceiver, AgentEventSource, AgentRuntime, AgentSessionForkAtTurnRequest,
@@ -56,12 +64,19 @@ use crate::agentic::coordination::{
     ConversationCoordinator, DialogScheduler, SessionMaintenancePermit,
 };
 use crate::agentic::core::Session;
+use crate::agentic::deep_review::history::{
+    identify_latest_review_revisions, project_pull_request_review, project_session_review_record,
+    PullRequestReviewPage, PullRequestReviewRun, PullRequestReviewSelection, ReviewHistoryCursor,
+    SessionReviewPage, SessionReviewTarget,
+};
+use crate::agentic::deep_review::outcome::{persisted_review_target, review_report_tool};
 use crate::agentic::events::EventQueue;
 use crate::agentic::keyed_lock::KeyedAsyncLockGuard;
 use crate::agentic::persistence::session_branch::SessionBranchRequest;
 use crate::agentic::persistence::{
     PersistedSessionTurnPage, PersistenceManager, SessionMetadataPage,
 };
+use crate::agentic::session::compression::ContextCompressor;
 use crate::agentic::session::transcript_render::transcript_final_assistant_content;
 #[cfg(feature = "product-search")]
 use crate::agentic::session::transcript_render::{
@@ -1304,6 +1319,453 @@ impl CoreAgentRuntimeCompatibility {
             log::warn!("External session discovery: {warning}");
         }
         self.persistence.list_session_metadata(workspace_path).await
+    }
+
+    pub async fn pull_request_review_runs(
+        &self,
+        workspace_path: &Path,
+        selection: &PullRequestReviewSelection,
+    ) -> OpenBitFunResult<Vec<PullRequestReviewRun>> {
+        let mut runs = self
+            .persistence
+            .project_indexed_session_metadata(workspace_path, |metadata| {
+                project_pull_request_review(metadata, selection, |session_id| {
+                    self.scheduler.is_session_busy_or_queued(session_id)
+                })
+            })
+            .await?;
+        identify_latest_review_revisions(&mut runs);
+        Ok(runs)
+    }
+
+    pub async fn pull_request_review_history(
+        &self,
+        workspace_path: &Path,
+        selection: &PullRequestReviewSelection,
+        before: Option<&ReviewHistoryCursor>,
+    ) -> OpenBitFunResult<PullRequestReviewPage> {
+        let runs = self
+            .pull_request_review_runs(workspace_path, selection)
+            .await?;
+        let mut page = PullRequestReviewPage::new(runs, before);
+        for run in &mut page.runs {
+            self.discard_hidden_review_outcome(workspace_path, run)
+                .await;
+        }
+        Ok(page)
+    }
+
+    pub async fn list_session_review_records(
+        &self,
+        workspace_path: &Path,
+        parent_session_id: &str,
+        before: Option<&ReviewHistoryCursor>,
+    ) -> OpenBitFunResult<SessionReviewPage> {
+        validate_persisted_session_id(parent_session_id)?;
+        let records = self
+            .persistence
+            .project_indexed_session_metadata(workspace_path, |metadata| {
+                project_session_review_record(metadata, parent_session_id, |id| {
+                    self.scheduler.is_session_busy_or_queued(id)
+                })
+            })
+            .await?;
+        let mut page = SessionReviewPage::new(records, before);
+        for record in &mut page.records {
+            self.discard_hidden_review_outcome(workspace_path, &mut record.run)
+                .await;
+        }
+        Ok(page)
+    }
+
+    pub async fn workspace_review_record_runs(
+        &self,
+        storage_path: &Path,
+        parent_session_id: &str,
+        record_id: &str,
+    ) -> OpenBitFunResult<Vec<PullRequestReviewRun>> {
+        validate_persisted_session_id(parent_session_id)?;
+        let mut runs = self
+            .persistence
+            .project_indexed_session_metadata(storage_path, |metadata| {
+                let record = project_session_review_record(metadata, parent_session_id, |id| {
+                    self.scheduler.is_session_busy_or_queued(id)
+                })?;
+                (matches!(record.target, SessionReviewTarget::Workspace)
+                    && record.run.revision.record_id == record_id)
+                    .then_some(record.run)
+            })
+            .await?;
+        identify_latest_review_revisions(&mut runs);
+        Ok(runs)
+    }
+
+    /// Resolves the exact, latest visible report under the same storage lock as the transcript.
+    pub async fn load_workspace_review_remediation(
+        &self,
+        storage_path: &Path,
+        workspace_id: &str,
+        session_id: &str,
+        report_tool_id: &str,
+    ) -> OpenBitFunResult<(ReviewRemediationPlan, ReviewTargetEvidence, SessionMetadata)> {
+        let (result, evidence, metadata) = self
+            .load_completed_review_report(
+                storage_path,
+                workspace_id,
+                session_id,
+                report_tool_id,
+                true,
+            )
+            .await?;
+        let plan =
+            ReviewRemediationPlan::from_report(&result).map_err(OpenBitFunError::Validation)?;
+        Ok((plan, evidence, metadata))
+    }
+
+    pub async fn load_review_coverage_retry(
+        &self,
+        storage_path: &Path,
+        workspace_id: &str,
+        session_id: &str,
+        report_tool_id: &str,
+    ) -> OpenBitFunResult<(
+        Vec<openbitfun_agent_runtime::deep_review::report::IncompleteReviewCheck>,
+        ReviewTargetEvidence,
+        SessionMetadata,
+    )> {
+        let (result, evidence, metadata) = self
+            .load_completed_review_report(
+                storage_path,
+                workspace_id,
+                session_id,
+                report_tool_id,
+                false,
+            )
+            .await?;
+        let result = result
+            .as_str()
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or(result);
+        let checks = metadata
+            .deep_review_run_manifest
+            .as_ref()
+            .map_or_else(Vec::new, |manifest| {
+                openbitfun_agent_runtime::deep_review::report::incomplete_review_checks(
+                    &result, manifest, &evidence,
+                )
+            });
+        Ok((checks, evidence, metadata))
+    }
+
+    async fn load_completed_review_report(
+        &self,
+        storage_path: &Path,
+        workspace_id: &str,
+        session_id: &str,
+        report_tool_id: &str,
+        editable_workspace: bool,
+    ) -> OpenBitFunResult<(serde_json::Value, ReviewTargetEvidence, SessionMetadata)> {
+        let read = self
+            .begin_persisted_session_read(storage_path, session_id)
+            .await?;
+        if self.scheduler.is_session_busy_or_queued(session_id) {
+            return Err(OpenBitFunError::SessionInUse {
+                session_id: session_id.to_string(),
+            });
+        }
+        let invalid = |message: &str| OpenBitFunError::Validation(message.to_owned());
+        let metadata = self
+            .persistence
+            .load_session_metadata(storage_path, session_id)
+            .await?
+            .ok_or_else(|| invalid("The saved Review session is unavailable"))?;
+        if metadata
+            .workspace_id
+            .as_deref()
+            .is_some_and(|owner| owner != workspace_id)
+            || !metadata.relationship.as_ref().is_some_and(|relationship| {
+                matches!(
+                    relationship.kind,
+                    Some(SessionRelationshipKind::Review | SessionRelationshipKind::DeepReview)
+                ) && relationship
+                    .parent_session_id
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty())
+            })
+        {
+            return Err(invalid(
+                "This report does not belong to a Review in this workspace",
+            ));
+        }
+        let evidence = persisted_review_target(&metadata)
+            .ok_or_else(|| invalid("The saved Review does not contain its original target"))?;
+        if editable_workspace && evidence.source() != ReviewTargetEvidenceSource::Workspace {
+            return Err(invalid(
+                "Run a Review on the editable workspace changes before starting fixes",
+            ));
+        }
+        let turns = load_visible_persisted_session_turns(
+            self.persistence.as_ref(),
+            storage_path,
+            session_id,
+            read.visible_turn_end(),
+            Some(1),
+        )
+        .await?;
+        let turn = turns
+            .last()
+            .filter(|turn| {
+                turn.kind == openbitfun_services_core::session::DialogTurnKind::UserDialog
+                    && turn.status == TurnStatus::Completed
+            })
+            .ok_or_else(|| invalid("Complete the Review before taking action on its report"))?;
+        let result = review_report_tool(turn)
+            .filter(|tool| tool.id == report_tool_id)
+            .and_then(|tool| tool.tool_result.as_ref())
+            .filter(|result| result.success)
+            .ok_or_else(|| invalid("Open the latest saved Review report"))?;
+        Ok((result.result.clone(), evidence, metadata))
+    }
+
+    /// Projects only the selected items and the initial turn of each linked fixer.
+    pub async fn workspace_review_remediation_progress(
+        &self,
+        storage_path: &Path,
+        workspace_id: &str,
+        session_id: &str,
+        report_tool_id: &str,
+        plan: &ReviewRemediationPlan,
+        mut follow_up_scope: Option<(&str, &mut PostFixReviewScope)>,
+    ) -> OpenBitFunResult<ReviewRemediationProgress> {
+        let plan_ids: std::collections::BTreeSet<_> =
+            plan.items.iter().map(|item| item.id.as_str()).collect();
+        let mut children = self
+            .persistence
+            .project_indexed_session_metadata(storage_path, |metadata| {
+                let relationship = metadata.relationship.as_ref()?;
+                if metadata.agent_type != REVIEW_FIXER_AGENT_TYPE
+                    || metadata
+                        .workspace_id
+                        .as_deref()
+                        .is_some_and(|owner| owner != workspace_id)
+                    || relationship.kind != Some(SessionRelationshipKind::Review)
+                    || relationship.parent_session_id.as_deref() != Some(session_id)
+                    || relationship.parent_tool_call_id.as_deref() != Some(report_tool_id)
+                {
+                    return None;
+                }
+                let request_id = metadata.session_id.strip_prefix("review_fix_")?;
+                let turn_id = format!("review_fix_turn_{request_id}");
+                let tracking = match metadata
+                    .custom_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get(REMEDIATION_TRACKING_KEY))
+                {
+                    Some(value) => {
+                        let mut tracking: ReviewRemediationTracking =
+                            serde_json::from_value(value.clone()).ok()?;
+                        if tracking.report_revision != plan.report_revision
+                            || tracking.turn_id != turn_id
+                        {
+                            return None;
+                        }
+                        tracking
+                            .item_ids
+                            .retain(|id| plan_ids.contains(id.as_str()));
+                        if tracking.item_ids.is_empty() {
+                            return None;
+                        }
+                        Some(tracking)
+                    }
+                    None => {
+                        // Before per-item tracking, the immutable relationship
+                        // still bound a dedicated fixer to the original tool.
+                        let request = uuid::Uuid::parse_str(request_id).ok()?;
+                        let parent_request = relationship.parent_request_id.as_deref()?;
+                        let fingerprint =
+                            parent_request.strip_prefix(&format!("fix-{request}-"))?;
+                        if request.simple().to_string() != request_id
+                            || fingerprint.len() != 16
+                            || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        {
+                            return None;
+                        }
+                        None
+                    }
+                };
+                Some((
+                    metadata.created_at,
+                    metadata.session_id.clone(),
+                    metadata.session_name.clone(),
+                    turn_id,
+                    tracking,
+                    metadata.turn_count > 1,
+                ))
+            })
+            .await?;
+        children.sort_unstable_by(|a, b| (b.0, &b.1).cmp(&(a.0, &a.1)));
+        let mut progress = ReviewRemediationProgress::default();
+        for (_, child_id, child_name, turn_id, tracking, has_later_turns) in children {
+            let relevant = progress.latest_run.is_none()
+                || tracking.as_ref().is_some_and(|tracking| {
+                    tracking
+                        .item_ids
+                        .iter()
+                        .any(|id| !progress.items.contains_key(id))
+                });
+            if follow_up_scope.is_none()
+                && !relevant
+                && !self.scheduler.is_session_busy_or_queued(&child_id)
+            {
+                continue;
+            }
+            let read = self
+                .begin_persisted_session_read(storage_path, &child_id)
+                .await?;
+            let turn = if read.visible_turn_end() == Some(0) {
+                None
+            } else {
+                // The runtime creates a dedicated child and immediately submits
+                // this exact first turn. Later conversational turns are unrelated.
+                self.persistence
+                    .load_dialog_turn(storage_path, &child_id, 0)
+                    .await?
+                    .filter(|turn| turn.turn_id == turn_id && turn.session_id == child_id)
+            };
+            let busy = self.scheduler.is_session_busy_or_queued(&child_id);
+            let state = match turn.as_ref().map(|turn| &turn.status) {
+                Some(TurnStatus::Completed)
+                    if turn
+                        .as_ref()
+                        .is_some_and(|turn| turn.has_final_response == Some(false)) =>
+                {
+                    ReviewFixRunState::Failed
+                }
+                Some(TurnStatus::Completed) => ReviewFixRunState::Completed,
+                Some(TurnStatus::Cancelled) => ReviewFixRunState::Cancelled,
+                Some(TurnStatus::Error) => ReviewFixRunState::Failed,
+                _ if busy => ReviewFixRunState::Running,
+                Some(TurnStatus::InProgress) => ReviewFixRunState::Interrupted,
+                None => ReviewFixRunState::StartUnconfirmed,
+            };
+            if let Some((root, scope)) = follow_up_scope.as_mut() {
+                if let Some(turn) = turn.as_ref().filter(|turn| {
+                    tracking.is_some() && !has_later_turns && turn.status != TurnStatus::InProgress
+                }) {
+                    for item in turn.model_rounds.iter().flat_map(|round| &round.tool_items) {
+                        let (name, _) = openbitfun_agent_tools::effective_tool_invocation(
+                            &item.tool_name,
+                            &item.tool_call.input,
+                        );
+                        let successful = item.tool_result.as_ref().filter(|result| result.success);
+                        scope.observe_receipt(root, name, successful.map(|result| &result.result));
+                    }
+                } else {
+                    scope.require_workspace_fallback();
+                }
+            }
+            let receipt = turn
+                .as_ref()
+                .filter(|_| tracking.is_some())
+                .and_then(|turn| {
+                    turn.model_rounds
+                        .iter()
+                        .rev()
+                        .flat_map(|round| round.tool_items.iter().rev())
+                        .filter(|item| {
+                            item.is_subagent_item != Some(true)
+                                && item.subagent_session_id.is_none()
+                                && item.parent_task_tool_id.is_none()
+                        })
+                        .find_map(|item| {
+                            let (name, _) = openbitfun_agent_tools::effective_tool_invocation(
+                                &item.tool_name,
+                                &item.tool_call.input,
+                            );
+                            let result = item.tool_result.as_ref()?;
+                            (name == "TodoWrite"
+                                && result.success
+                                && result.result["todos"].is_array())
+                            .then_some(&result.result)
+                        })
+                });
+            // A running turn can have accepted tool replies before the complete
+            // transcript is saved. The same successful TodoWrite checkpoint
+            // survives context compaction and interruption.
+            let context_receipt = if turn.is_some() && tracking.is_some() {
+                let messages = match state {
+                    ReviewFixRunState::Running => Some(
+                        self.coordinator
+                            .get_session_manager()
+                            .get_context_messages(&child_id)
+                            .await?,
+                    ),
+                    ReviewFixRunState::Interrupted => {
+                        self.persistence
+                            .load_turn_context_snapshot(storage_path, &child_id, 0)
+                            .await?
+                    }
+                    _ => None,
+                };
+                messages
+                    .as_deref()
+                    .and_then(|messages| {
+                        ContextCompressor::latest_successful_todo_snapshot_for_turn(
+                            messages, &turn_id,
+                        )
+                    })
+                    .and_then(|(_, snapshot)| serde_json::to_value(snapshot).ok())
+            } else {
+                None
+            };
+            if let Some(tracking) = tracking.as_ref() {
+                for (id, mut item_state) in
+                    tracking.item_states(context_receipt.as_ref().or(receipt))
+                {
+                    if state != ReviewFixRunState::Running
+                        && item_state == ReviewFixItemState::InProgress
+                    {
+                        item_state = ReviewFixItemState::Pending;
+                    }
+                    progress.items.entry(id).or_insert(item_state);
+                }
+            }
+            progress.running |= busy;
+            if progress.latest_run.is_none() {
+                progress.latest_run = Some(ReviewFixRun {
+                    session_id: child_id,
+                    session_name: child_name,
+                    state,
+                });
+            }
+        }
+        Ok(progress)
+    }
+
+    async fn discard_hidden_review_outcome(
+        &self,
+        workspace_path: &Path,
+        run: &mut PullRequestReviewRun,
+    ) {
+        // A staged undo hides a suffix without rewriting the stored transcript or its metadata.
+        let Some(index) = run.outcome_turn_index else {
+            return;
+        };
+        match self
+            .persistence
+            .load_session_revert_state(workspace_path, &run.session_id)
+            .await
+        {
+            Ok(Some(state)) if index >= state.boundary_turn => run.outcome = None,
+            Err(error) => {
+                log::warn!(
+                    "Could not confirm Review outcome visibility: session_id={}, error={error}",
+                    run.session_id
+                );
+                run.outcome = None;
+            }
+            _ => {}
+        }
     }
 
     pub async fn list_persisted_sessions_page(

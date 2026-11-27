@@ -285,6 +285,31 @@ test("a phone or a browser opens no window: cards show inline in Library and the
   expect(tick?.args).toEqual({ request: { cardId: "card-a", itemId: "i1", done: true } });
 });
 
+test("the same saved donut card renders in its desktop window and in the phone library", async () => {
+  const state = freshState();
+  state.cards = [{ id: "chart", title: "Build quota", visible: true, size: { width: 300, height: 240 },
+    template: { kind: "chart", chart: "donut", itemsPath: "/samples", total: 20 },
+    dataSource: { kind: "http" }, data: { samples: [["Old run", 6]] },
+    lastData: { fetchedAtMs: 1_790_000_000_000, value: { samples: [["Current run", 10]] } } }];
+  const desktopHost = presenceHost(state);
+  const desktop = await open(PRESENCE, { ...DESKTOP, host: { handlers: desktopHost.host.handlers } });
+  await desktop.waitUntil(() => desktop.window("desktop-card-chart").state() !== null);
+  await desktop.waitFor("id:desktop-card-chart-ring");
+  await desktop.waitFor("text:Current run");
+  expect(desktop.shows("text:Old run")).toBe(false);
+
+  const phoneHost = presenceHost(state);
+  const phone = await open("./fixtures/obpApp.tsx", { ...PHONE, host: { handlers: phoneHost.host.handlers } });
+  await phone.waitFor("Library");
+  await phone.press("Library");
+  await phone.press("label:library-tab-spaces");
+  await phone.press("label:spaces-view-cards");
+  await phone.waitFor("id:desktop-card-chart-ring");
+  await phone.waitFor("text:Remaining");
+  await phone.waitFor("text:Current run");
+  expect(phone.window("desktop-card-chart").state()).toBe(null);
+});
+
 test("Settings › Pet on a browser is one Desktop only row", async () => {
   const state = freshState(true);
   const { host } = presenceHost(state);

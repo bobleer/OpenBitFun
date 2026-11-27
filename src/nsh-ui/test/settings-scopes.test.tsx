@@ -5,7 +5,8 @@
 // Permissions, Account › Activity and the phone push layout.
 
 import { expect, open, test } from "nsh/test";
-import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./support";
+import { designTokens } from "../src/generated/designTokens";
+import { createBackend, DEFAULT_USAGE, fixtureUsageActivity, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const PHONE = { width: 375, height: 812, platform: "ios" as const };
@@ -13,7 +14,7 @@ const HARNESS = "./fixtures/settingsApp.tsx";
 /** The same harness with the Super Agent UI gate on (`src/productGates.ts`). */
 const HARNESS_SUPER_AGENT = "./fixtures/settingsAppSuperAgent.tsx";
 
-function fleetNavigator() {
+function fleetNavigator(peerCapabilities: string[] = ["fleet_v1"]) {
   return {
     revision: 2,
     full: true,
@@ -37,7 +38,7 @@ function fleetNavigator() {
         "dev-b",
         "linux-box",
         [{ workspaceId: "workspace-2", name: "infra", rootPath: "/srv/infra", isHostCurrent: true, sessions: [] }],
-        { hostKind: "cli" },
+        { hostKind: "cli", hostCapabilities: peerCapabilities },
       ),
       fleetDeviceRow("dev-c", "win-pc", [], { state: "offline" }),
     ],
@@ -53,6 +54,7 @@ interface SettingsOptions {
   superAgentUi?: boolean;
   /** Optional custom invoke override run before default fixture dispatch. */
   onInvoke?: (action: string, request: Record<string, unknown> | undefined) => unknown | undefined;
+  peerCapabilities?: string[];
 }
 
 async function openSettings(options: SettingsOptions = {}, size: typeof DESKTOP | typeof PHONE = DESKTOP) {
@@ -79,13 +81,13 @@ async function openSettings(options: SettingsOptions = {}, size: typeof DESKTOP 
   };
   const host = fleetObpHost(backend, {
     fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
-    navigator: fleetNavigator(),
+    navigator: fleetNavigator(options.peerCapabilities),
   });
   const app = await open(options.superAgentUi ? HARNESS_SUPER_AGENT : HARNESS, { ...size, host: { handlers: host.handlers } });
   return { app, host, backend, superagentCalls };
 }
 
-test("the left list draws three scopes without icons, and only Preferences pages say they sync", async () => {
+test("the left list keeps three scopes, and only Preferences pages say they sync", async () => {
   const { app } = await openSettings();
   await app.waitFor("nav-settings-page-general");
   for (const scope of ["Preferences", "Account", "Device"]) {
@@ -102,7 +104,7 @@ test("the left list draws three scopes without icons, and only Preferences pages
   expect(app.shows("nav-settings-page-automation")).toBe(false);
   expect(app.shows("nav-settings-page-external-agents")).toBe(false);
 
-  // A Preferences page: a 22/600 title and the synced line.
+  // A Preferences page shows the synced line.
   await app.waitFor("settings-synced");
   expect(Number(app.spanStyle("Synced with your account").fontSize)).toBe(12);
   await app.waitFor("Interface language");
@@ -111,8 +113,8 @@ test("the left list draws three scopes without icons, and only Preferences pages
   await app.press("nav-settings-page-models");
   await app.waitFor("Default models");
   expect(app.shows("settings-synced")).toBe(false);
-  expect(Number(app.spanStyle("Models >> nth=1").fontSize)).toBe(22);
-  expect(String(app.spanStyle("Models >> nth=1").fontWeight)).toBe("600");
+  expect(Number(app.spanStyle("Models >> nth=1").fontSize)).toBe(designTokens.typography.pageTitle.size);
+  expect(String(app.spanStyle("Models >> nth=1").fontWeight)).toBe(designTokens.typography.pageTitle.weight);
 });
 
 test("the device scope chip lists runtime devices, disables an offline one and moves the context", async () => {
@@ -136,6 +138,287 @@ test("the device scope chip lists runtime devices, disables an offline one and m
   await app.press("settings-scope-chip");
   await app.press("settings-scope-device-dev-a");
   await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-a" && call.command === "get_mcp_servers"));
+});
+
+test("MCP ignores delayed catalog and config responses from the previous device", async () => {
+  const host = fleetObpHost(createBackend(), {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  const delayed: string[] = [];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (frame.params?.command !== "fleet_call" || request?.target !== "dev-a") return send(data);
+    const reply = (result: unknown) => JSON.stringify({ jsonrpc: "2.0", id: frame.id, result });
+    if (request.command === "get_mcp_servers") {
+      delayed.push(reply([{ id: "old", name: "Previous device server", status: "Stopped", transport: "stdio", enabled: false }]));
+      return [];
+    }
+    if (request.command === "load_mcp_json_config") {
+      delayed.push(reply({ jsonConfig: '{"mcpServers":{}}', fingerprint: "old-device" }));
+      return [];
+    }
+    return send(data);
+  };
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("nav-settings-page-mcp");
+  await app.waitUntil(() => delayed.length === 2);
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitFor("mcp-edit-fs-server");
+  await app.host.send("openbitfun.obpFrames", delayed);
+  expect(app.shows("Previous device server")).toBe(false);
+  await app.press("mcp-stop-fs-server");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "stop_mcp_server"));
+  await app.waitFor("mcp-start-fs-server");
+  await app.press("mcp-edit-fs-server");
+  await app.waitFor("mcp-draft-save");
+  await app.clear("mcp-draft-name");
+  await app.type("mcp-draft-name", "Device B files");
+  await app.press("mcp-draft-save");
+  await app.waitFor("mcp-draft-modal", { state: "gone" });
+  expect(host.fleetCalls.filter(call => call.command === "save_mcp_json_config")).toMatchObject([
+    { target: "dev-b", args: { expectedFingerprint: "fp-1" } },
+  ]);
+});
+
+test("model pools show the selected device and retry a member on its owning device", async () => {
+  const backend = createBackend();
+  backend.handlers["openbitfun.invoke"]({ action: "save_model_pool", internal: true,
+    request: { pool: { id: "", name: "Device B pool", strategy: "ordered", member_model_ids: ["model-1"] } } });
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  const delayed: string[] = [];
+  let delayedPools = false;
+  let delayedModels = false;
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (frame.params?.command !== "fleet_call" || request?.target !== "dev-a") return send(data);
+    let result: unknown;
+    if (request.command === "get_model_pools") {
+      delayedPools = true;
+      result = { version: 1, pools: [
+        { id: "pool-1", name: "Previous device pool", strategy: "balanced", member_model_ids: [] },
+      ] };
+    } else if (request.command === "get_config" && request.args?.request?.path === "ai.models") {
+      delayedModels = true;
+      result = [{ id: "old-model", name: "Previous device model", enabled: true, capabilities: ["text_chat"] }];
+    } else {
+      return send(data);
+    }
+    delayed.push(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+    return [];
+  };
+
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("nav-settings-page-models");
+  await app.waitUntil(() => delayedPools && delayedModels);
+  await app.press("models-tab-pools");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitFor("Device B pool");
+  await app.host.send("openbitfun.obpFrames", delayed);
+  expect(app.shows("Previous device pool")).toBe(false);
+  await app.press("edit-pool-pool-1");
+  await app.press("pool-add-members");
+  await app.waitFor("pool-toggle-model-1");
+  expect(app.shows("pool-toggle-old-model")).toBe(false);
+  await app.press("pool-member-picker-done");
+  await app.waitFor("Cooling down");
+  await app.press("pool-member-actions-model-1");
+  await app.press("pool-member-retry-model-1");
+  await app.waitFor("Available");
+  expect(host.fleetCalls.filter(call => call.command === "retry_model_pool_member")).toMatchObject([
+    { target: "dev-b", args: { request: { modelId: "model-1" } } },
+  ]);
+  expect(host.fleetCalls.filter(call => call.command === "get_model_pool_status").map(call => call.target)).toEqual(["dev-b", "dev-b"]);
+});
+
+test("MCP reopens authorization for an expired credential on the owning device", async () => {
+  const backend = createBackend({ mcpRemoteAuthConfigured: true });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const action = (data as { action: string }).action;
+    if (action === "restart_mcp_server") return { ok: false, error: "Handshake failed: 401 Unauthorized" };
+    if (action !== "get_mcp_servers") return invoke(data);
+    const reply = invoke(data) as { ok: true; value: Array<Record<string, unknown>> };
+    return { ...reply, value: reply.value.map(row => row.id === "remote-docs"
+      ? { ...row, enabled: true, status: "Connected" } : row) };
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  const delayed: string[] = [];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (frame.params?.command !== "fleet_call" || request?.command !== "restart_mcp_server" || request.target !== "dev-a") {
+      return send(data);
+    }
+    delayed.push(JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32000, message: "401 Unauthorized" } }));
+    return [];
+  };
+
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("nav-settings-page-mcp");
+  await app.waitFor("mcp-restart-remote-docs");
+  await app.press("mcp-restart-remote-docs");
+  await app.waitUntil(() => delayed.length === 1);
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitUntil(() => app.enabled("mcp-restart-remote-docs"));
+  await app.host.send("openbitfun.obpFrames", delayed);
+  expect(app.shows("mcp-auth-modal")).toBe(false);
+
+  await app.press("mcp-restart-remote-docs");
+  await app.waitFor("OAuth status: waiting for the browser");
+  await app.waitUntil(() => app.enabled("mcp-auth-close"));
+  await app.press("mcp-auth-close");
+  await app.waitFor("mcp-auth-modal", { state: "gone" });
+  expect(host.fleetCalls.filter(call => ["restart_mcp_server", "start_mcp_remote_oauth", "cancel_mcp_remote_oauth"].includes(call.command)))
+    .toMatchObject([
+      { target: "dev-b", command: "restart_mcp_server", args: { serverId: "remote-docs" } },
+      { target: "dev-b", command: "start_mcp_remote_oauth", args: { request: { serverId: "remote-docs" } } },
+      { target: "dev-b", command: "cancel_mcp_remote_oauth", args: { request: { serverId: "remote-docs" } } },
+    ]);
+
+  backend.setMcpOAuthSession({ serverId: "remote-docs", status: "awaitingCallback" });
+  await app.press("mcp-auth-remote-docs");
+  await app.waitFor("OAuth status: waiting for the provider to redirect back");
+  backend.setMcpOAuthSession({ serverId: "remote-docs", status: "authorized" });
+  await app.waitFor("mcp-auth-modal", { state: "gone" });
+  await app.waitFor("remote-docs is authorized");
+  expect(host.fleetCalls.filter(call => call.command === "start_mcp_remote_oauth")).toHaveLength(1);
+});
+
+test("usage ignores delayed period and activity results from the previous device", async () => {
+  const host = fleetObpHost(createBackend(), {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  const delayed: string[] = [];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (frame.params?.command !== "fleet_call" || request?.target !== "dev-a") return send(data);
+    const result = request.command === "get_token_usage_statistics"
+      ? { ...DEFAULT_USAGE, totalTokens: 999_000 }
+      : request.command === "get_token_usage_activity"
+        ? { ...fixtureUsageActivity(), totalTokens: 888_000 }
+        : undefined;
+    if (!result) return send(data);
+    delayed.push(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+    return [];
+  };
+
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("nav-settings-page-usage");
+  await app.waitUntil(() => delayed.length === 2);
+  expect(app.enabled("id:usage-range-select")).toBe(false);
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitFor("id:usage-total-tokens >> text:120K");
+  await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
+  await app.host.send("openbitfun.obpFrames", delayed);
+
+  expect(app.shows("id:usage-total-tokens >> text:120K")).toBe(true);
+  expect(app.shows("text:999K")).toBe(false);
+  expect(app.texts().join("\n")).not.toContain("888K tokens over the window");
+  expect(host.fleetCalls.filter(call => call.target === "dev-b" && call.command.startsWith("get_token_usage_"))
+    .map(call => call.command).sort()).toEqual(["get_token_usage_activity", "get_token_usage_statistics"]);
+});
+
+test("usage reopens after offscreen results from a previous device are discarded", async () => {
+  const host = fleetObpHost(createBackend(), {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  const delayed: string[] = [];
+  let delayRequests = true;
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (!delayRequests || frame.params?.command !== "fleet_call" || request?.target !== "dev-a") return send(data);
+    const result = request.command === "get_token_usage_statistics"
+      ? DEFAULT_USAGE
+      : request.command === "get_token_usage_activity" ? fixtureUsageActivity() : undefined;
+    if (!result) return send(data);
+    delayed.push(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+    return [];
+  };
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+
+  await app.press("nav-settings-page-usage");
+  await app.waitUntil(() => delayed.length === 2);
+  await app.press("nav-settings-page-general");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.host.send("openbitfun.obpFrames", delayed);
+  delayRequests = false;
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-a");
+  await app.press("nav-settings-page-usage");
+  await app.waitFor("id:usage-total-tokens >> text:120K");
+  expect(app.enabled("id:usage-range-select")).toBe(true);
+  await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
+});
+
+test("a device switch holds an MCP JSON draft and saves it on the device where it was edited", async () => {
+  const { app, host } = await openSettings();
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-json-toggle");
+  await app.waitUntil(() => (app.value("mcp-json") ?? "").includes("fs-server"));
+  const draft = JSON.stringify({ ...JSON.parse(app.value("mcp-json")!), deviceDraft: "saved on dev-a" });
+  await app.clear("mcp-json");
+  await app.type("mcp-json", draft);
+
+  const switchDevice = async () => {
+    await app.press("settings-scope-chip");
+    await app.press("settings-scope-device-dev-b");
+    await app.waitFor("settings-unsaved-dialog");
+  };
+  await switchDevice();
+  expect(host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_mcp_servers")).toBe(false);
+  await app.press("settings-unsaved-keep");
+  expect(app.value("mcp-json")).toBe(draft);
+  await switchDevice();
+  await app.press("settings-unsaved-save");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_mcp_servers"));
+  expect(host.fleetCalls.filter(call => call.command === "save_mcp_json_config")).toMatchObject([
+    { target: "dev-a", args: { jsonConfig: draft, expectedFingerprint: "fp-1" } },
+  ]);
+  expect(app.shows("mcp-json-editor")).toBe(false);
+});
+
+test("a picked MCP file is read on the controller and imported only on the selected fleet device", async () => {
+  const { app, host } = await openSettings();
+  await app.press("nav-settings-page-mcp");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "load_mcp_json_config"));
+  await app.waitFor("mcp-import");
+  await app.press("mcp-import");
+  app.onPick(() => [{ name: "controller-only.json", data: new TextEncoder().encode(JSON.stringify({
+    mcpServers: { "fleet-fixture": { command: "fixture-only-command" } },
+  })) }]);
+  await app.press("mcp-import-pick");
+  await app.waitFor("controller-only.json");
+  await app.press("mcp-import-preview");
+  expect(host.fleetCalls.some(call => call.command === "read_file_content" || call.command === "save_mcp_json_config")).toBe(false);
+  await app.press("mcp-import-save");
+  await app.waitFor("mcp-import-modal", { state: "gone" });
+  const writes = host.fleetCalls.filter(call => call.command === "save_mcp_json_config");
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ target: "dev-b", args: { expectedFingerprint: "fp-1" } });
+  expect(String(writes[0].args.jsonConfig)).not.toContain("controller-only.json");
+  expect(JSON.parse(String(writes[0].args.jsonConfig))).toMatchObject({ mcpServers: { "fleet-fixture": {
+    command: "fixture-only-command", enabled: false,
+  } } });
 });
 
 test("Account › OpenBitFun turns the agent off and deletes its data through the cloud node", async () => {
@@ -348,7 +631,11 @@ test("Settings coalesces parent config reads when the host returns full section 
       max_rollouts_scan_limit: 2000,
       phase1_max_concurrency: 1,
     },
-    editor: { font_size: 14, tab_size: 4, word_wrap: "off", line_numbers: "on", minimap: { enabled: true } },
+    editor: {
+      font_size: 14, tab_size: 4, insert_spaces: true, detect_indentation: true,
+      line_height: 1.5, word_wrap: "off", line_numbers: "on", minimap: { enabled: true },
+      scroll_beyond_last_line: false, render_line_highlight: "line", render_whitespace: "selection",
+    },
     terminal: { font_size: 14, scrollback: 1000, cursor_style: "block" },
     superagent: { allowAutoApproval: true, acceptDispatch: true },
   };
@@ -372,6 +659,144 @@ test("Settings coalesces parent config reads when the host returns full section 
   expect(new Set(settingsRootReads).size).toBe(5);
   expect(settingsRootReads.includes("superagent")).toBe(false);
   expect(readPaths.filter(p => p.startsWith("editor.") || p.startsWith("terminal.") || p.startsWith("memories.")).length).toBe(0);
+});
+
+test("execution settings use the selected runtime's model targets and write only the requested leaves", async () => {
+  const { app, host } = await openSettings({
+    peerCapabilities: ["fleet_v1", "model_routing_v1", "model_pool_selection_v1", "subagent_model_override_policy_v1"],
+    onInvoke: (action, request) => {
+      if (action === "get_config" && request?.path === "ai") return { ok: true, value: {
+        allow_subagent_model_override: true, allow_tool_json_repair: true,
+        agent_model_selections: { subagents: { default: { kind: "model", model_ref: "fast" }, fork: { kind: "inherit" } } },
+      } };
+      if (action === "get_model_pools") return { ok: true, value: { version: 1, pools: [
+        { id: "review-pool", name: "Review pool", strategy: "ordered", member_model_ids: ["model-1"] },
+      ] } };
+      if (action === "set_config" && request?.path === "ai.allow_tool_json_repair" && request.value === true) {
+        return { ok: false, error: "This fixture refused the tool argument setting" };
+      }
+      return undefined;
+    },
+  });
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-execution");
+  await app.waitFor("Tool schema loading");
+  await app.waitFor("Subagents");
+  await app.waitUntil(() => app.enabled("id:subagent-default-model") &&
+    host.fleetCalls.some(call => call.command === "get_model_pools" && call.target === "dev-b"));
+  await app.press("id:subagent-default-model");
+  await app.press("subagent-default-model-pool-review-pool");
+  await app.waitFor("Review pool");
+  await app.press("id:subagent-fork-model");
+  await app.press("subagent-fork-model-primary");
+  await app.press("id:subagent-model-override");
+  await app.press("id:tool-json-repair");
+  await app.waitUntil(() => app.enabled("id:tool-json-repair"));
+  await app.press("id:tool-json-repair");
+  await app.waitFor("This fixture refused the tool argument setting");
+
+  expect(host.fleetCalls.filter(call => call.command === "set_config")).toMatchObject([
+    { target: "dev-b", args: { request: { path: "ai.agent_model_selections.subagents.default", value: { kind: "pool", pool_id: "review-pool" } } } },
+    { target: "dev-b", args: { request: { path: "ai.agent_model_selections.subagents.fork", value: { kind: "model", model_ref: "primary" } } } },
+    { target: "dev-b", args: { request: { path: "ai.allow_subagent_model_override", value: false } } },
+    { target: "dev-b", args: { request: { path: "ai.allow_tool_json_repair", value: false } } },
+    { target: "dev-b", args: { request: { path: "ai.allow_tool_json_repair", value: true } } },
+  ]);
+  expect(app.accessibility("id:tool-json-repair")?.checked).toBe("false");
+});
+
+test("execution settings retain legacy subagent selections and hide pool choices on an older host", async () => {
+  const { app, host } = await openSettings({
+    onInvoke: (action, request) => {
+      if (action === "get_config" && request?.path === "ai") return { ok: true, value: {
+        allow_subagent_model_override: true,
+        agent_model_defaults: { subagents: { default: { kind: "fixed", model_id: "removed-model" }, fork: { kind: "inherit" } } },
+      } };
+      return undefined;
+    },
+  });
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-execution");
+  await app.waitFor("removed-model (not configured)");
+  expect(app.enabled("id:subagent-model-override")).toBe(false);
+  await app.press("id:subagent-default-model");
+  expect(app.enabled("subagent-default-model-unavailable")).toBe(false);
+  expect(host.fleetCalls.some(call => call.command === "get_model_pools" && call.target === "dev-b")).toBe(false);
+  await app.press("subagent-default-model-primary");
+  expect(host.fleetCalls.filter(call => call.command === "set_config")).toMatchObject([
+    { target: "dev-b", args: { request: { path: "ai.agent_model_defaults.subagents.default", value: { kind: "fixed", model_id: "primary" } } } },
+  ]);
+});
+
+test("memory settings group advanced fields and send paired changes and settings reset to the selected device", async () => {
+  let document = {
+    generate_memories: true, use_memories: false, generate_for_btw_sessions: true,
+    external_context_policy: "clear_tool_results", extract_model: "fast", consolidation_model: null,
+    min_rollout_idle_hours: 12,
+  };
+  const { app, host } = await openSettings({
+    onInvoke: (action, request) => {
+      if (action === "get_config" && request?.path === "memories") return { ok: true, value: document };
+      if (action === "product_control_invoke" && request?.capabilityId === "setting.ai.memory") {
+        if (request.value === false) return { ok: false, error: "Memory settings fixture refused the write" };
+        document = { ...document, generate_memories: true, use_memories: true };
+        return { ok: true, value: { configured: true, effectiveValue: true } };
+      }
+      if (action === "reset_config" && request?.path === "memories") {
+        document = { ...document, generate_memories: false, use_memories: false, extract_model: "", min_rollout_idle_hours: 6 };
+        return { ok: true, value: "Configuration reset" };
+      }
+      return undefined;
+    },
+  });
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-session-memory");
+  await app.waitUntil(() => app.enabled("id:memory-enabled"));
+  expect(document).toMatchObject({ generate_memories: true, use_memories: false, generate_for_btw_sessions: true });
+  expect(app.shows("id:memory-btw-sessions")).toBe(false);
+  expect(app.enabled("id:memory-extract-model")).toBe(false);
+  expect(app.shows("id:memory-idle-hours")).toBe(false);
+  await app.type("settings-search", "A session must be idle");
+  await app.press("settings-search-hit-field-memory-idle-hours");
+  await app.waitFor("id:memory-idle-hours");
+  expect(app.enabled("memory-idle-hours-increase")).toBe(false);
+  await app.press("id:memory-advanced-toggle");
+  await app.waitFor("id:memory-idle-hours", { state: "gone" });
+  await app.type("settings-search", "A session must be idle");
+  await app.press("settings-search-hit-field-memory-idle-hours");
+  await app.waitFor("id:memory-idle-hours");
+
+  await app.press("id:memory-enabled");
+  await app.waitUntil(() => app.enabled("id:memory-extract-model"));
+  expect(document.generate_for_btw_sessions).toBe(true);
+  expect(app.shows("id:memory-btw-sessions")).toBe(false);
+  expect(app.enabled("memory-idle-hours-increase")).toBe(true);
+  expect(app.value("id:memory-idle-hours")).toBe("12");
+  await app.press("id:memory-enabled");
+  await app.waitFor("Memory settings fixture refused the write");
+  expect(app.enabled("id:memory-extract-model")).toBe(true);
+  expect(host.fleetCalls.filter(call => call.command === "product_control_invoke" &&
+    (call.args.request as { capabilityId?: string }).capabilityId === "setting.ai.memory")).toMatchObject([true, false].map(value => ({
+      target: "dev-b", args: { request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value } },
+    })));
+  expect(host.fleetCalls.some(call => call.command === "set_config" &&
+    String((call.args.request as { path?: string }).path).startsWith("memories"))).toBe(false);
+
+  await app.press("memory-manage");
+  expect(app.enabled("memory-open-folder")).toBe(false);
+  await app.press("memory-reset-settings");
+  await app.waitFor("memory-reset-settings-confirm");
+  expect(host.fleetCalls.some(call => call.command === "reset_config")).toBe(false);
+  await app.press("memory-reset-settings-confirm");
+  await app.waitFor("Follow the primary model");
+  expect(app.enabled("id:memory-extract-model")).toBe(false);
+  expect(host.fleetCalls.filter(call => call.command === "reset_config")).toMatchObject([
+    { target: "dev-b", args: { request: { path: "memories" } } },
+  ]);
+  expect(host.fleetCalls.some(call => call.command === "reset_memory" || call.command === "get_memory_paths")).toBe(false);
 });
 
 test("a peer device's storage page never scans or cleans the controller's snapshot store", async () => {

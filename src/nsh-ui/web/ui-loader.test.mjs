@@ -168,6 +168,50 @@ function bundle() {
 const navigate = url => ({ method: 'GET', url, mode: 'navigate' });
 const get = url => ({ method: 'GET', url, mode: 'cors' });
 
+test('figure previews get an opaque shell without widening the bundle page policy', async () => {
+  const { manifest, index } = bundle();
+  const world = environment();
+  world.pool.set(sha(index), index);
+  const ui = loader.createUiLoader(world.env);
+  const { bundleId } = await ui.storeManifest({ manifest, deviceId: 'desk-1' });
+  const shell = await ui.handle(navigate(`${SCOPE}${bundleId}/.obf-figure.html`), 'c1');
+  assert.equal(shell.status, 200);
+  assert.equal(shell.headers.get('X-OpenBitFun-Figure-Preview'), '1');
+  assert.equal(shell.headers.get('Cache-Control'), 'no-store');
+  assert.match(shell.headers.get('Content-Security-Policy'), /default-src 'none'.*frame-src data:.*sandbox allow-scripts/);
+  assert.match(shell.headers.get('Content-Security-Policy'), /; connect-src data: blob:;/);
+  assert.equal(shell.headers.get('X-OpenBitFun-Figure-Bindings'), '1');
+  assert.doesNotMatch(shell.headers.get('Content-Security-Policy'), /allow-same-origin/);
+  const figureShell = await shell.text();
+  assert.match(figureShell, /<iframe sandbox="allow-scripts" referrerpolicy="no-referrer"/);
+  assert.equal(world.fetched.length, 0);
+
+  const parent = {};
+  const forwarded = [];
+  const listeners = {};
+  const frame = {
+    addEventListener: (event, listener) => { listeners[event] = listener; },
+    contentWindow: { postMessage: data => forwarded.push(data) },
+  };
+  vm.runInNewContext(figureShell.match(/<script>([\s\S]+)<\/script>/)[1], {
+    document: { querySelector: () => frame },
+    addEventListener: (event, listener) => { listeners[event] = listener; },
+    location: { hash: "" },
+    parent,
+  });
+  const update = JSON.stringify({ type: 'openbitfun.figure.bindings.v1', nonce: 'fixture', values: {} });
+  listeners.message({ source: frame.contentWindow, data: update });
+  listeners.message({ source: parent, data: JSON.stringify({ type: 'unrelated' }) });
+  listeners.load();
+  assert.deepEqual(forwarded, []);
+  listeners.message({ source: parent, data: update });
+  listeners.load();
+  assert.deepEqual(forwarded, [update, update]);
+
+  const page = await ui.handle(navigate(`${SCOPE}${bundleId}/index.html`), 'c1');
+  assert.doesNotMatch(page.headers.get('Content-Security-Policy'), /'unsafe-inline'/);
+});
+
 test('store recomputes the id and serves verified files, caching them', async () => {
   const { manifest, index, app, wasm } = bundle();
   const world = environment();

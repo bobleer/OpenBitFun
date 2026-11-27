@@ -27,6 +27,8 @@ pub mod exclusive_file_lease;
     feature = "resource-capacity"
 ))]
 mod file_lock;
+#[cfg(feature = "file-text-encoding")]
+pub mod file_text_encoding;
 #[cfg(any(feature = "filesystem", feature = "workspace-transfer"))]
 pub mod file_write_lock;
 #[cfg(feature = "filesystem")]

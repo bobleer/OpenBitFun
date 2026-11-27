@@ -1,10 +1,14 @@
 import { Buffer } from "buffer";
-import { createWorkspaceDirectory } from "./api";
-import { entryDeviceId, fleetActive, invokeCommand } from "./bridge";
+import { createWorkspaceDirectory, type WorkspaceRecord } from "./api";
+import type { BackendConnection } from "./backendConnection";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand } from "./bridge";
+import { primaryComposerDraft, type ComposerDraftTarget } from "./composerDraftStore";
 import { controllerPort } from "./controller/controllerPort";
 import { fleetDeviceById } from "./fleetStore";
 import { tr } from "./i18n";
 import { activeSessionDevice, activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, deviceContext } from "./state";
+import { mergeSessionReferences, messageWithSessionReferences, sessionReferenceKey, type SessionReferenceCandidate } from "./sessionReferences";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { Clipboard, Picker, signal } from "nsh";
 
 /**
@@ -13,10 +17,15 @@ import { Clipboard, Picker, signal } from "nsh";
  * Remote peers, remote SSH/Docker/WSL workspaces, and browser/phone controllers
  * MUST send image bytes (`dataUrl`) and never controller-local paths.
  */
-export function isLocalAttachmentPathAllowed(): boolean {
+export interface AttachmentOwner {
+  deviceId: string;
+  workspace: WorkspaceRecord | null;
+}
+
+export function isLocalAttachmentPathAllowed(owner?: AttachmentOwner): boolean {
   if (controllerPort()) return false;
   if (fleetActive()) {
-    const targetDevice = activeSessionDevice() || deviceContext();
+    const targetDevice = owner ? owner.deviceId : activeSessionDevice() || deviceContext();
     if (
       targetDevice &&
       targetDevice !== entryDeviceId() &&
@@ -25,8 +34,7 @@ export function isLocalAttachmentPathAllowed(): boolean {
       return false;
     }
   }
-  const ws = activeWorkspace();
-  if (isRemoteWorkspace(ws)) {
+  if (isRemoteWorkspace(owner ? owner.workspace : activeWorkspace())) {
     return false;
   }
   return true;
@@ -66,8 +74,9 @@ export interface FileAttachment {
 export const LONG_PASTE_MAX_LINES = 50;
 export const LONG_PASTE_MAX_CHARS = 1000;
 
-export const imageAttachments = signal<ImageAttachment[]>([]);
-export const fileAttachments = signal<FileAttachment[]>([]);
+export const imageAttachments = primaryComposerDraft.images;
+export const fileAttachments = primaryComposerDraft.files;
+export const sessionReferenceAttachments = primaryComposerDraft.references;
 export const attachmentNotice = signal<string>("");
 
 let nextId = 0;
@@ -106,6 +115,15 @@ export function addFileAttachment(input: Omit<FileAttachment, "id">): FileAttach
   return entry;
 }
 
+export function attachFileToDraft(target: ComposerDraftTarget, entry: FileAttachment): void {
+  target.update(draft => draft.files.some(item => item.path === entry.path && item.isDirectory === entry.isDirectory)
+    ? draft : { ...draft, files: [...draft.files, entry] });
+}
+
+export function attachImageToDraft(target: ComposerDraftTarget, entry: ImageAttachment): void {
+  target.update(draft => ({ ...draft, images: [...draft.images, entry] }));
+}
+
 export function removeFileAttachment(id: string): void {
   fileAttachments.update(list => list.filter(entry => entry.id !== id));
 }
@@ -134,7 +152,19 @@ export function composeMessageWithFileAttachments(
   return trimmed ? `${trimmed} ${tags.join(" ")}` : tags.join(" ");
 }
 
-import { isRemoteWorkspace } from "./shared/workspaceUtils";
+/** Send the expansion to the host while keeping the original slash invocation in the transcript. */
+export function composerMessage(
+  text: string,
+  files: readonly FileAttachment[],
+  references: readonly SessionReferenceCandidate[],
+  invocation?: string,
+) {
+  const body = composeMessageWithFileAttachments(text, files);
+  const payload = messageWithSessionReferences(body, references);
+  if (invocation === undefined) return { message: payload, displayBody: body };
+  const displayBody = composeMessageWithFileAttachments(invocation, files);
+  return { message: { ...messageWithSessionReferences(displayBody, references), text: payload.text }, displayBody };
+}
 
 function isRemoteWorkspaceObj(ws: unknown): boolean {
   if (!ws || typeof ws !== "object") return false;
@@ -161,40 +191,48 @@ export async function saveLongTextPasteToWorkspace(
   options?: {
     workspaceId?: string;
     workspaceRoot?: string;
+    deviceId?: string;
+    connection?: BackendConnection;
     isRemote?: boolean;
     fileName?: string;
-    skipPrimaryStore?: boolean;
   },
 ): Promise<FileAttachment | null> {
-  const workspaceId = options?.workspaceId || activeWorkspaceId();
-  const root = (options?.workspaceRoot || activeWorkspaceRoot() || "").trim();
+  const connection = options?.connection ?? backendConnection();
+  if (backendConnection() !== connection) return null;
+  const workspaceId = options?.workspaceId ?? activeWorkspaceId();
+  const root = (options?.workspaceRoot ?? activeWorkspaceRoot() ?? "").trim();
   if (!workspaceId || !root) return null;
   const isRemote = options?.isRemote ?? isRemoteWorkspaceObj(activeWorkspace());
+  const deviceId = options?.deviceId ?? (activeSessionDevice() || deviceContext());
+  const route = fleetActive() && deviceId ? { target: deviceId } : undefined;
   // Remote workspaces always use POSIX paths; Windows local roots keep backslash.
   const sep = !isRemote && /^[A-Za-z]:\\/.test(root) ? "\\" : "/";
   const trimmedRoot = root.replace(/[\\/]+$/, "");
   const pastedDir = `${trimmedRoot}${sep}.openbitfun${sep}pasted`;
-  const fileName = options?.fileName || formatPastedFileName();
+  // The provided name labels the chip. Each paste owns a different stored file.
+  const fileName = formatPastedFileName();
   const filePath = `${pastedDir}${sep}${fileName}`;
   const relativePath = `.openbitfun/pasted/${fileName}`;
 
   try {
     try {
-      await createWorkspaceDirectory(workspaceId, pastedDir);
+      await createWorkspaceDirectory(workspaceId, pastedDir, route);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (!/exist/i.test(msg)) {
         // Proceed to write attempt; write_file_content will surface any real permission/path failure.
       }
     }
+    if (backendConnection() !== connection) return null;
     await invokeCommand<unknown>("write_file_content", {
       workspaceId,
       workspacePath: root,
       filePath,
       content: text,
-    });
-    const entry = {
-      name: fileName,
+    }, route);
+    return {
+      id: `file-attachment-${++nextId}`,
+      name: options?.fileName || fileName,
       path: filePath,
       relativePath,
       isDirectory: false,
@@ -202,10 +240,6 @@ export async function saveLongTextPasteToWorkspace(
       lineCount: countTextLines(text),
       charCount: text.length,
     };
-    if (options?.skipPrimaryStore) {
-      return { id: `file-attachment-${++nextId}`, ...entry };
-    }
-    return addFileAttachment(entry);
   } catch {
     return null;
   }
@@ -217,22 +251,26 @@ export async function saveLongTextPasteToWorkspace(
  * data URL. A clipboard without an image says so instead of failing the send.
  */
 export async function attachImageFromClipboard(): Promise<void> {
+  const target = primaryComposerDraft.capture();
+  const allowLocalPath = isLocalAttachmentPathAllowed();
+  const add = (item: ImageAttachment) => attachImageToDraft(target, item);
+  const report = (message: string) => { if (target.isVisible()) attachmentNotice.set(message); };
   attachmentNotice.set("");
   let image: { url: string; size: { width: number; height: number } } | null = null;
   try {
     image = await Clipboard.readImage();
   } catch (error) {
-    attachmentNotice.set(error instanceof Error ? error.message : String(error));
+    report(error instanceof Error ? error.message : String(error));
     return;
   }
   if (!image) {
-    attachmentNotice.set(tr("chat.attach.noClipboardImage"));
+    report(tr("chat.attach.noClipboardImage"));
     return;
   }
 
   const { width, height } = image.size;
-  if (image.url.startsWith("file://") && isLocalAttachmentPathAllowed()) {
-    addAttachment({
+  if (image.url.startsWith("file://") && allowLocalPath) {
+    add({
       id: `attachment-${++nextId}`,
       name: nameOfPath(image.url),
       mimeType: mimeOfPath(image.url),
@@ -253,7 +291,7 @@ export async function attachImageFromClipboard(): Promise<void> {
     const contentType =
       response.headers.get("content-type") ??
       (image.url.startsWith("file://") ? mimeOfPath(image.url) : "image/png");
-    addAttachment({
+    add({
       id: `attachment-${++nextId}`,
       name: image.url.startsWith("file://") ? nameOfPath(image.url) : `clipboard-${nextId}.${extensionOf(contentType)}`,
       mimeType: contentType,
@@ -263,7 +301,7 @@ export async function attachImageFromClipboard(): Promise<void> {
       dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`,
     });
   } catch (error) {
-    attachmentNotice.set(
+    report(
       image.url.startsWith("file://")
         ? tr("error.unsupported")
         : error instanceof Error
@@ -281,19 +319,22 @@ export async function attachImageFromClipboard(): Promise<void> {
  */
 export async function attachImagesFromPicker(
   onAdd?: (attachment: ImageAttachment) => void,
+  isVisible?: () => boolean,
 ): Promise<number> {
+  const target = primaryComposerDraft.capture();
+  const report = (message: string) => { if ((isVisible ?? target.isVisible)()) attachmentNotice.set(message); };
   attachmentNotice.set("");
   let picked: Array<{ file: File; size: { width: number; height: number } }> = [];
   try {
     picked = await Picker.pickImages({ multiple: true, limit: 8, maxDimension: 2048 });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    attachmentNotice.set(
+    report(
       message.includes("ERR_ACCESS_DENIED") ? tr("chat.attach.pickerUnavailable") : message,
     );
     return 0;
   }
-  const addTarget = onAdd ?? addAttachment;
+  const addTarget = onAdd ?? (item => attachImageToDraft(target, item));
   let added = 0;
   for (const image of picked) {
     try {
@@ -310,14 +351,10 @@ export async function attachImagesFromPicker(
       });
       added += 1;
     } catch (error) {
-      attachmentNotice.set(error instanceof Error ? error.message : String(error));
+      report(error instanceof Error ? error.message : String(error));
     }
   }
   return added;
-}
-
-function addAttachment(attachment: ImageAttachment): void {
-  imageAttachments.update(list => [...list, attachment]);
 }
 
 /** Drops an attachment from the next turn; the array is replaced so `<Each>` re-renders. */
@@ -325,15 +362,17 @@ export function removeAttachment(id: string): void {
   imageAttachments.update(list => list.filter(entry => entry.id !== id));
 }
 
-export function clearAttachments(): void {
-  imageAttachments.set([]);
-  fileAttachments.set([]);
-  attachmentNotice.set("");
+export function addSessionReference(reference: SessionReferenceCandidate): void {
+  sessionReferenceAttachments.update(current => mergeSessionReferences(current, [reference]));
+}
+
+export function removeSessionReference(key: string): void {
+  sessionReferenceAttachments.update(current => current.filter(reference => sessionReferenceKey(reference) !== key));
 }
 
 /** Serializes a list of image attachments into the wire shape `submit_user_message` / `start_dialog_turn` expects. */
-export function buildAttachmentContexts(list: ReadonlyArray<ImageAttachment>) {
-  const allowLocalPath = isLocalAttachmentPathAllowed();
+export function buildAttachmentContexts(list: ReadonlyArray<ImageAttachment>, owner?: AttachmentOwner) {
+  const allowLocalPath = isLocalAttachmentPathAllowed(owner);
   return list
     .filter(entry => Boolean(entry.dataUrl) || (allowLocalPath && Boolean(entry.imagePath)))
     .map(entry => ({

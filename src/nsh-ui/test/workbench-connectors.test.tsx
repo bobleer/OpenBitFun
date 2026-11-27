@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { openSession, openToolScene, showDevices, type BackendOptions, createBackend, createDeviceBackend } from "./support";
+import { openSession, openToolScene, showDevices, type BackendOptions, createBackend, createDeviceBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -693,11 +693,66 @@ test("settings opens on General, renders one page at a time, and finds a field b
   expect(app.texts()).not.toContain("Model pools");
 
   // Search matches a field label on another page and opens that page.
-  await app.type("settings-search", "scrollback");
+  const searchY = app.layout("settings-search")!.y;
+  await app.scroll("id:settings-navigation-scroll", 350);
+  expect(app.layout("settings-search")!.y).toBe(searchY);
+  await app.type("settings-search", "terminal");
   await app.waitFor("settings-search-hit-field-terminal-scrollback");
-  await app.press("settings-search-hit-field-terminal-scrollback");
+  await app.keyboard.press("end");
+  await app.keyboard.press("enter");
   await app.waitFor("Maximum lines preserved in terminal scroll history");
   expect(app.value("terminal-scrollback")).toBe("1000");
+});
+
+test("settings remembers each page's scroll position", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, height: 460, host: { handlers: backend.handlers } });
+  const titleY = () => app.layout("id:settings-page-title")?.y ?? -10000;
+
+  await app.press("Settings");
+  await app.waitFor("Interface language");
+  await app.press("nav-settings-page-shortcuts");
+  await app.waitFor("Choose the keys for the app's own commands.");
+  const top = titleY();
+  await app.scroll("id:settings-page-scroll", 320);
+  await app.waitUntil(() => titleY() < top - 50);
+  const remembered = titleY();
+
+  await app.press("nav-settings-page-general");
+  await app.waitFor("Interface language");
+  expect(Math.abs(titleY() - top)).toBeLessThan(3);
+  await app.press("nav-settings-page-shortcuts");
+  await app.waitUntil(() => Math.abs(titleY() - remembered) < 3);
+});
+
+test("settings form fields fill the row only when the content panel is narrow", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  const viewport = () => app.layout("id:settings-page-scroll")!;
+  const field = () => app.layout("worktree-root")!;
+  const row = () => app.layout("id:settings-row-worktree-root")!;
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-workspace");
+  await app.waitFor("worktree-root");
+  const input = app.accessibility("id:worktree-root");
+  expect(input?.label).toBe("Worktree folder");
+  expect(input?.description).toBe("Directory where isolated Git worktrees are created");
+  expect(viewport().width).toBeGreaterThan(520);
+  expect(field().width).toBeGreaterThan(180);
+  expect(field().width).toBeLessThanOrEqual(220);
+  const desktopFieldY = field().y - row().y;
+
+  await app.setViewport(740, 900);
+  await app.waitUntil(() => viewport().width < 600);
+  expect(viewport().width).toBeLessThanOrEqual(520);
+  await app.waitUntil(() => field().width > 220);
+  expect(app.shows("nav-settings-page-workspace")).toBe(true);
+  expect(field().y - row().y).toBeGreaterThan(desktopFieldY + 16);
+
+  await app.setViewport(DESKTOP.width, DESKTOP.height);
+  await app.waitUntil(() => field().width <= 220);
+  expect(Math.abs(field().y - row().y - desktopFieldY)).toBeLessThan(3);
 });
 
 test("a narrow settings scene lists the pages first, pushes one full width and goes back", async () => {
@@ -743,16 +798,20 @@ test("typed text that is not saved holds a page change until it is saved or disc
   await app.type("worktree-branch-prefix", "team/");
   await app.waitFor("worktree-branch-prefix-save");
 
-  // Leaving asks first; keep editing stays on the page with the text intact.
-  await app.press("nav-settings-page-editor");
+  // Finding a field on another page uses the same guard and keeps the search
+  // available if the reader stays on the current draft.
+  await app.type("settings-search", "font size inside code");
+  await app.press("settings-search-hit-field-editor-font-size");
   await app.waitFor("Unsaved changes");
   await app.press("settings-unsaved-keep");
   expect(app.value("worktree-branch-prefix")).toBe("team/");
+  expect(app.value("settings-search")).toBe("font size inside code");
 
   // Save writes the typed value, then the page changes.
-  await app.press("nav-settings-page-editor");
+  await app.press("settings-search-hit-field-editor-font-size");
   await app.press("settings-unsaved-save");
-  await app.waitFor("Font size inside code and markdown previews");
+  await app.waitFor("Font size inside code and source views");
+  expect(app.value("settings-search")).toBe("");
   const prefixWrite = (await backend.handlers["openbitfun.invoke"]({
     action: "get_config",
     request: { path: "app.worktrees.branchPrefix" },
@@ -1111,6 +1170,73 @@ test("terminal scene attaches the shells the host already runs for the workspace
 
   await app.press("×");
   await app.waitFor("No active shell");
+});
+
+test("terminal follows the saved default shell and changing renderer settings reuses the running shell", async () => {
+  const backend = createWorkbenchBackend({
+    configs: { terminal: { default_shell: "Bash", font_size: 14, cursor_style: "block", scrollback: 1000 } },
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openToolScene(app, "terminal");
+  await app.waitFor("terminal-1 %");
+  const creates = () => backend.calls.filter(call => call.action === "terminal_create");
+  expect(creates()[0]?.request).toMatchObject({ shellId: "shell-bash", shellType: "Bash" });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-terminal");
+  await app.press("terminal-default-shell");
+  await app.press("label:terminal-default-shell-shell-zsh");
+  await app.waitUntil(() => backend.settingsWrites.some(write => write.path === "terminal.default_shell" && write.value === "/bin/zsh"));
+  await app.clear("terminal-scrollback");
+  await app.type("terminal-scrollback", "100");
+  await app.submit("terminal-scrollback");
+  await app.waitUntil(() => backend.settingsWrites.some(write => write.path === "terminal.scrollback" && write.value === 100));
+  await openToolScene(app, "terminal");
+  await app.waitFor("terminal-1 %");
+  expect(creates()).toHaveLength(1);
+
+  await app.press("New shell");
+  await app.waitUntil(() => creates().length === 2);
+  expect(creates()[1]?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
+});
+
+test("terminal defaults use the fleet workspace device and SSH uses the remote login shell", async () => {
+  const backend = createBackend({ configs: { terminal: { default_shell: "/bin/bash", font_size: 18 } } });
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [], totals: { running: 0, waiting: 0, unread: 0 },
+      devices: [
+        fleetDeviceRow("dev-a", "Entry", [], { isClientDevice: true }),
+        fleetDeviceRow("dev-b", "Owner", [
+          {
+            workspaceId: "ws-local", name: "Fleet workspace", rootPath: "/repo", kind: "local",
+            sessions: [fleetSessionRow("dev-b", "ws-local", "s-local", "Fleet session")],
+          },
+          {
+            workspaceId: "ws-ssh", name: "SSH workspace", rootPath: "/srv/project", kind: "remote_ssh",
+            sessions: [fleetSessionRow("dev-b", "ws-ssh", "s-ssh", "SSH session")],
+          },
+        ]),
+      ],
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, platform: "web", host: { handlers: host.handlers } });
+  await app.press("id:sidebar-session-s-local");
+  await openToolScene(app, "terminal");
+  const calls = () => host.fleetCalls.filter(call => call.command === "terminal_create");
+  await app.waitUntil(() => calls().length === 1);
+  expect(calls()[0]).toMatchObject({ target: "dev-b", args: { request: { workspaceId: "ws-local", shellId: "shell-bash" } } });
+  expect(host.fleetCalls.find(call => call.command === "get_config" &&
+    (call.args.request as { path?: string })?.path === "terminal")?.target).toBe("dev-b");
+
+  await app.press("id:sidebar-session-s-ssh");
+  await openToolScene(app, "terminal");
+  await app.waitUntil(() => calls().length === 2);
+  expect(calls()[1]).toMatchObject({ target: "dev-b", args: { request: { workspaceId: "ws-ssh" } } });
+  const request = calls()[1]!.args.request as { shellId?: string; shellType?: string };
+  expect(request.shellId).toBeUndefined();
+  expect(request.shellType).toBeUndefined();
 });
 
 

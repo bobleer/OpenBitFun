@@ -127,15 +127,29 @@
     "e2e:ui": "cd src/nsh-ui && nsh test ."
   },
   "devDependencies": {
+    "@mapbox/vector-tile": "3.0.0",
     "@noble/hashes": "^2.0.1",
+    "@types/react": "18.3.27",
+    "@types/react-dom": "18.3.7",
     "cross-env": "^10.1.0",
+    "d3-geo": "3.1.1",
+    "echarts": "6.0.0",
+    "esbuild": "0.27.2",
     "jsdom": "^29.0.1",
     "jszip": "^3.10.1",
+    "parse5": "8.0.0",
+    "pbf": "5.1.2",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "5.4.624",
     "pptxgenjs": "^4.0.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "sass": "^1.93.2",
     "sharp": "^0.34.3",
+    "topojson-client": "3.1.0",
     "typescript": "~5.8.3",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "zod": "4.6.7"
   },
   "packageManager": "pnpm@10.15.0+sha512.486ebc259d3e999a4e8691ce03b5cac4a71cbeca39372a9b762cb500cfdf0873e2cb16abe3d951b1ee2cf012503f027b98b6584e4df22524e0c7450d9ec7aa7b"
 }

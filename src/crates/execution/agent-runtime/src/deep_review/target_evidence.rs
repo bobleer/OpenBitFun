@@ -144,6 +144,11 @@ impl ReviewTargetEvidence {
         let Some(evidence) = evidence else {
             return Ok(None);
         };
+        Self::from_evidence(evidence).map(Some)
+    }
+
+    /// Reads the standalone evidence carried by a persisted Review session.
+    pub fn from_evidence(evidence: &Value) -> Result<Self, ReviewTargetEvidenceValidationError> {
         let object = evidence.as_object().ok_or_else(|| {
             ReviewTargetEvidenceValidationError::invalid("reviewTarget", "expected object")
         })?;
@@ -326,7 +331,7 @@ impl ReviewTargetEvidence {
         }
         let _ = object;
 
-        Ok(Some(Self {
+        Ok(Self {
             fingerprint,
             source,
             base_revision,
@@ -337,7 +342,7 @@ impl ReviewTargetEvidence {
             files,
             limitations,
             omitted_file_count,
-        }))
+        })
     }
 
     pub fn fingerprint(&self) -> &str {
@@ -831,7 +836,7 @@ fn review_path_eq(left: &str, right: &str) -> bool {
     left.to_lowercase() == right.to_lowercase()
 }
 
-fn is_full_commit_id(value: &str) -> bool {
+pub(super) fn is_full_commit_id(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

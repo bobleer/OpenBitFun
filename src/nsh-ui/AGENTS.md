@@ -210,20 +210,15 @@ switcher in the main flow.
   the prompt's `revision` before sending them. `PromptAttention` is the one prompt
   component: the Inbox, a job card (`placement="card"`) and the session composer draw
   it. Tests: `test/inbox.test.tsx`, `test/session-view.test.tsx`.
-- `src/usageStore.ts`: the usage dashboard, one command read twice, as the desktop
-  reads it. The range read decides the bucketing (`last24Hours` / `today` bucket by
-  hour, the rest by day) and the resolved IANA zone travels with both reads, because
-  the host aligns calendar ranges and buckets with it. Every number comes from the
-  host: a failed read clears the totals to `null` instead of rendering zeroes, and the
-  `token_usage_statistics_unsupported` marker an older host sends becomes its own
-  sentence. The activity read asks the same command for `timeRange: "custom"` over a
-  fixed six-calendar-month window at day granularity, then projects the host's buckets
-  onto a Monday-first week grid: days outside the window stay empty padding, a day the
-  host did not report stays at zero, and the five shades come from the busiest day in
-  the window. Do not "smooth" that grid — every cell is one host bucket. It runs only
-  after a successful range read (a host without the command loses both) and its own
-  failure sets `usageActivityNotice` and leaves `usageActivity` `null`, so the section
-  keeps its totals and states why the chart is missing. The distribution block reads
+- `src/usageStore.ts`: the usage dashboard reads the selected period from
+  `get_token_usage_statistics` and the fixed six-month grid from
+  `get_token_usage_activity`. Both reads use the same IANA zone and device. A range
+  change only reads the period, with hourly buckets for `last24Hours` and `today`.
+  Entering another device or pressing Refresh reads both panels. Responses from a
+  previous device are ignored. Loading, a successful empty result, and unsupported
+  or failed requests have distinct states. Each activity cell uses the day key and
+  intensity returned by the host. A failed or unsupported activity request has its
+  own notice, so the overview can still show totals. The distribution block reads
   the same answer's `byModel` / `byGroup` / `byEndpoint`: `usageDistribution` selects
   which list is drawn, `usageEntryFilter` narrows it by the row's primary and secondary
   text, `usageExpanded` lifts the five-row cap, and `usageDistributionRows()` /
@@ -562,11 +557,10 @@ switcher in the main flow.
 - `test/support.ts`: the simulated backend the headless tests play as host; file
   mutations act on a mutable directory map, so a create, rename or delete changes
   what the next `explorer_get_children` returns.
-  A command a surface reads more than once can be answered per request shape:
-  `get_token_usage_statistics` returns `usage` for a range and `usageActivity` for
-  the `custom` six-month window, where `usage: null` means this host offers the
-  command not at all and `usageActivity: null` means it takes the range and refuses
-  the window — the difference the usage section must survive. Sessions carry their
+  `get_token_usage_statistics` returns `usage` for the requested range and
+  `get_token_usage_activity` returns `usageActivity` for the fixed activity window.
+  `usage: null` simulates a host without usage statistics. `usageActivity: null`
+  simulates one that serves the period and refuses the activity window. Sessions carry their
   `agentType`, `update_session_mode` rewrites it the way the host does (and is
   recorded in `sessionModeWrites`), `create_session` puts the new session into the
   catalogue the surface reloads with no turn yet, and `agentModes: null` means this

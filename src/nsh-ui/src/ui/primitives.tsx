@@ -20,6 +20,7 @@ import {
   type ViewStyle,
 } from "nsh";
 import { Input, Tooltip } from "nsh/base";
+import { designTokens } from "../generated/designTokens";
 import { tr, type MessageKey } from "../i18n";
 import { activeScene, type SceneId } from "../state";
 import {
@@ -27,6 +28,7 @@ import {
   compactLayout,
   concentricRadius,
   controlHeight,
+  designControlColors,
   elevationShadow,
   fontMono,
   inputFontSans,
@@ -41,6 +43,7 @@ import {
   surfaceWorkingColor,
   textLineHeight,
   textSize,
+  textStyle,
   textTracking,
   type ControlSize,
   type SurfacePlane,
@@ -220,9 +223,9 @@ function resolveTooltip(
 
 export function focusRingStyle(surface?: SurfacePlane): ViewStyle {
   return {
-    outlineWidth: 2,
+    outlineWidth: designTokens.metrics.focus.width,
     outlineColor: surfaceFocusColor(surface ?? SurfaceContext()),
-    outlineOffset: 2,
+    outlineOffset: designTokens.metrics.focus.offset,
   };
 }
 
@@ -239,6 +242,7 @@ export type ButtonSize = ControlSize;
 export type ControlSurface = "canvas" | "chrome";
 
 export interface ButtonProps {
+  testID?: string;
   label: string;
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -252,6 +256,7 @@ export interface ButtonProps {
   disabled?: boolean;
   tooltip?: string | JSX.Element;
   accessibilityLabel?: string;
+  buttonRef?: (node: ViewRef | null) => void;
   style?: StyleProp<ViewStyle>;
   onPress: () => void;
 }
@@ -261,6 +266,7 @@ function btnBg(variant: ButtonVariant, surface: ControlSurface = "canvas"): stri
   if (variant === "accent") return palette().actionSolid;
   if (variant === "danger") return palette().dangerSoft;
   if (variant === "outline" || variant === "ghost") return "transparent";
+  if (designControlColors()) return palette().buttonSecondaryBg;
   return surface === "chrome" ? palette().chromeInputBg : palette().buttonSecondaryBg;
 }
 
@@ -268,6 +274,9 @@ function btnHoverBg(variant: ButtonVariant, surface: ControlSurface = "canvas"):
   if (variant === "primary") return palette().actionPrimaryHover;
   if (variant === "accent") return palette().actionSolidHover;
   if (variant === "danger") return palette().dangerHoverBg;
+  const colors = designControlColors();
+  if (colors && variant === "outline") return colors.buttonFill;
+  if (colors && variant === "secondary") return palette().buttonSecondaryHover;
   if (variant === "outline" || variant === "ghost") {
     return surface === "chrome" ? palette().chromeHover : palette().surfaceSubtle;
   }
@@ -278,6 +287,9 @@ function btnPressedBg(variant: ButtonVariant, surface: ControlSurface = "canvas"
   if (variant === "primary") return palette().actionPrimaryPressed;
   if (variant === "accent") return palette().actionSolid;
   if (variant === "danger") return palette().dangerHoverBg;
+  const colors = designControlColors();
+  if (colors && variant === "outline") return colors.buttonFill;
+  if (colors && variant === "secondary") return palette().buttonSecondaryPressed;
   if (variant === "outline" || variant === "ghost") {
     return surface === "chrome" ? palette().chromeActive : palette().panelHover;
   }
@@ -285,10 +297,12 @@ function btnPressedBg(variant: ButtonVariant, surface: ControlSurface = "canvas"
 }
 
 function btnBorder(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
-  if (variant === "primary") return palette().actionPrimaryBorder;
+  const colors = designControlColors();
+  if (variant === "primary") return colors ? "transparent" : palette().actionPrimaryBorder;
   if (variant === "accent") return "transparent";
   if (variant === "danger") return palette().dangerBorder;
   if (variant === "ghost") return "transparent";
+  if (colors) return variant === "outline" ? colors.buttonOutlineBorder : "transparent";
   if (variant === "secondary") {
     if (surface === "chrome") return palette().chromeBorder;
     return isLightAppearance() ? palette().border : palette().borderSubtle;
@@ -297,10 +311,12 @@ function btnBorder(variant: ButtonVariant, surface: ControlSurface = "canvas"): 
 }
 
 function btnHoverBorder(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
-  if (variant === "primary") return palette().actionPrimaryBorder;
+  const colors = designControlColors();
+  if (variant === "primary") return colors ? "transparent" : palette().actionPrimaryBorder;
   if (variant === "accent") return "transparent";
   if (variant === "danger") return palette().dangerBorder;
   if (variant === "ghost") return "transparent";
+  if (colors) return variant === "outline" ? colors.buttonOutlineBorderInteractive : palette().border;
   if (variant === "secondary") {
     if (surface === "chrome") return palette().chromeBorder;
     return isLightAppearance() ? palette().borderStrong : palette().border;
@@ -315,25 +331,14 @@ function btnFg(variant: ButtonVariant, surface: ControlSurface = "canvas"): stri
   if (variant === "ghost") {
     return surface === "chrome" ? palette().chromeTextMuted : palette().textSecondary;
   }
+  const colors = designControlColors();
+  if (colors) return colors.buttonContent;
   return surface === "chrome" ? palette().chromeText : palette().text;
-}
-
-function btnPadX(size: ButtonSize): number {
-  if (size === "xs") return 8;
-  if (size === "sm") return 12;
-  if (size === "lg") return 20;
-  return 16;
 }
 
 function btnGap(size: ButtonSize): number {
   if (size === "xs" || size === "sm") return space.xs;
   return space.chip;
-}
-
-function btnFontPx(size: ButtonSize): number {
-  if (size === "xs") return 12;
-  if (size === "lg") return 14;
-  return 13;
 }
 
 function btnIconPx(size: ButtonSize): number {
@@ -342,21 +347,29 @@ function btnIconPx(size: ButtonSize): number {
   return 16;
 }
 
-function btnRadius(size: ButtonSize, pill?: boolean): number {
-  // Visual spec §2.3: buttons are `md` (8), small (24) buttons `sm` (6); `pill` opts into a pill.
-  if (pill === true) return radii.pill;
-  if (size === "xs") return radii.sm;
-  return radii.md;
-}
-
 export function Button(props: ButtonProps) {
+  const size = () => props.size ?? "md";
+  const variant = () => props.variant ?? "secondary";
+  const surface = () => props.surface ?? "canvas";
+  const fontSize = () => designTokens.metrics.buttonFontSize[size()];
+  const disabled = () => Boolean(props.disabled && !props.loading);
   const isMutedPrimaryDisabled = () =>
-    Boolean(props.disabled && !props.loading) &&
-    ((props.variant ?? "secondary") === "primary" || (props.variant ?? "secondary") === "accent");
+    disabled() && (variant() === "primary" || variant() === "accent");
+  const foreground = () => {
+    const colors = designControlColors();
+    if (disabled() && colors) return variant() === "primary" ? colors.buttonPrimaryContentDisabled : colors.buttonContentDisabled;
+    return isMutedPrimaryDisabled() ? palette().textMuted : btnFg(variant(), surface());
+  };
+  const background = () => {
+    if (isMutedPrimaryDisabled()) return designControlColors()?.buttonFill ?? palette().buttonSecondaryBg;
+    return btnBg(variant(), surface());
+  };
 
   return (
     <View
+      ref={props.buttonRef}
       role="button"
+      testID={props.testID}
       disabled={Boolean(props.disabled || props.loading)}
       hitSlop={touchSlop(controlHeight[props.size ?? "md"], (props.size ?? "md") === "xs" ? 3 : undefined)}
       tooltip={resolveTooltip(props.tooltip, props.label)}
@@ -380,18 +393,16 @@ export function Button(props: ButtonProps) {
           flexShrink: 0,
           minWidth: 0,
           maxWidth: "100%",
-          gap: btnGap(props.size ?? "md"),
-          paddingHorizontal: btnPadX(props.size ?? "md"),
+          gap: btnGap(size()),
+          paddingHorizontal: variant() === "ghost" ? space.md : designTokens.metrics.buttonPadding[size()],
           paddingVertical: 0,
-          borderRadius: btnRadius(props.size ?? "md", props.pill),
+          borderRadius: (props.pill ?? variant() !== "ghost") ? radii.pill : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: isMutedPrimaryDisabled()
+          borderColor: isMutedPrimaryDisabled() && !designControlColors()
             ? palette().borderSubtle
             : btnBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
-          backgroundColor: isMutedPrimaryDisabled()
-            ? palette().buttonSecondaryBg
-            : btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+          backgroundColor: background(),
           cursor: props.disabled || props.loading ? "not-allowed" : "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
@@ -403,11 +414,12 @@ export function Button(props: ButtonProps) {
         borderColor: btnHoverBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
       }}
       activeStyle={tactileActiveStyle(0.98, {
-        backgroundColor: btnPressedBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+        backgroundColor: btnPressedBg(variant(), surface()),
+        borderColor: variant() === "secondary" && designControlColors() ? palette().borderStrong : btnHoverBorder(variant(), surface()),
       })}
       focusVisibleStyle={focusRingStyle(props.surface ?? SurfaceContext())}
       disabledStyle={{
-        opacity: isMutedPrimaryDisabled() ? 0.72 : 0.4,
+        opacity: designControlColors() ? 1 : isMutedPrimaryDisabled() ? 0.72 : 0.4,
       }}
     >
       <If when={Boolean(props.loading)}>
@@ -421,11 +433,7 @@ export function Button(props: ButtonProps) {
           <Icon
             name={iconName() as IconName}
             size={btnIconPx(props.size ?? "md")}
-            color={
-              isMutedPrimaryDisabled()
-                ? palette().textMuted
-                : btnFg(props.variant ?? "secondary", props.surface ?? "canvas")
-            }
+            color={foreground()}
           />
         )}
       </If>
@@ -433,18 +441,16 @@ export function Button(props: ButtonProps) {
         style={{
           flexShrink: 1,
           minWidth: 0,
-          color: isMutedPrimaryDisabled()
-            ? palette().textMuted
-            : btnFg(props.variant ?? "secondary", props.surface ?? "canvas"),
-          fontSize: textSize(btnFontPx(props.size ?? "md")),
+          color: foreground(),
+          fontSize: textSize(fontSize()),
           fontWeight:
-            (props.variant ?? "secondary") === "primary" ||
+            designControlColors() ? designTokens.typography.label.weight : (props.variant ?? "secondary") === "primary" ||
             (props.variant ?? "secondary") === "accent"
               ? "600"
               : (props.variant ?? "secondary") === "secondary"
                 ? "500"
                 : "400",
-          lineHeight: textLineHeight(btnFontPx(props.size ?? "md"), 1.2),
+          lineHeight: textLineHeight(fontSize(), designTokens.typography.label.lineHeight),
           textAlign: "center",
           numberOfLines: 1,
           textOverflow: "ellipsis",
@@ -457,11 +463,7 @@ export function Button(props: ButtonProps) {
           <Icon
             name={iconName() as IconName}
             size={btnIconPx(props.size ?? "md")}
-            color={
-              isMutedPrimaryDisabled()
-                ? palette().textMuted
-                : btnFg(props.variant ?? "secondary", props.surface ?? "canvas")
-            }
+            color={foreground()}
           />
         )}
       </If>
@@ -483,6 +485,9 @@ export interface IconButtonProps {
   disabled?: boolean;
   tooltip?: string | JSX.Element;
   accessibilityLabel?: string;
+  testID?: string;
+  expanded?: boolean;
+  buttonRef?: (node: ViewRef) => void;
   style?: StyleProp<ViewStyle>;
   onPress: () => void;
 }
@@ -501,14 +506,17 @@ function iconBtnGlyph(size: IconButtonSize): number {
 export function IconButton(props: IconButtonProps) {
   return (
     <View
+      ref={props.buttonRef}
       role="button"
       disabled={props.disabled}
       hitSlop={touchSlop(controlHeight[props.size ?? "sm"], (props.size ?? "sm") === "xs" ? 3 : undefined)}
       tooltip={resolveTooltip(props.tooltip)}
       accessibilityLabel={props.accessibilityLabel}
+      testID={props.testID}
       accessibilityState={{
         disabled: Boolean(props.disabled),
         selected: Boolean(props.active),
+        expanded: props.expanded,
       }}
       onPress={() => {
         if (!props.disabled) props.onPress();
@@ -585,16 +593,22 @@ export function IconButton(props: IconButtonProps) {
   );
 }
 
-// --- Settings / Editorial Sections (macOS / Linear lifted matte grouped cards) ---
+// --- Config forms ---
 
 const ConfigSectionInsetContext = context<number>(0);
 const ConfigSectionControlWidthContext = context<number | undefined>(undefined);
 const ConfigRowInRailContext = context<boolean>(false);
+/** A config page can measure its own viewport, independently of the shell. */
+export const ConfigFormCompactContext = context<() => boolean>(compactLayout);
+const configFieldMetrics = designTokens.metrics.fieldGroup;
+const configSectionMetrics = designTokens.metrics.formSection;
 
 export interface ConfigSectionProps {
   title: string;
   subtitle?: string;
   extra?: JSX.Element;
+  notice?: JSX.Element;
+  anchorRef?: (node: ViewRef | null) => void;
   /**
    * Inner body padding in px. Defaults to `14` so freeform sections never collide
    * with card borders; `<ConfigRow>` automatically compensates with negative
@@ -615,58 +629,54 @@ export interface ConfigSectionProps {
   style?: StyleProp<ViewStyle>;
 }
 
-export function ConfigSection(props: ConfigSectionProps) {
-  const effectiveInset = () => (props.flush ? 0 : (props.bodyPadding ?? 14));
+export function ConfigSectionHeader(props: { title: string; description?: string; extra?: JSX.Element }) {
+  const compact = ConfigFormCompactContext();
   return (
-    <View style={[{ gap: 12 }, props.style]}>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 12,
-          paddingHorizontal: 2,
-        }}
-      >
-        <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-          <Text
-            style={{
-              color: palette().text,
-              fontSize: textSize(15),
-              fontWeight: "600",
-              letterSpacing: textTracking(15),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(15, 1.28),
-            }}
-          >
-            {props.title}
-          </Text>
-          <If when={props.subtitle ?? ""}>
-            {sub => (
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.44),
-                }}
-              >
-                {sub()}
-              </Text>
-            )}
+    <View style={{
+      flexDirection: compact() ? "column" : "row",
+      flexWrap: compact() ? undefined : "wrap",
+      alignItems: "flex-start",
+      columnGap: space.md,
+      rowGap: space.sm,
+      minWidth: 0,
+    }}>
+      <If when={props.title || props.description}>
+        <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact() ? undefined : 240,
+          minWidth: 0, maxWidth: "100%", gap: configSectionMetrics.textGap }}>
+          <If when={props.title}>
+            <Text role="header" style={textStyle("sectionTitle")}>{props.title}</Text>
+          </If>
+          <If when={props.description}>
+            <Text style={{ ...textStyle("smallBody"), maxWidth: 600 }}>{props.description}</Text>
           </If>
         </View>
-        <If when={Boolean(props.extra)}>
-          <View style={{ flexShrink: 0 }}>{props.extra}</View>
-        </If>
-      </View>
+      </If>
+      <If when={Boolean(props.extra)}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.md,
+          minWidth: 0, maxWidth: "100%", marginLeft: compact() ? undefined : "auto" }}>
+          {props.extra}
+        </View>
+      </If>
+    </View>
+  );
+}
+
+export function ConfigSection(props: ConfigSectionProps) {
+  const compact = ConfigFormCompactContext();
+  const effectiveInset = () => (props.flush ? 0 : (props.bodyPadding ?? 14));
+  return (
+    <View ref={props.anchorRef} style={[{ minWidth: 0, gap: compact() ? space.md : configSectionMetrics.gap }, props.style]}>
+      <If when={Boolean(props.title || props.subtitle || props.extra)}>
+        <ConfigSectionHeader title={props.title} description={props.subtitle} extra={props.extra} />
+      </If>
+      {props.notice}
       <View
         style={[
           {
-            borderRadius: radii.lg,
+            minWidth: 0,
+            borderRadius: configFieldMetrics.radius,
             borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().border,
-            backgroundColor: palette().panelRaised,
-            boxShadow: elevationShadow(0),
+            backgroundColor: designControlColors()?.fieldGroupBackground ?? palette().surfaceTertiary,
             padding: effectiveInset(),
             overflow: "hidden",
           },
@@ -686,8 +696,11 @@ export function ConfigSection(props: ConfigSectionProps) {
 export type ConfigRowControlAlign = "end" | "stretch";
 
 export interface ConfigRowProps {
+  testID?: string;
   label: string;
   description?: string;
+  stacked?: boolean;
+  wrap?: boolean;
   /** Renders a bottom hairline divider (default `true`). Pass `false` on the last row. */
   divider?: boolean;
   /** Renders a top hairline divider (useful when list loops separate rows with `!first`). */
@@ -712,21 +725,29 @@ export interface ConfigRowProps {
 }
 
 export function ConfigRow(props: ConfigRowProps) {
+  const compact = ConfigFormCompactContext();
   const resolvedControlWidth = () =>
     props.controlWidth ?? ConfigSectionControlWidthContext();
   const isStretch = () => (props.controlAlign ?? "end") === "stretch";
-  const stacked = () => compactLayout();
+  const stacked = () => props.stacked || (props.wrap !== false && compact());
+  const hasControl = () => Boolean(props.children);
+  const controlFillsRail = () => resolvedControlWidth() !== undefined && isStretch();
+  const labelSize = configFieldMetrics.labelSize;
   return (
     <View
+      testID={props.testID}
+      role="group"
+      accessibilityLabel={props.label}
       style={[
         {
-          minHeight: stacked() ? undefined : 56,
           marginHorizontal: ConfigSectionInsetContext() > 0 ? -ConfigSectionInsetContext() : 0,
-          paddingHorizontal: space.lg,
-          paddingVertical: space.md,
+          paddingHorizontal: compact() ? space.lg : configFieldMetrics.rowPaddingHorizontal,
+          paddingVertical: configFieldMetrics.rowPaddingVertical,
           flexDirection: stacked() ? "column" : "row",
-          alignItems: stacked() ? "stretch" : "center",
-          gap: stacked() ? space.sm : space.xxl,
+          flexWrap: !stacked() && props.wrap !== false ? "wrap" : undefined,
+          alignItems: stacked() ? "stretch" : "flex-start",
+          columnGap: stacked() ? 0 : space.x4l,
+          rowGap: space.sm,
           borderTopWidth: props.topDivider ? 1 : 0,
           borderBottomWidth: props.divider === false ? 0 : 1,
           borderColor: palette().borderSubtle,
@@ -734,21 +755,17 @@ export function ConfigRow(props: ConfigRowProps) {
         },
         props.style,
       ]}
-      hoverStyle={
-        stacked()
-          ? undefined
-          : {
-              backgroundColor: palette().surfaceSubtle,
-            }
-      }
+      hoverStyle={{ backgroundColor: designControlColors()?.configRowHover ?? palette().surfaceSubtle }}
     >
-      <View style={{ flex: stacked() ? undefined : 1, minWidth: 0, gap: space.xs }}>
+      <View style={{ flexGrow: stacked() ? 0 : 1, flexShrink: 1,
+        flexBasis: !stacked() && props.wrap !== false && hasControl() ? 150 : undefined,
+        minWidth: 0, gap: configSectionMetrics.textGap }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(13),
-            fontWeight: "500",
-            lineHeight: textLineHeight(13, 1.35),
+            fontSize: textSize(labelSize),
+            fontWeight: configFieldMetrics.labelWeight,
+            lineHeight: textLineHeight(labelSize, configFieldMetrics.labelLeading),
           }}
         >
           {props.label}
@@ -757,11 +774,11 @@ export function ConfigRow(props: ConfigRowProps) {
           {desc => (
             <Text
               style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
+                color: palette().textSecondary,
+                fontSize: textSize(configFieldMetrics.descriptionSize),
                 fontVariant: props.descriptionTabular ? ["tabular-nums"] : undefined,
-                lineHeight: textLineHeight(12, 1.45),
-                maxWidth: 520,
+                lineHeight: textLineHeight(configFieldMetrics.descriptionSize, configFieldMetrics.descriptionLeading),
+                maxWidth: hasControl() ? 450 : undefined,
               }}
             >
               {desc()}
@@ -769,24 +786,26 @@ export function ConfigRow(props: ConfigRowProps) {
           )}
         </If>
       </View>
-      <If when={Boolean(props.children)}>
+      <If when={hasControl()}>
         <View
           style={[
             {
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: stacked() ? "flex-start" : isStretch() ? "flex-start" : "flex-end",
-              flexShrink: 0,
+              flexDirection: props.stacked ? "column" : "row",
+              flexWrap: props.stacked || props.wrap === false ? undefined : "wrap",
+              alignItems: props.stacked ? "stretch" : "center",
+              justifyContent: props.stacked || isStretch() ? "flex-start" : "flex-end",
+              flexShrink: 1,
               minWidth: 0,
               width: stacked() ? "100%" : resolvedControlWidth(),
-              maxWidth: stacked() ? "100%" : resolvedControlWidth() !== undefined ? "60%" : undefined,
+              maxWidth: stacked() ? "100%" : "60%",
+              marginLeft: stacked() ? undefined : "auto",
               gap: space.sm,
             },
             props.controlStyle,
           ]}
         >
           <ConfigRowInRailContext.Provider
-            value={stacked() || (resolvedControlWidth() !== undefined && isStretch())}
+            value={stacked() || controlFillsRail()}
           >
             {props.children}
           </ConfigRowInRailContext.Provider>
@@ -1391,6 +1410,10 @@ export interface SegmentedTabsProps<T extends string> {
   fill?: boolean;
   /** When inside a horizontal `<Scroll>`, keep each tab at its intrinsic width instead of truncating. */
   scrollable?: boolean;
+  wrap?: boolean;
+  disabled?: boolean;
+  accessibilityLabel?: string;
+  interaction?: "tabs" | "buttons";
   style?: StyleProp<ViewStyle>;
   onChange: (value: T) => void;
 }
@@ -1410,13 +1433,19 @@ const SEGMENT_THUMB_SPRING = { type: "spring", stiffness: 520, damping: 44 } as 
  */
 export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
   const size = () => props.size ?? "md";
-  const height = () => controlHeight[size()];
+  const height = () => props.wrap && compactLayout() ? layout.touchTarget : controlHeight[props.size ?? "md"];
+  const basis = () => {
+    if (!props.wrap) return undefined;
+    if (props.options.length <= 5) return 0;
+    const columns = Math.min(4, Math.ceil(props.options.length / 2));
+    return `${100 / columns - 2}%` as const;
+  };
   const fontPx = () => (size() === "md" ? 13 : 12);
   const frames = signal<Record<string, { x: number; width: number }>>({});
   const thumb = signal<ViewRef | null>(null);
-  const frame = () => frames()[props.value] ?? null;
+  const frame = () => props.wrap ? null : frames()[props.value] ?? null;
   const select = (value: T) => {
-    if (value === props.value) return;
+    if (props.disabled || value === props.value) return;
     // The thumb's frame moves in this turn: glide it there (at once under reduced motion).
     if (!reduceMotion() && frame()) thumb()?.animateLayout(SEGMENT_THUMB_SPRING);
     props.onChange(value);
@@ -1429,15 +1458,17 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
   });
   return (
     <View
-      role="tablist"
+      role={props.interaction === "buttons" ? "group" : "tablist"}
+      accessibilityLabel={props.accessibilityLabel}
       style={[
         {
           boxSizing: "border-box",
           position: "relative",
-          height: height(),
+          height: props.wrap ? undefined : height(),
           flexDirection: "row",
+          flexWrap: props.wrap ? "wrap" : undefined,
           alignItems: "center",
-          width: props.fill ? "100%" : "fit-content",
+          width: props.fill || props.wrap ? "100%" : "fit-content",
           flexShrink: 0,
           maxWidth: props.scrollable ? undefined : "100%",
           padding: SEGMENT_PADDING,
@@ -1479,14 +1510,16 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
             selected() ? selectedColor() : hovered() ? palette().textSecondary : palette().textMuted;
           return (
             <View
-              role="tab"
+              role={props.interaction === "buttons" ? "button" : "tab"}
               hitSlop={touchSlop(height())}
               accessibilityLabel={option().accessibilityLabel}
-              accessibilityState={{ selected: selected() }}
-              onPress={() => select(option().value)}
+              accessibilityState={props.interaction === "buttons"
+                ? { pressed: selected(), disabled: props.disabled }
+                : { selected: selected(), disabled: props.disabled }}
+              onPress={props.disabled ? undefined : () => select(option().value)}
               onMouseEnter={() => hovered.set(true)}
               onMouseLeave={() => hovered.set(false)}
-              onLayout={event => {
+              onLayout={props.wrap ? undefined : event => {
                 const x = event.bounds.origin.x;
                 const width = event.bounds.size.width;
                 const held = frames()[option().value];
@@ -1495,12 +1528,12 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
               }}
               style={{
                 boxSizing: "border-box",
-                height: "100%",
+                height: props.wrap ? height() - SEGMENT_PADDING * 2 : "100%",
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "center",
-                flexGrow: props.fill ? 1 : 0,
-                flexBasis: props.fill ? 0 : "auto",
+                flexGrow: props.fill || props.wrap ? 1 : 0,
+                flexBasis: basis() ?? (props.fill ? 0 : "auto"),
                 flexShrink: props.scrollable ? 0 : 1,
                 minWidth: props.scrollable ? undefined : 0,
                 gap: space.xs,
@@ -1509,11 +1542,11 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 borderCurve: "continuous",
                 // Before the options are measured the selected one draws the thumb itself.
                 ...(selected() && !frame() ? thumbStyle() : { backgroundColor: "transparent" }),
-                cursor: "pointer",
+                cursor: props.disabled ? "default" : "pointer",
                 userSelect: "none",
                 ...pressTransition(MOTION_DURATION.fast),
               }}
-              activeStyle={tactileActiveStyle(0.97)}
+              activeStyle={props.disabled ? undefined : tactileActiveStyle(0.97)}
               focusVisibleStyle={focusRingStyle()}
             >
               <If when={option().icon ?? ""}>
@@ -1710,18 +1743,31 @@ export interface ToggleSwitchProps {
   checked?: boolean;
   label?: string;
   accessibilityLabel?: string;
+  accessibilityDescription?: string;
+  testID?: string;
   disabled?: boolean;
   onChange: (next: boolean) => void;
 }
 
 export function ToggleSwitch(props: ToggleSwitchProps) {
+  const metrics = designTokens.metrics.switch;
   const isChecked = () => Boolean(props.value ?? props.checked);
+  const disabledOpacity = () => designControlColors()?.disabledOpacity ?? 0.48;
+  const trackColor = () => {
+    const colors = designControlColors();
+    return isChecked() ? colors?.switchTrackChecked ?? palette().switchOn
+      : colors?.switchTrack ?? palette().toggleTrackOff;
+  };
+  const thumbColor = () => designControlColors()?.switchThumb
+    ?? (isChecked() ? isLightAppearance() ? palette().panelRaised : palette().text : palette().toggleThumbOff);
   return (
     <View
       role="switch"
+      testID={props.testID}
       disabled={props.disabled}
-      hitSlop={touchSlop(18, props.label ? undefined : 4)}
-      accessibilityLabel={props.accessibilityLabel}
+      hitSlop={touchSlop(metrics.trackHeight, props.label ? undefined : 4)}
+      accessibilityLabel={props.accessibilityLabel ?? props.label}
+      accessibilityDescription={props.accessibilityDescription}
       accessibilityState={{
         checked: isChecked(),
         disabled: Boolean(props.disabled),
@@ -1739,20 +1785,18 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
         userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ opacity: props.disabled ? 0.48 : 0.94 }}
-      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.96)}
       focusVisibleStyle={focusRingStyle()}
-      disabledStyle={{ opacity: 0.48 }}
+      disabledStyle={{ opacity: disabledOpacity() }}
     >
       <View
         style={{
           boxSizing: "border-box",
-          width: 30,
-          height: 18,
+          width: metrics.trackWidth,
+          height: metrics.trackHeight,
           flexShrink: 0,
           borderRadius: radii.pill,
-          backgroundColor: isChecked() ? palette().switchOn : palette().toggleTrackOff,
-          padding: 2,
+          backgroundColor: trackColor(),
+          padding: metrics.thumbInset,
           flexDirection: "row",
           alignItems: "center",
           ...paintTransition(MOTION_DURATION.fast),
@@ -1760,36 +1804,20 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
       >
         <View
           style={{
-            width: 14,
-            height: 14,
+            width: metrics.thumbSize,
+            height: metrics.thumbSize,
             borderRadius: radii.pill,
-            backgroundColor: isChecked()
-              ? isLightAppearance()
-                ? palette().panelRaised
-                : palette().text
-              : palette().toggleThumbOff,
-            boxShadow: elevationShadow(1),
-            transform: [{ translateX: isChecked() ? 12 : 0 }],
+            backgroundColor: thumbColor(),
+            transform: [{ translateX: isChecked() ? metrics.thumbTravel : 0 }],
             transitionProperty: reduceMotion() ? "background-color" : "transform",
-            transitionDuration: reduceMotion() ? 100 : 160,
-            transitionTimingFunction: reduceMotion()
-              ? MOTION_EASE_STANDARD
-              : springs.toggle,
+            transitionDuration: reduceMotion() ? 0 : MOTION_DURATION.fast,
+            transitionTimingFunction: MOTION_EASE_STANDARD,
           }}
         />
       </View>
       <If when={props.label ?? ""}>
         {labelText => (
-          <Text
-            style={{
-              flexShrink: 1,
-              minWidth: 0,
-              color: palette().text,
-              fontSize: textSize(13),
-              fontWeight: "500",
-              lineHeight: textLineHeight(13, 1.36),
-            }}
-          >
+          <Text style={{ ...textStyle("label"), flexShrink: 1, minWidth: 0 }}>
             {labelText()}
           </Text>
         )}
@@ -2685,6 +2713,8 @@ export interface TextFieldProps {
   error?: string;
   placeholder?: string;
   size?: InputSize;
+  /** Exact baseline for an editable typography preview. */
+  fontSize?: number;
   /** `"soft"` uses a calm borderless filled surface (ideal inside modals). */
   variant?: "default" | "soft";
   leadingIcon?: IconName;
@@ -2698,10 +2728,12 @@ export interface TextFieldProps {
   readonly?: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
-  /** What the field holds, for the phone keyboard and autofill: an email address or a one-time code (no autocorrect, no capitals). */
-  content?: "email" | "one-time-code";
+  /** What the field holds, for the phone keyboard and autofill. */
+  content?: "email" | "one-time-code" | "number";
   surface?: ControlSurface;
   accessibilityLabel?: string;
+  accessibilityDescription?: string;
+  testID?: string;
   inputRef?: InputRef | ((node: InputRef) => void);
   style?: StyleProp<ViewStyle>;
 }
@@ -2725,24 +2757,26 @@ export function TextField(props: TextFieldProps) {
     return compactLayout() ? Math.max(base, 36) : base;
   };
   const inputFontSize = () => {
-    const size = props.size ?? "md";
-    const base = textSize(props.monospace ? 12 : size === "sm" ? 12 : size === "lg" ? 14 : 13);
+    if (props.fontSize !== undefined) return props.fontSize;
+    const base = textSize(props.monospace ? designTokens.typography.mono.size : designTokens.typography.label.size);
     return compactLayout() ? Math.max(16, base) : base;
   };
+  const colors = designControlColors;
+  const chrome = () => props.surface === "chrome";
+  const invalidBorder = () => colors() ? palette().dangerBorder : palette().danger;
   const isSoft = () => props.variant === "soft";
+  const fieldBorder = () => {
+    if (props.error) return invalidBorder();
+    if (chrome()) return palette().chromeBorder;
+    if (isSoft()) return isLightAppearance() ? palette().borderSubtle : "transparent";
+    return colors()?.fieldBorder ?? (isLightAppearance() ? palette().border : palette().borderSubtle);
+  };
+  const placeholderColor = () => chrome() ? palette().chromeTextMuted : colors()?.fieldPlaceholder ?? palette().textMuted;
   return (
     <View style={[{ gap: space.sm, minWidth: 0 }, props.style]}>
       <If when={props.label ?? ""}>
         {labelText => (
-          <Text
-            style={{
-              color:
-                props.surface === "chrome" ? palette().chromeText : palette().textSecondary,
-              fontSize: textSize((props.size ?? "md") === "lg" ? 13 : 12),
-              fontWeight: "500",
-              lineHeight: textLineHeight((props.size ?? "md") === "lg" ? 13 : 12, 1.35),
-            }}
-          >
+          <Text style={textStyle("label", { color: chrome() ? palette().chromeText : palette().text })}>
             {labelText()}
           </Text>
         )}
@@ -2756,22 +2790,12 @@ export function TextField(props: TextFieldProps) {
           flexDirection: "row",
           alignItems: props.multiline ? "flex-start" : "center",
           gap: space.sm,
-          paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
+          paddingHorizontal: space.sm,
           paddingVertical: props.multiline ? space.sm : 0,
-          borderRadius: (props.size ?? "md") === "sm" ? radii.sm : radii.md,
+          borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: props.error
-            ? palette().danger
-            : props.surface === "chrome"
-              ? palette().chromeBorder
-              : isSoft()
-                ? isLightAppearance()
-                  ? palette().borderSubtle
-                  : "transparent"
-                : isLightAppearance()
-                  ? palette().border
-                  : palette().borderSubtle,
+          borderColor: fieldBorder(),
           backgroundColor:
             props.surface === "chrome"
               ? palette().chromeInputBg
@@ -2780,34 +2804,27 @@ export function TextField(props: TextFieldProps) {
                   ? palette().canvasSubtle
                   : palette().surfaceSubtle
                 : palette().inputBg,
-          opacity: props.disabled ? 0.55 : 1,
+          opacity: props.disabled && !colors() ? 0.55 : 1,
           ...paintTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={
           props.disabled
             ? undefined
             : {
-                borderColor: props.error
-                  ? palette().danger
-                  : props.surface === "chrome"
-                    ? palette().chromeBorder
-                    : isSoft()
-                      ? palette().borderSubtle
-                      : palette().border,
+                borderColor: props.error ? invalidBorder()
+                  : chrome() ? palette().chromeBorder
+                  : colors()?.fieldBorderHover ?? (isSoft() ? palette().borderSubtle : palette().border),
+                backgroundColor: !chrome() && !isSoft() ? colors()?.fieldBackgroundHover : undefined,
               }
         }
         focusWithinStyle={
           props.disabled
             ? undefined
             : {
-                borderColor: props.error
-                  ? palette().danger
-                  : props.surface === "chrome"
-                    ? palette().chromeAccent
-                    : palette().borderFocus,
-                boxShadow: props.error
-                  ? `0 0 0 3px ${palette().dangerSoft}`
-                  : `0 0 0 2px ${palette().accentSoft}`,
+                borderColor: props.error ? invalidBorder()
+                  : chrome() ? palette().chromeAccent : colors()?.fieldBorderActive ?? palette().borderFocus,
+                boxShadow: colors() && !chrome() ? undefined
+                  : props.error ? `0 0 0 3px ${palette().dangerSoft}` : `0 0 0 2px ${palette().accentSoft}`,
               }
         }
       >
@@ -2816,18 +2833,15 @@ export function TextField(props: TextFieldProps) {
             <View style={{ flexShrink: 0, marginTop: props.multiline ? 2 : 0 }}>
               <Icon
                 name={iconName() as IconName}
-                size={(props.size ?? "md") === "sm" ? 13 : 14}
-                color={
-                  props.surface === "chrome"
-                    ? palette().chromeTextMuted
-                    : palette().textMuted
-                }
+                size={(props.size ?? "md") === "sm" ? 14 : (props.size ?? "md") === "lg" ? 20 : 16}
+                color={props.disabled ? colors()?.contentDisabled ?? placeholderColor() : placeholderColor()}
               />
             </View>
           )}
         </If>
         <Input
           ref={props.inputRef}
+          testID={props.testID}
           value={props.value}
           placeholder={props.placeholder}
           multiline={props.multiline}
@@ -2838,8 +2852,9 @@ export function TextField(props: TextFieldProps) {
           keyboardType={props.content === "email" ? "email-address" : props.content ? "number-pad" : undefined}
           autoCapitalize={props.content ? "none" : undefined}
           autoCorrect={props.content ? false : undefined}
-          autoComplete={props.content}
+          autoComplete={props.content === "number" ? undefined : props.content}
           accessibilityLabel={props.accessibilityLabel ?? props.label ?? props.placeholder}
+          accessibilityDescription={props.accessibilityDescription}
           onChange={e => {
             if (props.disabled) return;
             modalForm?.markEdited();
@@ -2857,9 +2872,8 @@ export function TextField(props: TextFieldProps) {
             minHeight: props.multiline
               ? Math.max(48, (props.minHeight ?? 84) - 16)
               : Math.max(24, fieldHeight() - 2),
-            color: props.surface === "chrome" ? palette().chromeText : palette().text,
-            placeholderColor:
-              props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
+            color: props.disabled && colors() ? colors()?.contentDisabled : chrome() ? palette().chromeText : palette().text,
+            placeholderColor: placeholderColor(),
             caretColor: palette().accent,
             fontFamily: props.monospace ? fontMono() : inputFontSans(),
             fontSize: inputFontSize(),
@@ -2893,11 +2907,7 @@ export function TextField(props: TextFieldProps) {
       <If when={props.error ?? ""}>
         {errText => (
           <Text
-            style={{
-              color: palette().danger,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.4),
-            }}
+            style={textStyle("caption", { color: palette().danger })}
           >
             {errText()}
           </Text>
@@ -2906,11 +2916,7 @@ export function TextField(props: TextFieldProps) {
       <If when={!props.error && (props.hint ?? "") ? props.hint! : ""}>
         {hintText => (
           <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.4),
-            }}
+            style={textStyle("caption")}
           >
             {hintText()}
           </Text>
@@ -2936,6 +2942,10 @@ export interface SearchInputProps {
   onChange: (value: string) => void;
   onSubmit?: (text: string) => void;
   onKeyPress?: (e: { key: string }) => void;
+  onClear?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  onCompositionChange?: (composing: boolean) => void;
   placeholder?: string;
   shortcut?: string;
   countLabel?: string;
@@ -2945,6 +2955,8 @@ export interface SearchInputProps {
   surface?: ControlSurface;
   autoFocus?: boolean;
   accessibilityLabel?: string;
+  accessibilityExpanded?: boolean;
+  accessibilityActiveDescendant?: ViewRef | null;
   inputRef?: InputRef | ((node: InputRef) => void);
   style?: StyleProp<ViewStyle>;
 }
@@ -2955,12 +2967,16 @@ export interface SearchInputProps {
  * shortcut/match counter.
  */
 export function SearchInput(props: SearchInputProps) {
+  const chrome = () => props.surface === "chrome";
+  const colors = designControlColors;
+  const placeholderColor = () => chrome() ? palette().chromeTextMuted : colors()?.fieldPlaceholder ?? palette().textMuted;
+  const interactiveBorder = () => chrome() ? palette().chromeBorder : palette().border;
   const fieldHeight = () => {
-    const base = controlHeight[props.size ?? "md"];
+    const base = designTokens.metrics.searchField[props.size ?? "md"];
     return compactLayout() ? Math.max(base, 36) : base;
   };
   const inputFontSize = () => {
-    const base = textSize((props.size ?? "md") === "sm" ? 12 : 13);
+    const base = textSize(designTokens.typography.label.size);
     return compactLayout() ? Math.max(16, base) : base;
   };
   return (
@@ -2973,40 +2989,34 @@ export function SearchInput(props: SearchInputProps) {
           minWidth: 0,
           flexDirection: "row",
           alignItems: "center",
-          gap: space.sm,
+          gap: space.xs,
           paddingHorizontal: space.md,
           paddingVertical: 0,
-          borderRadius: props.pill ? radii.pill : (props.size ?? "md") === "sm" ? radii.sm : radii.md,
+          borderRadius: (props.pill ?? true) ? radii.pill : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor:
-            props.surface === "chrome"
+            chrome()
               ? palette().chromeBorder
-              : isLightAppearance()
-                ? palette().border
-                : palette().borderSubtle,
-          backgroundColor:
-            props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
+              : colors() || !isLightAppearance() ? palette().borderSubtle : palette().border,
+          backgroundColor: chrome() ? palette().chromeInputBg : palette().inputBg,
           ...paintTransition(MOTION_DURATION.fast),
         },
         props.style,
       ]}
       hoverStyle={{
-        borderColor:
-          props.surface === "chrome" ? palette().chromeBorder : palette().border,
+        borderColor: interactiveBorder(),
+        backgroundColor: chrome() ? undefined : colors()?.fieldBackgroundHover,
       }}
       focusWithinStyle={{
-        borderColor:
-          props.surface === "chrome" ? palette().chromeAccent : palette().borderFocus,
-        boxShadow: `0 0 0 2px ${palette().accentSoft}`,
+        borderColor: colors() ? interactiveBorder() : chrome() ? palette().chromeAccent : palette().borderFocus,
+        boxShadow: colors() ? undefined : `0 0 0 2px ${palette().accentSoft}`,
       }}
     >
       <Icon
         name="search"
         size={13}
-        color={
-          props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted
-        }
+        color={placeholderColor()}
       />
       <Input
         ref={props.inputRef}
@@ -3014,17 +3024,21 @@ export function SearchInput(props: SearchInputProps) {
         placeholder={props.placeholder ?? `${tr("common.search")}…`}
         autoFocus={props.autoFocus}
         accessibilityLabel={props.accessibilityLabel ?? props.placeholder ?? tr("common.search")}
+        accessibilityState={props.accessibilityExpanded === undefined ? undefined : { expanded: props.accessibilityExpanded }}
+        accessibilityActiveDescendant={props.accessibilityActiveDescendant}
         onChange={e => props.onChange(e.value)}
         onSubmit={e => props.onSubmit?.(e.text)}
         onKeyPress={props.onKeyPress}
+        onFocus={props.onFocus}
+        onBlur={props.onBlur}
+        onCompositionChange={props.onCompositionChange ? event => props.onCompositionChange?.(event.composing) : undefined}
         style={{
           flex: 1,
           minWidth: 0,
           height: "100%",
           minHeight: Math.max(24, fieldHeight() - 2),
           color: props.surface === "chrome" ? palette().chromeText : palette().text,
-          placeholderColor:
-            props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
+          placeholderColor: placeholderColor(),
           caretColor: palette().accent,
           fontFamily: inputFontSans(),
           fontSize: inputFontSize(),
@@ -3057,7 +3071,7 @@ export function SearchInput(props: SearchInputProps) {
           surface={props.surface}
           tooltip={props.clearLabel ?? tr("common.clearSearch")}
           accessibilityLabel={props.clearLabel ?? tr("common.clearSearch")}
-          onPress={() => props.onChange("")}
+          onPress={props.onClear ?? (() => props.onChange(""))}
           style={{ width: 20, height: 20 }}
         />
       </If>

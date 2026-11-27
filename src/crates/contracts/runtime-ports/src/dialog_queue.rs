@@ -101,6 +101,9 @@ pub struct DialogQueueItem {
     pub reason: Option<String>,
     pub target_turn_id: Option<String>,
     pub steering_id: Option<String>,
+    /// Original composer structure for restoring the queued draft on another surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_presentation: Option<serde_json::Value>,
     /// Display-only receipt for accepted steering; never a second history record.
     /// Older hosts omit this field and clients retain the composer queue UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,8 +182,10 @@ mod tests {
             "targetTurnId":"active", "steeringId":"steer"});
         let item: DialogQueueItem = serde_json::from_value(legacy.clone()).unwrap();
         assert!(item.steering_display.is_none());
+        assert!(item.composer_presentation.is_none());
         assert_eq!(serde_json::to_value(item).unwrap(), legacy);
         let mut extended = legacy;
+        extended["composerPresentation"] = serde_json::json!({"version":1,"segments":[]});
         extended["steeringDisplay"] = serde_json::json!({"targetTurnId":"active", "content":"complete prompt",
             "composerPresentation":{"version":1}});
         let item: DialogQueueItem = serde_json::from_value(extended.clone()).unwrap();

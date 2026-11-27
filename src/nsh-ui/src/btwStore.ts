@@ -2,10 +2,10 @@
 // as an ephemeral child of the open session on the device that runs it: the
 // child reuses the parent's context, streams through the normal agentic events
 // under the child session id this client names, and never enters the parent's
-// transcript or sidebar. `btw_cancel` stops it. Closing the side-question split
-// pane immediately releases all ephemeral state.
+// transcript or sidebar. After confirmation and any required `btw_cancel`
+// acknowledgement, closing the pane releases its ephemeral state.
 
-import { batch, signal } from "nsh";
+import { batch, signal, Storage } from "nsh";
 import {
   buildAttachmentContexts,
   composeMessageWithFileAttachments,
@@ -51,8 +51,91 @@ export const sideQuestionHistory = signal<SideQuestion[]>([]);
 export const sideQuestionChildId = signal<string | null>(null);
 /** Parent session that spawned the current ephemeral side thread. */
 export const sideQuestionParentId = signal<string | null>(null);
+export interface SideQuestionTarget {
+  sessionId: string;
+  deviceId: string;
+  workspaceId?: string | null;
+  workspacePath?: string | null;
+  modelId?: string | null;
+}
+export const sideQuestionTarget = signal<SideQuestionTarget | null>(null);
 /** Set when the session's host predates `btw_ask_stream`. */
 export const sideQuestionUnsupported = signal(false);
+
+const SKIP_CLOSE_CONFIRMATION_KEY = "openbitfun:preferences:skip-btw-close-confirmation:v1";
+export const confirmBtwClose = signal(true);
+let preferenceEdited = false;
+let preferenceWrite = Promise.resolve();
+
+export async function loadBtwClosePreference(): Promise<void> {
+  try {
+    const saved = await Storage.getItem(SKIP_CLOSE_CONFIRMATION_KEY);
+    if (!preferenceEdited) confirmBtwClose.set(saved !== "true");
+  } catch {
+    // Keep confirmation enabled if storage is unavailable.
+  }
+}
+
+export function setConfirmBtwClose(enabled: boolean): void {
+  preferenceEdited = true;
+  confirmBtwClose.set(enabled);
+  preferenceWrite = preferenceWrite.then(async () => {
+    if (enabled) await Storage.removeItem(SKIP_CLOSE_CONFIRMATION_KEY);
+    else await Storage.setItem(SKIP_CLOSE_CONFIRMATION_KEY, "true");
+  }).catch(() => {
+    // The preference still applies in this window.
+  });
+}
+
+interface SideQuestionCloseRequest {
+  action: "close" | "replace" | "reset";
+  afterClose?: () => void;
+}
+export const sideQuestionCloseRequest = signal<SideQuestionCloseRequest | null>(null);
+export const sideQuestionClosing = signal(false);
+export const sideQuestionStopError = signal("");
+export const sideQuestionStopping = signal(false);
+let admission: Promise<unknown> | undefined;
+let cancellation: Promise<boolean> | undefined;
+
+export function requestSideQuestionClose(
+  afterClose?: () => void,
+  action: SideQuestionCloseRequest["action"] = "close",
+): void {
+  if (!sideQuestionOpen() || sideQuestionClosing() || sideQuestionCloseRequest()) return;
+  const request = { action, afterClose };
+  if (confirmBtwClose()) sideQuestionCloseRequest.set(request);
+  else void finishSideQuestionClose(request, false);
+}
+
+export function dismissSideQuestionClose(): void {
+  if (!sideQuestionClosing()) sideQuestionCloseRequest.set(null);
+}
+
+export async function acceptSideQuestionClose(skipNextTime: boolean): Promise<void> {
+  const request = sideQuestionCloseRequest();
+  if (!request || sideQuestionClosing()) return;
+  await finishSideQuestionClose(request, skipNextTime);
+}
+
+async function finishSideQuestionClose(request: SideQuestionCloseRequest, skipNextTime: boolean): Promise<void> {
+  sideQuestionClosing.set(true);
+  try {
+    if (sideQuestion()?.state === "running" && !await cancelSideQuestion()) return;
+    batch(() => {
+      resetSideQuestionThread();
+      if (request.action !== "reset") {
+        sideQuestionOpen.set(false);
+        sideQuestionTarget.set(null);
+      }
+      sideQuestionCloseRequest.set(null);
+      if (skipNextTime) setConfirmBtwClose(false);
+    });
+  } finally {
+    sideQuestionClosing.set(false);
+  }
+  request.afterClose?.();
+}
 
 export function addSideQuestionImageAttachment(item: ImageAttachment): void {
   sideQuestionImageAttachments.update(list => (list.some(x => x.id === item.id) ? list : [...list, item]));
@@ -88,18 +171,25 @@ function oneLine(text: string): string {
   return line.length > 48 ? `${line.slice(0, 48)}…` : line;
 }
 
-export function openSideQuestion(prefill = ""): void {
+export function openSideQuestion(target: SideQuestionTarget, question: string): void {
+  if (sideQuestionClosing() || sideQuestionCloseRequest()) return;
+  const previous = sideQuestionTarget();
+  if (previous && (previous.sessionId !== target.sessionId || previous.deviceId !== target.deviceId)) {
+    requestSideQuestionClose(() => openSideQuestion(target, question), "replace");
+    return;
+  }
+  sideQuestionTarget.set(target);
   sideQuestionUnsupported.set(false);
-  if (prefill) sideQuestionDraft.set(prefill);
   sideQuestionOpen.set(true);
+  if (question) void askSideQuestion(target, question);
 }
 
 /** Starts a fresh ephemeral side-question thread while keeping the split pane open. */
-export function resetSideQuestionThread(): void {
+function resetSideQuestionThread(): void {
   replayFloor = undefined;
   supersededAttempts.clear();
-  const current = sideQuestion();
-  if (current?.state === "running") void cancelSideQuestion();
+  refreshRequested = false;
+  pendingRead = null;
   batch(() => {
     sideQuestion.set(null);
     sideQuestionHistory.set([]);
@@ -109,24 +199,7 @@ export function resetSideQuestionThread(): void {
     clearSideQuestionAttachments();
     sideQuestionModelOverride.set(null);
     sideQuestionUnsupported.set(false);
-  });
-}
-
-/** Closes the side-question pane, cancels any running turn, and releases ephemeral state. */
-export function closeSideQuestion(): void {
-  replayFloor = undefined;
-  supersededAttempts.clear();
-  const current = sideQuestion();
-  if (current?.state === "running") void cancelSideQuestion();
-  batch(() => {
-    sideQuestionOpen.set(false);
-    sideQuestion.set(null);
-    sideQuestionHistory.set([]);
-    sideQuestionChildId.set(null);
-    sideQuestionParentId.set(null);
-    sideQuestionDraft.set("");
-    clearSideQuestionAttachments();
-    sideQuestionModelOverride.set(null);
+    sideQuestionStopError.set("");
   });
 }
 
@@ -144,21 +217,19 @@ function updateTurnEntry(requestId: string, updater: (entry: SideQuestion) => Si
 
 /** Asks `question` beside `sessionId`; follow-ups reuse the ephemeral child session. */
 export async function askSideQuestion(
-  target: {
-    sessionId: string;
-    deviceId: string;
-    workspaceId?: string | null;
-    workspacePath?: string | null;
-    modelId?: string | null;
-  },
+  target: SideQuestionTarget,
   question: string,
 ): Promise<void> {
+  if (sideQuestionClosing() || sideQuestionCloseRequest()) return;
   const outgoingImages = [...sideQuestionImageAttachments()];
   const outgoingFiles = [...sideQuestionFileAttachments()];
   const text = composeMessageWithFileAttachments(question, outgoingFiles);
   if ((!text && outgoingImages.length === 0) || !target.sessionId) return;
   const previous = sideQuestion();
-  if (previous?.state === "running") await cancelSideQuestion();
+  if (previous?.state === "running") {
+    if (!await cancelSideQuestion() || sideQuestion()?.requestId !== previous.requestId
+      || sideQuestionClosing() || sideQuestionCloseRequest()) return;
+  }
 
   // Reuse the ephemeral child session when continuing under the same parent session;
   // start a clean thread if the user switched parent sessions.
@@ -187,6 +258,7 @@ export async function askSideQuestion(
   replayFloor = undefined;
   batch(() => {
     sideQuestionOpen.set(true);
+    sideQuestionTarget.set(target);
     sideQuestionParentId.set(target.sessionId);
     sideQuestionChildId.set(childSessionId);
     sideQuestion.set(entry);
@@ -194,25 +266,24 @@ export async function askSideQuestion(
     sideQuestionDraft.set("");
     clearSideQuestionAttachments();
     sideQuestionUnsupported.set(false);
+    sideQuestionStopError.set("");
   });
 
-  try {
-    await invokeCommand<{ ok?: boolean }>(
-      "btw_ask_stream",
-      {
-        requestId: entry.requestId,
-        sessionId: entry.parentSessionId,
-        ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
-        ...(target.workspacePath ? { workspacePath: target.workspacePath } : {}),
-        question: text,
-        childSessionId: entry.childSessionId,
-        childSessionName: oneLine(text || "image"),
-        ...(modelId ? { modelId } : {}),
-        ...(imageContexts.length > 0 ? { imageContexts } : {}),
-      },
-      fleetActive() && target.deviceId ? { target: target.deviceId } : undefined,
-    );
-  } catch (error) {
+  const pending = invokeCommand<{ ok?: boolean }>(
+    "btw_ask_stream",
+    {
+      requestId: entry.requestId,
+      sessionId: entry.parentSessionId,
+      ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
+      ...(target.workspacePath ? { workspacePath: target.workspacePath } : {}),
+      question: text,
+      childSessionId: entry.childSessionId,
+      childSessionName: oneLine(text || "image"),
+      ...(modelId ? { modelId } : {}),
+      ...(imageContexts.length > 0 ? { imageContexts } : {}),
+    },
+    fleetActive() && target.deviceId ? { target: target.deviceId } : undefined,
+  ).catch(error => {
     if (sideQuestion()?.requestId !== entry.requestId) return;
     if (isMissingCommand(error, "btw_ask_stream")) sideQuestionUnsupported.set(true);
     const message = error instanceof Error ? error.message : String(error ?? "");
@@ -221,24 +292,44 @@ export async function askSideQuestion(
       state: "failed",
       error: message,
     }));
-  }
+  }).finally(() => {
+    if (admission === pending) admission = undefined;
+  });
+  admission = pending;
+  await pending;
 }
 
-export async function cancelSideQuestion(): Promise<void> {
+export function cancelSideQuestion(): Promise<boolean> {
+  if (cancellation) return cancellation;
   const current = sideQuestion();
-  if (!current || current.state !== "running") return;
-  updateTurnEntry(current.requestId, item => ({ ...item, state: "cancelled" }));
-  try {
+  if (!current || current.state !== "running") return Promise.resolve(true);
+  sideQuestionStopping.set(true);
+  sideQuestionStopError.set("");
+  const stillRunning = () => sideQuestion()?.requestId === current.requestId && sideQuestion()?.state === "running";
+  // The host registers the request id before acknowledging admission. A stop
+  // sent sooner can succeed without ever reaching the corresponding turn.
+  const stop = async () => {
+    await admission;
+    if (!stillRunning()) return;
     await invokeCommand<unknown>(
       "btw_cancel",
       { requestId: current.requestId },
       fleetActive() && current.deviceId ? { target: current.deviceId } : undefined,
     );
-  } catch {
-    // The turn may already have ended on its device; the pane says it stopped either way.
-  } finally {
-    if (sideQuestion()?.requestId === current.requestId) void refreshSideQuestionTranscript();
-  }
+  };
+  cancellation = stop().then(() => {
+    if (stillRunning()) updateTurnEntry(current.requestId, item => ({ ...item, state: "cancelled" }));
+    return true;
+  }, error => {
+    if (!stillRunning()) return true;
+    sideQuestionStopError.set(error instanceof Error ? error.message : String(error));
+    return false;
+  }).finally(() => {
+    cancellation = undefined;
+    sideQuestionStopping.set(false);
+    if (sideQuestion()?.requestId === current.requestId && !stillRunning()) void refreshSideQuestionTranscript();
+  });
+  return cancellation;
 }
 
 function matches(payload: unknown, origin: string): SideQuestion | null {
@@ -366,19 +457,10 @@ export function subscribeSideQuestionEvents(): void {
 
 /** Test seam. */
 export function resetSideQuestion(): void {
-  replayFloor = undefined;
-  supersededAttempts.clear();
-  refreshRequested = false;
-  pendingRead = null;
   batch(() => {
-    sideQuestion.set(null);
-    sideQuestionHistory.set([]);
-    sideQuestionChildId.set(null);
-    sideQuestionParentId.set(null);
-    sideQuestionDraft.set("");
-    clearSideQuestionAttachments();
-    sideQuestionModelOverride.set(null);
+    resetSideQuestionThread();
+    sideQuestionTarget.set(null);
     sideQuestionOpen.set(false);
-    sideQuestionUnsupported.set(false);
+    sideQuestionCloseRequest.set(null);
   });
 }

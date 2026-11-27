@@ -3,12 +3,12 @@
 // Owns canonical locale normalization (`zh-CN`, `en-US`, `zh-TW`), reactive
 // `currentLocale` signal, `tr(key, params?)` catalog lookup with `{{name}}`
 // interpolation, local `Storage` persistence (`openbitfun.nsh.locale.v1`),
-// native NSH `setLocale(...)` synchronization, and host `app.language` merge.
+// native NSH `setLocale(...)` synchronization, and host language persistence.
 
 import { Storage, signal, type Signal } from "nsh";
 import { setLocale as setNshLocale } from "nsh/i18n";
 import { getConfig } from "./api";
-import { invokeCommand } from "./bridge";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand } from "./bridge";
 import { enUSMessages, type MessageKey } from "./locales/en-US";
 import { zhCNMessages } from "./locales/zh-CN";
 import { zhTWMessages } from "./locales/zh-TW";
@@ -215,6 +215,17 @@ function readUrlLocaleOverride(): AppLocale | null {
 }
 
 let localeMutationVersion = 0;
+let localeReadVersion = 0;
+let localeWriteInFlight: Promise<boolean> | null = null;
+let localeStorageWrite = Promise.resolve();
+export const appLocaleSaving = signal(false);
+
+function storeLocale(locale: AppLocale): Promise<void> {
+  localeStorageWrite = localeStorageWrite
+    .then(() => Storage.setItem(LOCALE_STORAGE_KEY, locale))
+    .catch(() => undefined);
+  return localeStorageWrite;
+}
 
 /**
  * Synchronizes the active UI locale from a host-reported value without writing
@@ -232,26 +243,27 @@ export function syncLocaleFromHost(raw: unknown): void {
 
 async function readHostLocale(): Promise<AppLocale | null> {
   try {
-    const appConfig = await getConfig("app", true);
-    if (appConfig && typeof appConfig === "object") {
-      const parsed = normalizeLocale((appConfig as Record<string, unknown>).language);
-      if (parsed) return parsed;
-    }
+    const current = normalizeLocale(await invokeCommand<unknown>("i18n_get_current_language"));
+    if (current) return current;
   } catch {
-    // Fall through to leaf path or controller i18n command.
+    // Older hosts expose the preference through config only.
   }
 
+  const entry = entryDeviceId();
+  if (fleetActive() && !entry) return null;
+  const target = entry ? { target: entry } : undefined;
   try {
-    const leaf = await getConfig("app.language", true);
+    const leaf = await getConfig("app.language", true, target);
     const parsed = normalizeLocale(leaf);
     if (parsed) return parsed;
   } catch {
-    // Fall through to i18n_get_current_language if supported.
+    // Some older hosts only return the parent document.
   }
 
   try {
-    const direct = await invokeCommand<unknown>("i18n_get_current_language");
-    return normalizeLocale(direct);
+    const appConfig = await getConfig("app", true, target);
+    return appConfig && typeof appConfig === "object"
+      ? normalizeLocale((appConfig as Record<string, unknown>).language) : null;
   } catch {
     return null;
   }
@@ -264,12 +276,18 @@ async function readHostLocale(): Promise<AppLocale | null> {
  * boot always wins.
  */
 export async function loadAppLocale(opts?: { forceHost?: boolean }): Promise<AppLocale> {
+  const connection = backendConnection();
+  const readVersion = ++localeReadVersion;
+  if (localeWriteInFlight) await localeWriteInFlight;
   const startVersion = localeMutationVersion;
+  const canApply = () => backendConnection() === connection && localeReadVersion === readVersion
+    && localeMutationVersion === startVersion;
+  if (!canApply()) return currentLocale();
 
   if (!opts?.forceHost) {
     const urlLocale = readUrlLocaleOverride();
     if (urlLocale) {
-      if (localeMutationVersion === startVersion) {
+      if (canApply()) {
         currentLocale.set(urlLocale);
         applyNativeLocale(urlLocale);
       }
@@ -278,7 +296,7 @@ export async function loadAppLocale(opts?: { forceHost?: boolean }): Promise<App
 
     try {
       const stored = await Storage.getItem(LOCALE_STORAGE_KEY);
-      if (localeMutationVersion !== startVersion) return currentLocale();
+      if (!canApply()) return currentLocale();
       const parsedStored = normalizeLocale(stored);
       if (parsedStored) {
         currentLocale.set(parsedStored);
@@ -291,12 +309,12 @@ export async function loadAppLocale(opts?: { forceHost?: boolean }): Promise<App
   }
 
   const hostLocale = await readHostLocale();
-  if (localeMutationVersion !== startVersion) return currentLocale();
+  if (!canApply()) return currentLocale();
   if (hostLocale) {
     currentLocale.set(hostLocale);
     applyNativeLocale(hostLocale);
     if (opts?.forceHost) {
-      void Storage.setItem(LOCALE_STORAGE_KEY, hostLocale).catch(() => undefined);
+      void storeLocale(hostLocale);
     }
     return hostLocale;
   }
@@ -315,19 +333,28 @@ export async function setAppLocale(
   opts?: { persistHost?: boolean },
 ): Promise<boolean> {
   const canonical = normalizeLocale(locale);
-  if (!canonical) return false;
+  if (!canonical || appLocaleSaving()) return false;
 
+  appLocaleSaving.set(true);
+  const work = saveAppLocale(canonical, opts?.persistHost !== false);
+  localeWriteInFlight = work;
+  try {
+    return await work;
+  } finally {
+    localeWriteInFlight = null;
+    appLocaleSaving.set(false);
+  }
+}
+
+async function saveAppLocale(canonical: AppLocale, persistHost: boolean): Promise<boolean> {
+  const connection = backendConnection();
   localeMutationVersion += 1;
   currentLocale.set(canonical);
   applyNativeLocale(canonical);
 
-  try {
-    await Storage.setItem(LOCALE_STORAGE_KEY, canonical);
-  } catch {
-    // Keep the chosen locale in memory even when storage cannot write.
-  }
+  await storeLocale(canonical);
 
-  if (opts?.persistHost === false) {
+  if (!persistHost) {
     notifyLocalePersisted(canonical);
     return true;
   }
@@ -337,13 +364,17 @@ export async function setAppLocale(
   // controller-local, so the change stays on this machine. No whole `app` document is read or written back from here.
   let persisted = true;
   try {
+    if (backendConnection() !== connection) return false;
     await invokeCommand("i18n_set_language", { language: canonical });
   } catch {
     // The UI already switched; the caller says the host did not keep it.
     persisted = false;
   }
-  notifyLocalePersisted(canonical);
-  return persisted;
+  if (persisted && backendConnection() === connection) {
+    notifyLocalePersisted(canonical);
+    return true;
+  }
+  return false;
 }
 
 function extractRawErrorMessage(raw: unknown): string {

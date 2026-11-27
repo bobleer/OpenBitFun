@@ -290,6 +290,17 @@ async fn read_file_content_with(
     let request = request_value(args);
     let path = get_string(request, "filePath")?;
     let hint = directory_connection(workspaces, request, &path).await?;
+    if let Some(codec) = request.get("textEncoding").filter(|value| !value.is_null()) {
+        let codec: openbitfun_services_core::file_text_encoding::TextFileEncoding =
+            serde_json::from_value(codec.clone()).map_err(|error| error.to_string())?;
+        let bytes = openbitfun_core::service::filesystem::path_operations::read_bytes(
+            files,
+            &path,
+            hint.as_deref(),
+        )
+        .await?;
+        return serde_json::to_value(codec.decode(&bytes)?).map_err(|error| error.to_string());
+    }
     if let Some(encoding) = optional_string(request, "encoding") {
         if encoding.eq_ignore_ascii_case("base64") {
             let bytes = path_operations::read_bytes(files, &path, hint.as_deref()).await?;

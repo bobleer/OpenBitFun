@@ -126,6 +126,7 @@ import {
 } from "../theme";
 import { deviceException, stateColor } from "../ui/fleet";
 import { Icon, type IconName } from "../ui/icons";
+import { ChoiceIndicator } from "../ui/ChoiceIndicator";
 import { createDiffViewStyles } from "../ui/markdown";
 import {
   MOTION_DURATION,
@@ -158,10 +159,11 @@ import {
   type SegmentedTabOption,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
+import { Toolbar, ToolbarSeparator } from "../ui/Toolbar";
+import { ReviewPlatformView } from "./ReviewPlatformView";
 import {
   createSceneWidth,
   StackBackButton,
-  ToolbarDivider,
   WORKBENCH_TOUCH_MIN,
 } from "../ui/workbenchLayout";
 
@@ -186,6 +188,7 @@ const gitTabs = computed<ReadonlyArray<SegmentedTabOption<GitTab>>>(() => [
   { value: "branches", label: tr("git.tabBranches"), badge: gitBranches().length },
   { value: "history", label: tr("git.tabHistory"), badge: gitCommits().length },
   { value: "worktrees", label: tr("git.tabWorktrees"), badge: gitWorktrees().length },
+  { value: "pull-requests", label: tr("pullRequests.title"), accessibilityLabel: "git-tab-pull-requests" },
 ]);
 
 const compactGitTabs = computed<ReadonlyArray<SegmentedTabOption<GitTab>>>(() => [
@@ -193,6 +196,7 @@ const compactGitTabs = computed<ReadonlyArray<SegmentedTabOption<GitTab>>>(() =>
   { value: "branches", label: tr("git.tabBranches") },
   { value: "history", label: tr("git.tabHistory") },
   { value: "worktrees", label: tr("git.tabWorktrees") },
+  { value: "pull-requests", label: tr("pullRequests.title"), accessibilityLabel: "git-tab-pull-requests" },
 ]);
 
 const branchSelectOptions = computed<ReadonlyArray<SelectDropdownOption<string>>>(() => {
@@ -556,7 +560,7 @@ interface GitFileRowProps {
 }
 
 /** A 16 px high-contrast checkbox for batch selection of working-copy rows. */
-function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
+function RowCheckbox(props: { path: string; label: string }) {
   const checked = () => checkedGitPathSet().has(props.path);
   return (
     <View
@@ -568,15 +572,7 @@ function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
       style={{
         width: space.lg,
         height: space.lg,
-        borderRadius: radii.xs,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: checked()
-          ? palette().actionPrimaryBg
-          : props.quiet
-            ? palette().border
-            : palette().borderStrong,
-        backgroundColor: checked() ? palette().actionPrimaryBg : "transparent",
+        borderRadius: radii.sm,
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
@@ -586,9 +582,7 @@ function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
       activeStyle={tactileActiveStyle(0.95)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <If when={checked()}>
-        <Icon name="check" size={12} color={palette().actionPrimaryFg} />
-      </If>
+      <ChoiceIndicator kind="checkbox" checked={checked()} size="lg" />
     </View>
   );
 }
@@ -670,7 +664,6 @@ function GitFileRow(props: GitFileRowProps) {
           <RowCheckbox
             path={checkPath()}
             label={props.displayPath}
-            quiet={!hovered() && !props.touch && !props.selected && checkedGitPaths().length === 0}
           />
         )}
       </If>
@@ -2943,32 +2936,16 @@ export function GitScene(props: GitSceneProps = {}) {
       <If
         when={narrow()}
         else={
-          <View
-            style={{
-              height: props.compact ? 38 : 42,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.md,
-              paddingHorizontal: props.compact ? space.md : space.lg,
-              borderBottomWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().canvas,
-              flexShrink: 0,
-            }}
-          >
-            <GitBranchControls compact={props.compact} />
-            <ToolbarDivider />
-            <View style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}>
-              <GitUnderlineTabs
-                options={gitTabs()}
-                value={gitTab()}
-                height={props.compact ? 38 : 42}
-                paddingHorizontal={0}
-                onChange={nextTab => gitTab.set(nextTab)}
-              />
-            </View>
-            <GitSyncActions compact={props.compact} />
-          </View>
+          <Toolbar size={props.compact ? "sm" : "md"}
+            leading={<>
+              <GitBranchControls compact={props.compact} />
+              <ToolbarSeparator />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <GitUnderlineTabs options={gitTabs()} value={gitTab()} paddingHorizontal={0}
+                  onChange={nextTab => gitTab.set(nextTab)} />
+              </View>
+            </>}
+            trailing={<GitSyncActions compact={props.compact} />} />
         }
       >
         {/* Narrow (< 600px): compact branch/sync strip over hairline-underline tabs */}
@@ -2982,21 +2959,8 @@ export function GitScene(props: GitSceneProps = {}) {
             flexShrink: 0,
           }}
         >
-          <View
-            style={{
-              minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
-              paddingHorizontal: space.sm,
-              paddingVertical: space.xs,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: space.xs,
-              minWidth: 0,
-            }}
-          >
-            <GitBranchControls compact />
-            <GitSyncActions compact />
-          </View>
+          <Toolbar size="sm" style={{ borderBottomWidth: 0, backgroundColor: "transparent" }}
+            leading={<GitBranchControls compact />} trailing={<GitSyncActions compact />} />
           <GitUnderlineTabs
             options={compactGitTabs()}
             value={gitTab()}
@@ -3279,6 +3243,9 @@ export function GitScene(props: GitSceneProps = {}) {
           </If>
           <If when={gitTab() === "worktrees"}>
             <WorktreesView compact={narrow()} />
+          </If>
+          <If when={gitTab() === "pull-requests"}>
+            <ReviewPlatformView compact={narrow()} />
           </If>
         </View>
       </If>

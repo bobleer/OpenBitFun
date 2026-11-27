@@ -94,6 +94,7 @@ test("BTW shares thinking, tools, streamed answers and hover footer without pers
   await send("text-chunk", { text: "Late old answer" });
   expect(app.texts().join("\n")).not.toContain("Late old answer");
   await app.press("side-question-close");
+  await app.press("side-question-close-confirm");
   await app.waitFor("id:side-question-pane", { state: "gone" });
 });
 

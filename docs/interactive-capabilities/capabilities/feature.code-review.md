@@ -34,6 +34,18 @@ Load pull request diffs, linked issues, and failing CI logs from GitHub, GitLab,
   - Read pull-request descriptions, review threads, and paged file changes directly in context
   - 说明：即使面对包含上百个文件的大号 PR，也会按页有序读取概览与关键改动，不会一次性撑爆模型上下文窗口。
   - Why & how: Loads PR overviews, review comments, and file diffs in clean pages so even large pull requests stay fast and within context budgets.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 从拉取请求面板开始只读审查
+  - Start a read-only review from the pull request panel
+  - 说明：选择拉取请求后，可以开始只读审查或打开已保存的审查结果。运行设备会核对确切提交，并在面板中标明审查状态和提交是否一致。
+  - Why & how: Select a pull request to start a read-only review or reopen a saved run. The runtime verifies the exact commits and shows each run’s status and revision match in the panel.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在原会话中查看审查进度与结果
+  - View review progress and results in the original chat
+  - 说明：会话卡片显示最新一轮的审查状态和报告摘要，可以打开完整报告。
+  - Why & how: The chat card shows the latest review status and summary and opens the full report.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 选择审查发现并启动修复
+  - Select Review findings and start fixes
+  - 说明：打开已完成的工作区审查，选择修复项并确认决策后，由工作区所属运行端启动修复。
+  - Why & how: Open a completed workspace Review, select findings and confirm decisions to start a fix session on the owning runtime.
 - **由专用智能体工具控制 / Delegated Agent tool** · `ReviewPlatform` · 一键拉取 PR 失败或运行中的 CI 任务日志，快速定位构建与测试报错
   - Fetch CI run logs for a pull request to pinpoint build, lint, or test failures
   - 说明：智能体会先列出该 PR 下的各项 CI 检查状态，再只拉取失败那一项的日志正文，迅速帮你复现并修好问题。

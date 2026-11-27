@@ -12,6 +12,27 @@ function unsupported(what: string): Promise<never> {
   return Promise.reject(new Error(`${what} is not available in a browser tab`));
 }
 
+async function downloadFile(fileName: string, contents: Blob): Promise<"started"> {
+  type DownloadLink = { href: string; download: string; click(): void; remove(): void };
+  const doc = (globalThis as { document?: {
+    createElement(tag: "a"): DownloadLink;
+    body: { appendChild(link: DownloadLink): void };
+  } }).document;
+  if (!doc) return unsupported("Downloading files");
+  const link = doc.createElement("a");
+  const url = URL.createObjectURL(contents);
+  try {
+    link.href = url;
+    link.download = fileName;
+    doc.body.appendChild(link);
+    link.click();
+    return "started";
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 export function createBrowserShell(): WindowShell {
   return {
     id: "browser",
@@ -43,6 +64,19 @@ export function createBrowserShell(): WindowShell {
     pickDirectory() {
       // The folders a session opens live on the backend's machine.
       return unsupported("Choosing a folder on this device");
+    },
+    textFileExport: {
+      kind: "save",
+      run({ fileName, text }) {
+        return downloadFile(fileName, new Blob([text], { type: "text/markdown;charset=utf-8" }));
+      },
+    },
+    binaryFileExport: {
+      kind: "save",
+      run({ fileName, base64, mimeType }) {
+        const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+        return downloadFile(fileName, new Blob([bytes], { type: mimeType }));
+      },
     },
     async appVersion() {
       return null;

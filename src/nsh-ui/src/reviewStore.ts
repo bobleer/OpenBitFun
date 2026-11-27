@@ -9,16 +9,17 @@
 // remote workspace gets the host's own refusal, never a local fallback.
 
 import { signal } from "nsh";
-import { invokeCommand } from "./bridge";
-import { tr, type MessageKey } from "./i18n";
+import { fleetActive, invokeCommand } from "./bridge";
+import { localizeHostError, tr, type MessageKey } from "./i18n";
 import { isMissingCommand } from "./settingsMutations";
 import {
   activeSessionId,
+  activeSessionDevice,
   activeWorkspace,
   navigateScene,
   refreshSessionsSilently,
+  rememberReviewSession,
   selectSession,
-  sessions,
 } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -30,15 +31,28 @@ export interface ReviewLaunchFile {
   status: string;
 }
 
+export interface ReviewGitRevisions {
+  baseRevision: string;
+  headRevision: string;
+}
+
+export function gitRangeReviewLabel(range: ReviewGitRevisions): string {
+  return tr("review.displayGitRange", { base: range.baseRevision.slice(0, 7), head: range.headRevision.slice(0, 7) });
+}
+
 /** The host's answer, dry run or launch. */
 export interface ReviewLaunchAnswer {
-  status: "prepared" | "started" | "uncertain" | "refused";
+  status: "prepared" | "started" | "uncertain" | "already_running" | "refused";
   code?: string;
   message?: string;
   intent: ReviewIntent;
   mode?: string;
   agentType?: string;
+  gitRange?: ReviewGitRevisions;
+  scopeFingerprint?: string;
   fileCount: number;
+  plannedFileCount?: number;
+  deferredFileCount?: number;
   changedLineCount?: number;
   completeness?: string;
   limitations?: string[];
@@ -47,7 +61,10 @@ export interface ReviewLaunchAnswer {
   requestId?: string;
   childSessionId?: string;
   childSessionName?: string;
+  parentReviewCard?: boolean;
 }
+
+export const reviewRecordChanged = signal<ReviewTarget | null>(null);
 
 export const reviewLauncherOpen = signal(false);
 export const reviewIntent = signal<ReviewIntent>("review");
@@ -70,6 +87,35 @@ let previewTicket = 0;
 // host already created instead of starting a second reviewer.
 let launchRequestId = "";
 
+export interface ReviewTarget {
+  sessionId: string;
+  deviceId: string;
+  workspaceId?: string | null;
+  workspacePath?: string | null;
+  openChild?: (id: string) => void;
+}
+
+const sheetTarget = signal<ReviewTarget | null>(null);
+
+function primaryReviewTarget(): ReviewTarget | null {
+  const sessionId = activeSessionId();
+  if (!sessionId) return null;
+  const workspace = activeWorkspace();
+  return { sessionId, deviceId: activeSessionDevice(), workspaceId: workspace?.id, workspacePath: workspace?.rootPath };
+}
+
+function reviewRoute(target: ReviewTarget) {
+  return fleetActive() && target.deviceId ? { target: target.deviceId } : undefined;
+}
+
+function reviewTargetFields(target: ReviewTarget) {
+  return {
+    parentSessionId: target.sessionId,
+    ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
+    ...(target.workspacePath ? { workspacePath: target.workspacePath } : {}),
+  };
+}
+
 function newRequestId(): string {
   const random = Math.random().toString(16).slice(2, 10);
   return `review_${Date.now().toString(36)}_${random}`;
@@ -83,6 +129,19 @@ const REFUSAL_KEYS: Record<string, MessageKey> = {
   review_target_too_large: "review.refusal.tooLarge",
   review_remote_workspace_unsupported: "review.refusal.remoteWorkspace",
   review_not_git_repository: "review.refusal.notGitRepository",
+  review_post_fix_scope_changed: "review.postFixScopeChanged",
+  review_retry_no_scope: "review.retry.noScope",
+  review_retry_scope_changed: "review.retry.scopeChanged",
+  review_retry_provider_unsupported: "review.retry.providerUnsupported",
+  review_no_git_range_changes: "review.refusal.gitRangeEmpty",
+  review_git_range_unresolved: "review.refusal.gitRangeUnresolved",
+  review_git_range_three_dot: "review.refusal.gitRangeThreeDot",
+  review_git_range_ambiguous: "review.refusal.gitRangeAmbiguous",
+  review_git_range_with_files: "review.refusal.gitRangeWithFiles",
+  review_git_range_changed: "review.refusal.gitRangeChanged",
+  review_git_range_session_unavailable: "review.refusal.gitRangeSession",
+  review_git_range_files_unavailable: "review.refusal.gitRangeFiles",
+  review_git_range_request_conflict: "review.refusal.gitRangeConflict",
 };
 
 /** The sentence a refusal shows: this surface's copy for codes it knows, else the host's. */
@@ -114,14 +173,9 @@ export function reviewSelectedCount(): number {
   return reviewAllFiles().filter(file => !excluded.has(file.path)).length;
 }
 
-function scopeRequest(): Record<string, unknown> | null {
-  const parentSessionId = activeSessionId();
-  if (!parentSessionId) return null;
-  const workspace = activeWorkspace();
+function scopeRequest(target: ReviewTarget) {
   return {
-    parentSessionId,
-    ...(workspace?.id ? { workspaceId: workspace.id } : {}),
-    ...(workspace?.rootPath ? { workspacePath: workspace.rootPath } : {}),
+    ...reviewTargetFields(target),
     intent: reviewIntent(),
     files: reviewScopePaths(),
     focus: reviewFocus().trim(),
@@ -139,12 +193,13 @@ function reportFailure(error: unknown): void {
 
 /** Asks the host to read the current scope without creating anything. */
 export async function previewReview(): Promise<void> {
-  const request = scopeRequest();
-  if (!request) return;
+  const target = sheetTarget();
+  if (!target) return;
+  const request = scopeRequest(target);
   const ticket = ++previewTicket;
   reviewPreviewLoading.set(true);
   try {
-    const answer = await invokeCommand<ReviewLaunchAnswer>("launch_review", { ...request, dryRun: true });
+    const answer = await invokeCommand<ReviewLaunchAnswer>("launch_review", { ...request, dryRun: true }, reviewRoute(target));
     if (ticket !== previewTicket) return;
     reviewUnsupported.set(false);
     reviewPreview.set(answer);
@@ -161,7 +216,10 @@ export async function previewReview(): Promise<void> {
 }
 
 /** Opens the sheet for the session on screen and reads its workspace changes. */
-export function openReviewLauncher(options: { intent?: ReviewIntent; focus?: string } = {}): void {
+export function openReviewLauncher(options: { intent?: ReviewIntent; focus?: string; target?: ReviewTarget } = {}): void {
+  const target = options.target ?? primaryReviewTarget();
+  if (!target) return;
+  sheetTarget.set(target);
   reviewIntent.set(options.intent ?? "review");
   reviewFocus.set(options.focus ?? "");
   reviewExcluded.set([]);
@@ -177,6 +235,7 @@ export function openReviewLauncher(options: { intent?: ReviewIntent; focus?: str
 export function closeReviewLauncher(): void {
   previewTicket += 1;
   reviewLauncherOpen.set(false);
+  sheetTarget.set(null);
   reviewPreviewLoading.set(false);
 }
 
@@ -199,54 +258,70 @@ export function includeAllReviewFiles(): void {
 }
 
 /** Shows the child session the host created and started. */
-async function openReviewChild(answer: ReviewLaunchAnswer, intent: ReviewIntent): Promise<void> {
+export function openReviewChild(
+  answer: Pick<ReviewLaunchAnswer, "childSessionId" | "childSessionName" | "agentType">,
+  intent: ReviewIntent,
+  target: ReviewTarget,
+): void {
   const childId = answer.childSessionId;
   if (!childId) return;
-  if (!sessions().some(row => row.sessionId === childId)) {
-    sessions.update(rows => [
-      {
-        sessionId: childId,
-        sessionName: answer.childSessionName ?? childName(intent),
-        agentType: answer.agentType,
-        lastActiveAt: Date.now(),
-      },
-      ...rows,
-    ]);
+  rememberReviewSession({
+    sessionId: childId,
+    sessionName: answer.childSessionName ?? childName(intent),
+    agentType: answer.agentType,
+    workspaceId: target.workspaceId ?? undefined,
+    ...(target.deviceId ? { deviceId: target.deviceId } : {}),
+  });
+  if (target.openChild) target.openChild(childId);
+  else {
+    navigateScene("sessions");
+    selectSession(childId, target.deviceId || undefined, target.workspaceId || undefined);
   }
-  navigateScene("sessions");
-  selectSession(childId);
   void refreshSessionsSilently();
+}
+
+export function handleReviewLaunch(answer: ReviewLaunchAnswer, intent: ReviewIntent, target: ReviewTarget): void {
+  if (!answer.childSessionId) return;
+  if (!answer.parentReviewCard || !target.workspaceId) {
+    openReviewChild(answer, intent, target);
+    return;
+  }
+  reviewRecordChanged.set({ ...target });
+  if (answer.status === "started") pushToast(tr("review.recordStarted"), "info");
 }
 
 function childName(intent: ReviewIntent): string {
   return intent === "strict" ? tr("review.childNameStrict") : tr("review.childName");
 }
 
-async function runLaunch(request: Record<string, unknown>, intent: ReviewIntent): Promise<ReviewLaunchAnswer | null> {
+async function runLaunch(
+  request: Record<string, unknown>, intent: ReviewIntent, target: ReviewTarget, requestId: string,
+  displayMessage = intent === "strict" ? tr("review.displayStrict") : tr("review.displayStandard"),
+): Promise<ReviewLaunchAnswer> {
   const answer = await invokeCommand<ReviewLaunchAnswer>("launch_review", {
     ...request,
-    requestId: launchRequestId || newRequestId(),
+    requestId,
     childSessionName: childName(intent),
-    displayMessage: intent === "strict" ? tr("review.displayStrict") : tr("review.displayStandard"),
-  });
+    displayMessage,
+  }, reviewRoute(target));
   if (answer.status === "refused") {
     reviewNotice.set(reviewRefusalText(answer));
     return answer;
   }
-  await openReviewChild(answer, intent);
+  handleReviewLaunch(answer, intent, target);
   if (answer.status === "uncertain") pushToast(tr("review.uncertain"), "warning");
   return answer;
 }
 
 /** Launches the Review the sheet describes. */
 export async function launchReviewFromSheet(): Promise<void> {
-  const request = scopeRequest();
-  if (!request || reviewLaunching() || reviewUnsupported()) return;
+  const target = sheetTarget();
+  if (!target || reviewLaunching() || reviewUnsupported()) return;
   reviewLaunching.set(true);
   reviewNotice.set("");
   try {
-    const answer = await runLaunch(request, reviewIntent());
-    if (answer && answer.status !== "refused") {
+    const answer = await runLaunch(scopeRequest(target), reviewIntent(), target, launchRequestId);
+    if (sheetTarget() === target && answer.status !== "refused") {
       launchRequestId = "";
       closeReviewLauncher();
     }
@@ -257,36 +332,108 @@ export async function launchReviewFromSheet(): Promise<void> {
   }
 }
 
+// Treat any range-shaped selection as a preflight candidate so a previous
+// owner cannot interpret it as workspace focus. The host parses and resolves it.
+function maySelectGitRange(text: string): boolean {
+  const focus = text.trim().replace(/^\/\S+\s*/, "").replace(/^strict(?:\s+|$)/i, "");
+  return /^(?:review\s+)?(?:commit|ref)(?:\s|$)/i.test(focus)
+    || focus.split(/\s+/).some(raw => {
+      const token = raw.replace(/^[`"']+/, "");
+      return token.includes("..") && !token.startsWith("../") && !token.includes("://");
+    });
+}
+
+interface PendingGitRangeLaunch {
+  commandText: string;
+  revisions: ReviewGitRevisions;
+  intent: ReviewIntent;
+  requestId: string;
+  launching: boolean;
+}
+
+const pendingGitRangeLaunches = new Map<string, PendingGitRangeLaunch>();
+
+async function launchReviewGitRange(text: string, target: ReviewTarget): Promise<boolean> {
+  const key = JSON.stringify([target.deviceId, target.workspaceId, target.sessionId]);
+  const matchingLaunch = () => {
+    const saved = pendingGitRangeLaunches.get(key);
+    return saved?.commandText === text ? saved : undefined;
+  };
+  let launch = matchingLaunch();
+  try {
+    if (!launch) {
+      const prepared = await invokeCommand<ReviewLaunchAnswer>("launch_review", {
+        ...reviewTargetFields(target), commandText: text, dryRun: true,
+      }, reviewRoute(target));
+      if (prepared.status === "refused") {
+        // Older owners can refuse a clean or oversized working tree before
+        // telling us anything about the explicitly requested commits.
+        const workspaceOnly = prepared.code === "review_no_workspace_changes" || prepared.code === "review_target_too_large";
+        pushToast(workspaceOnly ? tr("review.gitRangeHostUpdate") : reviewRefusalText(prepared), "warning");
+        return false;
+      }
+      if (prepared.status !== "prepared" || !prepared.gitRange) {
+        pushToast(tr("review.gitRangeHostUpdate"), "warning");
+        return false;
+      }
+      launch = matchingLaunch() ?? {
+        commandText: text, revisions: prepared.gitRange, intent: prepared.intent, requestId: newRequestId(), launching: false,
+      };
+      pendingGitRangeLaunches.set(key, launch);
+    }
+    if (launch.launching) return true;
+    launch.launching = true;
+    try {
+      const answer = await runLaunch({
+        ...reviewTargetFields(target),
+        // Older owners reject this intent even if the runtime changed
+        // between preparation and launch.
+        intent: "git_range",
+        approvedGitRange: { ...launch.revisions, commandText: text },
+      }, launch.intent, target, launch.requestId, gitRangeReviewLabel(launch.revisions));
+      if (pendingGitRangeLaunches.get(key) === launch) pendingGitRangeLaunches.delete(key);
+      if (answer.status === "refused") {
+        pushToast(reviewRefusalText(answer), "warning");
+        return false;
+      }
+      return true;
+    } finally {
+      launch.launching = false;
+    }
+  } catch (error) {
+    pushToast(isMissingCommand(error, "launch_review")
+      ? tr("review.gitRangeHostUpdate") : localizeHostError(error), "warning");
+    return false;
+  }
+}
+
 /**
  * Runs a typed `/review …` line for the session on screen. The host reads the
  * line (intent and focus); a refusal or an older host opens the sheet, where the
- * reason is shown and the scope can be changed. Returns whether it handled the line.
+ * reason is shown and the scope can be changed. A refused Git range keeps its
+ * composer draft so it can be corrected and resubmitted.
  */
-export async function launchReviewFromCommand(text: string): Promise<boolean> {
-  const parentSessionId = activeSessionId();
-  if (!parentSessionId || !isReviewCommand(text)) return false;
-  const workspace = activeWorkspace();
-  launchRequestId = newRequestId();
+export async function launchReviewFromCommand(text: string, target = primaryReviewTarget()): Promise<boolean> {
+  if (!target || !isReviewCommand(text)) return false;
+  if (maySelectGitRange(text)) return launchReviewGitRange(text.trim(), target);
   const intent: ReviewIntent = /^\/(deepreview|deep[-_]review)\b|^\/review\s+strict\b/i.test(text.trim())
     ? "strict"
     : "review";
   try {
     const answer = await runLaunch(
       {
-        parentSessionId,
-        ...(workspace?.id ? { workspaceId: workspace.id } : {}),
-        ...(workspace?.rootPath ? { workspacePath: workspace.rootPath } : {}),
+        ...reviewTargetFields(target),
         commandText: text.trim(),
       },
-      intent,
+      intent, target, newRequestId(),
     );
     if (answer?.status === "refused") {
       const notice = reviewNotice();
-      openReviewLauncher({ intent });
+      openReviewLauncher({ intent, target });
       reviewNotice.set(notice);
     }
   } catch (error) {
-    openReviewLauncher({ intent });
+    openReviewLauncher({ intent, target });
     reportFailure(error);
   }
   return true;

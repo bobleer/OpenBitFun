@@ -2,6 +2,7 @@
 // type scale with its CJK leading, the spacing and radius scales, elevation,
 // the teal accent family with its contrast, and the motion tokens.
 import { expect, test } from "nsh/test";
+import { designTokens } from "../src/generated/designTokens";
 import { currentLocale } from "../src/i18n";
 import { createMarkdownStyles } from "../src/ui/markdown";
 import {
@@ -49,12 +50,14 @@ const dark = getAppearancePreset("openbitfun-dark").palette;
 const light = getAppearancePreset("openbitfun-light").palette;
 
 const ROLES: TextRole[] = [
+  "welcome",
   "display",
   "pageTitle",
   "modalTitle",
   "sectionTitle",
   "prose",
   "body",
+  "smallBody",
   "label",
   "caption",
   "micro",
@@ -65,7 +68,7 @@ const ROLES: TextRole[] = [
 ];
 
 test("the type scale is whole pixels and every role is on it", () => {
-  const scale = [28, 22, 17, 16, 15, 14, 13, 12, 11];
+  const scale = [32, 26, 24, 15, 14, 13, 12, 11];
   for (const value of Object.values(typeScale)) {
     expect(Number.isInteger(value)).toBe(true);
     expect(scale).toContain(value);
@@ -74,36 +77,39 @@ test("the type scale is whole pixels and every role is on it", () => {
     const style = textStyle(role);
     expect(Number.isInteger(style.fontSize)).toBe(true);
     expect(Number.isInteger(style.lineHeight)).toBe(true);
-    expect(["400", "500", "600"]).toContain(style.fontWeight);
+    expect(["400", "500", "600", "700"]).toContain(style.fontWeight);
     expect(style.fontSize).toBe(roleSize(role));
   }
   // The deprecated keys read as their replacements, so old call sites compile and land on the scale.
-  expect(typeScale.cardTitle).toBe(typeScale.body);
   expect(typeScale.control).toBe(typeScale.label);
   expect(typeScale.meta).toBe(typeScale.caption);
 });
 
 test("each role has the spec's size, weight and leading", () => {
   const expected: Array<[TextRole, number, string, number]> = [
-    ["display", 28, "600", 34],
-    ["pageTitle", 22, "600", 28],
-    ["modalTitle", 17, "600", 24],
-    ["sectionTitle", 16, "600", 22],
-    ["prose", 15, "400", 24],
-    ["body", 14, "400", 20],
-    ["label", 13, "500", 18],
-    ["caption", 12, "400", 16],
-    ["micro", 11, "600", 14],
-    ["mono", 12, "400", 16],
+    ["welcome", 32, "600", 35],
+    ["display", 26, "600", 29],
+    ["pageTitle", 24, "700", 29],
+    ["modalTitle", 24, "700", 29],
+    ["sectionTitle", 15, "600", 18],
+    ["prose", 14, "400", 22],
+    ["body", 14, "400", 21],
+    ["smallBody", 13, "400", 20],
+    ["label", 13, "400", 16],
+    ["caption", 12, "400", 18],
+    ["micro", 11, "500", 13],
+    ["mono", 12, "400", 18],
     ["monoBlock", 13, "400", 20],
+    ["cardTitle", 13, "600", 16],
+    ["meta", 12, "400", 18],
   ];
   for (const [role, size, weight, line] of expected) {
     const style = textStyle(role);
     expect([role, style.fontSize, style.fontWeight, style.lineHeight]).toEqual([role, size, weight, line]);
   }
-  expect(textStyle("display").letterSpacing).toBe(-0.4);
-  expect(textStyle("pageTitle").letterSpacing).toBe(-0.3);
-  expect(textStyle("sectionTitle").letterSpacing).toBe(-0.1);
+  expect(textStyle("display").letterSpacing).toBe(-0.52);
+  expect(textStyle("pageTitle").letterSpacing).toBe(0);
+  expect(textStyle("sectionTitle").letterSpacing).toBe(0);
   expect(textStyle("prose").letterSpacing).toBe(0);
 });
 
@@ -111,18 +117,18 @@ test("Chinese prose and body take a 1.7 leading and no tracking", () => {
   const before = currentLocale();
   try {
     currentLocale.set("zh-CN");
-    expect(textStyle("prose").lineHeight).toBe(26);
+    expect(textStyle("prose").lineHeight).toBe(24);
     expect(textStyle("body").lineHeight).toBe(24);
     expect(textLineHeight(14, 1.55)).toBe(24);
     // Single-line chrome keeps its own leading.
-    expect(textStyle("label").lineHeight).toBe(18);
+    expect(textStyle("label").lineHeight).toBe(16);
     expect(textLineHeight(14, 1.2)).toBe(17);
     expect(textStyle("display").letterSpacing).toBe(0);
     expect(textTracking(22)).toBe(0);
     currentLocale.set("zh-TW");
-    expect(textStyle("prose").lineHeight).toBe(26);
-    currentLocale.set("en-US");
     expect(textStyle("prose").lineHeight).toBe(24);
+    currentLocale.set("en-US");
+    expect(textStyle("prose").lineHeight).toBe(22);
     expect(textTracking(28)).toBe(-0.4);
   } finally {
     currentLocale.set(before);
@@ -135,12 +141,12 @@ test("spacing, radii and control heights are on their scales", () => {
     if (key === "chip") expect(value).toBe(6);
     else expect(SPACE_SCALE).toContain(value);
   }
-  expect([radii.xs, radii.sm, radii.md, radii.lg, radii.xl, radii.pill]).toEqual([4, 6, 8, 12, 16, 999]);
-  // `surface` (20) is retired; the key stays for old call sites at the canvas radius.
+  expect([radii.xs, radii.sm, radii.md, radii.lg, radii.xl, radii.pill]).toEqual([4, 6, 8, 12, 16, 9999]);
+  expect(layout.canvasRadius).toBe(24);
   expect(radii.surface).toBe(layout.canvasRadius);
-  expect(controlHeight).toEqual({ xs: 24, sm: 28, md: 32, lg: 40 });
+  expect(controlHeight).toEqual({ xs: 24, sm: 32, md: 40, lg: 48 });
   expect(layout.navDefaultWidth).toBe(264);
-  expect(layout.conversationWidth).toBe(760);
+  expect(layout.conversationWidth).toBe(900);
 });
 
 test("motion springs are NSH spring strings and the pulse replaces ping", () => {
@@ -153,15 +159,18 @@ test("motion springs are NSH spring strings and the pulse replaces ping", () => 
   expect(motionTiming.reducedMax).toBeLessThanOrEqual(120);
 });
 
-test("the dark preset's accent family is teal and toggles follow it", () => {
+test("default appearances use the shared surface, action and focus colors", () => {
+  for (const [palette, tokens] of [[light, designTokens.light.palette], [dark, designTokens.dark.palette]] as const) {
+    expect(palette).toEqual({ ...palette, ...tokens });
+  }
+});
+
+test("the dark preset's working accent is teal and toggles follow it", () => {
   expect(dark.accent).toBe("#3fb6c4");
   expect(dark.chromeAccent).toBe(dark.accent);
-  expect(dark.borderFocus).toBe(dark.accent);
   expect(dark.brandWarm).toBe(dark.accent);
   expect(dark.switchOn).toBe(dark.actionSolid);
   expect(light.switchOn).toBe(light.accent);
-  // Kept: asserted by App.test.tsx and sessions-ux.test.tsx.
-  expect(light.textMuted).toBe("#5c6672");
 });
 
 test("the teal accent clears the spec's contrast in both schemes", () => {
@@ -201,7 +210,7 @@ test("the other presets keep the accents they had", () => {
   }
 });
 
-test("session markdown typography uses native 15px prose, distinct heading scale, and tight container-driven list spacing", () => {
+test("session markdown uses the shared prose size, distinct headings, and tight list spacing", () => {
   const obj = (style: unknown) => (style ?? {}) as Record<string, number | string | undefined>;
   const before = currentLocale();
   try {
@@ -209,8 +218,10 @@ test("session markdown typography uses native 15px prose, distinct heading scale
     const en = createMarkdownStyles();
     const enRoot = obj(en.root);
     const enParagraph = obj(en.paragraph);
-    expect(enRoot.fontSize).toBe(15);
     expect(enRoot.fontFamily).toBe(fontSans());
+    expect(obj(en.math).color).toBe(enParagraph.color);
+    expect(obj(en.mathBlock).color).toBe(enParagraph.color);
+    expect(enRoot.fontSize).toBe(designTokens.typography.prose.size);
     expect(Number(obj(en.heading1).fontSize ?? 0) > Number(obj(en.heading2).fontSize ?? 0)).toBe(true);
     expect(Number(obj(en.heading2).fontSize ?? 0) > Number(obj(en.heading3).fontSize ?? 0)).toBe(true);
     expect(Number(obj(en.heading3).fontSize ?? 0) > Number(enRoot.fontSize ?? 0)).toBe(true);

@@ -3106,9 +3106,11 @@ const DEV_FIXTURES = {
   // plain browser. The install answers the host's permission refusal first.
   miniapp_market_browse: args => {
     const req = payloadOf(args);
+    const ids = Array.isArray(req.listingIds) ? new Set(req.listingIds) : null;
     const query = String(req.query || "").toLowerCase();
     const category = String(req.category || "all");
     const items = devMarketListings
+      .filter(item => !ids || ids.has(item.listingId))
       .filter(item => category === "all" || item.category === category)
       .filter(item => !query || `${item.name} ${item.description}`.toLowerCase().includes(query))
       .map(({ releases: _releases, changelog: _changelog, license: _license, ...summary }) => summary);
@@ -3116,7 +3118,7 @@ const DEV_FIXTURES = {
   },
   miniapp_market_get_listing: args => {
     const req = payloadOf(args);
-    const found = devMarketListings.find(item => item.slug === req.slug);
+    const found = devMarketListings.find(item => req.listingId ? item.listingId === req.listingId : item.slug === req.slug);
     if (!found) throw new Error(JSON.stringify({ code: "not_found", message: "Listing not found." }));
     return found;
   },
@@ -5411,6 +5413,38 @@ export async function createHost(player) {
   const windowApi = tauri && tauri.window;
   const native = Boolean(core && typeof core.invoke === "function");
   const transport = native ? "tauri" : "dev";
+  const figureImageRequests = new Map();
+
+  function documentAsset(asset) {
+    if (typeof asset !== "string" || !asset.startsWith("asset:/")) return null;
+    const url = new URL(player.asset(asset), globalThis.location.href);
+    return url.origin === globalThis.location.origin ? url.href : null;
+  }
+
+  function loadFigureImage(args) {
+    const { nonce, asset, url } = args ?? {};
+    const workerUrl = documentAsset(asset);
+    if (!workerUrl || typeof url !== "string" || typeof nonce !== "string" ||
+        !/^[a-f0-9]{32}$/.test(nonce) || figureImageRequests.has(nonce)) return null;
+    return new Promise(resolve => {
+      const worker = new Worker(workerUrl);
+      const finish = value => {
+        if (figureImageRequests.get(nonce) !== finish) return;
+        figureImageRequests.delete(nonce);
+        clearTimeout(timer);
+        worker.terminate();
+        resolve(value ?? null);
+      };
+      const timer = setTimeout(() => finish(null), 5500);
+      figureImageRequests.set(nonce, finish);
+      worker.onmessage = ({ data }) => {
+        if (data?.nonce === nonce && data.url === url) finish(data.value);
+      };
+      worker.onerror = () => finish(null);
+      try { worker.postMessage({ nonce, url }); }
+      catch { finish(null); }
+    });
+  }
 
   if (!native) {
     // Before the start script reads `#nsh-params` and the runtime makes its realm.
@@ -5442,6 +5476,40 @@ export async function createHost(player) {
 
   const unlisteners = new Map();
   const controller = createController(player);
+  let snippetKeys = null;
+
+  function clearLatexSnippetKeys() {
+    if (!snippetKeys) return;
+    const { focus, listener, blur } = snippetKeys;
+    snippetKeys = null;
+    focus.removeEventListener("keydown", listener, true);
+    focus.removeEventListener("blur", blur);
+  }
+
+  function setLatexSnippetKeys(args) {
+    if (!Number.isSafeInteger(args?.id)) return;
+    if (args.active !== true && snippetKeys?.id !== args.id) return;
+    clearLatexSnippetKeys();
+    if (args.active !== true) return;
+    const focus = document.activeElement;
+    if (!focus || !player.root.contains(focus)) return;
+    const listener = event => {
+      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey ||
+          (event.key !== "Tab" && event.key !== "Escape")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) player.hostEvent("openbitfun.latexSnippetKey", {
+        id: args.id,
+        key: event.key === "Escape" ? "escape" : event.shiftKey ? "previous" : "next",
+      });
+    };
+    const blur = () => {
+      if (snippetKeys?.id === args.id) clearLatexSnippetKeys();
+    };
+    snippetKeys = { id: args.id, focus, listener, blur };
+    focus.addEventListener("keydown", listener, true);
+    focus.addEventListener("blur", blur, { once: true });
+  }
   /** In-flight `eventApi.listen()` registrations, preventing duplicate listeners & leaks. */
   const pendingListeners = new Map();
 
@@ -6170,6 +6238,28 @@ export async function createHost(player) {
   return {
     async call(name, args) {
       switch (name) {
+        case "openbitfun.latexSnippetKeys":
+          return setLatexSnippetKeys(args);
+        case "openbitfun.documentRendererAsset":
+          return documentAsset(args?.asset);
+        case "openbitfun.loadFigureImage":
+          return loadFigureImage(args);
+        case "openbitfun.cancelFigureImage":
+          figureImageRequests.get(args?.nonce)?.(null);
+          return null;
+        case "openbitfun.figurePreviewShell": {
+          const page = bundlePageOf(globalThis.location);
+          if (!page) return null;
+          const url = new URL(`b/${page.bundleId}/.obf-figure.html`, page.launcher);
+          const response = await fetch(url, { cache: "no-store" });
+          if (!response.ok || response.headers.get("X-OpenBitFun-Figure-Preview") !== "1") {
+            throw new Error("The browser gateway does not provide the figure preview shell");
+          }
+          if (args?.capabilities === true) {
+            return { url: url.href, bindingUpdates: response.headers.get("X-OpenBitFun-Figure-Bindings") === "1" };
+          }
+          return url.href;
+        }
         case "openbitfun.transport":
           return { ok: true, value: { transport }, transport };
         case "openbitfun.windowChrome":

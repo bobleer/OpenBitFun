@@ -11,6 +11,9 @@ import { holdGitStatusLive } from "./gitStatusLive";
 import { currentDeviceScopeKey, isRemotePeerContext } from "./shared/deviceScope";
 import { errorMessageOf } from "./shared/errorUtils";
 import { invalidateMarkdownMediaCache } from "./ui/markdownMedia";
+import { readFileWithEncoding, type EditorFileByteIdentity, type EditorFileEncoding } from "./editorFileEncoding";
+import { tr } from "./i18n";
+import { rendererAssets } from "./documentRenderers";
 import {
   dirnameOfPath,
   fileUrlToPath,
@@ -45,6 +48,10 @@ import {
   runStep,
 } from "./state";
 import { basename, extensionOf, formatBytes } from "./format";
+import type { EditorIndentation } from "./ui/editorIndentation";
+import { readFileEditorConfig } from "./ui/editorPreferences";
+import type { LatexTabView } from "./latexDocument";
+import type { PdfReviewSession } from "./pdfReviewSession";
 
 export type PreviewKind = "markdown" | "code" | "text" | "image" | "video" | "pdf" | "diff" | "binary";
 
@@ -54,6 +61,9 @@ export interface OpenFile {
   kind: PreviewKind;
   language: string;
   content: string;
+  byteIdentity?: EditorFileByteIdentity;
+  /** A fresh PDF byte snapshot may replace the same path. */
+  previewRevision?: number;
   note?: string;
   /** Past `LARGE_FILE_BYTES`: shown without colouring, editable on request. */
   large?: boolean;
@@ -116,6 +126,52 @@ export const gitListOpen = signal(false);
 /** The open editor tabs, in the order they were opened. */
 export const openFilePaths = signal<string[]>([]);
 
+export interface FileEditorOptions {
+  language?: string;
+  indentation?: EditorIndentation;
+  encoding?: EditorFileEncoding;
+  latex?: LatexTabView;
+  pdfReviews?: Record<string, PdfReviewSession>;
+}
+
+const editorOptionsByPath = signal<Record<string, FileEditorOptions>>({});
+export const activeFileEditorOptions = computed(() => {
+  const path = openFile()?.path;
+  return path ? editorOptionsByPath()[path] : undefined;
+});
+
+/** These choices belong to the open tab and its controller-side editor. */
+export function setActiveFileEditorOptions(patch: Partial<FileEditorOptions>): void {
+  const path = openFile()?.path;
+  if (!path || !openFilePaths().includes(path)) return;
+  editorOptionsByPath.update(current => {
+    const next = { ...current, [path]: { ...current[path], ...patch } };
+    if (!next[path].language && !next[path].indentation && !next[path].encoding && !next[path].latex && !next[path].pdfReviews) {
+      delete next[path];
+    }
+    return next;
+  });
+}
+
+const editorConfig = signal<{ device: string; config: ReturnType<typeof readFileEditorConfig> } | null>(null);
+let editorConfigRequest = 0;
+export const activeFileEditorConfig = computed(() => {
+  const policy = editorConfig();
+  return policy?.device === currentDeviceScopeKey() ? policy.config : null;
+});
+
+export async function refreshFileEditorConfig(): Promise<void> {
+  const device = currentDeviceScopeKey();
+  const request = ++editorConfigRequest;
+  try {
+    const editor = await invokeCommand<unknown>("get_config", { path: "editor", skipRetryOnNotFound: true });
+    if (request !== editorConfigRequest || device !== currentDeviceScopeKey() || !editor) return;
+    editorConfig.set({ device, config: readFileEditorConfig(editor) });
+  } catch {
+    // An unavailable settings read must not prevent opening or editing a file.
+  }
+}
+
 /**
  * An unsaved edit of a file that is not the active tab. The active file's draft
  * lives in `editingContent`; switching tabs moves it here and back, so a tab
@@ -125,6 +181,7 @@ export interface FileDraft {
   text: string;
   /** The disk text the draft was edited against. */
   base: string;
+  byteIdentity?: EditorFileByteIdentity;
   /** The disk identity of `base`, when the host reported one. */
   version: DiskVersion | null;
 }
@@ -142,6 +199,7 @@ export const changedOnDisk = signal<Record<string, "modified" | "deleted">>({});
 export const saveConflict = signal<string | null>(null);
 /** The dirty tab waiting for a Discard / Save confirmation before it closes. */
 export const confirmingCloseTab = signal<string | null>(null);
+export const confirmingEncodingSave = signal<string | null>(null);
 
 export interface GitDecoration {
   /** The porcelain letter git reports: M, A, D, R, U (untracked) or C (conflict). */
@@ -255,6 +313,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   html: "html",
   htm: "html",
   xml: "xml",
+  tex: "latex",
   svg: "xml",
   sql: "sql",
   md: "markdown",
@@ -362,6 +421,7 @@ export const hasUnsavedEdit = computed(() => {
 
 /** A tab carries unsaved text: the active draft, or a stashed one. */
 export function isDirtyPath(path: string): boolean {
+  if (Object.values(editorOptionsByPath()[path]?.pdfReviews ?? {}).some(review => review.hasPending())) return true;
   if (openFile()?.path === path) return hasUnsavedEdit();
   return Boolean(drafts()[path]);
 }
@@ -371,6 +431,9 @@ export const dirtyPaths = computed<string[]>(() => {
   const paths = Object.keys(drafts());
   const active = openFile()?.path;
   if (active && hasUnsavedEdit() && !paths.includes(active)) paths.push(active);
+  for (const path of openFilePaths()) {
+    if (!paths.includes(path) && isDirtyPath(path)) paths.push(path);
+  }
   return paths;
 });
 
@@ -403,7 +466,9 @@ function stashActiveDraft(): void {
   const draft = editingContent();
   if (!file || draft === null) return;
   if (draft !== file.content) {
-    setDraft(file.path, { text: draft, base: file.content, version: diskVersions.get(file.path) ?? null });
+    setDraft(file.path, {
+      text: draft, base: file.content, byteIdentity: file.byteIdentity, version: diskVersions.get(file.path) ?? null,
+    });
   } else {
     setDraft(file.path, null);
   }
@@ -546,15 +611,65 @@ export async function setExpanded(path: string, expanded: boolean): Promise<void
 let openTicket = 0;
 
 /**
- * Whether this client previews PDFs: the native desktop's web view has a PDF
- * viewer; a browser tab and the phone open them elsewhere.
+ * The shared viewer is bundled on every surface. Standalone previews can
+ * still use the native desktop's built-in PDF viewer.
  */
 export function pdfPreviewSupported(): boolean {
-  return windowShellId() === "nsh-desktop";
+  return Boolean(rendererAssets()?.pdfScript) || windowShellId() === "nsh-desktop";
 }
 
 /** Above this, text opens without colouring and the editor says why. */
 export const LARGE_FILE_BYTES = 1024 * 1024;
+
+async function readEditorText(workspaceId: string, path: string, encoding?: EditorFileEncoding) {
+  if (encoding) return readFileWithEncoding(workspaceId, path, encoding);
+  return { content: (await readFileContent(workspaceId, path)) ?? "", byteIdentity: undefined };
+}
+
+export const canReopenWithEncoding = computed(() => {
+  const file = openFile();
+  return Boolean(file && file.kind !== "diff" && EDITABLE_VIEW_KINDS.has(previewKindOf(file.path)));
+});
+
+let encodingReadTicket = 0;
+
+function encodingErrorMessage(error: unknown): string {
+  const message = errorMessageOf(error);
+  if (message.includes("FILE_ENCODING_UNSUPPORTED")) return tr("files.encodingUnsupported");
+  if (message.includes("FILE_ENCODING_INVALID")) return tr("files.encodingInvalid");
+  return message;
+}
+
+export async function reopenWithEncoding(encoding: EditorFileEncoding): Promise<boolean> {
+  const workspaceId = activeWorkspaceId();
+  const file = openFile();
+  if (!workspaceId || !file || selectedPath() !== file.path || !canReopenWithEncoding() ||
+      hasUnsavedEdit() || fileSaving()) return false;
+  const ticket = openTicket;
+  const request = ++encodingReadTicket;
+  const stillCurrent = () => ticket === openTicket && request === encodingReadTicket && openFile() === file &&
+    !hasUnsavedEdit() && !fileSaving();
+  try {
+    const [snapshot, version] = await Promise.all([
+      readFileWithEncoding(workspaceId, file.path, encoding),
+      readDiskVersion(workspaceId, file.path),
+    ]);
+    if (!stillCurrent()) return false;
+    const kind = previewKindOf(file.path);
+    const large = (version?.size ?? knownSizeOf(file.path) ?? snapshot.content.length) > LARGE_FILE_BYTES;
+    const wasEditing = editingContent() !== null;
+    openFile.set({ path: file.path, name: file.name, kind, language: languageOf(file.path), ...snapshot, large });
+    if (wasEditing || (EDIT_ON_OPEN_KINDS.has(kind) && !large)) editingContent.set(snapshot.content);
+    setActiveFileEditorOptions({ encoding });
+    setChangedOnDisk(file.path, null);
+    diskVersions.set(file.path, version);
+    fileNotice.set("");
+    return true;
+  } catch (error) {
+    if (stillCurrent()) fileNotice.set(encodingErrorMessage(error));
+    return false;
+  }
+}
 
 export async function openFileAt(path: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
@@ -607,8 +722,6 @@ export async function openFileAt(path: string): Promise<void> {
     return;
   }
   if (kind === "pdf") {
-    // Only the native desktop draws a PDF (its web view's own viewer); other
-    // clients show where to open it instead of fetching bytes they cannot show.
     if (!pdfPreviewSupported()) {
       openFile.set({ path, name, kind, language: "", content: "" });
       return;
@@ -635,7 +748,7 @@ export async function openFileAt(path: string): Promise<void> {
       try {
         const encoded = await readFileContent(workspaceId, path, "base64");
         if (ticket !== openTicket) return;
-        openFile.set({ path, name, kind, language: "", content: encoded ?? "" });
+        openFile.set({ path, name, kind, language: "", content: encoded ?? "", previewRevision: ticket });
       } catch (error) {
         if (ticket !== openTicket) return;
         const message = error instanceof Error ? error.message : String(error);
@@ -657,14 +770,18 @@ export async function openFileAt(path: string): Promise<void> {
   }
   await runStep(async () => {
     const stashed = drafts()[path];
+    const encoding = editorOptionsByPath()[path]?.encoding;
     let content: string | null = null;
+    let byteIdentity: EditorFileByteIdentity | undefined;
     let readError: unknown = null;
     let version: DiskVersion | null = null;
     try {
-      [content, version] = await Promise.all([
-        readFileContent(workspaceId, path).then(text => text ?? ""),
+      const [snapshot, diskVersion] = await Promise.all([
+        readEditorText(workspaceId, path, encoding),
         readDiskVersion(workspaceId, path),
       ]);
+      ({ content, byteIdentity } = snapshot);
+      version = diskVersion;
     } catch (error) {
       readError = error;
     }
@@ -675,21 +792,22 @@ export async function openFileAt(path: string): Promise<void> {
       // The draft wins: it is reopened over the disk text it was typed against,
       // and a disk copy that moved on meanwhile is flagged, never merged silently.
       setDraft(path, null);
-      openFile.set({ path, name, kind, language: languageOf(path), content: stashed.base, ...(large ? { large } : {}) });
+      openFile.set({ path, name, kind, language: languageOf(path), content: stashed.base, byteIdentity: stashed.byteIdentity, large });
       diskVersions.set(path, stashed.version);
       editingContent.set(stashed.text);
-      if (readError) setChangedOnDisk(path, "deleted");
-      else if (content !== null && !sameDiskText(content, stashed.base)) setChangedOnDisk(path, "modified");
+      if (readError) setChangedOnDisk(path, version || errorMessageOf(readError).includes("FILE_ENCODING_") ? "modified" : "deleted");
+      else if (content !== null && (!sameDiskText(content, stashed.base) ||
+        byteIdentity?.sha256 !== stashed.byteIdentity?.sha256)) setChangedOnDisk(path, "modified");
       return;
     }
     if (readError) {
-      const message = readError instanceof Error ? readError.message : String(readError);
+      const message = encodingErrorMessage(readError);
       openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
       return;
     }
     diskVersions.set(path, version);
     setChangedOnDisk(path, null);
-    openFile.set({ path, name, kind, language: languageOf(path), content: content ?? "", ...(large ? { large } : {}) });
+    openFile.set({ path, name, kind, language: languageOf(path), content: content ?? "", byteIdentity, large });
     // Code, text, and Markdown open straight into an editable draft (clean until modified);
     // oversized files (> LARGE_FILE_BYTES) stay read-only until the user opts in.
     if (EDIT_ON_OPEN_KINDS.has(kind) && !large) editingContent.set(content ?? "");
@@ -701,6 +819,7 @@ const EDIT_ON_OPEN_KINDS = new Set<PreviewKind>(["code", "text", "markdown"]);
 /** Re-reads the active file from disk, dropping its draft (Reload from disk). */
 export async function reloadFromDisk(path: string): Promise<void> {
   saveConflict.set(null);
+  confirmingEncodingSave.set(null);
   setChangedOnDisk(path, null);
   setDraft(path, null);
   invalidateMarkdownMediaCache();
@@ -715,20 +834,21 @@ export async function keepDraftOverDisk(path: string): Promise<void> {
   if (!workspaceId) return;
   const file = openFile();
   if (file?.path !== path) return;
+  const ticket = openTicket;
   try {
-    const [content, version] = await Promise.all([
-      readFileContent(workspaceId, path).then(text => text ?? ""),
+    const [snapshot, version] = await Promise.all([
+      readEditorText(workspaceId, path, file.byteIdentity?.encoding),
       readDiskVersion(workspaceId, path),
     ]);
-    if (openFile()?.path !== path) return;
+    if (openFile() !== file || ticket !== openTicket) return;
     const draft = editingContent();
-    openFile.set({ ...file, content });
+    openFile.set({ ...file, ...snapshot });
     diskVersions.set(path, version);
     // A draft equal to the old base would read as clean against the new one.
     if (draft === null) editingContent.set(file.content);
   } catch {
     // The file is gone: saving recreates it from the draft.
-    diskVersions.set(path, null);
+    if (openFile() === file && ticket === openTicket) diskVersions.set(path, null);
   }
 }
 
@@ -883,6 +1003,8 @@ function movePathState(from: string, to: string): void {
     return next;
   });
   openFilePaths.update(tabs => tabs.map(tab => (isAtOrUnder(tab, from) ? rebase(tab, from, to) : tab)));
+  editorOptionsByPath.update(current => Object.fromEntries(Object.entries(current).map(([path, options]) =>
+    [isAtOrUnder(path, from) ? rebase(path, from, to) : path, options])));
   drafts.update(current => {
     const next: Record<string, FileDraft> = {};
     for (const [key, draft] of Object.entries(current)) next[isAtOrUnder(key, from) ? rebase(key, from, to) : key] = draft;
@@ -911,6 +1033,7 @@ function dropPathState(path: string): void {
     return next;
   });
   openFilePaths.update(tabs => tabs.filter(tab => !isAtOrUnder(tab, path)));
+  editorOptionsByPath.update(current => Object.fromEntries(Object.entries(current).filter(([key]) => !isAtOrUnder(key, path))));
   drafts.update(current => {
     const next: Record<string, FileDraft> = {};
     for (const [key, draft] of Object.entries(current)) if (!isAtOrUnder(key, path)) next[key] = draft;
@@ -1030,10 +1153,17 @@ export async function runFileSearch(): Promise<void> {
   });
 }
 
-/** Expands every ancestor of a path so its row is visible, then selects it. */
-export async function revealPath(path: string): Promise<void> {
+let revealTicket = 0;
+
+/** Expands every ancestor, then returns the path if it is still the current open file. */
+export async function revealPath(path: string): Promise<string | undefined> {
   const root = activeWorkspaceRoot();
   if (!root) return;
+  const workspace = currentWorkspaceKey();
+  const reveal = ++revealTicket;
+  const opening = openTicket;
+  const isCurrent = (ticket: number) =>
+    reveal === revealTicket && ticket === openTicket && workspace === currentWorkspaceKey();
   const remote = activeIsRemote();
   const resolvedLink = resolveWorkspaceMarkdownLink(path, root, remote);
   const target = resolvedLink.kind === "workspace" ? resolvedLink.target : path;
@@ -1050,8 +1180,10 @@ export async function revealPath(path: string): Promise<void> {
   expandedDirs.set([...expanded]);
   for (const directory of expanded) {
     if (!dirChildren()[directory]) await loadDirectory(directory);
+    if (!isCurrent(opening)) return;
   }
   await openFileAt(target);
+  if (isCurrent(opening + 1) && selectedPath() === target && openFile()?.path === target) return target;
 }
 
 /** Starts live editing for text, code, or markdown files currently open in preview. */
@@ -1069,6 +1201,7 @@ export function beginEditFile(): void {
  */
 export function cancelEditFile(): void {
   const file = openFile();
+  confirmingEncodingSave.set(null);
   if (file && EDIT_ON_OPEN_KINDS.has(file.kind) && !file.large) {
     editingContent.set(file.content);
   } else {
@@ -1110,6 +1243,8 @@ function isFileConflict(error: unknown): boolean {
   return message.includes("FILE_CONFLICT");
 }
 
+let fileSaveRequest = 0;
+
 /**
  * Persists the edited content through `write_file_content` with `expectedHash`,
  * the hash of the disk text the edit was made against. The host compares it with
@@ -1118,17 +1253,30 @@ function isFileConflict(error: unknown): boolean {
  * meanwhile; that refusal becomes the Overwrite / Reload choice instead of a
  * blind overwrite. Overwrite (`force`) sends no hash.
  */
-export async function saveEditedFile(options: { force?: boolean } = {}): Promise<void> {
+export async function saveEditedFile(options: { force?: boolean; convertEncoding?: boolean } = {}): Promise<void> {
   const file = openFile();
   const content = editingContent();
   const workspaceId = activeWorkspaceId();
   if (!file || content === null || !workspaceId || fileSaving()) return;
+  const encoding = file.byteIdentity?.encoding;
+  const needsConversion = encoding && encoding !== "utf8" && encoding !== "utf8-bom";
+  if (needsConversion && !options.convertEncoding && !(options.force && saveConflict() === file.path)) {
+    confirmingEncodingSave.set(file.path);
+    return;
+  }
+  confirmingEncodingSave.set(null);
+  const ticket = openTicket;
+  const workspaceKey = currentWorkspaceKey();
+  const workspacePath = activeWorkspaceRoot();
+  const diskContent = !needsConversion && file.byteIdentity?.hasBom ? `\ufeff${content}` : content;
+  const request = ++fileSaveRequest;
   fileSaving.set(true);
   try {
     await runStep(async () => {
       let expectedHash: string | null = null;
       if (!options.force) {
-        expectedHash = await contentHash(file.content);
+        expectedHash = file.byteIdentity?.sha256 ?? await contentHash(file.content);
+        if (ticket !== openTicket || workspaceKey !== currentWorkspaceKey()) return;
         if (expectedHash === null) {
           // Without a digest the host cannot check the disk copy; ask rather than overwrite.
           saveConflict.set(file.path);
@@ -1138,38 +1286,55 @@ export async function saveEditedFile(options: { force?: boolean } = {}): Promise
       try {
         await invokeCommand<unknown>("write_file_content", {
           workspaceId,
-          workspacePath: activeWorkspaceRoot(),
+          workspacePath,
           filePath: file.path,
-          content,
+          content: diskContent,
           ...(expectedHash !== null ? { expectedHash } : {}),
         });
       } catch (error) {
         if (isFileConflict(error)) {
-          saveConflict.set(file.path);
+          if (ticket === openTicket && workspaceKey === currentWorkspaceKey()) saveConflict.set(file.path);
           return;
         }
         throw error;
       }
+      if (workspaceKey !== currentWorkspaceKey() || request !== fileSaveRequest) return;
+      const version = await readDiskVersion(workspaceId, file.path);
+      const savedHash = !needsConversion && file.byteIdentity ? await contentHash(diskContent) : null;
+      if (workspaceKey !== currentWorkspaceKey() || request !== fileSaveRequest) return;
+      const byteIdentity = savedHash && file.byteIdentity ? { ...file.byteIdentity, sha256: savedHash } : undefined;
       saveConflict.set(null);
       setChangedOnDisk(file.path, null);
-      diskVersions.set(file.path, await readDiskVersion(workspaceId, file.path));
-      openFile.update(current =>
-        current && current.path === file.path ? { ...current, content } : current,
-      );
-      if (openFile()?.path === file.path) {
-        // Keep the user in place (clean) after saving instead of kicking Markdown out of editing.
-        editingContent.set(content);
+      diskVersions.set(file.path, version);
+      const current = openFile();
+      if (current?.path === file.path && current.kind === file.kind) {
+        if (needsConversion || (file.byteIdentity && !byteIdentity)) setActiveFileEditorOptions({ encoding: undefined });
+        openFile.set({ ...current, content: byteIdentity ? content : diskContent, byteIdentity });
+        // Keep edits typed while the checked write was in flight.
+        if (editingContent() === content) editingContent.set(byteIdentity ? content : diskContent);
+      } else if (openFilePaths().includes(file.path)) {
+        if (needsConversion || (file.byteIdentity && !byteIdentity)) {
+          editorOptionsByPath.update(current => ({ ...current, [file.path]: { ...current[file.path], encoding: undefined } }));
+        }
+        const parked = drafts()[file.path];
+        if (parked) setDraft(file.path, parked.text === content ? null : {
+          ...parked, base: byteIdentity ? content : diskContent, byteIdentity, version,
+        });
       }
       fileNotice.set(`Saved ${file.name}`);
       void loadGitStatus();
     });
   } finally {
-    fileSaving.set(false);
+    if (request === fileSaveRequest) fileSaving.set(false);
   }
 }
 
 export function cancelSaveConflict(): void {
   saveConflict.set(null);
+}
+
+export function cancelEncodingSave(): void {
+  confirmingEncodingSave.set(null);
 }
 
 /** Closes a tab, asking first when it holds unsaved text. */
@@ -1186,10 +1351,21 @@ export function cancelCloseTab(): void {
 }
 
 /** Saves the active dirty tab, then closes it once the save went through. */
-export async function saveAndCloseTab(path: string): Promise<void> {
+export async function saveAndCloseTab(path: string, options?: { convertEncoding?: boolean }): Promise<void> {
   if (openFile()?.path !== path) return;
-  await saveEditedFile();
-  if (!hasUnsavedEdit() && saveConflict() !== path) closeTab(path);
+  const scope = currentWorkspaceKey();
+  await saveOpenPdfReviews(path);
+  if (currentWorkspaceKey() !== scope || openFile()?.path !== path) return;
+  await saveEditedFile(options);
+  if (currentWorkspaceKey() === scope && openFile()?.path === path && !isDirtyPath(path) && saveConflict() !== path) closeTab(path);
+}
+
+export async function saveOpenPdfReviews(path = openFile()?.path): Promise<void> {
+  if (!path) return;
+  await Promise.all(Object.values(editorOptionsByPath()[path]?.pdfReviews ?? {}).map(async review => {
+    review.commitDraft();
+    await review.save();
+  }));
 }
 
 /** Closes a tab and drops whatever unsaved text it held. */
@@ -1199,9 +1375,16 @@ export function closeTab(path: string): void {
   const index = tabs.indexOf(path);
   const remaining = tabs.filter(item => item !== path);
   openFilePaths.set(remaining);
+  editorOptionsByPath.update(current => {
+    if (!current[path]) return current;
+    const next = { ...current };
+    delete next[path];
+    return next;
+  });
   setDraft(path, null);
   setChangedOnDisk(path, null);
   if (saveConflict() === path) saveConflict.set(null);
+  if (confirmingEncodingSave() === path) confirmingEncodingSave.set(null);
   diskVersions.delete(path);
   if (openFile()?.path === path) {
     editingContent.set(null);
@@ -1210,6 +1393,7 @@ export function closeTab(path: string): void {
       void openFileAt(nextPath);
     } else {
       openFileTicketBump();
+      if (selectedPath() === path) selectedPath.set(null);
       openFile.set(null);
     }
   }
@@ -1233,6 +1417,7 @@ interface WorkspaceFilesSnapshot {
   drafts: Record<string, FileDraft>;
   active: string | null;
   versions: Array<[string, DiskVersion | null]>;
+  editorOptions: Record<string, FileEditorOptions>;
 }
 
 /** Tabs and drafts of the workspaces that are not active, restored on return. */
@@ -1354,28 +1539,29 @@ async function syncOpenFileFromDisk(workspaceId: string, path: string, change: "
     return;
   }
   if (!EDITABLE_VIEW_KINDS.has(active.kind)) return;
-  let content: string | null = null;
+  const ticket = openTicket;
+  let snapshot: Awaited<ReturnType<typeof readEditorText>> | null = null;
   try {
-    content = (await readFileContent(workspaceId, path)) ?? "";
+    snapshot = await readEditorText(workspaceId, path, active.byteIdentity?.encoding);
   } catch {
-    content = null;
+    // An edited file may no longer decode with the selected encoding.
   }
   const current = openFile();
-  if (!current || current.path !== path) return;
-  if (content === null) {
-    setChangedOnDisk(path, "deleted");
+  if (!current || current !== active || ticket !== openTicket) return;
+  if (!snapshot) {
+    setChangedOnDisk(path, active.byteIdentity && change === "modify" ? "modified" : "deleted");
     return;
   }
-  if (sameDiskText(content, current.content)) return;
+  if (sameDiskText(snapshot.content, current.content) && snapshot.byteIdentity?.sha256 === current.byteIdentity?.sha256) return;
   if (hasUnsavedEdit()) {
     setChangedOnDisk(path, "modified");
     return;
   }
   const version = await readDiskVersion(workspaceId, path);
-  if (openFile()?.path !== path || hasUnsavedEdit()) return;
+  if (openFile() !== current || ticket !== openTicket || hasUnsavedEdit()) return;
   diskVersions.set(path, version);
-  openFile.set({ ...current, content });
-  if (editingContent() !== null) editingContent.set(content);
+  openFile.set({ ...current, ...snapshot });
+  if (editingContent() !== null) editingContent.set(snapshot.content);
 }
 
 const EDITABLE_VIEW_KINDS = new Set<PreviewKind>(["code", "markdown", "text"]);
@@ -1484,15 +1670,18 @@ onWorkspaceChanged(() => {
       drafts: drafts(),
       active: openFile()?.path ?? null,
       versions: [...diskVersions.entries()],
+      editorOptions: editorOptionsByPath(),
     });
   }
   openTicket += 1;
   diskVersions.clear();
   openFilePaths.set([]);
+  editorOptionsByPath.set({});
   drafts.set({});
   changedOnDisk.set({});
   saveConflict.set(null);
   confirmingCloseTab.set(null);
+  confirmingEncodingSave.set(null);
   dirChildren.set({});
   expandedDirs.set([]);
   selectedPath.set(null);
@@ -1512,6 +1701,7 @@ onWorkspaceChanged(() => {
   if (snapshotKey && restored) {
     workspaceSnapshots.delete(snapshotKey);
     openFilePaths.set(restored.tabs);
+    editorOptionsByPath.set(restored.editorOptions);
     drafts.set(restored.drafts);
     for (const [path, version] of restored.versions) diskVersions.set(path, version);
     if (restored.active) void openFileAt(restored.active);

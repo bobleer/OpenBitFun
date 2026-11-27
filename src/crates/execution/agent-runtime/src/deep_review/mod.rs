@@ -14,6 +14,7 @@ pub mod incremental_cache;
 pub mod launch_plan;
 pub mod manifest;
 pub mod queue;
+pub mod remediation;
 pub mod report;
 mod runtime_state;
 pub mod shared_context;

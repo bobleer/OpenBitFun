@@ -139,7 +139,7 @@ pub enum ReviewPlatformKind {
 }
 
 impl ReviewPlatformKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Github => "github",
             Self::Gitlab => "gitlab",
@@ -1316,12 +1316,26 @@ impl ReviewPlatformService {
         remote_id: &str,
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestReviewTarget, ReviewPlatformError> {
+        self.pull_request_review_target_with_remote(repository, remote_id, pull_request_id)
+            .await
+            .map(|(_, target)| target)
+    }
+
+    /// Resolves the provider identity and evidence from the same authorized context.
+    pub async fn pull_request_review_target_with_remote(
+        &self,
+        repository: &ReviewRepositoryLocator,
+        remote_id: &str,
+        pull_request_id: &str,
+    ) -> Result<(ReviewPlatformRemote, ReviewPlatformPullRequestReviewTarget), ReviewPlatformError>
+    {
         let ctx = self
             .provider_context_for_repository(repository, Some(remote_id))
             .await?;
-        provider_for(ctx.remote.platform)
+        let target = provider_for(ctx.remote.platform)
             .pull_request_review_target(&ctx, pull_request_id)
-            .await
+            .await?;
+        Ok((ctx.remote, target))
     }
 
     pub async fn issue(

@@ -68,6 +68,18 @@ pub trait BackendBridge: Send + Sync + 'static {
         let _ = options_json;
         None
     }
+
+    /// Shows a controller-local Save dialog and writes the text after selection.
+    fn save_text_file(&self, options_json: String) -> Option<BoxFuture<Result<bool, String>>> {
+        let _ = options_json;
+        None
+    }
+
+    /// Shows a controller-local Save dialog for an export's original bytes.
+    fn save_binary_file(&self, options_json: String) -> Option<BoxFuture<Result<bool, String>>> {
+        let _ = options_json;
+        None
+    }
 }
 
 /// Readiness of the backend as seen by the module.
@@ -223,6 +235,24 @@ impl Backend {
         match bridge.pick_file_dialog(options_json) {
             Some(pick) => pick.await,
             None => Err(format!("{UNSUPPORTED_IN_NATIVE_HOST}: pick_file_dialog")),
+        }
+    }
+
+    /// Saves a text document on the controller. Returns false when cancelled.
+    pub async fn save_text_file(options_json: String) -> Result<bool, String> {
+        let (bridge, _) = ready_bridge().await?;
+        match bridge.save_text_file(options_json) {
+            Some(save) => save.await,
+            None => Err(format!("{UNSUPPORTED_IN_NATIVE_HOST}: save_text_file")),
+        }
+    }
+
+    /// Saves a binary file on the controller. Returns false when cancelled.
+    pub async fn save_binary_file(options_json: String) -> Result<bool, String> {
+        let (bridge, _) = ready_bridge().await?;
+        match bridge.save_binary_file(options_json) {
+            Some(save) => save.await,
+            None => Err(format!("{UNSUPPORTED_IN_NATIVE_HOST}: save_binary_file")),
         }
     }
 }

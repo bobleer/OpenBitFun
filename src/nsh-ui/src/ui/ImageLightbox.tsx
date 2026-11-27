@@ -1,40 +1,55 @@
 // Frameless full-viewport image preview lightbox + shared ImageViewerStage /
 // ImageViewerToolbar reused by both the session image lightbox and FilesScene
-// image preview. Supports 25% step zoom, real percentage readout, fit / 1:1
-// toggle, right-click copy (`Menu.popup` -> `Clipboard.writeImage`), and click
-// copy button below the image.
+// image preview. The file viewer keeps its zoom and rotation when expanded,
+// and exports the original workspace bytes through the controller shell.
 
-import { Clipboard, Image, Scroll, Text, View, cleanup, computed, effect, signal } from "nsh";
+import { Canvas, Clipboard, Image, Scroll, Text, View, cleanup, computed, effect, signal, type ViewRef } from "nsh";
 import { Dialog } from "nsh/base";
 import { isAvailable as desktopMenusAvailable, Menu } from "nsh/desktop";
-import { tr } from "../i18n";
+import { localBinaryFileExport } from "../bridge";
+import { formatBytes, formatCount } from "../format";
+import { localizeHostError, tr } from "../i18n";
+import { errorMessageOf } from "../shared/errorUtils";
 import { elevationShadow, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { Icon } from "./icons";
 import { MOTION_DURATION, modalEnterMotion, pressTransition, tactileActiveStyle } from "./motion";
 import { pushToast, registerEscapeDismiss } from "./overlays";
 import { IconButton, TooltipBubble, focusRingStyle } from "./primitives";
+import { Toolbar, ToolbarSeparator } from "./Toolbar";
 
 export interface LightboxImage {
   src: string;
   title?: string;
+  fileName?: string;
+  view?: ImageViewState;
+  onClose?: () => void;
 }
 
 export type ImageZoomState = "fit" | number;
+type ImageRotation = 0 | 90 | 180 | 270;
+
+export function createImageViewState() {
+  return { zoom: signal<ImageZoomState>("fit"), rotation: signal<ImageRotation>(0) };
+}
+
+type ImageViewState = ReturnType<typeof createImageViewState>;
 
 const ZOOM_STEP = 0.25;
 const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 4.0;
+const ZOOM_MAX = 5.0;
 
 export const lightboxImage = signal<LightboxImage | null>(null);
 
 export function openImageLightbox(image: LightboxImage): void {
   const src = image.src.trim();
   if (!src) return;
-  lightboxImage.set({ src, title: image.title?.trim() || undefined });
+  lightboxImage.set({ ...image, src, title: image.title?.trim() || undefined });
 }
 
 export function closeImageLightbox(): void {
+  const image = lightboxImage();
   lightboxImage.set(null);
+  image?.onClose?.();
 }
 
 /** Computes the fit scale (<= 1 for small images, proportional shrink for large ones). */
@@ -58,21 +73,32 @@ export function stepImageZoom(current: ImageZoomState, direction: 1 | -1, fitSca
   return Math.round(clamped * 100) / 100;
 }
 
-export interface ImageViewerToolbarProps {
+interface ImageViewerToolbarProps {
   zoom: () => ImageZoomState;
   effectiveScale: () => number;
   src: () => string;
   onZoomChange: (next: ImageZoomState) => void;
   showClose?: boolean;
   onClose?: () => void;
+  onRotate: () => void;
+  fileName?: string;
+  canExport: boolean;
+  onExpand?: () => void;
+  captureExpandButton: (node: ViewRef) => void;
 }
 
-/**
- * Shared floating pill toolbar rendered beneath an image preview in both
- * ImageLightbox and FilesScene: `[ - | 100% | + | 1:1 / Fit | Copy (| Close) ]`.
- */
-export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
+function imageExportName(value: string): string {
+  const cleaned = value.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/, "");
+  if (!cleaned) return "image";
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+
+function ImageViewerToolbar(props: ImageViewerToolbarProps) {
   const copied = signal(false);
+  const exporting = signal(false);
+  const fileExport = localBinaryFileExport();
+  const share = fileExport?.kind === "share";
+  const exportLabel = () => tr(share ? "files.shareImage" : "files.downloadImage");
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   cleanup(() => {
     if (copiedTimer) {
@@ -98,19 +124,42 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
     }
   };
 
+  async function exportImage() {
+    if (!fileExport || !props.fileName || !props.canExport || exporting()) return;
+    const src = props.src();
+    const separator = src.indexOf(",");
+    const header = /^data:(image\/[a-z\d.+-]+);base64$/i.exec(src.slice(0, separator));
+    if (!header || separator === src.length - 1) return;
+    exporting.set(true);
+    try {
+      const outcome = await fileExport.run({
+        title: exportLabel(), fileName: imageExportName(props.fileName),
+        mimeType: header[1], base64: src.slice(separator + 1),
+      });
+      if (outcome === "saved") pushToast(tr("common.saved"), "success");
+      else if (outcome === "started") pushToast(tr("files.imageDownloadStarted"), "info");
+    } catch (error) {
+      pushToast(errorMessageOf(error).includes("IMAGE_SHARE_TOO_LARGE")
+        ? tr("files.imageShareTooLarge") : localizeHostError(error), "error");
+    } finally {
+      exporting.set(false);
+    }
+  }
+
   const pct = () => `${Math.max(1, Math.round(props.effectiveScale() * 100))}%`;
-  const atMin = () => props.zoom() !== "fit" && (props.zoom() as number) <= ZOOM_MIN + 1e-4;
-  const atMax = () => props.zoom() !== "fit" && (props.zoom() as number) >= ZOOM_MAX - 1e-4;
+  const atMin = () => props.effectiveScale() <= ZOOM_MIN + 1e-4;
+  const atMax = () => props.effectiveScale() >= ZOOM_MAX - 1e-4;
 
   return (
     <View
       accessibilityLabel="image-viewer-toolbar"
       onPress={() => undefined}
-      style={{
+      style={[{
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
         gap: 2,
+      }, props.fileName ? undefined : {
         paddingHorizontal: 6,
         paddingVertical: 4,
         borderRadius: radii.pill,
@@ -119,7 +168,7 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
         backgroundColor: palette().glassOverlayBg,
         backdropFilter: "blur(16px) saturate(1.2)",
         boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
-      }}
+      }]}
     >
       <IconButton
         icon="minus"
@@ -171,7 +220,7 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
         onPress={() => props.onZoomChange(stepImageZoom(props.zoom(), 1, props.effectiveScale()))}
       />
 
-      <View style={{ width: 1, height: 14, marginHorizontal: 4, backgroundColor: palette().borderSubtle }} />
+      <ToolbarSeparator />
 
       <View
         role="button"
@@ -201,8 +250,10 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
         </Text>
       </View>
 
-      <View style={{ width: 1, height: 14, marginHorizontal: 4, backgroundColor: palette().borderSubtle }} />
+      <ToolbarSeparator />
 
+      <IconButton icon="rotate-cw" size="xs" tooltip={tr("files.rotateImage")}
+        accessibilityLabel="image-rotate-clockwise" disabled={!props.canExport} onPress={props.onRotate} />
       <IconButton
         icon={copied() ? "check" : "copy"}
         size="xs"
@@ -213,14 +264,24 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
         onPress={() => void copyImage()}
       />
 
+      <If when={Boolean(props.fileName && fileExport)}>
+        <IconButton icon={share ? "upload" : "download"} size="xs" tooltip={exportLabel()}
+          accessibilityLabel={share ? "image-share" : "image-download"} disabled={!props.canExport || exporting()}
+          onPress={() => void exportImage()} />
+      </If>
+      <If when={Boolean(props.onExpand)}>
+        <IconButton icon="maximize" size="xs" tooltip={tr("files.openImageFullscreen")}
+          accessibilityLabel="image-fullscreen" disabled={!props.canExport}
+          buttonRef={props.captureExpandButton} onPress={() => props.onExpand?.()} />
+      </If>
       <If when={Boolean(props.showClose && props.onClose)}>
-        <View style={{ width: 1, height: 14, marginHorizontal: 4, backgroundColor: palette().borderSubtle }} />
+        <ToolbarSeparator />
         <IconButton
-          icon="close"
+          icon={props.fileName ? "minimize" : "close"}
           size="xs"
           iconSize={13}
           accessibilityLabel="image-lightbox-close"
-          tooltip={tr("common.close")}
+          tooltip={tr(props.fileName ? "files.exitImageFullscreen" : "common.close")}
           style={{ borderRadius: radii.pill }}
           onPress={() => props.onClose?.()}
         />
@@ -232,8 +293,8 @@ export function ImageViewerToolbar(props: ImageViewerToolbarProps) {
 export interface ImageViewerSurfaceProps {
   src: () => string;
   imageAccessibilityLabel?: () => string;
-  zoom: () => ImageZoomState;
-  onZoomChange: (next: ImageZoomState) => void;
+  view: ImageViewState;
+  fileName?: string;
   showClose?: boolean;
   onClose?: () => void;
   onBackdropPress?: () => void;
@@ -241,14 +302,14 @@ export interface ImageViewerSurfaceProps {
   padding?: number;
 }
 
-/**
- * Shared borderless image preview stage + floating bottom zoom/copy toolbar.
- * Used identically by both full-screen `ImageLightboxHost` and `FilesScene`.
- */
+/** Files docks the controls above the image. Session previews use the floating toolbar. */
 export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
   const naturalSize = signal<{ width: number; height: number } | null>(null);
   const stageSize = signal<{ width: number; height: number } | null>(null);
   const loadFailed = signal(false);
+  let expandButton: ViewRef | null = null;
+  let mounted = true;
+  cleanup(() => { mounted = false; });
 
   effect(() => {
     props.src();
@@ -256,12 +317,14 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
     loadFailed.set(false);
   });
 
-  const fitScale = computed(() => computeImageFitScale(naturalSize(), stageSize()));
+  const isSideways = () => props.view.rotation() === 90 || props.view.rotation() === 270;
+  const imageBounds = (size: { width: number; height: number } | null) =>
+    size && isSideways() ? { width: size.height, height: size.width } : size;
+  const fitScale = computed(() => computeImageFitScale(imageBounds(naturalSize()), stageSize()));
   const effectiveScale = computed(() => {
-    const z = props.zoom();
+    const z = props.view.zoom();
     return z === "fit" ? fitScale() : z;
   });
-
   const displayDimensions = computed<{ width: number; height: number } | null>(() => {
     const nat = naturalSize();
     if (!nat || nat.width <= 0 || nat.height <= 0) return null;
@@ -270,6 +333,14 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
       width: Math.max(1, Math.round(nat.width * scale)),
       height: Math.max(1, Math.round(nat.height * scale)),
     };
+  });
+  const displayBounds = computed(() => imageBounds(displayDimensions()));
+  const fileSize = computed(() => {
+    const source = props.src();
+    const comma = source.indexOf(",");
+    if (!source.startsWith("data:image/") || comma < 0) return 0;
+    const padding = source.endsWith("==") ? 2 : source.endsWith("=") ? 1 : 0;
+    return Math.floor((source.length - comma - 1) * 3 / 4) - padding;
   });
 
   const copyViaContextMenu = async () => {
@@ -284,13 +355,51 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
   };
 
   const pad = props.padding ?? space.lg;
+  const expandedElsewhere = () => !props.showClose && lightboxImage()?.view === props.view;
+  const toolbar = () => <ImageViewerToolbar
+    zoom={props.view.zoom}
+    effectiveScale={effectiveScale}
+    src={props.src}
+    onZoomChange={props.view.zoom.set}
+    onRotate={() => props.view.rotation.set(((props.view.rotation() + 90) % 360) as ImageRotation)}
+    fileName={props.fileName}
+    canExport={!loadFailed() && !!props.src()}
+    onExpand={props.fileName && !props.showClose ? () => openImageLightbox({
+      src: props.src(), title: props.fileName, fileName: props.fileName, view: props.view,
+      onClose: () => requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (mounted && !lightboxImage()) expandButton?.focus();
+      })),
+    }) : undefined}
+    captureExpandButton={node => { expandButton = node; }}
+    showClose={props.showClose}
+    onClose={props.onClose}
+  />;
 
   return (
+    <View style={{ flex: 1, width: "100%", minWidth: 0, minHeight: 0 }}>
+      <If when={Boolean(props.fileName)}>
+        <View accessibilityElementsHidden={expandedElsewhere()} style={{ pointerEvents: expandedElsewhere() ? "none" : "auto" }}>
+          <Toolbar size="sm" leading={<View style={{ flex: 1, minWidth: 0, flexDirection: "row",
+            alignItems: "center", gap: space.sm }}>
+            <Text style={{ ...textStyle("caption", { color: palette().text }),
+              fontWeight: "600", flexShrink: 1, numberOfLines: 1, textOverflow: "ellipsis-middle" }}>{props.fileName}</Text>
+            <If when={(stageSize()?.width ?? 0) >= 560 ? naturalSize() : null}>{size =>
+              <Text style={{ ...textStyle("caption", { color: palette().textMuted, tabular: true }), flexShrink: 0 }}>
+                {`${formatCount(size().width)} × ${formatCount(size().height)}`}
+              </Text>}
+            </If>
+            <If when={(stageSize()?.width ?? 0) >= 560 && fileSize() > 0}>
+              <Text style={{ ...textStyle("caption", { color: palette().textMuted, tabular: true }), flexShrink: 0 }}>
+                {formatBytes(fileSize())}
+              </Text>
+            </If>
+          </View>} trailing={toolbar()} />
+        </View>
+      </If>
     <View
       style={{
         flex: 1,
         width: "100%",
-        height: "100%",
         minWidth: 0,
         minHeight: 0,
         flexDirection: "column",
@@ -321,6 +430,22 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
           overflow: "hidden",
         }}
       >
+        <If when={Boolean(props.fileName)}>
+          <Canvas accessibilityElementsHidden
+            style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0,
+              pointerEvents: "none", backgroundColor: palette().canvas }}
+            draw={(context, { width, height }) => {
+              const cell = 10;
+              context.fillStyle = palette().panelHover;
+              context.beginPath();
+              for (let y = 0, row = 0; y < height; y += cell, row += 1) {
+                for (let x = (row % 2) * cell; x < width; x += cell * 2) {
+                  context.rect(x, y, cell, cell);
+                }
+              }
+              context.fill();
+            }} />
+        </If>
         <If
           when={!loadFailed()}
           else={
@@ -335,14 +460,14 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
           <Scroll
             smoothWheel
             horizontal={false}
-            scrollbar={props.zoom() !== "fit"}
+            scrollbar={props.view.zoom() !== "fit"}
             style={{ flex: 1, width: "100%", minHeight: 0 }}
             contentStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}
           >
             <Scroll
               smoothWheel
               horizontal
-              scrollbar={props.zoom() !== "fit"}
+              scrollbar={props.view.zoom() !== "fit"}
               style={{ flex: 1, minWidth: 0 }}
               contentStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}
             >
@@ -357,8 +482,8 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
                   );
                 }}
                 style={{
-                  width: displayDimensions()?.width ?? stageSize()?.width ?? "100%",
-                  height: displayDimensions()?.height ?? stageSize()?.height ?? "100%",
+                  width: displayBounds()?.width ?? stageSize()?.width ?? "100%",
+                  height: displayBounds()?.height ?? stageSize()?.height ?? "100%",
                   alignItems: "center",
                   justifyContent: "center",
                 }}
@@ -377,10 +502,11 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
                     props.onError?.(event.message);
                   }}
                   style={{
-                    width: "100%",
-                    height: "100%",
+                    width: displayDimensions()?.width ?? "100%",
+                    height: displayDimensions()?.height ?? "100%",
                     objectFit: "contain",
                     borderRadius: radii.md,
+                    transform: [{ rotate: `${props.view.rotation()}deg` }],
                   }}
                 />
               </View>
@@ -389,20 +515,14 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
         </If>
       </View>
 
-      <ImageViewerToolbar
-        zoom={props.zoom}
-        effectiveScale={effectiveScale}
-        src={props.src}
-        onZoomChange={props.onZoomChange}
-        showClose={props.showClose}
-        onClose={props.onClose}
-      />
+      <If when={!props.fileName}>{toolbar()}</If>
+    </View>
     </View>
   );
 }
 
 function ImageLightboxView(props: { image: LightboxImage }) {
-  const zoom = signal<ImageZoomState>("fit");
+  const view = props.image.view ?? createImageViewState();
   const motion = modalEnterMotion();
   cleanup(registerEscapeDismiss(() => closeImageLightbox()));
 
@@ -422,8 +542,8 @@ function ImageLightboxView(props: { image: LightboxImage }) {
     >
       <ImageViewerSurface
         src={() => props.image.src}
-        zoom={zoom}
-        onZoomChange={next => zoom.set(next)}
+        view={view}
+        fileName={props.image.fileName}
         showClose={true}
         onClose={closeImageLightbox}
         onBackdropPress={closeImageLightbox}
@@ -453,8 +573,8 @@ export function ImageLightboxHost() {
             top: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: palette().scrimBg,
-            backdropFilter: "blur(16px)",
+            backgroundColor: image().fileName ? palette().canvas : palette().scrimBg,
+            ...(image().fileName ? {} : { backdropFilter: "blur(16px)" }),
           }}
           style={{
             position: "absolute",

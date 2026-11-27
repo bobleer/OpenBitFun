@@ -7,9 +7,11 @@
 
 import { computed, signal } from "nsh";
 import { reloadAgentModes } from "./agentModeStore";
+import { readAgentToolMetadata, selectableToolNames as visibleToolNames, type ToolGroupMetadata } from "./agentToolGroups";
 import { getConfig, setConfig } from "./api";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { fleetDeviceContext, invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
+import { skillsCatalogContextKey } from "./skillsCatalogStore";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, startQuickPromptInSession } from "./state";
 
 export type AgentKind = "mode" | "subagent";
@@ -33,6 +35,7 @@ export interface AgentCatalogItem {
   model: string | null;
   modelIsExplicit: boolean;
   effectiveEnabled: boolean;
+  defaultEnabled?: boolean;
   path?: string;
   externalProviderLabel?: string;
   /** The host's verdict (wave 4); `undefined` on a host that predates the flag. */
@@ -183,6 +186,9 @@ function normalizeAgentRow(record: Record<string, unknown>, kind: AgentKind): Ag
     model: readOptionalString(record, ["model"]),
     modelIsExplicit: readBoolean(record, ["modelIsExplicit", "model_is_explicit"], false),
     effectiveEnabled: readBoolean(record, ["effectiveEnabled", "effective_enabled", "enabled"], true),
+    defaultEnabled: typeof (record.defaultEnabled ?? record.default_enabled) === "boolean"
+      ? Boolean(record.defaultEnabled ?? record.default_enabled)
+      : undefined,
     path: readOptionalString(record, ["path"]) ?? undefined,
     externalProviderLabel:
       readOptionalString(record, ["externalProviderLabel", "external_provider_label"]) ?? undefined,
@@ -197,6 +203,7 @@ export const agentsNotice = signal<string | null>(null);
 export const availableModes = signal<AgentCatalogItem[]>([]);
 export const availableSubagents = signal<AgentCatalogItem[]>([]);
 export const agentToolNames = signal<string[]>([]);
+export const agentToolMetadata = signal<ReadonlyMap<string, ToolGroupMetadata>>(new Map());
 export const toolCatalogError = signal<string | null>(null);
 export const agentProfileConfigs = signal<Record<string, Record<string, unknown>>>({});
 export const agentKindFilter = signal<AgentKindFilter>("all");
@@ -204,6 +211,8 @@ export const agentSourceFilter = signal<AgentSourceFilter>("all");
 export const agentSearchQuery = signal("");
 export const confirmDeleteAgentUid = signal<string | null>(null);
 export const builderOpen = signal(false);
+const inspectorScope = signal("");
+export const agentInspectorScopeCurrent = computed(() => inspectorScope() === skillsCatalogContextKey());
 export const builderLoading = signal(false);
 export const builderSaving = signal(false);
 export const builderError = signal<string | null>(null);
@@ -234,13 +243,7 @@ export const filteredAgents = computed<AgentCatalogItem[]>(() => {
   });
 });
 
-export const selectableToolNames = computed<string[]>(() => {
-  const set = new Set<string>(agentToolNames());
-  for (const tool of builderDraft().tools) {
-    if (tool.trim()) set.add(tool);
-  }
-  return Array.from(set);
-});
+export const selectableToolNames = computed(() => visibleToolNames([...agentToolNames(), ...builderDraft().tools]));
 
 export function isRemoteAgentWorkspace(): boolean {
   return activeWorkspace()?.workspaceKind === "remote";
@@ -309,7 +312,8 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
   toolCatalogError.set(null);
   confirmDeleteAgentUid.set(null);
 
-  const [modesRes, subagentsRes, toolsRes, profilesRes] = await Promise.allSettled([
+  const target = fleetDeviceContext();
+  const [modesRes, subagentsRes, toolsRes, profilesRes, metadataRes] = await Promise.allSettled([
     invokeCommand<Array<Record<string, unknown>>>("get_available_modes", {
       workspaceId,
       ...(workspacePath ? { workspacePath } : {}),
@@ -320,6 +324,7 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
     }),
     invokeRawCommand<string[]>("list_agent_tool_names", {}),
     invokeRawCommand<Record<string, Record<string, unknown>>>("get_agent_profile_configs", {}),
+    readAgentToolMetadata(target),
   ]);
 
   if (ticket !== catalogLoadTicket) return;
@@ -349,13 +354,12 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
     errors.push(subagentsRes.reason instanceof Error ? subagentsRes.reason.message : String(subagentsRes.reason));
   }
 
-  if (toolsRes.status === "fulfilled") {
-    const names = Array.isArray(toolsRes.value)
-      ? toolsRes.value.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
-      : [];
-    agentToolNames.set(names);
-  } else {
-    agentToolNames.set([]);
+  const names = toolsRes.status === "fulfilled" && Array.isArray(toolsRes.value)
+    ? toolsRes.value.filter((name): name is string => typeof name === "string") : [];
+  const metadata = metadataRes.status === "fulfilled" ? metadataRes.value : new Map<string, ToolGroupMetadata>();
+  agentToolMetadata.set(metadata);
+  agentToolNames.set(visibleToolNames([...names, ...metadata.keys()]));
+  if (toolsRes.status === "rejected" && metadataRes.status === "rejected") {
     toolCatalogError.set(toolsRes.reason instanceof Error ? toolsRes.reason.message : String(toolsRes.reason));
   }
 
@@ -413,6 +417,7 @@ export function openCreateBotBuilder(defaultKind: AgentKind = "mode"): void {
     agentsNotice.set(tr("agents.store.createRemote"));
     return;
   }
+  inspectorScope.set(skillsCatalogContextKey());
   confirmDeleteAgentUid.set(null);
   const availableTools = agentToolNames();
   const initialTools = defaultKind === "mode"
@@ -450,32 +455,9 @@ export function updateBuilderDraft(patch: Partial<AgentBuilderDraft>): void {
   });
 }
 
-export function toggleBuilderTool(toolName: string): void {
-  builderDraft.update(current => {
-    const exists = current.tools.includes(toolName);
-    const nextTools = exists
-      ? current.tools.filter(item => item !== toolName)
-      : [...current.tools, toolName];
-    return { ...current, tools: nextTools };
-  });
-}
-
-export function selectAllBuilderTools(): void {
-  builderDraft.update(current => ({
-    ...current,
-    tools: [...selectableToolNames()],
-  }));
-}
-
-export function clearBuilderTools(): void {
-  builderDraft.update(current => ({
-    ...current,
-    tools: [],
-  }));
-}
-
 export async function openAgentInspector(item: AgentCatalogItem): Promise<void> {
   const workspaceId = activeWorkspaceId() ?? undefined;
+  inspectorScope.set(skillsCatalogContextKey());
   confirmDeleteAgentUid.set(null);
   builderError.set(null);
   builderSaving.set(false);
@@ -799,30 +781,69 @@ export async function saveBuilderBot(): Promise<void> {
   }
 }
 
-export async function saveProfileConfig(): Promise<void> {
+function canWriteProfileTools(): boolean {
+  return builderDraft().mode === "configure-profile" && agentInspectorScopeCurrent() &&
+    !builderSaving() && !isRemoteAgentWorkspace() && !toolCatalogError();
+}
+
+async function refreshProfileTools(agentId: string, scope: string): Promise<void> {
+  await loadAgentsCatalog(scope);
+  if (scope !== skillsCatalogContextKey() || builderDraft().id !== agentId) return;
+  const refreshed = availableModes().find(item => item.id === agentId);
+  if (refreshed) {
+    const tools = [...effectiveToolsForAgent(refreshed)];
+    builderDraft.update(current => ({ ...current, tools }));
+    if (tools.includes("Skill") && modeSkillsFor() !== agentId) void loadModeSkills(agentId);
+    if (!tools.includes("Skill")) {
+      modeSkillsFor.set(null);
+      modeSkills.set([]);
+    }
+  }
+  reloadAgentModes();
+}
+
+export async function saveProfileToolSelection(changes: ReadonlyMap<string, boolean>): Promise<boolean> {
   const draft = builderDraft();
-  if (draft.mode !== "configure-profile") return;
+  if (!canWriteProfileTools()) return false;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
+  const current = () => scope === skillsCatalogContextKey() && builderOpen() && builderDraft().id === draft.id;
   builderError.set(null);
   builderSaving.set(true);
   try {
+    const configs = await invokeRawCommand<Record<string, Record<string, unknown>>>("get_agent_profile_configs", {}, { target });
+    if (!current()) return false;
+    if (!configs || typeof configs !== "object" || Array.isArray(configs)) {
+      throw new Error(tr("agents.toolPermissionsCatalogUnavailable"));
+    }
     const modeItem = availableModes().find(item => item.id === draft.id);
     const profileKey = modeItem?.configProfileId || draft.id;
-    const existing = agentProfileConfigs()[profileKey] ?? agentProfileConfigs()[draft.id] ?? {};
+    const existing = configs[profileKey] ?? configs[draft.id] ?? {};
+    const selected = new Set(Array.isArray(existing.enabled_tools) || Array.isArray(existing.enabledTools)
+      ? readStringArray(existing, ["enabled_tools", "enabledTools"])
+      : modeItem?.defaultTools ?? draft.tools);
+    for (const [tool, enabled] of changes) {
+      if (enabled) selected.add(tool);
+      else selected.delete(tool);
+    }
     const config = {
       ...existing,
       profile_id: (existing.profile_id as string | undefined) ?? profileKey,
       default_tools: (existing.default_tools as string[] | undefined) ?? modeItem?.defaultTools ?? [],
-      enabled_tools: [...draft.tools],
+      enabled_tools: [...selected],
     };
     await invokeRawCommand<unknown>("set_agent_profile_config", {
       agentId: draft.id,
       config,
-    });
+    }, { target });
+    if (!current()) return false;
+    builderDraft.update(value => ({ ...value, tools: [...selected] }));
     agentsNotice.set(tr("agents.store.profileSaved", { name: draft.name }));
-    await loadAgentsCatalog();
-    reloadAgentModes();
+    await refreshProfileTools(draft.id, scope);
+    return current();
   } catch (error) {
-    builderError.set(error instanceof Error ? error.message : String(error));
+    if (current()) builderError.set(error instanceof Error ? error.message : String(error));
+    return false;
   } finally {
     builderSaving.set(false);
   }
@@ -830,25 +851,22 @@ export async function saveProfileConfig(): Promise<void> {
 
 export async function resetProfileConfig(): Promise<void> {
   const draft = builderDraft();
-  if (draft.mode !== "configure-profile") return;
+  if (!canWriteProfileTools()) return;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
+  const current = () => scope === skillsCatalogContextKey() && builderOpen() && builderDraft().id === draft.id;
   builderError.set(null);
   builderSaving.set(true);
   try {
     await invokeRawCommand<unknown>("reset_agent_profile_config", {
       agentId: draft.id,
-    });
-    await loadAgentsCatalog();
-    const refreshed = availableModes().find(item => item.id === draft.id);
-    if (refreshed) {
-      builderDraft.update(current => ({
-        ...current,
-        tools: [...effectiveToolsForAgent(refreshed)],
-      }));
-    }
-    reloadAgentModes();
+    }, { target });
+    if (!current()) return;
+    await refreshProfileTools(draft.id, scope);
+    if (!current()) return;
     agentsNotice.set(tr("agents.store.profileReset", { name: draft.name }));
   } catch (error) {
-    builderError.set(error instanceof Error ? error.message : String(error));
+    if (current()) builderError.set(error instanceof Error ? error.message : String(error));
   } finally {
     builderSaving.set(false);
   }
@@ -947,71 +965,94 @@ export async function deleteCatalogAgent(item: AgentCatalogItem): Promise<void> 
   }
 }
 
-// --- Per-parent subagent availability (the desktop's agent card toggles) ---
+// --- Per-parent subagent availability ---
 
-/** The subagents a primary agent may call, as `list_manageable_subagents` reports them. */
 export const parentSubagents = signal<AgentCatalogItem[]>([]);
 export const parentSubagentsFor = signal<string | null>(null);
 export const parentSubagentsLoading = signal(false);
 export const parentSubagentsError = signal<string | null>(null);
-export const parentSubagentSaving = signal<string | null>(null);
+export const parentSubagentsSaving = signal(false);
+const parentSubagentScope = signal("");
+export const parentSubagentsScopeCurrent = computed(() => parentSubagentScope() === skillsCatalogContextKey());
 let parentSubagentsTicket = 0;
+
+async function readParentSubagents(parentAgentType: string, workspaceId: string | undefined, target: string | null) {
+  const rows = await invokeCommand<Array<Record<string, unknown>>>("list_manageable_subagents", {
+    parentAgentType,
+    ...(workspaceId ? { workspaceId } : {}),
+  }, { target });
+  return (Array.isArray(rows) ? rows : [])
+    .map(row => normalizeAgentRow(row ?? {}, "subagent"))
+    .filter((item): item is AgentCatalogItem => item !== null);
+}
 
 export async function loadParentSubagents(parentAgentType: string): Promise<void> {
   const ticket = ++parentSubagentsTicket;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
   const workspaceId = activeWorkspaceId() ?? undefined;
+  const current = () => ticket === parentSubagentsTicket && scope === skillsCatalogContextKey();
+  if (parentSubagentsFor() !== parentAgentType || parentSubagentScope() !== scope) parentSubagents.set([]);
+  parentSubagentScope.set(scope);
   parentSubagentsFor.set(parentAgentType);
   parentSubagentsLoading.set(true);
   parentSubagentsError.set(null);
   try {
-    const rows = await invokeCommand<Array<Record<string, unknown>>>("list_manageable_subagents", {
-      parentAgentType,
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    if (ticket !== parentSubagentsTicket) return;
-    parentSubagents.set(
-      (Array.isArray(rows) ? rows : [])
-        .map(row => normalizeAgentRow(row ?? {}, "subagent"))
-        .filter((item): item is AgentCatalogItem => item !== null),
-    );
+    const rows = await readParentSubagents(parentAgentType, workspaceId, target);
+    if (current()) parentSubagents.set(rows);
   } catch (error) {
-    if (ticket !== parentSubagentsTicket) return;
-    parentSubagents.set([]);
-    parentSubagentsError.set(error instanceof Error ? error.message : String(error));
+    if (current()) {
+      parentSubagents.set([]);
+      parentSubagentsError.set(error instanceof Error ? error.message : String(error));
+    }
   } finally {
     if (ticket === parentSubagentsTicket) parentSubagentsLoading.set(false);
   }
 }
 
-/** Turns one subagent on or off for one parent agent, then reads the list back. */
-export async function setParentSubagentEnabled(
+/** The host writes individual subagents. Keep only changes it has yet to acknowledge. */
+export async function saveParentSubagentSelection(
   parentAgentType: string,
-  subagentId: string,
-  enabled: boolean,
-): Promise<void> {
-  if (parentSubagentSaving()) return;
-  if (isRemoteAgentWorkspace()) {
-    parentSubagentsError.set(tr("agents.subagentRemoteUnsupported"));
-    return;
-  }
+  changes: ReadonlyMap<string, boolean>,
+): Promise<ReadonlyMap<string, boolean> | null> {
+  if (parentSubagentsSaving() || parentSubagentsLoading() || !parentSubagentsScopeCurrent() ||
+    parentSubagentsFor() !== parentAgentType || isRemoteAgentWorkspace()) return null;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
   const workspaceId = activeWorkspaceId() ?? undefined;
-  parentSubagentSaving.set(subagentId);
+  const current = () => scope === skillsCatalogContextKey() && parentSubagentsFor() === parentAgentType;
+  const remaining = new Map(changes);
+  parentSubagentsSaving.set(true);
   parentSubagentsError.set(null);
   try {
-    await invokeCommand<unknown>("update_subagent_config", {
-      subagentId,
-      parentAgentType,
-      enabled,
-      ...(workspaceId ? { workspaceId } : {}),
-    });
+    let failure: string | null = null;
+    try {
+      const rows = await readParentSubagents(parentAgentType, workspaceId, target);
+      const byId = new Map(rows.map(row => [row.id, row]));
+      for (const [subagentId, enabled] of changes) {
+        if (!current()) return null;
+        const row = byId.get(subagentId);
+        if (!row || row.source === "external") throw new Error(tr("agents.subagentSelectionUnavailable"));
+        if (row.effectiveEnabled !== enabled) {
+          await invokeCommand("update_subagent_config", {
+            subagentId, parentAgentType, enabled,
+            ...(workspaceId ? { workspaceId } : {}),
+          }, { target });
+        }
+        remaining.delete(subagentId);
+      }
+    } catch (error) {
+      failure = tr("agents.subagentToggleFailed", { error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!current()) return null;
     await loadParentSubagents(parentAgentType);
-    reloadAgentModes();
-  } catch (error) {
-    parentSubagentsError.set(
-      tr("agents.subagentToggleFailed", { error: error instanceof Error ? error.message : String(error) }),
-    );
+    if (!current()) return null;
+    const partlyApplied = remaining.size < changes.size;
+    if (failure) parentSubagentsError.set(partlyApplied ? tr("agents.subagentPartialSave", { error: failure }) : failure);
+    if (partlyApplied) reloadAgentModes();
+    return remaining;
   } finally {
-    parentSubagentSaving.set(null);
+    parentSubagentsSaving.set(false);
   }
 }
 
@@ -1021,6 +1062,9 @@ export interface ModeSkillRow {
   key: string;
   name: string;
   description: string;
+  isBuiltin: boolean;
+  groupKey: string;
+  sourceLabel: string;
   effectiveEnabled: boolean;
   globallyEnabled: boolean;
 }
@@ -1030,6 +1074,8 @@ export const modeSkillsFor = signal<string | null>(null);
 export const modeSkillsLoading = signal(false);
 export const modeSkillsError = signal<string | null>(null);
 export const modeSkillsSaving = signal(false);
+const modeSkillsScope = signal("");
+export const modeSkillsScopeCurrent = computed(() => modeSkillsScope() === skillsCatalogContextKey());
 let modeSkillsTicket = 0;
 
 function readModeSkill(raw: unknown): ModeSkillRow | null {
@@ -1041,33 +1087,42 @@ function readModeSkill(raw: unknown): ModeSkillRow | null {
     key,
     name: readString(rec, ["name"]) || key,
     description: readString(rec, ["description"]),
+    isBuiltin: readBoolean(rec, ["isBuiltin", "is_builtin"]),
+    groupKey: readString(rec, ["groupKey", "group_key"]),
+    sourceLabel: readString(rec, ["sourceLabel", "source_label"]),
     effectiveEnabled: readBoolean(rec, ["effectiveEnabled", "effective_enabled"], false),
     globallyEnabled: readBoolean(rec, ["globallyEnabled", "globally_enabled"], true),
   };
+}
+
+async function readModeSkillRows(modeId: string, workspace: ReturnType<typeof activeWorkspace>, target: string | null): Promise<ModeSkillRow[]> {
+  const raw = await invokeRawCommand<unknown>("get_mode_skill_configs", {
+    modeId,
+    workspaceId: workspace?.id ?? null,
+    workspacePath: workspace?.rootPath || null,
+  }, { target });
+  const list = Array.isArray(raw) ? raw : (raw as { skills?: unknown } | null)?.skills;
+  return Array.isArray(list) ? list.map(readModeSkill).filter((row): row is ModeSkillRow => row !== null) : [];
 }
 
 /** Reads which skills one agent runs with (`get_mode_skill_configs`, positional). */
 export async function loadModeSkills(modeId: string): Promise<void> {
   const ticket = ++modeSkillsTicket;
   const workspace = activeWorkspace();
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
+  const current = () => ticket === modeSkillsTicket && scope === skillsCatalogContextKey();
+  if (modeSkillsFor() !== modeId || modeSkillsScope() !== scope) modeSkills.set([]);
+  modeSkillsScope.set(scope);
   modeSkillsFor.set(modeId);
   modeSkillsLoading.set(true);
   modeSkillsError.set(null);
   try {
-    const raw = await invokeRawCommand<unknown>("get_mode_skill_configs", {
-      modeId,
-      workspaceId: workspace?.id ?? null,
-      workspacePath: workspace?.rootPath || null,
-    });
-    if (ticket !== modeSkillsTicket) return;
-    const list = Array.isArray(raw)
-      ? raw
-      : raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).skills)
-        ? ((raw as Record<string, unknown>).skills as unknown[])
-        : [];
-    modeSkills.set(list.map(readModeSkill).filter((row): row is ModeSkillRow => row !== null));
+    const rows = await readModeSkillRows(modeId, workspace, target);
+    if (!current()) return;
+    modeSkills.set(rows);
   } catch (error) {
-    if (ticket !== modeSkillsTicket) return;
+    if (!current()) return;
     modeSkills.set([]);
     modeSkillsError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -1075,34 +1130,51 @@ export async function loadModeSkills(modeId: string): Promise<void> {
   }
 }
 
-/** Turns one skill on or off for one agent by replacing that agent's whole selection. */
-export async function setModeSkillEnabled(modeId: string, skillKey: string, enabled: boolean): Promise<void> {
-  if (modeSkillsSaving()) return;
+/** Applies the draft to the current host selection and submits one replacement. */
+export async function saveModeSkillSelection(modeId: string, changes: ReadonlyMap<string, boolean>): Promise<boolean> {
+  if (modeSkillsSaving() || modeSkillsLoading() || !modeSkillsScopeCurrent() || modeSkillsFor() !== modeId || isRemoteAgentWorkspace()) return false;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
+  const workspace = activeWorkspace();
   const workspaceId = activeWorkspaceId() ?? undefined;
-  const enabledSkillKeys = modeSkills()
-    .filter(row => (row.key === skillKey ? enabled : row.effectiveEnabled))
-    .map(row => row.key);
+  const current = () => scope === skillsCatalogContextKey() && modeSkillsFor() === modeId;
   modeSkillsSaving.set(true);
   modeSkillsError.set(null);
   try {
+    const rows = await readModeSkillRows(modeId, workspace, target);
+    if (!current()) return false;
+    const selected = (row: ModeSkillRow) => (row.globallyEnabled ? changes.get(row.key) : undefined) ?? row.effectiveEnabled;
+    if (!rows.some(row => selected(row) !== row.effectiveEnabled)) {
+      modeSkills.set(rows);
+      return true;
+    }
+    const enabledSkillKeys = rows.filter(selected).map(row => row.key);
     await invokeCommand<unknown>("replace_mode_skill_selection", {
       modeId,
       enabledSkillKeys,
       ...(workspaceId ? { workspaceId } : {}),
-    });
+    }, { target });
+    if (!current()) return false;
     await loadModeSkills(modeId);
+    if (!current()) return false;
     reloadAgentModes();
+    return true;
   } catch (error) {
-    modeSkillsError.set(
-      tr("agents.modeSkillsFailed", { error: error instanceof Error ? error.message : String(error) }),
-    );
+    if (current()) {
+      modeSkillsError.set(
+        tr("agents.modeSkillsFailed", { error: error instanceof Error ? error.message : String(error) }),
+      );
+    }
+    return false;
   } finally {
     modeSkillsSaving.set(false);
   }
 }
 
 export async function resetModeSkills(modeId: string): Promise<void> {
-  if (modeSkillsSaving()) return;
+  if (modeSkillsSaving() || !modeSkillsScopeCurrent() || modeSkillsFor() !== modeId || isRemoteAgentWorkspace()) return;
+  const scope = skillsCatalogContextKey();
+  const target = fleetDeviceContext();
   const workspaceId = activeWorkspaceId() ?? undefined;
   modeSkillsSaving.set(true);
   modeSkillsError.set(null);
@@ -1110,10 +1182,12 @@ export async function resetModeSkills(modeId: string): Promise<void> {
     await invokeCommand<unknown>("reset_mode_skill_selection", {
       modeId,
       ...(workspaceId ? { workspaceId } : {}),
-    });
+    }, { target });
+    if (scope !== skillsCatalogContextKey() || modeSkillsFor() !== modeId) return;
     await loadModeSkills(modeId);
     reloadAgentModes();
   } catch (error) {
+    if (scope !== skillsCatalogContextKey() || modeSkillsFor() !== modeId) return;
     modeSkillsError.set(
       tr("agents.modeSkillsFailed", { error: error instanceof Error ? error.message : String(error) }),
     );

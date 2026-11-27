@@ -318,6 +318,11 @@
   ],
   "generatedChecks": [
     {
+      "id": "nsh-design-tokens",
+      "surfaceIds": ["design-system-token-owner"],
+      "command": ["node", "scripts/generate-nsh-design-tokens.mjs", "--check"]
+    },
+    {
       "id": "subagent-avatar-artwork",
       "surfaceIds": ["design-system-ui"],
       "command": ["node", "scripts/check-subagent-avatar-assets.mjs"]

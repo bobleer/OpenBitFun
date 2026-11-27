@@ -6,9 +6,10 @@
 // the desktop editor puts in `member_model_ids`, and a draft with an empty id is
 // how a new pool is created: the host allocates the stable id.
 
-import { signal } from "nsh";
-import { invokeCommand } from "./bridge";
-import { runStep } from "./state";
+import { computed, signal } from "nsh";
+import { fleetDeviceContext, invokeCommand } from "./bridge";
+import { tr } from "./i18n";
+import { errorText, invokeSettingsMutation, isMissingCommand } from "./settingsMutations";
 
 export interface ModelPool {
   id: string;
@@ -38,15 +39,17 @@ interface PoolDocument {
 export const pools = signal<ModelPool[]>([]);
 /** `null` until the host has been asked; `false` means it has no pools at all. */
 export const poolsSupported = signal<boolean | null>(null);
+export const poolsLoading = signal(false);
 export const poolsNotice = signal("");
 export const poolDraft = signal<PoolDraft | null>(null);
 export const poolStatuses = signal<Record<string, PoolMemberStatus[]>>({});
+export const poolStatusLoading = signal<string | null>(null);
+export const poolBusy = signal(false);
+const poolDraftBaseline = signal<PoolDraft | null>(null);
+export const poolDraftDirty = computed(() => Boolean(poolDraft()) && JSON.stringify(poolDraft()) !== JSON.stringify(poolDraftBaseline()));
 
 /** The strategies the desktop editor offers, in its order. */
-export const POOL_STRATEGIES: ReadonlyArray<{ value: string; label: string; hint: string }> = [
-  { value: "ordered", label: "Ordered", hint: "Always the first member that is available" },
-  { value: "balanced", label: "Balanced", hint: "Spreads turns across members that are available" },
-];
+export const POOL_STRATEGIES = ["ordered", "balanced"] as const;
 
 function readablePools(document: PoolDocument): ModelPool[] {
   const rows = Array.isArray(document?.pools) ? document.pools : [];
@@ -66,47 +69,69 @@ function readablePools(document: PoolDocument): ModelPool[] {
   return result;
 }
 
-let loading = false;
+let poolDevice: string | null | undefined;
+let scopeRevision = 0;
+let listRequest = 0;
+let statusRequest = 0;
 
-/**
- * Reads the pools once. The settings section calls this on every render, and
- * `pools` is one of its dependencies, so an unguarded read would never settle.
- */
+function poolScope() {
+  const target = fleetDeviceContext();
+  const revision = scopeRevision;
+  return { target, current: () => target === fleetDeviceContext() && revision === scopeRevision };
+}
+
+/** Reads the pools on first use and on a device change. */
 export function ensurePools(): void {
-  if (poolsSupported() !== null || loading) return;
-  loading = true;
-  void loadPools().finally(() => {
-    loading = false;
-  });
+  if (poolDevice !== fleetDeviceContext()) void loadPools();
 }
 
 export async function loadPools(): Promise<void> {
-  await runStep(async () => {
-    try {
-      const document = await invokeCommand<PoolDocument>("get_model_pools");
+  const target = fleetDeviceContext();
+  if (poolDevice !== target) {
+    poolDevice = target;
+    scopeRevision += 1;
+    closePoolDraft();
+    pools.set([]);
+    poolStatuses.set({});
+    poolsSupported.set(null);
+    poolBusy.set(false);
+    poolStatusLoading.set(null);
+  }
+  const scope = poolScope();
+  const request = ++listRequest;
+  const current = () => scope.current() && listRequest === request;
+  poolsLoading.set(true);
+  poolsNotice.set("");
+  try {
+    const document = await invokeCommand<PoolDocument>("get_model_pools", undefined, scope);
+    if (current()) {
       pools.set(readablePools(document));
       poolsSupported.set(true);
-      poolsNotice.set("");
-    } catch {
-      // A host without model pools keeps the section out of the way instead of
-      // showing an error for a feature that surface never had.
-      poolsSupported.set(false);
-      pools.set([]);
     }
-  });
+  } catch (error) {
+    if (!current()) return;
+    if (isMissingCommand(error, "get_model_pools")) poolsSupported.set(false);
+    else poolsNotice.set(errorText(error));
+  } finally {
+    if (current()) poolsLoading.set(false);
+  }
 }
 
 export function openPoolDraft(pool?: ModelPool): void {
-  poolDraft.set(
-    pool
-      ? { id: pool.id, name: pool.name, strategy: pool.strategy, members: [...pool.memberModelIds] }
-      : { id: "", name: "", strategy: "ordered", members: [] },
-  );
+  const draft = pool
+    ? { id: pool.id, name: pool.name, strategy: pool.strategy, members: [...pool.memberModelIds] }
+    : { id: "", name: "", strategy: "ordered", members: [] };
+  poolDraftBaseline.set(draft);
+  poolDraft.set(draft);
   poolsNotice.set("");
+  if (pool) void loadPoolStatus(pool.id);
 }
 
 export function closePoolDraft(): void {
+  statusRequest += 1;
+  poolStatusLoading.set(null);
   poolDraft.set(null);
+  poolDraftBaseline.set(null);
 }
 
 export function updatePoolDraft(patch: Partial<PoolDraft>): void {
@@ -138,66 +163,81 @@ export function movePoolMember(modelId: string, delta: number): void {
   });
 }
 
-export async function savePoolDraft(): Promise<void> {
+export function canSavePoolDraft(): boolean {
   const draft = poolDraft();
-  if (!draft) return;
-  if (!draft.name.trim()) {
-    poolsNotice.set("A pool needs a name");
-    return;
+  return Boolean(draft?.name.trim()) && !poolBusy() && !poolsLoading() && poolDevice === fleetDeviceContext();
+}
+
+export async function savePoolDraft(): Promise<boolean> {
+  const draft = poolDraft();
+  if (!draft || !canSavePoolDraft()) return false;
+  return mutatePools("save_model_pool", {
+    pool: { id: draft.id, name: draft.name.trim(), strategy: draft.strategy, member_model_ids: draft.members },
+  }, tr("settings.pools.saved", { name: draft.name.trim() }));
+}
+
+export async function deletePool(poolId: string): Promise<boolean> {
+  return mutatePools("delete_model_pool", { poolId }, tr("settings.pools.deleted"));
+}
+
+async function mutatePools(command: "save_model_pool" | "delete_model_pool", request: Record<string, unknown>, notice: string): Promise<boolean> {
+  if (poolBusy() || poolsLoading() || poolDevice !== fleetDeviceContext()) return false;
+  const scope = poolScope();
+  poolBusy.set(true);
+  poolsNotice.set("");
+  try {
+    const document = await invokeSettingsMutation<PoolDocument>(command, request, scope);
+    if (!scope.current()) return false;
+    poolStatuses.set({});
+    pools.set(readablePools(document));
+    closePoolDraft();
+    poolsNotice.set(notice);
+    return true;
+  } catch (error) {
+    if (scope.current()) poolsNotice.set(errorText(error));
+    return false;
+  } finally {
+    if (scope.current()) poolBusy.set(false);
   }
-  await runStep(async () => {
-    try {
-      const document = await invokeCommand<PoolDocument>("save_model_pool", {
-        pool: {
-          id: draft.id,
-          name: draft.name.trim(),
-          strategy: draft.strategy,
-          member_model_ids: draft.members,
-        },
-      });
-      pools.set(readablePools(document));
-      poolsSupported.set(true);
-      poolDraft.set(null);
-      poolsNotice.set(`Saved ${draft.name.trim()}`);
-    } catch (error) {
-      poolsNotice.set(error instanceof Error ? error.message : String(error));
-    }
-  });
 }
 
-export async function deletePool(poolId: string): Promise<void> {
-  await runStep(async () => {
-    try {
-      const document = await invokeCommand<PoolDocument>("delete_model_pool", { poolId });
-      pools.set(readablePools(document));
-      poolsNotice.set("Pool deleted");
-    } catch (error) {
-      poolsNotice.set(error instanceof Error ? error.message : String(error));
+/** Checks a stored pool. An optional retry asks the host to reset that member first. */
+async function loadPoolStatus(poolId: string, retryModelId?: string): Promise<void> {
+  const scope = poolScope();
+  const request = ++statusRequest;
+  const current = () => scope.current() && statusRequest === request;
+  poolStatusLoading.set(poolId);
+  try {
+    if (retryModelId) {
+      await invokeSettingsMutation("retry_model_pool_member", { modelId: retryModelId }, scope);
+      if (!current()) return;
     }
-  });
+    const rows = await invokeSettingsMutation<Array<{ modelId?: string; model_id?: string; status?: string; reason?: string }>>(
+      "get_model_pool_status", { poolId }, scope,
+    );
+    if (!current()) return;
+    const statuses: PoolMemberStatus[] = [];
+    for (const row of rows ?? []) {
+      const modelId = row.modelId ?? row.model_id;
+      if (modelId) statuses.push({ modelId, status: row.status ?? "unverified", reason: row.reason });
+    }
+    poolStatuses.update(value => ({ ...value, [poolId]: statuses }));
+  } catch (error) {
+    if (current()) poolsNotice.set(errorText(error));
+  } finally {
+    if (current()) poolStatusLoading.set(null);
+  }
 }
 
-/** Asks the host how each member of a pool is doing right now. */
-export async function loadPoolStatus(poolId: string): Promise<void> {
-  await runStep(async () => {
-    try {
-      const rows = await invokeCommand<Array<{ modelId?: string; model_id?: string; status?: string; reason?: string }>>(
-        "get_model_pool_status",
-        { poolId },
-      );
-      const statuses: PoolMemberStatus[] = [];
-      for (const row of rows ?? []) {
-        const modelId = row.modelId ?? row.model_id;
-        if (!modelId) continue;
-        statuses.push({
-          modelId,
-          status: row.status ?? "unverified",
-          ...(row.reason ? { reason: row.reason } : {}),
-        });
-      }
-      poolStatuses.update(current => ({ ...current, [poolId]: statuses }));
-    } catch (error) {
-      poolsNotice.set(error instanceof Error ? error.message : String(error));
-    }
-  });
+export async function retryPoolMember(modelId: string): Promise<void> {
+  const draft = poolDraft();
+  if (!draft?.id || !draft.members.includes(modelId) || poolBusy() || poolStatusLoading() || poolDevice !== fleetDeviceContext()) return;
+  const scope = poolScope();
+  poolBusy.set(true);
+  poolsNotice.set("");
+  try {
+    await loadPoolStatus(draft.id, modelId);
+  } finally {
+    if (scope.current()) poolBusy.set(false);
+  }
 }

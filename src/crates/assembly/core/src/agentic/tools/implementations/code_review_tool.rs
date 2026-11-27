@@ -223,6 +223,20 @@ impl CodeReviewTool {
                                 "enum": ["reported", "inferred", "missing"],
                                 "description": "Whether packet_id/status was reported by the reviewer, inferred from scheduling metadata, or missing"
                             },
+                            "covered_files": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Exact packet paths the worker reported as covered. Omit when coverage is unknown."
+                            },
+                            "retry_scope_files": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Exact unresolved paths reported within this packet, when available."
+                            },
+                            "capacity_reason": {
+                                "type": "string",
+                                "description": "Runtime capacity reason for a capacity_skipped packet, when supplied."
+                            },
                             "issue_count": {
                                 "type": "integer",
                                 "description": "Validated issue count for this reviewer"
@@ -512,6 +526,7 @@ impl CodeReviewTool {
         if input.get("issues").is_none() {
             warn!("CodeReview tool missing issues field, using default values");
             input["issues"] = json!([]);
+            input["finding_count_available"] = json!(false);
         }
 
         // Fill positive_points default values
@@ -647,6 +662,11 @@ impl Tool for CodeReviewTool {
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
         let mut filled_input = input.clone();
+        if let Some(report) = filled_input.as_object_mut() {
+            report.remove("evidence_coverage");
+            report.remove("target_changed_during_review");
+            report.remove("finding_count_available");
+        }
         let deep_review = Self::is_deep_review_context(Some(context));
         let compression_contract = deep_review
             .then(|| Self::compression_contract_for_context(context))
@@ -887,6 +907,15 @@ mod tests {
         let reviewer_properties = &schema["properties"]["reviewers"]["items"]["properties"];
 
         assert_eq!(reviewer_properties["packet_id"]["type"], "string");
+        assert_eq!(
+            reviewer_properties["covered_files"]["items"]["type"],
+            "string"
+        );
+        assert_eq!(
+            reviewer_properties["retry_scope_files"]["items"]["type"],
+            "string"
+        );
+        assert_eq!(reviewer_properties["capacity_reason"]["type"], "string");
         assert_eq!(
             reviewer_properties["packet_status_source"]["enum"],
             json!(["reported", "inferred", "missing"])

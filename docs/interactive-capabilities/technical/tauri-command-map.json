@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b8dea7e5ab42bd8cc78c5fe3917400199e345e80aa52a06ed27191632076d58c",
-  "commandCount": 728,
+  "catalogDigest": "3ed78c6ff3e1a9cdd54af58d888ee083cfdd4ab2b2a16f56f1270290a8a2b1f8",
+  "commandCount": 733,
   "coverage": {
-    "commandCount": 728,
-    "documentedCommandCount": 626,
+    "commandCount": 733,
+    "documentedCommandCount": 631,
     "implementationCommandCount": 102,
     "implementationDigest": "4954073be0636de6ca1ef4d75ade342a2450cbc396030322c116e2973299eb4e"
   },
@@ -5556,6 +5556,22 @@
       "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
+      "id": "launch_review_remediation",
+      "moduleId": "review_launch",
+      "capabilityId": "feature.code-review",
+      "capabilityIds": [
+        "feature.code-review"
+      ],
+      "documentedItemIds": [
+        "feature.code-review:review-remediation"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::review_launch_api::launch_review_remediation",
+      "sourceFile": "src/apps/desktop/src/api/review_launch_api.rs",
+      "signature": "fn launch_review_remediation( app: HostHandle, coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: LaunchReviewRemediationRequest, ) -> Result<LaunchReviewRemediationResponse, String>",
+      "remoteWorkspacePolicy": "RemoteUnsupported"
+    },
+    {
       "id": "list_agent_companion_pets",
       "moduleId": "commands",
       "capabilityId": null,
@@ -5846,6 +5862,22 @@
       "rustPath": "api::session_policy_api::list_session_commands",
       "sourceFile": "src/apps/desktop/src/api/session_policy_api.rs",
       "signature": "fn list_session_commands( scheduler: State<'_, Arc<DialogScheduler>>, request: ListSessionCommandsRequest, ) -> Result<Vec<SessionCommandDescriptor>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "list_session_review_records",
+      "moduleId": "review_launch",
+      "capabilityId": "feature.code-review",
+      "capabilityIds": [
+        "feature.code-review"
+      ],
+      "documentedItemIds": [
+        "feature.code-review:session-review-records"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::review_launch_api::list_session_review_records",
+      "sourceFile": "src/apps/desktop/src/api/review_launch_api.rs",
+      "signature": "fn list_session_review_records( runtime: State<'_, DesktopRuntimeContext>, request: ListSessionReviewRecordsRequest, ) -> Result<SessionReviewPage, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -6652,7 +6684,7 @@
       "visibility": "documented",
       "rustPath": "api::miniapp_market_api::miniapp_market_get_listing",
       "sourceFile": "src/apps/desktop/src/api/miniapp_market_api.rs",
-      "signature": "fn miniapp_market_get_listing( request: MarketSlugRequest, ) -> Result<MarketListingDetail, String>",
+      "signature": "fn miniapp_market_get_listing( request: MarketListingRequest, ) -> Result<MarketListingDetail, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -6749,6 +6781,22 @@
       "rustPath": "api::miniapp_market_api::miniapp_market_list_submissions",
       "sourceFile": "src/apps/desktop/src/api/miniapp_market_api.rs",
       "signature": "fn miniapp_market_list_submissions() -> Result<Vec<MarketSubmission>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "miniapp_market_read_screenshot",
+      "moduleId": "miniapp_market",
+      "capabilityId": "feature.miniapps",
+      "capabilityIds": [
+        "feature.miniapps"
+      ],
+      "documentedItemIds": [
+        "feature.miniapps:market"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::miniapp_market_api::miniapp_market_read_screenshot",
+      "sourceFile": "src/apps/desktop/src/api/miniapp_market_api.rs",
+      "signature": "fn miniapp_market_read_screenshot( request: MarketScreenshotRequest, ) -> Result<String, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -7398,7 +7446,7 @@
       "visibility": "documented",
       "rustPath": "read_file_content",
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
-      "signature": "fn read_file_content( state: State<'_, AppState>, request: ReadFileContentRequest, ) -> Result<String, String>",
+      "signature": "fn read_file_content( state: State<'_, AppState>, request: ReadFileContentRequest, ) -> Result<super::path_target::ReadFileContent, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
@@ -8717,6 +8765,38 @@
       "rustPath": "review_platform_get_workspace_snapshot",
       "sourceFile": "src/apps/desktop/src/api/review_platform_api.rs",
       "signature": "fn review_platform_get_workspace_snapshot( _state: State<'_, AppState>, request: ReviewPlatformWorkspaceSnapshotRequest, ) -> Result<ReviewPlatformWorkspaceSnapshot, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
+      "id": "review_platform_launch_pull_request_review",
+      "moduleId": "review_launch",
+      "capabilityId": "feature.code-review",
+      "capabilityIds": [
+        "feature.code-review"
+      ],
+      "documentedItemIds": [
+        "feature.code-review:review-pull-request"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::review_launch_api::review_platform_launch_pull_request_review",
+      "sourceFile": "src/apps/desktop/src/api/review_launch_api.rs",
+      "signature": "fn review_platform_launch_pull_request_review( app: HostHandle, coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: LaunchPullRequestReviewRequest, ) -> Result<LaunchReviewResponse, String>",
+      "remoteWorkspacePolicy": "RemoteUnsupported"
+    },
+    {
+      "id": "review_platform_list_pull_request_reviews",
+      "moduleId": "review_launch",
+      "capabilityId": "feature.code-review",
+      "capabilityIds": [
+        "feature.code-review"
+      ],
+      "documentedItemIds": [
+        "feature.code-review:review-pull-request"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::review_launch_api::review_platform_list_pull_request_reviews",
+      "sourceFile": "src/apps/desktop/src/api/review_launch_api.rs",
+      "signature": "fn review_platform_list_pull_request_reviews( runtime: State<'_, DesktopRuntimeContext>, request: PullRequestReviewHistoryRequest, ) -> Result<PullRequestReviewPage, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {

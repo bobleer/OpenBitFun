@@ -246,6 +246,7 @@ pub fn deep_review_queue_state(input: DeepReviewQueueStateInput<'_>) -> DeepRevi
         run_elapsed_ms: matches!(input.status, DeepReviewQueueStatus::Running).then_some(0),
         max_queue_wait_seconds: Some(input.max_queue_wait_seconds),
         session_concurrency_high: false,
+        controls_available: false,
     }
 }
 
@@ -813,7 +814,7 @@ pub fn deep_review_launch_batch_for_task(
     })
 }
 
-fn file_paths_for_manifest_packet(
+pub(super) fn file_paths_for_manifest_packet(
     packet: &Value,
 ) -> Result<Vec<String>, DeepReviewPolicyViolation> {
     let Some(scope) = value_for_any_key(packet, &["assignedScope", "assigned_scope"]) else {
@@ -825,7 +826,7 @@ fn file_paths_for_manifest_packet(
     string_array_for_any_key(scope, &["files"])
 }
 
-fn is_retryable_capacity_reason(reason: &str) -> bool {
+pub(super) fn is_retryable_capacity_reason(reason: &str) -> bool {
     matches!(
         reason,
         "local_concurrency_cap"

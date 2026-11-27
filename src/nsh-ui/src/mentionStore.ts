@@ -1,14 +1,8 @@
-// References in the message: the token a workspace file or directory becomes when
-// the user points the agent at it.
-//
-// The wire shape is the desktop composer's: a tag travels inside the message text
-// (`#file:<name>`, `#dir:<name>`), and the runtime does not expand it, so the agent
-// resolves the name with its own tools. What this store owns is finding the name —
-// the workspace's file names, through the same `search_files` read the Files scene
-// searches with — and putting the tag where the user is typing.
+// The composer reference picker follows one pane and its owning runtime.
+// Files become attachment tags and sessions carry the owner's persisted locator.
 
 import { signal } from "nsh";
-import type { InputRef } from "nsh";
+import type { ComposerInputHandle } from "./ui/PromptReferenceEditor";
 import {
   executeSessionCommand,
   getDirectoryChildren,
@@ -16,17 +10,27 @@ import {
   searchWorkspaceFiles,
   type WorkspaceEntry,
 } from "./api";
-import { addFileAttachment, toRelativeWorkspacePath } from "./attachmentStore";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { addFileAttachment, addSessionReference, toRelativeWorkspacePath, type FileAttachment } from "./attachmentStore";
+import { fleetActive, invokeCommand, invokeRawCommand } from "./bridge";
+import { fleetDeviceById } from "./fleetStore";
 import { tr, type MessageKey } from "./i18n";
+import { mcpPromptToken, skillPromptToken } from "./promptReferences";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeSessionId,
+  activeSessionDevice,
+  activeSessionKey,
   activeWorkspaceId,
   activeWorkspaceRoot,
+  activeWorkspace,
+  agentTypeOf,
+  chosenAgentType,
   composerText,
+  deviceContext,
   sessions,
 } from "./state";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
+import { readSessionReference, sessionReferenceKey, type SessionReferenceCandidate } from "./sessionReferences";
 
 /** One row of the picker: a path the host reported, split into what a row shows. */
 export interface MentionHit {
@@ -34,15 +38,52 @@ export interface MentionHit {
   name: string;
   directory: boolean;
   relativePath?: string;
+  session?: SessionReferenceCandidate;
+  prompt?: { kind: "skills" | "mcp"; token: string; scope: string };
 }
 
+export interface MentionOwner {
+  pane: "primary" | "secondary";
+  key: () => string | null;
+  sessionId: () => string | null;
+  deviceId: () => string;
+  workspaceId: () => string | null;
+  workspaceRoot: () => string;
+  remoteWorkspace: () => boolean;
+  draft: () => string;
+  setDraft: (text: string) => void;
+  addFile: (file: Omit<FileAttachment, "id">) => void;
+  addSession: (reference: SessionReferenceCandidate) => void;
+}
+
+const primaryMentionOwner: MentionOwner = {
+  pane: "primary",
+  key: () => activeSessionKey() ?? `${deviceContext()}/workspace/${effectiveMentionWorkspaceId() ?? ""}`,
+  sessionId: activeSessionId,
+  deviceId: () => activeSessionDevice() || deviceContext(),
+  workspaceId: effectiveMentionWorkspaceId,
+  workspaceRoot: activeWorkspaceRoot,
+  remoteWorkspace: () => isRemoteWorkspace(activeWorkspace()),
+  draft: composerText,
+  setDraft: composerText.set,
+  addFile: addFileAttachment,
+  addSession: addSessionReference,
+};
+let owner = primaryMentionOwner;
+let ownerKey: string | null = null;
+
 export const mentionOpen = signal(false);
+export const mentionPane = signal<"primary" | "secondary">("primary");
+export type MentionSource = "sources" | "all" | "files" | "sessions" | "skills" | "mcp";
+export const mentionSource = signal<MentionSource>("files");
+let explicitSource = false;
 export const mentionQuery = signal("");
 export const mentionBrowseDir = signal("");
 export const mentionHits = signal<MentionHit[]>([]);
 export const mentionSearched = signal(false);
 export const mentionLoading = signal(false);
 export const mentionNotice = signal("");
+export const mentionRetryable = signal(false);
 /** The host matched more names than the panel draws. */
 export const mentionTruncated = signal(false);
 /**
@@ -70,6 +111,7 @@ const IGNORED_BROWSE_DIRS = new Set([
 let debounceTimer: number | null = null;
 /** Monotonic token for browse/search requests so slower answers never overwrite newer ones. */
 let mentionReqSeq = 0;
+const mentionCatalogs = new Map<string, Promise<MentionCatalog>>();
 
 function effectiveMentionWorkspaceId(): string | null {
   const direct = activeWorkspaceId();
@@ -86,8 +128,40 @@ export function mentionToken(hit: MentionHit): string {
   return `#${hit.directory ? "dir" : "file"}:${ref} `;
 }
 
-export function openMention(): void {
+export function mentionOwnerRoot(): string {
+  return owner.workspaceRoot();
+}
+
+function bindMentionOwner(target: MentionOwner): void {
+  owner = target;
+  ownerKey = target.key();
+  mentionPane.set(target.pane);
+}
+
+function mentionRoute() {
+  const target = owner.deviceId();
+  return target ? { target } : undefined;
+}
+
+export function mentionOwnerCurrent(): boolean {
+  return ownerKey !== null && owner.key() === ownerKey;
+}
+
+function mentionMode(): string {
+  const session = owner.sessionId();
+  return session ? agentTypeOf(session, owner.deviceId()) : chosenAgentType();
+}
+
+function mentionCatalogScope(): string {
+  return JSON.stringify([owner.deviceId(), owner.workspaceId(), owner.remoteWorkspace(), mentionMode()]);
+}
+
+export function openMention(target = primaryMentionOwner): void {
+  closeMention();
+  bindMentionOwner(target);
+  mentionSource.set("sources");
   mentionNotice.set("");
+  mentionRetryable.set(false);
   mentionQuery.set("");
   mentionBrowseDir.set("");
   mentionHits.set([]);
@@ -95,16 +169,20 @@ export function openMention(): void {
   mentionTruncated.set(false);
   mentionInline.set(false);
   mentionOpen.set(true);
-  void loadMentionDirectory("");
 }
 
 export function closeMention(): void {
+  ++mentionReqSeq;
+  mentionCatalogs.clear();
   mentionOpen.set(false);
   mentionInline.set(false);
+  mentionLoading.set(false);
   mentionQuery.set("");
   mentionBrowseDir.set("");
   syncedText = null;
   syncedCaret = -1;
+  inlineToken = null;
+  explicitSource = false;
   if (debounceTimer !== null) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
@@ -139,7 +217,10 @@ export function mentionTriggerAt(text: string, caret: number): MentionTrigger | 
  * Follows the composer's text and caret: a typed `@` opens the panel with workspace
  * root browsing immediately on bare `@` and live file/folder search as the user types.
  */
-export function syncInlineMention(text: string, caret: number, fromSelectionOnly = false): void {
+export function syncInlineMention(text: string, caret: number, fromSelectionOnly = false, target = primaryMentionOwner): void {
+  const inOtherPane = owner !== target && mentionOpen();
+  if (inOtherPane && fromSelectionOnly) return;
+  if (inOtherPane || (mentionOpen() && !mentionOwnerCurrent())) closeMention();
   // Selection reports while clicking a popover row keep the active token intact so the row press succeeds.
   if (fromSelectionOnly && text === syncedText && mentionOpen() && mentionInline()) {
     const triggerAtCaret = mentionTriggerAt(text, caret);
@@ -154,9 +235,12 @@ export function syncInlineMention(text: string, caret: number, fromSelectionOnly
     if (mentionOpen() && mentionInline()) closeMention();
     return;
   }
+  const wasOpen = mentionOpen() && mentionInline();
+  if (!wasOpen && mentionOpen()) closeMention();
   inlineToken = { start: trigger.start, end: trigger.end };
-  const wasOpen = mentionOpen();
   if (!wasOpen) {
+    bindMentionOwner(target);
+    mentionSource.set(trigger.query.trim() ? "all" : "files");
     mentionNotice.set("");
     mentionHits.set([]);
     mentionSearched.set(false);
@@ -166,6 +250,7 @@ export function syncInlineMention(text: string, caret: number, fromSelectionOnly
   }
   mentionInline.set(true);
   if (!wasOpen || mentionQuery() !== trigger.query) {
+    if (!explicitSource) mentionSource.set(trigger.query.trim() ? "all" : "files");
     setMentionQuery(trigger.query);
   }
 }
@@ -175,6 +260,7 @@ export function browseMentionDir(dirPath: string): void {
   mentionBrowseDir.set(dirPath);
   mentionQuery.set("");
   mentionNotice.set("");
+  mentionRetryable.set(false);
   if (debounceTimer !== null) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
@@ -184,7 +270,7 @@ export function browseMentionDir(dirPath: string): void {
 
 export function browseMentionParent(): void {
   const current = mentionBrowseDir().replace(/[\\/]+$/, "");
-  const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
+  const root = owner.workspaceRoot().replace(/[\\/]+$/, "");
   if (!current || current === root) return;
   const lastSep = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
   if (lastSep <= 0) {
@@ -200,17 +286,18 @@ export function browseMentionParent(): void {
 }
 
 async function loadMentionDirectory(dirPath: string): Promise<void> {
-  const workspaceId = effectiveMentionWorkspaceId();
-  const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
+  const workspaceId = owner.workspaceId();
+  const root = owner.workspaceRoot().replace(/[\\/]+$/, "");
   if (!workspaceId || !mentionOpen()) return;
   const target = dirPath || root;
   if (!target) return;
   const seq = ++mentionReqSeq;
   mentionLoading.set(true);
   mentionNotice.set("");
+  mentionRetryable.set(false);
   try {
-    const raw = await getDirectoryChildren(workspaceId, target);
-    if (seq !== mentionReqSeq || !mentionOpen()) return;
+    const raw = await getDirectoryChildren(workspaceId, target, mentionRoute());
+    if (seq !== mentionReqSeq || !mentionOpen() || !mentionOwnerCurrent()) return;
     const entries: WorkspaceEntry[] = Array.isArray(raw) ? raw : [];
     const atRoot = !dirPath || dirPath === root;
     const filtered = entries.filter(entry => {
@@ -235,24 +322,56 @@ async function loadMentionDirectory(dirPath: string): Promise<void> {
     mentionHits.set(hits);
     mentionTruncated.set(filtered.length > hits.length);
     mentionSearched.set(false);
-  } catch {
+  } catch (error) {
     if (seq !== mentionReqSeq) return;
     mentionHits.set([]);
     mentionTruncated.set(false);
+    mentionNotice.set(error instanceof Error ? error.message : String(error));
   } finally {
     if (seq === mentionReqSeq) mentionLoading.set(false);
   }
 }
 
 /**
- * Types the query. Empty query immediately lists the active workspace (or browsed directory)
- * files & folders; non-empty query searches workspace filenames & folders with debounce.
+ * A query entered in the popup searches every source. Clearing it returns
+ * to the source list or the source and directory being browsed.
  */
 export function setMentionQuery(query: string): void {
+  ++mentionReqSeq;
   mentionQuery.set(query);
   mentionNotice.set("");
+  mentionRetryable.set(false);
   if (debounceTimer !== null) clearTimeout(debounceTimer);
   const trimmed = query.trim();
+  if (!trimmed && mentionSource() === "all") {
+    mentionSource.set("files");
+    explicitSource = false;
+  }
+  const source = mentionResultSource();
+  if (source === "sources") {
+    mentionHits.set([]);
+    mentionSearched.set(false);
+    mentionTruncated.set(false);
+    mentionLoading.set(false);
+    return;
+  }
+  if (source === "skills" || source === "mcp" || source === "sessions") {
+    const search = source === "sessions"
+      ? () => searchSessionMentions(trimmed)
+      : () => searchCatalogMentions(source, trimmed);
+    mentionHits.set([]);
+    mentionTruncated.set(false);
+    mentionLoading.set(true);
+    if (!trimmed) {
+      void search();
+      return;
+    }
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void search();
+    }, SEARCH_DEBOUNCE_MS);
+    return;
+  }
   if (!trimmed) {
     mentionSearched.set(false);
     mentionTruncated.set(false);
@@ -261,11 +380,9 @@ export function setMentionQuery(query: string): void {
   }
   // Drop unfiltered root-browse rows immediately when transitioning into search
   // so stale non-matching files never linger while the search debounce settles.
-  if (!mentionSearched()) {
-    mentionHits.set([]);
-    mentionTruncated.set(false);
-    mentionLoading.set(true);
-  }
+  mentionHits.set([]);
+  mentionTruncated.set(false);
+  mentionLoading.set(true);
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
     void searchMentions(trimmed);
@@ -273,32 +390,57 @@ export function setMentionQuery(query: string): void {
 }
 
 async function searchMentions(query: string): Promise<void> {
-  const workspaceId = effectiveMentionWorkspaceId();
-  if (!workspaceId || !mentionOpen()) return;
+  const workspaceId = owner.workspaceId();
+  if (!mentionOpen() || !mentionOwnerCurrent()) return;
+  const all = mentionResultSource() === "all";
+  const scope = mentionCatalogScope();
+  const includeSessions = all && canSearchSessionReferences();
   const seq = ++mentionReqSeq;
   mentionLoading.set(true);
-  try {
-    const reply = await searchWorkspaceFiles(workspaceId, query, {
+  const [files, sessionMatches, skills, mcp] = await Promise.allSettled([
+    workspaceId ? searchWorkspaceFiles(workspaceId, query, {
       searchContent: false,
       maxResults: RESULT_LIMIT + 6,
-    });
-    if (seq !== mentionReqSeq || !mentionOpen() || effectiveMentionWorkspaceId() !== workspaceId) return;
-    const rows = rowsOf(reply);
-    const hits = hitsOf(rows, query);
-    mentionHits.set(hits);
-    mentionTruncated.set(rows.length > hits.length);
-    mentionSearched.set(true);
-  } catch (error) {
-    if (seq !== mentionReqSeq) return;
-    mentionHits.set([]);
-    mentionTruncated.set(false);
-    mentionSearched.set(true);
+    }, mentionRoute()) : Promise.resolve([]),
+    includeSessions ? fetchSessionMentions(query) : Promise.resolve([]),
+    all ? readMentionCatalog("skills").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
+    all && !owner.remoteWorkspace()
+      ? readMentionCatalog("mcp").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
+  ]);
+  if (seq !== mentionReqSeq || !mentionOpen() || !mentionOwnerCurrent() || owner.workspaceId() !== workspaceId) return;
+  const rows = files.status === "fulfilled" ? rowsOf(files.value) : [];
+  const fileHits = hitsOf(rows, query);
+  const sessionHits = sessionMatches.status === "fulfilled" ? sessionMatches.value : [];
+  const currentScope = mentionCatalogScope() === scope;
+  const skillHits = currentScope && skills.status === "fulfilled" ? skills.value : [];
+  const mcpHits = currentScope && mcp.status === "fulfilled" ? mcp.value : [];
+  const sources = [fileHits, sessionHits, skillHits, mcpHits];
+  const counts = sources.map(() => 0);
+  let remaining = RESULT_LIMIT;
+  for (let row = 0; row < RESULT_LIMIT && remaining > 0; row++) {
+    for (const [index, hits] of sources.entries()) {
+      if (row >= hits.length || remaining === 0) continue;
+      counts[index]++;
+      remaining--;
+    }
+  }
+  const combined = sources.flatMap((hits, index) => hits.slice(0, counts[index]));
+  mentionHits.set(combined);
+  mentionTruncated.set(rows.length + sessionHits.length + skillHits.length + mcpHits.length > combined.length);
+  mentionSearched.set(true);
+  if (files.status === "rejected") {
+    const error = files.reason;
     mentionNotice.set(
       `This host cannot search its files: ${error instanceof Error ? error.message : String(error)}`,
     );
-  } finally {
-    if (seq === mentionReqSeq) mentionLoading.set(false);
+  } else if (sessionMatches.status === "rejected" && !isMissingCommand(sessionMatches.reason, "search_referenceable_sessions")) {
+    mentionNotice.set(tr("sessions.mentionSessionSearchFailed"));
   }
+  mentionLoading.set(false);
+}
+
+export function mentionResultSource(): MentionSource {
+  return !mentionInline() && mentionQuery().trim() ? "all" : mentionSource();
 }
 
 /** The host's rows: `search_files` answers a list, and a host that wraps it says `results`. */
@@ -310,7 +452,7 @@ function rowsOf(reply: unknown): unknown[] {
 
 /** The host's rows, one per path, with workspace root applied and exact/prefix matches ranked first. */
 function hitsOf(rows: unknown[], query = ""): MentionHit[] {
-  const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
+  const root = owner.workspaceRoot().replace(/[\\/]+$/, "");
   const hits: MentionHit[] = [];
   const seen = new Set<string>();
   const q = query.trim().toLowerCase();
@@ -347,26 +489,225 @@ let syncedCaret = -1;
  * Attaches the chosen file/folder as a styled `FileAttachment` chip in the composer
  * and strips the inline `@query` token (if triggered inline) instead of dumping raw `#file:` text.
  */
-export function insertMention(hit: MentionHit, composer: InputRef | undefined): void {
+export function insertMention(hit: MentionHit, composer: ComposerInputHandle | undefined): void {
+  if (!mentionOwnerCurrent()) {
+    closeMention();
+    return;
+  }
+  const target = owner;
   const replacing = mentionInline() ? inlineToken : null;
+  const selection = composer?.selection();
   inlineToken = null;
   closeMention();
-  const root = activeWorkspaceRoot();
-  addFileAttachment({
-    name: hit.name,
-    path: hit.path,
-    relativePath: hit.relativePath || toRelativeWorkspacePath(hit.path, root) || hit.name,
-    isDirectory: hit.directory,
-    source: hit.directory ? "folder" : "file",
-  });
+  if (hit.prompt) {
+    if (hit.prompt.scope !== mentionCatalogScope()) return;
+    const text = target.draft();
+    const current = selection?.text === text ? selection : undefined;
+    const start = replacing?.start ?? current?.start ?? text.length;
+    const end = replacing?.end ?? current?.end ?? start;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const prefix = before && !/\s$/.test(before) ? " " : "";
+    const suffix = /^\s/.test(after) ? "" : " ";
+    const inserted = `${before}${prefix}${hit.prompt.token}${suffix}`;
+    target.setDraft(inserted + after);
+    queueMicrotask(() => {
+      composer?.focus();
+      composer?.setSelection(inserted.length);
+    });
+    return;
+  }
+  if (hit.session) {
+    target.addSession(hit.session);
+  } else {
+    target.addFile({
+      name: hit.name,
+      path: hit.path,
+      relativePath: hit.relativePath || toRelativeWorkspacePath(hit.path, target.workspaceRoot()) || hit.name,
+      isDirectory: hit.directory,
+      source: hit.directory ? "folder" : "file",
+    });
+  }
   if (replacing) {
-    const text = composerText();
+    const text = target.draft();
     const before = text.slice(0, replacing.start);
     const after = text.slice(replacing.end);
     const next = before && after && !/\s$/.test(before) && !/^\s/.test(after) ? `${before} ${after}` : `${before}${after}`;
-    composerText.set(next);
+    target.setDraft(next);
   }
   composer?.focus();
+}
+
+export function selectMentionSource(source: MentionSource): void {
+  if (source === mentionSource() || !mentionOwnerCurrent()) return;
+  explicitSource = true;
+  if (source === "sources") mentionBrowseDir.set("");
+  mentionSource.set(source);
+  mentionHits.set([]);
+  mentionSearched.set(false);
+  mentionTruncated.set(false);
+  setMentionQuery(mentionQuery());
+}
+
+function canSearchSessionReferences(): boolean {
+  return fleetDeviceById(owner.deviceId())?.hostKind !== "cli";
+}
+
+async function fetchSessionMentions(query: string): Promise<MentionHit[]> {
+  const sessionId = owner.sessionId();
+  const candidates = await invokeCommand<unknown>("search_referenceable_sessions", {
+    ...(query ? { query } : {}), limit: RESULT_LIMIT + 1,
+  }, mentionRoute());
+  if (!Array.isArray(candidates)) throw new Error("Invalid session reference search response");
+  return candidates.flatMap(candidate => {
+    const session = readSessionReference(candidate);
+    return session && session.sessionId !== sessionId ? [{
+      path: sessionReferenceKey(session),
+      name: session.sessionName,
+      directory: false,
+      relativePath: session.workspaceLabel,
+      session,
+    }] : [];
+  });
+}
+
+async function searchSessionMentions(query: string): Promise<void> {
+  if (!mentionOpen() || !mentionOwnerCurrent()) return;
+  const seq = ++mentionReqSeq;
+  const command = "search_referenceable_sessions";
+  try {
+    if (!canSearchSessionReferences()) {
+      mentionNotice.set(tr("sessions.mentionSessionUnavailable"));
+      return;
+    }
+    const hits = await fetchSessionMentions(query);
+    if (seq !== mentionReqSeq || !mentionOwnerCurrent()) return;
+    mentionHits.set(hits.slice(0, RESULT_LIMIT));
+    mentionTruncated.set(hits.length > RESULT_LIMIT);
+    mentionSearched.set(true);
+  } catch (failure) {
+    if (seq !== mentionReqSeq || !mentionOwnerCurrent()) return;
+    mentionNotice.set(isMissingCommand(failure, command)
+      ? tr("sessions.mentionSessionUnavailable")
+      : tr("sessions.mentionSessionSearchFailed"));
+  } finally {
+    if (seq === mentionReqSeq) mentionLoading.set(false);
+  }
+}
+
+type PromptSource = "mcp" | "skills";
+type MentionCatalog = {
+  entries: { hit: MentionHit; keywords: string[] }[];
+  notice?: MessageKey;
+};
+
+function readMentionCatalog(source: PromptSource): Promise<MentionCatalog> {
+  const scope = mentionCatalogScope();
+  const key = JSON.stringify([source, scope]);
+  const existing = mentionCatalogs.get(key);
+  if (existing) return existing;
+  const workspaceId = owner.workspaceId();
+  const mode = mentionMode();
+  const route = mentionRoute();
+  const current = () => mentionOpen() && mentionOwnerCurrent() && scope === mentionCatalogScope();
+  const remote = owner.remoteWorkspace();
+  const promise = source === "mcp"
+    ? remote
+      ? Promise.resolve<MentionCatalog>({ entries: [], notice: "sessions.mentionMcpRemote" })
+      : readMcpMentionCatalog(scope, mode, workspaceId, route)
+    : readSlashSkills(current, mode, workspaceId, owner.workspaceRoot(), false, route, true)
+      .then(skills => ({
+        entries: skills.map(skill => ({
+          hit: {
+            path: `skill:${skill.key ?? skill.name}`, name: skill.name, directory: false,
+            relativePath: skill.description || skill.argumentHint,
+            prompt: { kind: "skills" as const, token: skillPromptToken(skill.name), scope },
+          },
+          keywords: [skill.description, skill.argumentHint ?? ""],
+        })),
+      }));
+  mentionCatalogs.set(key, promise);
+  return promise;
+}
+
+async function readMcpMentionCatalog(
+  scope: string, modeId: string, workspaceId: string | null, route: ReturnType<typeof mentionRoute>,
+): Promise<MentionCatalog> {
+  const raw = await invokeCommand<unknown>("get_chat_mcp_catalog", {
+    modeId, ...(workspaceId ? { workspaceId } : {}),
+  }, route);
+  const catalog = raw as { tools?: unknown; modeRestricted?: unknown } | null;
+  if (!Array.isArray(catalog?.tools) || typeof catalog.modeRestricted !== "boolean") {
+    return { entries: [], notice: "sessions.mentionMcpUnavailable" };
+  }
+  const servers = new Map<string, MentionCatalog["entries"][number]>();
+  for (const tool of catalog.tools) {
+    const row = tool as Record<string, unknown> | null;
+    const id = row?.serverId;
+    const name = row?.serverName;
+    if (typeof id !== "string" || !id.trim() || typeof name !== "string" || !name.trim()) continue;
+    let entry = servers.get(id);
+    if (!entry) {
+      entry = {
+        hit: {
+          path: `mcp:${id}`, name, directory: false, relativePath: id,
+          prompt: { kind: "mcp", token: mcpPromptToken(id, name), scope },
+        },
+        keywords: ["mcp", id],
+      };
+      servers.set(id, entry);
+    }
+    for (const value of [row?.name, row?.toolName, row?.description]) {
+      if (typeof value === "string") entry.keywords.push(value);
+    }
+  }
+  return {
+    entries: [...servers.values()],
+    notice: catalog.modeRestricted ? "sessions.mentionMcpRestricted" : undefined,
+  };
+}
+
+function matchCatalog(catalog: MentionCatalog, query: string): MentionHit[] {
+  const needle = query.trim().toLowerCase();
+  const rank = ({ hit }: MentionCatalog["entries"][number]) => {
+    const name = hit.name.toLowerCase();
+    return name === needle ? 0 : name.startsWith(needle) ? 1 : 2;
+  };
+  return catalog.entries
+    .filter(({ hit, keywords }) => [hit.name, ...keywords].some(value => value.toLowerCase().includes(needle)))
+    .sort((a, b) => rank(a) - rank(b))
+    .map(entry => entry.hit);
+}
+
+async function searchCatalogMentions(source: PromptSource, query: string): Promise<void> {
+  if (!mentionOpen() || !mentionOwnerCurrent()) return;
+  const scope = mentionCatalogScope();
+  const seq = ++mentionReqSeq;
+  const current = () => seq === mentionReqSeq && mentionOwnerCurrent() && scope === mentionCatalogScope();
+  try {
+    const catalog = await readMentionCatalog(source);
+    if (!current()) return;
+    const hits = matchCatalog(catalog, query);
+    mentionHits.set(hits.slice(0, RESULT_LIMIT));
+    mentionTruncated.set(hits.length > RESULT_LIMIT);
+    mentionSearched.set(true);
+    if (catalog.notice) mentionNotice.set(tr(catalog.notice));
+  } catch (failure) {
+    if (!current()) return;
+    const command = source === "mcp" ? "get_chat_mcp_catalog" : "get_mode_skill_configs";
+    const unavailable = isMissingCommand(failure, command);
+    mentionNotice.set(tr(source === "mcp"
+      ? unavailable ? "sessions.mentionMcpUnavailable" : "sessions.mentionMcpFailed"
+      : unavailable ? "sessions.mentionSkillsUnavailable" : "sessions.mentionSkillsFailed"));
+    mentionRetryable.set(!unavailable);
+  } finally {
+    if (seq === mentionReqSeq) mentionLoading.set(false);
+  }
+}
+
+export function retryMentionCatalog(): void {
+  mentionCatalogs.delete(JSON.stringify([mentionSource(), mentionCatalogScope()]));
+  setMentionQuery(mentionQuery());
 }
 
 // Slash commands & Skills. A composer that holds `/name` (no space yet) opens the
@@ -455,61 +796,75 @@ export const LOCAL_SLASH_COMMANDS: ReadonlyArray<SlashCommand> = [
   },
 ];
 
-/** The commands the host offers for the open session; empty until it answers. */
-export const sessionCommandList = signal<SlashCommand[]>([]);
-/** Set when the host has no session commands, so `/` explains instead of listing. */
-export const sessionCommandsUnsupported = signal(false);
-/** Active mode's user-invocable skills searchable right inside `/`. */
-export const slashSkills = signal<SlashSkillItem[]>([]);
-
-let commandsKey: string | null = null;
-let skillsKey: string | null = null;
 const SLASH_SKILL_NAME_RE = /^[A-Za-z][\w:-]*$/;
 
-function mergedSlashCommands(): SlashCommand[] {
-  const host = sessionCommandList();
-  const seen = new Set(host.map(entry => entry.id));
-  const local = LOCAL_SLASH_COMMANDS.filter(entry => !seen.has(entry.id));
-  return [...host, ...local];
-}
+/** One catalog for each mounted composer, with independent session and device reads. */
+export function createSlashCommandCatalog() {
+  const sessionCommands = signal<SlashCommand[]>([]);
+  const unsupported = signal(false);
+  const skills = signal<SlashSkillItem[]>([]);
+  let commandsRequest: { key: string; promise: Promise<void> } | undefined;
+  let skillsRequest: { key: string; promise: Promise<void> } | undefined;
 
-/** Reads the host's command list for a session; repeated calls for it are free. */
-export async function loadSessionCommands(sessionId: string | null, force = false): Promise<void> {
-  const key = sessionId ?? "";
-  if (!force && key === commandsKey) return;
-  commandsKey = key;
-  try {
-    const rows = await listSessionCommands(sessionId);
-    if (commandsKey !== key) return;
-    sessionCommandList.set(
-      (rows ?? []).map(row => ({
-        id: String(row.id),
-        command: row.command || `/${row.id}`,
-        labelKey: row.labelKey ?? "",
-        description: row.description ?? "",
-        idleOnly: row.idleOnly === true,
-        available: row.available !== false,
-        args: Array.isArray(row.args) ? row.args : [],
-      })),
-    );
-    sessionCommandsUnsupported.set(false);
-  } catch (error) {
-    if (commandsKey !== key) return;
-    sessionCommandList.set([]);
-    sessionCommandsUnsupported.set(isMissingCommand(error, "list_session_commands"));
+  function commands(): SlashCommand[] {
+    const host = sessionCommands();
+    const seen = new Set(host.map(entry => entry.id));
+    return [...host, ...LOCAL_SLASH_COMMANDS.filter(entry => !seen.has(entry.id))];
   }
+
+  function loadCommands(sessionId: string | null, device: string): Promise<void> {
+    const key = JSON.stringify([device, sessionId]);
+    if (commandsRequest?.key === key) return commandsRequest.promise;
+    sessionCommands.set([]);
+    unsupported.set(false);
+    const route = fleetActive() && device ? { target: device } : undefined;
+    const promise = listSessionCommands(sessionId, route).then(rows => {
+      if (commandsRequest?.promise !== promise) return;
+      sessionCommands.set((rows ?? []).map(row => ({
+        id: String(row.id), command: row.command || `/${row.id}`, labelKey: row.labelKey ?? "",
+        description: row.description ?? "", idleOnly: row.idleOnly === true,
+        available: row.available !== false, args: Array.isArray(row.args) ? row.args : [],
+      })));
+    }).catch(error => {
+      if (commandsRequest?.promise === promise) unsupported.set(isMissingCommand(error, "list_session_commands"));
+    });
+    commandsRequest = { key, promise };
+    return promise;
+  }
+
+  function loadSkills(device: string, modeId: string, workspaceId: string | null, workspacePath: string, force = false): Promise<void> {
+    const key = JSON.stringify([device, modeId, workspaceId, workspacePath]);
+    if (!force && skillsRequest?.key === key) return skillsRequest.promise;
+    if (skillsRequest?.key !== key) skills.set([]);
+    const route = fleetActive() && device ? { target: device } : undefined;
+    const current = () => skillsRequest?.promise === promise;
+    const promise = readSlashSkills(current, modeId, workspaceId, workspacePath, force, route).then(rows => {
+      if (current()) skills.set(rows);
+    });
+    skillsRequest = { key, promise };
+    return promise;
+  }
+
+  function reset() {
+    commandsRequest = undefined;
+    skillsRequest = undefined;
+    sessionCommands.set([]);
+    unsupported.set(false);
+    skills.set([]);
+  }
+
+  return { commands, unsupported, skills, loadCommands, loadSkills, reset };
 }
 
-/** Loads enabled user-invocable skills for the active mode/workspace so `/` can search & insert `[$Skill]`. */
-export async function loadSlashSkills(
+async function readSlashSkills(
+  current: () => boolean,
   modeId: string,
   workspaceId: string | null,
   workspacePath: string,
-  force = false,
-): Promise<void> {
-  const key = `${modeId}|${workspaceId ?? ""}|${workspacePath}`;
-  if (!force && key === skillsKey) return;
-  skillsKey = key;
+  force: boolean,
+  route?: { target: string },
+  strictMode = false,
+): Promise<SlashSkillItem[]> {
   try {
     let raw: unknown;
     try {
@@ -519,21 +874,27 @@ export async function loadSlashSkills(
         includeDiagnostics: false,
         workspaceId: workspaceId || undefined,
         workspacePath: workspacePath || undefined,
-      });
-    } catch {
+      }, route);
+    } catch (error) {
+      if (!current()) return [];
+      if (strictMode) throw error;
       raw = await invokeRawCommand<unknown>("get_skill_configs", {
         forceRefresh: force,
         includeDiagnostics: false,
         workspaceId: workspaceId ?? null,
         workspacePath: workspacePath || null,
-      });
+      }, route);
     }
-    if (skillsKey !== key) return;
+    if (!current()) return [];
     const rows = Array.isArray(raw)
       ? raw
       : Array.isArray((raw as { skills?: unknown[] } | null)?.skills)
         ? (raw as { skills: unknown[] }).skills
-        : [];
+        : undefined;
+    if (!rows) {
+      if (strictMode) throw new Error("Invalid mode skill catalog");
+      return [];
+    }
     const seen = new Set<string>();
     const items: SlashSkillItem[] = [];
     for (const row of rows) {
@@ -561,10 +922,10 @@ export async function loadSlashSkills(
       });
     }
     items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    slashSkills.set(items);
-  } catch {
-    if (skillsKey !== key) return;
-    slashSkills.set([]);
+    return items;
+  } catch (error) {
+    if (strictMode) throw error;
+    return [];
   }
 }
 
@@ -576,10 +937,10 @@ export function slashCommandLabel(command: SlashCommand): string {
 }
 
 /** The command list the composer's text asks for, or `null` when it is not a slash token. */
-export function slashCommandsFor(text: string, running: boolean): SlashCommand[] | null {
-  if (!text.startsWith("/") || /\s/.test(text)) return null;
+export function slashCommandsFor(text: string, running: boolean, commands: readonly SlashCommand[]): SlashCommand[] {
+  if (!text.startsWith("/") || /\s/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return mergedSlashCommands().filter(entry => {
+  return commands.filter(entry => {
     if (running && entry.idleOnly) return false;
     const cmd = entry.command.slice(1).toLowerCase();
     if (cmd.startsWith(query) || cmd.includes(query)) return true;
@@ -589,10 +950,9 @@ export function slashCommandsFor(text: string, running: boolean): SlashCommand[]
 }
 
 /** Matching enabled skills for a leading `/query` token, ranked exact > prefix > substring. */
-export function slashSkillsFor(text: string): SlashSkillItem[] {
+export function slashSkillsFor(text: string, list: readonly SlashSkillItem[]): SlashSkillItem[] {
   if (!text.startsWith("/") || /\s/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  const list = slashSkills();
   if (!query) return list.slice(0, 12);
   const scored: Array<{ item: SlashSkillItem; rank: number }> = [];
   for (const item of list) {
@@ -609,15 +969,8 @@ export function slashSkillsFor(text: string): SlashSkillItem[] {
   return scored.slice(0, 12).map(s => s.item);
 }
 
-/** Replaces the leading `/query` token with the runtime-honored `[$<skillName>] ` token. */
-export function insertSlashSkill(skill: SlashSkillItem, composer: InputRef | undefined): void {
-  const token = `[$${skill.name}] `;
-  composerText.set(token);
-  composer?.focus();
-}
-
 /** The command a whole message names (`/reload skills`, `/reload-skills`, `/model claude`, `/goal ...`), if offered. */
-export function parseSlashCommand(text: string): { command: SlashCommand; arg: string } | null {
+export function parseSlashCommand(text: string, commands: readonly SlashCommand[]): { command: SlashCommand; arg: string } | null {
   const trimmed = text.trim();
   const match = /^\/([a-z_-]+)(?:\s+([\s\S]+))?$/i.exec(trimmed);
   if (!match) return null;
@@ -627,7 +980,7 @@ export function parseSlashCommand(text: string): { command: SlashCommand; arg: s
     id = "reload";
     rawArg = "skills";
   }
-  const command = mergedSlashCommands().find(entry => entry.id === id);
+  const command = commands.find(entry => entry.id === id);
   if (!command) return null;
   if (command.local) {
     return { command, arg: rawArg };
@@ -648,16 +1001,17 @@ const STARTED_MESSAGES: Record<string, MessageKey> = {
 export async function runSlashCommand(
   sessionId: string,
   command: SlashCommand,
-  arg = "",
+  arg: string,
+  workspaceId: string | null,
+  device: string,
 ): Promise<{ ok: boolean; message: string; outcome?: string }> {
-  const workspaceId = activeWorkspaceId();
   try {
     const result = await executeSessionCommand({
       sessionId,
       id: command.id,
       ...(arg ? { arg } : {}),
       ...(workspaceId ? { workspaceId } : {}),
-    });
+    }, fleetActive() && device ? { target: device } : undefined);
     const key = STARTED_MESSAGES[result?.outcome ?? ""];
     return { ok: true, message: key ? tr(key) : command.command, outcome: result?.outcome };
   } catch (error) {

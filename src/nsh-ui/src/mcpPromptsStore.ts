@@ -23,14 +23,11 @@ export interface McpPromptEntry {
   arguments: McpPromptArgument[];
 }
 
-export const mcpPrompts = signal<McpPromptEntry[]>([]);
 /** The prompt whose arguments are being filled in. */
 export const mcpPromptForm = signal<McpPromptEntry | null>(null);
 export const mcpPromptValues = signal<Record<string, string>>({});
 export const mcpPromptBusy = signal(false);
 export const mcpPromptError = signal("");
-
-let loadedFor: string | null = null;
 
 function route(deviceId: string): InvokeCommandOptions | undefined {
   return fleetActive() && deviceId ? { target: deviceId } : undefined;
@@ -58,15 +55,35 @@ export function mcpPromptSlug(entry: McpPromptEntry): string {
  * Reads the prompts of the device's running MCP servers once per device; a
  * server that publishes none, or a host without the command, adds nothing.
  */
-export async function loadMcpPrompts(deviceId: string, force = false): Promise<void> {
-  if (!force && loadedFor === deviceId) return;
-  loadedFor = deviceId;
+export function createMcpPromptCatalog() {
+  const prompts = signal<McpPromptEntry[]>([]);
+  let request: { device: string; promise: Promise<void> } | undefined;
+
+  function load(device: string): Promise<void> {
+    if (request?.device === device) return request.promise;
+    prompts.set([]);
+    const current = () => request?.promise === promise;
+    const promise = readMcpPrompts(device, current).then(rows => {
+      if (current()) prompts.set(rows);
+    });
+    request = { device, promise };
+    return promise;
+  }
+
+  function reset() {
+    request = undefined;
+    prompts.set([]);
+  }
+
+  return { prompts, load, reset };
+}
+
+async function readMcpPrompts(deviceId: string, current: () => boolean): Promise<McpPromptEntry[]> {
   let servers: Array<Record<string, unknown>> = [];
   try {
     servers = (await invokeCommand<Array<Record<string, unknown>>>("get_mcp_servers", undefined, route(deviceId))) ?? [];
   } catch {
-    if (loadedFor === deviceId) mcpPrompts.set([]);
-    return;
+    return [];
   }
   const running = servers.filter(server => {
     const status = String(server.status ?? "").toLowerCase();
@@ -75,6 +92,7 @@ export async function loadMcpPrompts(deviceId: string, force = false): Promise<v
   });
   const rows: McpPromptEntry[] = [];
   for (const server of running) {
+    if (!current()) return [];
     const serverId = String(server.id ?? "");
     if (!serverId) continue;
     try {
@@ -97,14 +115,14 @@ export async function loadMcpPrompts(deviceId: string, force = false): Promise<v
       // A server without prompts support answers with an error; it simply offers none.
     }
   }
-  if (loadedFor === deviceId) mcpPrompts.set(rows);
+  return rows;
 }
 
 /** The prompts a `/query` token matches (by server, name or title). */
-export function mcpPromptsFor(text: string): McpPromptEntry[] {
+export function mcpPromptsFor(text: string, prompts: readonly McpPromptEntry[]): McpPromptEntry[] {
   if (!text.startsWith("/") || /\s/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return mcpPrompts().filter(entry =>
+  return prompts.filter(entry =>
     !query ||
     mcpPromptSlug(entry).includes(query) ||
     entry.name.toLowerCase().includes(query) ||
@@ -169,7 +187,5 @@ export function closeMcpPromptForm(): void {
 
 /** Test seam. */
 export function resetMcpPrompts(): void {
-  loadedFor = null;
-  mcpPrompts.set([]);
   mcpPromptForm.set(null);
 }

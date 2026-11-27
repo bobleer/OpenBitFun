@@ -6,7 +6,9 @@
 // same way, so a size picked in either frontend is the size the other draws.
 
 import { signal } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getEntryConfig, setEntryConfig } from "./api";
+import { backendConnection } from "./bridge";
+import { tr } from "./i18n";
 import { BASE_FONT_SIZE, uiFontBasePx } from "./theme";
 
 export type FontLevel = "compact" | "small" | "default" | "medium" | "large" | "custom";
@@ -30,6 +32,10 @@ export const fontLevel = signal<FontLevel>("default");
 /** The baseline in px the scale comes from, resolved for the level. */
 export const fontPx = signal(BASE_FONT_SIZE);
 export const fontNotice = signal("");
+let writeQueue = Promise.resolve();
+let revision = 0;
+let latestRead = 0;
+let needsRetry = false;
 
 function isLevel(value: unknown): value is FontLevel {
   return value === "compact" || value === "small" || value === "default"
@@ -59,45 +65,58 @@ function apply(level: FontLevel, px: number): void {
  * the default, which is what the desktop's own default is.
  */
 export async function loadFontPreference(): Promise<void> {
+  const read = ++latestRead;
+  const before = revision;
+  const connection = backendConnection();
+  const current = () => read === latestRead && before === revision && backendConnection() === connection;
+  await writeQueue;
+  if (!current()) return;
   try {
-    const stored = (await getConfig(CONFIG_PATH, true)) as
+    const stored = (await getEntryConfig(CONFIG_PATH)) as
       | { uiSize?: { level?: unknown; customPx?: unknown } }
       | null;
+    if (!current()) return;
     const level = isLevel(stored?.uiSize?.level) ? stored.uiSize.level : "default";
-    const customPx = typeof stored?.uiSize?.customPx === "number" ? stored.uiSize.customPx : undefined;
+    const customPx = typeof stored?.uiSize?.customPx === "number" && Number.isFinite(stored.uiSize.customPx)
+      ? stored.uiSize.customPx : undefined;
     apply(level, pxOfLevel(level, customPx));
   } catch {
-    apply("default", BASE_FONT_SIZE);
+    // A transient read failure keeps the known baseline.
   }
 }
 
 /** Writes the whole document, which is the shape the desktop stores. */
 async function store(level: FontLevel, px: number): Promise<void> {
+  if (level === fontLevel() && px === fontPx() && !needsRetry) return;
+  const change = ++revision;
+  const connection = backendConnection();
+  needsRetry = false;
   apply(level, px);
   fontNotice.set("");
-  try {
-    await setConfig(CONFIG_PATH, {
-      uiSize: level === "custom" ? { level, customPx: px } : { level },
-    });
-  } catch (error) {
-    fontNotice.set(
-      `The host did not store the size: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  writeQueue = writeQueue.then(async () => {
+    if (backendConnection() !== connection) return;
+    try {
+      await setEntryConfig(CONFIG_PATH, {
+        uiSize: level === "custom" ? { level, customPx: px } : { level },
+      });
+    } catch {
+      if (change === revision && backendConnection() === connection) {
+        needsRetry = true;
+        fontNotice.set(tr("settings.appearance.fontSaveFailed"));
+      }
+    }
+  });
+  await writeQueue;
 }
 
 export async function chooseFontLevel(level: FontLevel): Promise<void> {
   await store(level, pxOfLevel(level, fontPx()));
 }
 
-/**
- * One step of the custom size. The desktop turns an adjusted preset into
- * `custom` at the resulting px, because the presets are fixed sizes.
- */
-export async function adjustFontPx(delta: number): Promise<void> {
-  const next = clampPx(fontPx() + delta);
-  if (next === fontPx()) return;
-  await store("custom", next);
+/** Writes a custom baseline chosen in the stepper. */
+export async function setCustomFontPx(px: number): Promise<void> {
+  if (!Number.isFinite(px)) return;
+  await store("custom", clampPx(px));
 }
 
 export async function resetFontPreference(): Promise<void> {

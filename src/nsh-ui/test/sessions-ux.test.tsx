@@ -133,17 +133,15 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   await openSession(app, "Muse workflow");
   await app.waitFor("Inspect and update the pipeline.");
 
-  // Layered progressive disclosure: thinking stays collapsed and consecutive non-text
-  // tool calls (bash, todo_write, edit) fold into one compact activity summary row.
+  // Reasoning stays collapsed. A shell row and the consequential actions each
+  // retain their own disclosure controls.
   await app.waitFor("Thinking summary");
   expect(app.texts()).not.toContain("Checking git status and cargo workspace before patching.");
-  await app.waitFor("Completed");
-  expect(app.texts().join("")).toContain("1 command, 1 edit, 1 step");
+  await app.waitFor("id:ambient-tool-card >> text:Ran");
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-edit");
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-todo_write");
   await app.waitFor("Primary model · 1.2s");
 
-  // Expanding the folded activity group reveals every compact tool strip cleanly.
-  await app.press("Completed");
-  await app.waitFor("Ran");
   await app.waitFor("cargo test -p core");
   await app.waitFor("Updated plan");
   await app.waitFor("Edited");
@@ -363,15 +361,103 @@ test("permission card and interactive question options answer blocking host inte
       },
     },
   });
-  await app.waitFor("Target: Pick a target");
-  await app.press("question-tool-tauri-q-0-Desktop");
+  await app.waitFor("Pick a target");
+  await app.press("id:question-tool-tauri-q-0-Desktop");
   await app.press("Send answer");
   expect(backend.userAnswers).toEqual([
     { toolId: "tool-tauri-q", answers: { "0": "Desktop" }, sessionId: "session-1" },
   ]);
 });
 
-test("sessions scene repaints reactively across dark and light Tauri palettes", async () => {
+test("AskUser question drafts stay on their source device across a split and swap", async () => {
+  const backend = createBackend();
+  const questions = (name: string) => ({ questions: [
+    { question: `${name} targets?`, header: "Targets", multiSelect: true,
+      options: [{ label: `${name} standard`, description: "Known target" }, { label: "Other" }] },
+    { question: `${name} release channel?`, header: "Channel", multiSelect: false,
+      options: [{ label: `${name} Stable` }] },
+  ] });
+  const pending = new Map<string, ReturnType<typeof questions>>();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const call = data as { action?: string; request?: { sessionId?: string }; raw?: { sessionId?: string } };
+    if (call.action === "get_session_interaction_mailbox") {
+      const sessionId = call.request?.sessionId ?? "";
+      const payload = pending.get(sessionId);
+      return { ok: true, value: { sessionId, userQuestions: { revision: 1,
+        questions: payload ? [{ toolId: "shared-tool", questions: payload }] : [] } } };
+    }
+    if (call.action === "submit_user_answers") pending.delete(call.raw?.sessionId ?? "");
+    return invoke(data);
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: { revision: 1, full: true, removedDeviceIds: [], devices: [
+      fleetDeviceRow("dev-a", "Entry", [{ workspaceId: "ws-a", name: "Entry project", rootPath: "/entry",
+        sessions: [fleetSessionRow("dev-a", "ws-a", "s-a1", "Entry session")] }], { isClientDevice: true }),
+      fleetDeviceRow("dev-b", "Owner", [{ workspaceId: "ws-b", name: "Owner project", rootPath: "/owner",
+        sessions: [fleetSessionRow("dev-b", "ws-b", "s-b1", "Owner session")] }]),
+    ] },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, platform: "web", host: { handlers: host.handlers } });
+  await app.press("id:sidebar-session-s-a1");
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  await app.press("id:sidebar-session-s-b1");
+  const prompt = (deviceId: string, sessionId: string, name: string) => JSON.stringify({
+    jsonrpc: "2.0", method: "event",
+    params: { seq: 1, origin: deviceId, event: "backend-event-toolawaitinguserinput",
+      payload: { toolId: "shared-tool", sessionId, questions: questions(name) } },
+  });
+  pending.set("s-a1", questions("Entry"));
+  pending.set("s-b1", questions("Owner"));
+  await app.host.send("openbitfun.obpFrames", [prompt("dev-a", "s-a1", "Entry"), prompt("dev-b", "s-b1", "Owner")]);
+  const main = "id:primary-session-pane";
+  const split = "id:secondary-session-pane";
+  await app.waitFor(`${main} >> text:Entry targets?`);
+  await app.waitFor(`${split} >> text:Owner targets?`);
+  expect(app.shows(`${main} >> text:Owner targets?`)).toBe(false);
+  expect(app.shows(`${split} >> text:Entry targets?`)).toBe(false);
+  expect(app.enabled(`${split} >> id:question-next-shared-tool`)).toBe(false);
+
+  await app.press(`${main} >> label:Entry standard`);
+  await app.press(`${split} >> id:question-shared-tool-0-Other`);
+  await app.press(`${split} >> id:question-shared-tool-0-other`);
+  await app.type(`${split} >> id:question-shared-tool-0-text`, "  extra target  ");
+  expect(app.shows(`${split} >> text:2 of 3 selected`)).toBe(true);
+  await app.press(`${split} >> id:question-next-shared-tool`);
+  await app.waitFor(`${split} >> text:Owner release channel?`);
+  await app.press(`${split} >> id:question-prev-shared-tool`);
+  expect(app.value(`${split} >> id:question-shared-tool-0-text`)).toBe("  extra target  ");
+  expect(host.fleetCalls.filter(call => call.command === "start_user_question_interaction")).toEqual([
+    { target: "dev-a", command: "start_user_question_interaction", args: { request: { sessionId: "s-a1", toolId: "shared-tool" } } },
+    { target: "dev-b", command: "start_user_question_interaction", args: { request: { sessionId: "s-b1", toolId: "shared-tool" } } },
+  ]);
+  const sends = () => host.fleetCalls.filter(call => call.command === "submit_user_answers");
+  expect(sends()).toEqual([]);
+
+  await app.hover("id:split-divider-proximity-left");
+  await app.press("split-divider-swap");
+  await app.waitFor(`${main} >> text:Owner targets?`);
+  expect(app.value(`${main} >> id:question-shared-tool-0-text`)).toBe("  extra target  ");
+  await app.press(`${main} >> id:question-next-shared-tool`);
+  await app.press(`${main} >> label:Owner Stable`);
+  await app.press(`${main} >> id:question-send-shared-tool`);
+  await app.waitUntil(() => sends().length === 1);
+  expect(sends()[0]).toMatchObject({ target: "dev-b", args: {
+    toolId: "shared-tool", sessionId: "s-b1", answers: { "0": ["Other", "extra target"], "1": "Owner Stable" },
+  } });
+  await app.press(`${split} >> id:question-next-shared-tool`);
+  await app.press(`${split} >> label:Entry Stable`);
+  await app.press(`${split} >> id:question-send-shared-tool`);
+  await app.waitUntil(() => sends().length === 2);
+  expect(sends()[1]).toMatchObject({ target: "dev-a", args: {
+    toolId: "shared-tool", sessionId: "s-a1", answers: { "0": ["Entry standard"], "1": "Entry Stable" },
+  } });
+});
+
+test("sessions scene repaints reactively across the shared dark and light palettes", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", {
     ...DESKTOP,
@@ -382,7 +468,7 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
   await openSession(app, "NSH skeleton");
   // The idle shortcut hint is gone (visual spec §5); a tool row's target is muted text too.
   await app.waitFor("NavPanel.tsx");
-  expect(app.spanStyle("NavPanel.tsx").color).toBe("#9e9ea6ff");
+  expect(app.spanStyle("NavPanel.tsx").color).toBe("#858585ff");
 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
@@ -394,7 +480,7 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
   // Back to the session through All sessions (the new shell has no settings back row).
   await openSession(app, "NSH skeleton");
   await app.waitFor("NavPanel.tsx");
-  expect(app.spanStyle("NavPanel.tsx").color).toBe("#5c6672ff");
+  expect(app.spanStyle("NavPanel.tsx").color).toBe("#6a6a6aff");
 });
 
 test("rename sends the whole session record the host deserializes", async () => {
@@ -518,6 +604,21 @@ test("a live round cuts its text at each tool call and shows the tool's result",
 
   await app.press("tool-card-ExecCommand");
   await app.waitFor("Finished dev profile");
+
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "ConfirmationNeeded", tool_id: "live-2", tool_name: "CallDeferredTool",
+      params: { tool_name: "Edit", args: { file_path: "/repo/live.ts", old_string: "before", new_string: "after" } } },
+  });
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-Edit");
+  await app.waitFor("Awaiting approval");
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "Completed", tool_id: "live-2", tool_name: "CallDeferredTool", result: { changed: true } },
+  });
+  await app.waitFor("Awaiting approval", { state: "gone" });
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-Edit");
+  expect(app.shows("label:tool-card-CallDeferredTool")).toBe(false);
 });
 
 test("a running turn keeps streaming while another session is open", async () => {
@@ -1184,6 +1285,10 @@ test("first /model opens above the composer without first pressing the model sel
   await app.waitFor("id:model-picker");
   expect(Math.abs(app.layout("id:model-picker")!.x - trigger.x)).toBeLessThan(2);
 
+  // The query opens search inside the picker. Return to the model list before dismissing it.
+  expect(app.value("model-picker-search-input")).toBe("missing-model");
+  await app.press("model-picker-search-back");
+  await app.waitFor("model-picker-search-input", { state: "gone" });
   await app.keyboard.press("escape");
   await app.waitFor("id:model-picker", { state: "gone" });
   await openSession(app, "Terminal migration");
@@ -1267,6 +1372,18 @@ test("/model switches models locally, bare /goal & /btw open dialogs, and visual
   await app.type("composer", "/btw");
   await app.submit("composer");
   expect(app.value("composer")).toBe("");
+  expect(backend.actions()).not.toContain("submit_user_message");
+});
+
+test("an ambiguous model command opens the same picker with its search already filled", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/model openai");
+  await app.submit("composer");
+  await app.waitFor("model-picker-search-input");
+  expect(app.value("model-picker-search-input")).toBe("openai");
+  expect(backend.actions()).not.toContain("update_session_model");
   expect(backend.actions()).not.toContain("submit_user_message");
 });
 
@@ -1496,6 +1613,102 @@ test("composer syncs session model from get_session_model_target, omits open ske
   await app.waitFor("Stop");
   expect(app.texts()).not.toContain("Steering the running turn");
   expect(app.texts()).not.toContain("Queued until the turn finishes");
+});
+
+test("the model menu keeps reasoning selected until its device accepts the new preset", async () => {
+  const backend = createBackend({ sessionReasoningPreset: "high" });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const requests: Array<Record<string, unknown> | undefined> = [];
+  let respond: ((reply: unknown) => void) | undefined;
+  backend.handlers["openbitfun.invoke"] = data => {
+    const call = data as { action?: string; request?: Record<string, unknown> };
+    if (call.action !== "update_session_model") return invoke(data);
+    requests.push(call.request);
+    return new Promise(resolve => { respond = resolve; });
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("label:reasoning-picker >> text:High");
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("model-picker-reasoning");
+  expect(app.shows("reasoning-preset-segments")).toBe(false);
+  await app.press("model-picker-reasoning");
+  await app.waitFor("reasoning-option-low");
+  expect(String(app.accessibility("reasoning-option-high")?.pressed)).toBe("true");
+
+  const first = app.press("reasoning-option-low");
+  await app.waitUntil(() => requests.length === 1);
+  expect(app.enabled("reasoning-option-low")).toBe(false);
+  expect(String(app.accessibility("reasoning-option-high")?.pressed)).toBe("true");
+  respond?.({ ok: false, error: "The model setting could not be saved" });
+  await first;
+  await app.waitFor("The model setting could not be saved");
+  expect(app.enabled("reasoning-option-low")).toBe(true);
+  expect(String(app.accessibility("reasoning-option-high")?.pressed)).toBe("true");
+
+  const retry = app.press("reasoning-option-low");
+  await app.waitUntil(() => requests.length === 2);
+  respond?.({ ok: true, value: null });
+  await retry;
+  await app.waitFor("reasoning-preset-segments", { state: "gone" });
+  await app.waitFor("label:model-picker-reasoning >> text:Low");
+  expect(requests).toMatchObject([
+    { sessionId: "session-1", workspaceId: "workspace-1", reasoningPreset: "low" },
+    { sessionId: "session-1", workspaceId: "workspace-1", reasoningPreset: "low" },
+  ]);
+});
+
+test("the model menu validates, cancels and retries a context-only model update", async () => {
+  const model = {
+    id: "cfg-primary", name: "Primary model", provider: "openai", model_name: "gpt-4.1-mini",
+    base_url: "https://fixture.invalid/v1", enabled: true, capabilities: ["text_chat"],
+    context_window: 128_000, max_tokens: 50_000,
+  };
+  const backend = createBackend({ configs: { "ai.models": [model] } });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const updates: unknown[] = [];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const call = data as { action?: string; request?: unknown };
+    if (call.action === "get_ai_model_catalog") {
+      const presets = updates.length >= 2 ? ["low"] : ["low", "high"];
+      return { ok: true, value: { models: [{ ...model, reasoning: { status: "supported",
+        presets: presets.map((id, order) => ({ id, order, source: "model_config", label: id, actions: [] })),
+      } }], default_models: { primary: model.id } } };
+    }
+    if (call.action === "ai_model_upsert") {
+      updates.push(call.request);
+      if (updates.length === 1) return { ok: false, error: "This model could not be updated right now" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("label:model-picker-context >> text:128K");
+  await app.press("model-picker-context");
+  expect(app.value("model-picker-context-input")).toBe("128000");
+  await app.clear("model-picker-context-input");
+  await app.type("model-picker-context-input", "31000");
+  await app.press("model-picker-context-save");
+  await app.waitFor("Enter a whole number between 32,000 and 2,000,000 tokens.");
+  expect(updates).toHaveLength(0);
+
+  await app.keyboard.press("escape");
+  await app.waitFor("label:model-picker-context >> text:128K");
+  expect(app.shows("model-picker-context-input")).toBe(false);
+  await app.press("model-picker-context");
+  await app.clear("model-picker-context-input");
+  await app.type("model-picker-context-input", "64000");
+  await app.press("model-picker-context-save");
+  await app.waitFor("This model could not be updated right now");
+  expect(app.value("model-picker-context-input")).toBe("64000");
+  await app.press("model-picker-context-save");
+  await app.waitFor("label:model-picker-context >> text:64.0K");
+  await app.waitFor("The output limit was lowered to what the context window allows.");
+  expect(updates).toEqual(Array.from({ length: 2 }, () => ({ models: [{ id: "cfg-primary", contextWindow: 64_000 }] })));
+  await app.press("model-picker-reasoning");
+  await app.waitFor("reasoning-option-low");
+  expect(app.shows("reasoning-option-high")).toBe(false);
 });
 
 test("left-side turn jump rail previews a turn on hover and jumps on press", async () => {
@@ -1852,15 +2065,17 @@ test("AskUserQuestion renders countdown until user interacts and disappears imme
     },
   });
 
-  await app.waitFor("Deploy: Pick deployment mode");
+  await app.waitFor("Pick deployment mode");
   // Countdown badge and auto-proceed hint are visible, and host timeout has NOT been cancelled yet.
-  expect(app.shows("question-countdown-tool-q-countdown")).toBe(true);
+  expect(app.shows("id:question-countdown-tool-q-countdown")).toBe(true);
   expect(backend.questionStarts).toEqual([]);
 
   // Selecting an option notifies the host to pause auto-proceed and hides the countdown.
-  await app.press("question-tool-q-countdown-0-Canary");
+  await app.press("id:question-countdown-tool-q-countdown");
   expect(backend.questionStarts).toEqual([{ sessionId: "session-1", toolId: "tool-q-countdown" }]);
-  expect(app.shows("question-countdown-tool-q-countdown")).toBe(false);
+  expect(app.shows("id:question-countdown-tool-q-countdown")).toBe(false);
+  await app.press("id:question-tool-q-countdown-0-Canary");
+  expect(backend.questionStarts).toHaveLength(1);
 
   // Clicking Stop clears BOTH pending AskUserQuestion AND pending PermissionCard immediately.
   await app.host.send("openbitfun.event", {
@@ -1879,7 +2094,7 @@ test("AskUserQuestion renders countdown until user interacts and disappears imme
   await app.waitFor("allow-once-perm-stop-test");
 
   await app.press("Stop");
-  await app.waitFor("Deploy: Pick deployment mode", { state: "gone" });
+  await app.waitFor("Pick deployment mode", { state: "gone" });
   await app.waitFor("allow-once-perm-stop-test", { state: "gone" });
   expect(app.texts()).not.toContain("The agent needs an answer");
 
@@ -1903,7 +2118,7 @@ test("AskUserQuestion renders countdown until user interacts and disappears imme
       },
     },
   });
-  await app.waitFor("Cleanup: Confirm cleanup?");
+  await app.waitFor("Confirm cleanup?");
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -1916,7 +2131,7 @@ test("AskUserQuestion renders countdown until user interacts and disappears imme
       },
     },
   });
-  await app.waitFor("Cleanup: Confirm cleanup?", { state: "gone" });
+  await app.waitFor("Confirm cleanup?", { state: "gone" });
 });
 
 test("prompt suggestion hydrates from persisted transcript view after restart, updates live, accepts on click, and clears on dismiss or new turn", async () => {

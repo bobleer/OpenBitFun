@@ -11,6 +11,9 @@ pub use openbitfun_agent_runtime::deep_review::{
 };
 
 pub mod capabilities;
+pub mod history;
+pub(crate) mod outcome;
 pub mod report;
+pub mod revision;
 pub mod scope;
 pub mod task_adapter;

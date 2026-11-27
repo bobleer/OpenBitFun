@@ -11,6 +11,7 @@
 import { cleanup, effect, lifecycle, Scroll, signal, Text, untracked, View, WebView } from "nsh";
 import { isAvailable as desktopMenusAvailable, Menu, type MenuItem } from "nsh/desktop";
 import { fleetActive, windowShellId } from "../bridge";
+import { cardNumber, cardTone, formatCardValue, resolvePointer, type CardTone } from "../desktopCardData";
 import {
   cardActionError,
   cardsDeviceForLibrary,
@@ -27,12 +28,14 @@ import {
   type DesktopCard,
 } from "../desktopCardsStore";
 import { fleetDeviceById } from "../fleetStore";
-import { formatCount, formatDate, formatRelativeTime, formatTime } from "../format";
+import { formatDate, formatRelativeTime, formatTime } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import { navigateScene, showDevice, selectSession } from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle, touchSlop, type Palette } from "../theme";
 import { DeviceBadge, deviceException, stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
+import { ChoiceIndicator } from "./ChoiceIndicator";
+import { DesktopCardChart } from "./DesktopCardChart";
 import { documentWebViewsAvailable } from "./markdownEditor";
 import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, SkeletonBlock } from "./primitives";
@@ -41,8 +44,6 @@ import type { DropdownMenuItem } from "./overlays";
 
 // ── Sizes (the spacing scale) ───────────────────────────────────────────────
 
-const CHART_LABEL_WIDTH = space.x6l + space.sm;
-const CHECKBOX_SIZE = space.lg;
 const METRIC_MIN_WIDTH = space.x6l + space.x3l;
 const CUSTOM_MIN_HEIGHT = space.x6l + space.x3l;
 const INLINE_CARD_MIN_HEIGHT = space.x6l * 2;
@@ -82,7 +83,7 @@ const CARD_ICONS: Record<string, IconName> = {
 };
 
 /** The card's own tones, read as the semantic tokens every appearance defines. */
-const TONE_TOKENS: Record<string, keyof Palette> = {
+const TONE_TOKENS: Record<CardTone, keyof Palette> = {
   neutral: "textSecondary",
   accent: "accent",
   info: "accent",
@@ -92,94 +93,14 @@ const TONE_TOKENS: Record<string, keyof Palette> = {
 };
 
 function toneColor(tone: unknown, fallback: keyof Palette = "text"): string {
-  const token = typeof tone === "string" ? TONE_TOKENS[tone] : undefined;
-  return palette()[token ?? fallback] as string;
-}
-
-/** RFC 6901 JSON Pointer lookup; `undefined` for a missing path. */
-export function resolvePointer(root: unknown, pointer: unknown): unknown {
-  if (typeof pointer !== "string") return undefined;
-  if (pointer === "") return root;
-  if (!pointer.startsWith("/")) return undefined;
-  let current: unknown = root;
-  for (const raw of pointer.slice(1).split("/")) {
-    const segment = raw.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Array.isArray(current)) {
-      if (!/^(0|[1-9]\d*)$/.test(segment)) return undefined;
-      current = current[Number(segment)];
-    } else if (current !== null && typeof current === "object") {
-      if (!Object.prototype.hasOwnProperty.call(current, segment)) return undefined;
-      current = (current as Record<string, unknown>)[segment];
-    } else {
-      return undefined;
-    }
-  }
-  return current;
+  const normalized = cardTone(tone);
+  return palette()[normalized ? TONE_TOKENS[normalized] : fallback] as string;
 }
 
 /** Template paths read the last fetched value when the card has a data source. */
 function cardData(card: DesktopCard): unknown {
   if (typeof card.dataSource?.kind === "string") return card.lastData?.value ?? null;
   return card.data ?? null;
-}
-
-function finite(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function timestampMs(value: unknown): number | null {
-  const numeric = finite(value);
-  if (numeric !== null) return Math.abs(numeric) < 1e11 ? numeric * 1000 : numeric;
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-  return null;
-}
-
-function fixed(value: number, digits: unknown): string {
-  const places = typeof digits === "number" ? Math.min(Math.max(Math.trunc(digits), 0), 8) : null;
-  if (places === null) return Number.isInteger(value) ? formatCount(value) : String(Math.round(value * 100) / 100);
-  const [whole, fraction] = Math.abs(value).toFixed(places).split(".");
-  const grouped = formatCount(Number(whole));
-  return `${value < 0 ? "-" : ""}${grouped}${fraction ? `.${fraction}` : ""}`;
-}
-
-/** A value as a metric or chart label says: number, percent, currency, date or text. */
-export function formatCardValue(item: Record<string, unknown>, raw: unknown): string {
-  if (raw === undefined || raw === null || raw === "") return "—";
-  const numeric = finite(raw);
-  let text: string;
-  switch (item.format) {
-    case "number":
-      text = numeric === null ? String(raw) : fixed(numeric, item.digits);
-      break;
-    case "percent":
-      text = numeric === null ? String(raw) : `${fixed(numeric, item.digits)}%`;
-      break;
-    case "currency":
-      text =
-        numeric === null ? String(raw) : `${typeof item.currency === "string" ? `${item.currency} ` : ""}${fixed(numeric, item.digits ?? 2)}`;
-      break;
-    case "datetime": {
-      const ms = timestampMs(raw);
-      text = ms === null ? String(raw) : `${formatDate(ms)} ${formatTime(ms)}`;
-      break;
-    }
-    case "relativeTime": {
-      const ms = timestampMs(raw);
-      text = ms === null ? String(raw) : formatRelativeTime(ms);
-      break;
-    }
-    default:
-      text = typeof raw === "object" ? JSON.stringify(raw) : String(raw);
-  }
-  return `${typeof item.prefix === "string" ? item.prefix : ""}${text}${typeof item.suffix === "string" ? item.suffix : ""}`;
 }
 
 function metricTone(item: Record<string, unknown>, raw: unknown): unknown {
@@ -189,53 +110,11 @@ function metricTone(item: Record<string, unknown>, raw: unknown): unknown {
     if (mapped) return mapped;
   }
   if (item.signTone === true) {
-    const numeric = finite(raw);
+    const numeric = cardNumber(raw);
     if (numeric !== null && numeric > 0) return "success";
     if (numeric !== null && numeric < 0) return "danger";
   }
   return item.tone;
-}
-
-interface ChartPoint {
-  label: string;
-  value: number;
-  tone?: unknown;
-}
-
-const CHART_LIMITS: Record<string, number> = { bar: 12, column: 24, line: 120, donut: 6, stacked: 6 };
-
-function chartPoints(template: Record<string, unknown>, data: unknown): ChartPoint[] {
-  const limit = CHART_LIMITS[String(template.chart)] ?? 12;
-  if (Array.isArray(template.items) && template.items.length > 0) {
-    return (template.items as Array<Record<string, unknown>>)
-      .map(item => ({ label: String(item.label ?? ""), value: finite(item.value) ?? 0, tone: item.tone }))
-      .slice(0, limit);
-  }
-  const raw = resolvePointer(data, template.itemsPath);
-  if (!Array.isArray(raw)) return [];
-  const labels = resolvePointer(data, template.labelsPath);
-  const labelKey = typeof template.labelKey === "string" ? template.labelKey : "label";
-  const valueKey = typeof template.valueKey === "string" ? template.valueKey : "value";
-  return raw
-    .map((entry, index): ChartPoint | null => {
-      if (typeof entry === "number" || typeof entry === "string") {
-        const value = finite(entry);
-        const label = Array.isArray(labels) ? String(labels[index] ?? index + 1) : String(index + 1);
-        return value === null ? null : { label, value };
-      }
-      if (Array.isArray(entry)) {
-        const value = finite(entry[1]);
-        return value === null ? null : { label: String(entry[0] ?? ""), value };
-      }
-      if (entry && typeof entry === "object") {
-        const record = entry as Record<string, unknown>;
-        const value = finite(record[valueKey]);
-        return value === null ? null : { label: String(record[labelKey] ?? ""), value };
-      }
-      return null;
-    })
-    .filter((point): point is ChartPoint => point !== null)
-    .slice(-limit);
 }
 
 // ── Template bodies ──────────────────────────────────────────────────────────
@@ -281,24 +160,7 @@ function Checklist(props: { deviceId: string; card: DesktopCard }) {
               ...pressTransition(120),
             }}
           >
-            <View style={{ marginTop: space.hair, flexShrink: 0 }}>
-              <If
-                when={item().done === true}
-                else={
-                  <View
-                    style={{
-                      width: CHECKBOX_SIZE,
-                      height: CHECKBOX_SIZE,
-                      borderRadius: radii.xs,
-                      borderWidth: 1,
-                      borderColor: palette().textMuted,
-                    }}
-                  />
-                }
-              >
-                <Icon name="check-square" size={CHECKBOX_SIZE} color={palette().textSecondary} />
-              </If>
-            </View>
+            <ChoiceIndicator kind="checkbox" checked={item().done === true} disabled={busy()} style={{ marginTop: space.hair }} />
             <Text
               style={{
                 ...bodyText(),
@@ -337,7 +199,7 @@ function useCountdownNow(target: () => number): () => number {
 }
 
 function Countdown(props: { card: DesktopCard }) {
-  const target = () => finite(props.card.template.targetAtMs) ?? 0;
+  const target = () => cardNumber(props.card.template.targetAtMs) ?? 0;
   const now = useCountdownNow(target);
   const remaining = () => Math.max(target() - now(), 0);
   const clock = () => {
@@ -380,9 +242,9 @@ function Countdown(props: { card: DesktopCard }) {
 function Progress(props: { card: DesktopCard }) {
   const data = () => cardData(props.card);
   const template = () => props.card.template;
-  const value = () => finite(template().valuePath !== undefined ? resolvePointer(data(), template().valuePath) : template().value);
+  const value = () => cardNumber(template().valuePath !== undefined ? resolvePointer(data(), template().valuePath) : template().value);
   const max = () => {
-    const raw = finite(template().maxPath !== undefined ? resolvePointer(data(), template().maxPath) : template().max);
+    const raw = cardNumber(template().maxPath !== undefined ? resolvePointer(data(), template().maxPath) : template().max);
     return raw !== null && raw > 0 ? raw : 100;
   };
   const ratio = () => (value() === null ? 0 : Math.min(Math.max((value() as number) / max(), 0), 1));
@@ -432,50 +294,6 @@ function Metrics(props: { card: DesktopCard }) {
           </View>
         )}
       </Each>
-    </View>
-  );
-}
-
-function Chart(props: { card: DesktopCard }) {
-  const points = () => chartPoints(props.card.template, cardData(props.card));
-  const scale = () => Math.max(...points().map(point => Math.abs(point.value)), 1);
-  return (
-    <View style={{ gap: space.xs }}>
-      <If when={points().length === 0}>
-        <Text style={metaText()}>{tr("cards.noData")}</Text>
-      </If>
-      <Each of={points()} key={(_point, index) => String(index)}>
-        {point => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
-            <Text style={{ ...metaText(), width: CHART_LABEL_WIDTH, flexShrink: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>{point().label}</Text>
-            <View style={{ flex: 1, minWidth: space.x4l, height: space.sm, borderRadius: radii.xs, backgroundColor: palette().surfaceTertiary, overflow: "hidden" }}>
-              <View
-                style={{
-                  height: space.sm,
-                  width: `${(Math.abs(point().value) / scale()) * 100}%`,
-                  borderRadius: radii.xs,
-                  backgroundColor: toneColor(point().tone ?? props.card.accent, "accent"),
-                }}
-              />
-            </View>
-            <Text
-              style={{
-                ...metaText(),
-                fontVariant: ["tabular-nums"],
-                maxWidth: METRIC_MIN_WIDTH,
-                flexShrink: 0,
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {formatCardValue(props.card.template, point().value)}
-            </Text>
-          </View>
-        )}
-      </Each>
-      <If when={typeof props.card.template.caption === "string" ? (props.card.template.caption as string) : ""}>
-        {caption => <Text style={metaText()}>{caption()}</Text>}
-      </If>
     </View>
   );
 }
@@ -530,7 +348,8 @@ function CardBodyContent(props: { deviceId: string; card: DesktopCard }) {
         <Metrics card={props.card} />
       </If>
       <If when={kind() === "chart"}>
-        <Chart card={props.card} />
+        <DesktopCardChart template={props.card.template} data={cardData(props.card)}
+          color={tone => toneColor(tone ?? props.card.accent, "accent")} />
       </If>
       <If when={kind() === "cronJob"}>
         <Text style={{ ...bodyText(), color: palette().textSecondary }}>{tr("cards.routine")}</Text>

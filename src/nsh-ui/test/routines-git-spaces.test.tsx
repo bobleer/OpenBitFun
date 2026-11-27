@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { openSession, openToolScene, showDevices, createBackend, type BackendOptions, selectTreeWorkspace } from "./support";
+import { openSession, openToolScene, showDevices, createBackend, type BackendOptions, selectTreeWorkspace, fleetDeviceRow, fleetObpHost } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -181,7 +181,12 @@ function createWorkbenchBackend(
         if (fx.cronReadyRejects) return { handled: true, error: "Command not found: notify_cron_host_ready" };
         return { handled: true, value: null };
       case "list_cron_jobs":
-        return { handled: true, value: cronJobs };
+        return {
+          handled: true,
+          value: payload.workspaceId
+            ? cronJobs.filter(job => (job.target as { workspace: { workspaceId?: string } }).workspace.workspaceId === payload.workspaceId)
+            : cronJobs,
+        };
       case "validate_cron_job_draft": {
         if (fx.cronPreviewMissing) return { handled: true, error: "Command not found: validate_cron_job_draft" };
         // The host's scheduler decides; this fixture answers the codes the editor localizes.
@@ -1240,6 +1245,113 @@ test("git: an older host without live status says so instead of polling, and ref
   expect(
     backend.calls.some(c => c.action === "git_reset_files" && (c.request as { staged?: boolean }).staged === false),
   ).toBe(false);
+});
+
+test("the assistant page manages scheduled sessions on the assistant workspace", async () => {
+  const assistant = { id: "assistant-1", name: "Muse", rootPath: "/assistants/muse", workspaceKind: "assistant" };
+  const workspace = { workspaceId: assistant.id, workspacePath: assistant.rootPath };
+  const backend = createWorkbenchBackend({
+    sessions: [
+      { sessionId: "assistant-session", sessionName: "Morning plan", workspaceId: assistant.id },
+      { sessionId: "other-session", sessionName: "Another workspace", workspaceId: "workspace-1" },
+    ],
+  });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    if ((data as { action?: string }).action === "get_assistant_workspaces") {
+      return { ok: true, value: [assistant], transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Library");
+  if (!app.shows("library-tab-assistants")) await app.press("Library");
+  await app.press("library-tab-assistants");
+  await app.press("assistant-card-assistant-1");
+  await app.press("assistant-tab-sessions");
+  await app.waitFor("Morning plan");
+  await app.waitFor("No routines yet");
+  expect(backend.calls.find(call => call.action === "list_cron_jobs")?.request).toEqual({ workspaceId: assistant.id });
+  expect(app.shows("Daily PR Triage")).toBe(false);
+
+  await app.press("assistant-routines-new");
+  await app.type("label:routine-name-input", "Daily planning");
+  await app.type("label:routine-prompt-input", "Prepare the team's daily plan.");
+  expect(app.shows("label:routine-workspace-select")).toBe(false);
+  await app.press("label:routine-save");
+  await app.waitFor("Daily planning");
+  expect(backend.calls.find(call => call.action === "create_cron_job")?.request).toMatchObject({
+    target: { kind: "workspace", workspace, launch: { agentType: "Claw", modelId: null } },
+  });
+
+  await app.press("label:routine-open-cron-created-2");
+  await app.press("label:routine-target-session");
+  await app.press("label:routine-session-select");
+  expect(app.shows("label:routine-session-option-other-session")).toBe(false);
+  await app.press("label:routine-session-option-assistant-session");
+  await app.press("label:routine-save");
+  await app.waitFor("label:routine-name-input", { state: "gone" });
+  expect(backend.calls.find(call => call.action === "update_cron_job")?.request).toMatchObject({
+    jobId: "cron-created-2",
+    target: { kind: "session", workspace, sessionId: "assistant-session" },
+  });
+
+  await app.press("label:routine-toggle-cron-created-2");
+  await app.waitUntil(() => backend.calls.filter(call => call.action === "update_cron_job").length === 2);
+  expect(backend.calls.filter(call => call.action === "update_cron_job")[1]?.request).toMatchObject({
+    jobId: "cron-created-2", enabled: false,
+  });
+  await app.press("label:routine-more-cron-created-2");
+  await app.press("label:routine-delete-cron-created-2");
+  await app.press("label:routine-delete-confirm-cron-created-2");
+  await app.waitFor("No routines yet");
+
+  await app.press("assistants-back");
+  await app.press("library-tab-routines");
+  await app.waitFor("Daily PR Triage");
+  expect(app.shows("Daily planning")).toBe(false);
+  expect(backend.calls.filter(call => call.action === "list_cron_jobs").at(-1)?.request).toEqual({});
+});
+
+test("assistant schedules read and write on the selected fleet desktop", async () => {
+  const assistant = { id: "assistant-remote", name: "Remote Muse", rootPath: "/assistants/muse", workspaceKind: "assistant" };
+  const backend = createWorkbenchBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    if ((data as { action?: string }).action === "get_assistant_workspaces") {
+      return { ok: true, value: [assistant], transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "entry" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [],
+      devices: [
+        fleetDeviceRow("entry", "Entry desktop", [], { isClientDevice: true }),
+        fleetDeviceRow("peer", "Peer desktop", []),
+      ],
+    },
+  });
+  const app = await open("./fixtures/libraryApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("On Entry desktop");
+  await app.press("library-scope-chip");
+  await app.press("library-scope-peer");
+  await app.waitFor("On Peer desktop");
+  await app.press("assistant-card-assistant-remote");
+  await app.press("assistant-tab-sessions");
+  await app.waitFor("No routines yet");
+  await app.press("assistant-routines-new");
+  await app.type("label:routine-name-input", "Peer planning");
+  await app.type("label:routine-prompt-input", "Prepare the daily plan.");
+  await app.press("label:routine-save");
+  await app.waitFor("Peer planning");
+  expect(host.fleetCalls.filter(call => call.command === "list_cron_jobs")).toMatchObject([
+    { target: "peer", args: { request: { workspaceId: assistant.id } } },
+  ]);
+  expect(host.fleetCalls.filter(call => call.command === "create_cron_job")).toMatchObject([
+    { target: "peer", args: { request: { target: { workspace: { workspaceId: assistant.id } } } } },
+  ]);
 });
 
 test("routines: a routine can run in an existing session of the active workspace", async () => {

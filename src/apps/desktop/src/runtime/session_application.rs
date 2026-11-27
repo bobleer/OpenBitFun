@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use openbitfun_agent_runtime::deep_review::{
+    remediation::{PostFixReviewScope, ReviewRemediationPlan, ReviewRemediationProgress},
+    ReviewTargetEvidence,
+};
 use openbitfun_agent_runtime::sdk::{
     AgentLocalCommandTurnRecordRequest, AgentRuntime, AgentSessionArchiveStateRequest,
     AgentSessionDeleteRequest, AgentSessionForkAtTurnRequest, AgentSessionForkRequest,
@@ -18,6 +22,9 @@ use openbitfun_agent_runtime::sdk::{
 };
 use openbitfun_core::agentic::coordination::{ConversationCoordinator, DialogScheduler};
 use openbitfun_core::agentic::core::{ProcessingPhase, Session, SessionState};
+use openbitfun_core::agentic::deep_review::history::{
+    PullRequestReviewPage, PullRequestReviewRun, PullRequestReviewSelection, ReviewHistoryCursor,
+};
 use openbitfun_core::agentic::persistence::{
     PersistedSessionTurnPage, SessionBranchResult, SessionMetadataPage,
 };
@@ -402,6 +409,131 @@ impl DesktopSessionApplication {
                 .get_or_insert_with(|| scope.workspace_id.clone());
         }
         Ok(records)
+    }
+
+    pub(crate) async fn pull_request_review_history(
+        &self,
+        request: DesktopSessionScopeRequest,
+        selection: &PullRequestReviewSelection,
+        before: Option<&ReviewHistoryCursor>,
+    ) -> DesktopSessionApplicationResult<PullRequestReviewPage> {
+        let scope = self.resolved_scope(request).await?;
+        self.compatibility
+            .pull_request_review_history(&self.storage_path(&scope), selection, before)
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn list_session_review_records(
+        &self,
+        request: DesktopSessionScopeRequest,
+        parent_session_id: &str,
+        before: Option<&ReviewHistoryCursor>,
+    ) -> DesktopSessionApplicationResult<
+        openbitfun_core::agentic::deep_review::history::SessionReviewPage,
+    > {
+        let scope = self.resolved_scope(request).await?;
+        self.compatibility
+            .list_session_review_records(&self.storage_path(&scope), parent_session_id, before)
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn workspace_review_record_runs(
+        &self,
+        request: DesktopSessionScopeRequest,
+        parent_session_id: &str,
+        record_id: &str,
+    ) -> DesktopSessionApplicationResult<Vec<PullRequestReviewRun>> {
+        let scope = self.resolved_scope(request).await?;
+        self.ensure_runtime_ownership(&scope)?;
+        self.compatibility
+            .workspace_review_record_runs(&self.storage_path(&scope), parent_session_id, record_id)
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn load_workspace_review_remediation(
+        &self,
+        request: DesktopSessionScopeRequest,
+        session_id: &str,
+        report_tool_id: &str,
+    ) -> DesktopSessionApplicationResult<(
+        ReviewRemediationPlan,
+        ReviewTargetEvidence,
+        SessionMetadata,
+    )> {
+        let scope = self.resolved_scope(request).await?;
+        self.ensure_runtime_ownership(&scope)?;
+        self.compatibility
+            .load_workspace_review_remediation(
+                &self.storage_path(&scope),
+                &scope.workspace_id,
+                session_id,
+                report_tool_id,
+            )
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn load_review_coverage_retry(
+        &self,
+        request: DesktopSessionScopeRequest,
+        session_id: &str,
+        report_tool_id: &str,
+    ) -> DesktopSessionApplicationResult<(
+        Vec<openbitfun_agent_runtime::deep_review::report::IncompleteReviewCheck>,
+        ReviewTargetEvidence,
+        SessionMetadata,
+    )> {
+        let scope = self.resolved_scope(request).await?;
+        self.ensure_runtime_ownership(&scope)?;
+        self.compatibility
+            .load_review_coverage_retry(
+                &self.storage_path(&scope),
+                &scope.workspace_id,
+                session_id,
+                report_tool_id,
+            )
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn workspace_review_remediation_progress(
+        &self,
+        request: DesktopSessionScopeRequest,
+        session_id: &str,
+        report_tool_id: &str,
+        plan: &ReviewRemediationPlan,
+        follow_up_scope: Option<(&str, &mut PostFixReviewScope)>,
+    ) -> DesktopSessionApplicationResult<ReviewRemediationProgress> {
+        let scope = self.resolved_scope(request).await?;
+        self.ensure_runtime_ownership(&scope)?;
+        self.compatibility
+            .workspace_review_remediation_progress(
+                &self.storage_path(&scope),
+                &scope.workspace_id,
+                session_id,
+                report_tool_id,
+                plan,
+                follow_up_scope,
+            )
+            .await
+            .map_err(desktop_core_session_error)
+    }
+
+    pub(crate) async fn pull_request_review_runs(
+        &self,
+        request: DesktopSessionScopeRequest,
+        selection: &PullRequestReviewSelection,
+    ) -> DesktopSessionApplicationResult<
+        Vec<openbitfun_core::agentic::deep_review::history::PullRequestReviewRun>,
+    > {
+        let scope = self.resolved_scope(request).await?;
+        self.compatibility
+            .pull_request_review_runs(&self.storage_path(&scope), selection)
+            .await
+            .map_err(desktop_core_session_error)
     }
 
     pub(crate) async fn list_persisted_sessions_page(

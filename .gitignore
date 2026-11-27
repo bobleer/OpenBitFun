@@ -144,3 +144,8 @@ AGENTS.override.md
 # (source of truth: src/nsh-ui/assets/vendor; written by scripts/sync-nsh-vendor-assets.mjs).
 src/apps/desktop-nsh/assets/vendor/
 src/apps/mobile-nsh/assets/vendor/
+src/apps/desktop-nsh/assets/model-pools/
+src/apps/mobile-nsh/assets/model-pools/
+src/nsh-ui/assets/vendor/pdf-reader.js
+src/nsh-ui/assets/vendor/figure-renderer.js
+src/nsh-ui/assets/vendor/figure-atlas/

@@ -389,14 +389,17 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
 
   // The Persona tab edits IDENTITY.md first, in the visual editor; the source
   // editor is one press away and stays chosen across the persona documents.
-  await app.waitFor("persona-source-toggle");
-  await app.press("persona-source-toggle");
+  await app.waitFor("persona-source");
+  await app.press("persona-source");
   expect(app.value("persona-editor-input")).toBe("# Muse\n\nPrimary studio assistant.");
 
   // Edit IDENTITY.md and save with POSIX path.
   await app.clear("persona-editor-input");
   await app.type("persona-editor-input", "# Muse Studio\n\nUpdated **identity** doc.");
   expect(app.value("persona-editor-input")).toBe("# Muse Studio\n\nUpdated **identity** doc.");
+  await app.press("persona-copy-markdown");
+  await app.waitUntil(() => app.clipboard() === "# Muse Studio\n\nUpdated **identity** doc.");
+  expect(recorded.some(c => c.action === "write_file_content")).toBe(false);
   await app.press("persona-save");
   expect(recorded.some(c => c.action === "write_file_content")).toBe(true);
   await app.waitFor("Saved IDENTITY.md");
@@ -405,10 +408,10 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   );
 
   // Live Markdown preview renders TextView without raw markdown hashes.
-  await app.press("persona-preview-toggle");
+  await app.press("persona-preview");
   await app.waitFor("Muse Studio");
   expect(app.texts().join("\n")).not.toContain("# Muse Studio");
-  await app.press("persona-preview-toggle");
+  await app.press("persona-source");
 
   // Switch to SOUL.md, edit and save.
   await app.press("persona-tab-SOUL.md");

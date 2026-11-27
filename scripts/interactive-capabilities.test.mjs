@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildCapabilityCatalog,
+  buildNshSearchCatalog,
   loadRemoteSurfaceRegistry,
   parseRegisteredCommands,
   projectSettingsCatalogDestination,
@@ -30,18 +31,24 @@ test('historical settings wire targets resolve through the current presentation 
     kind: 'settings', pageId: 'tools.automation', sectionId: 'hooks',
   });
   const input = runtimeCatalog.capabilities.find(({ id }) => id === 'setting.application.input');
-  const btwClose = input.items.find(({ id }) => id === 'btw-close-confirmation');
-  assert.deepEqual(btwClose.destination, { kind: 'settings', pageId: 'application.voice', sectionId: 'btw-close-confirmation' });
-  assert.deepEqual(projectSettingsCatalogDestination(input.id, btwClose.destination, btwClose.id), {
-    kind: 'settings', pageId: 'ai.session-memory', sectionId: 'btw',
-  });
-  assert.deepEqual(projectSettingsCatalogDestination('legacy', { kind: 'settings', pageId: 'application.input', sectionId: 'btw-close-confirmation' }), {
-    kind: 'settings', pageId: 'ai.session-memory', sectionId: 'btw',
-  });
+  assert.equal(input.items.some(({ id }) => id === 'btw-close-confirmation'), false);
   const computerUse = runtimeCatalog.capabilities.find(({ id }) => id === 'feature.computer-use');
   assert.deepEqual(projectSettingsCatalogDestination(computerUse.id, computerUse.destination), {
     kind: 'settings', pageId: 'tools.desktop-control',
   });
+});
+
+test('NSH search uses the public catalog and its current settings destinations', async () => {
+  const { publicCatalog } = buildCapabilityCatalog();
+  const projection = buildNshSearchCatalog(publicCatalog);
+  assert.deepEqual(JSON.parse(await read('src/nsh-ui/src/generated/interactiveCapabilities.json')), projection);
+  assert.equal(projection.digest, publicCatalog.digest);
+  assert.equal(projection.capabilities.length, publicCatalog.capabilities.length);
+  const execution = projection.capabilities.find(({ id }) => id === 'setting.tools.execution');
+  assert.deepEqual(execution.items.find(({ id }) => id === 'permission-mode').destination, {
+    kind: 'settings', pageId: 'ai.permissions',
+  });
+  assert.equal(execution.items.some(item => Object.hasOwn(item, 'control')), false);
 });
 
 test('the public contract is a compact feature-and-settings manual', () => {
@@ -328,7 +335,8 @@ test('built-in and external browsers share one agent action contract', async () 
   assert.match(builtinCoreAdapter, /impl BrowserAutomationClient for BuiltInBrowserClient/u);
   assert.match(builtinDesktopAdapter, /ActuatedWebviewAutomation/u);
   assert.match(builtinDesktopAdapter, /impl BuiltInBrowserHost for NativeBuiltInBrowserHost/u);
-  assert.doesNotMatch(builtinDesktopAdapter, /SNAPSHOT_SCRIPT|data-cdp-ref|element_center_js/u);
+  assert.match(builtinDesktopAdapter, /const SNAPSHOT_SCRIPT[^]*?cloneNode\(true\)/u);
+  assert.doesNotMatch(builtinDesktopAdapter, /data-cdp-ref|element_center_js/u);
   assert.match(controlHub, /SHARED_BROWSER_ACTIONS/u);
   assert.match(controlHub, /BrowserActions::new\(target\.client\(\)\)/u);
   assert.match(browserSurface, /browser_webview_set_agent_target_state/u);
@@ -490,7 +498,8 @@ test('the remote surface bindings are a projection of the compiled Product Opera
 
   assert.match(rendered, /export const REMOTE_SURFACE_REGISTRY_DIGEST = "fnv1a64:[0-9a-f]{16}" as const;/u);
   assert.ok(rendered.includes('"account_login",'));
-  assert.ok(rendered.includes('"peer_mode_ping",'));
+  assert.equal(registry.operations.find(({ id }) => id === 'peer_mode_ping')?.peer.kind, 'retired');
+  assert.equal(rendered.includes('"peer_mode_ping",'), false, 'retired relay commands stay outside the fleet projection');
   assert.equal(rendered.includes('"git_trust_repository",'), false, 'operator-only rows stay forwarded');
   assert.equal(rendered.includes('"dispatch_target_submit",'), false, 'HostInvoke-only rows never enter the FE local set');
 });

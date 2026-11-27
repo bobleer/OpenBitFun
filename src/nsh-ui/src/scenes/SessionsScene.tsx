@@ -24,8 +24,24 @@ import type {
   ViewToken,
 } from "nsh";
 import { DiffView, Input, TextView } from "nsh/base";
-import { invokeCommand } from "../bridge";
 import { CaptionActionStrip, SceneCaptionInset } from "../ui/titleBar";
+import { fleetActive, invokeCommand } from "../bridge";
+import { primaryComposerDraft, secondaryComposerDraft, stageComposerChange, type ComposerDraftTarget } from "../composerDraftStore";
+import {
+  dismissExternalSlashDialog,
+  externalSlashDialog,
+  externalSlashInvocation,
+  externalSlashItemDetail,
+  externalSlashMatches,
+  prefetchExternalSlashCatalog,
+  resetExternalSlashCatalog,
+  submitExternalSlash,
+  type ExternalSlashItem,
+  type ExternalSlashScope,
+  type NativeSlashItem,
+} from "../externalSlashCommands";
+import { createMcpPromptCatalog, mcpPromptsFor, mcpPromptSlug, type McpPromptEntry } from "../mcpPromptsStore";
+import { ExternalSlashDialogs } from "../ui/ExternalSlashDialogs";
 import {
   getLiveRoundText,
   getLiveRoundThinking,
@@ -42,16 +58,16 @@ import {
   hasSecondaryLiveRoundText,
   hasSecondaryLiveRoundThinking,
   isStreamDraining,
+  liveToolToCallView,
   liveTurn,
   secondaryLiveTurn,
   secondaryStreamScrollTick,
   streamScrollTick,
   turnStartedAt,
   type LiveModelRound,
-  type LiveToolItem,
   hasVisibleTextFrom,
 } from "../agentEvents";
-import { recoverInterruptedDialogTurn, rollbackSessionToTurn, type TranscriptTurnView } from "../api";
+import { recoverInterruptedDialogTurn, rollbackSessionToTurn, type ExternalCommandSubmission, type TranscriptTurnView, type WorkspaceRecord } from "../api";
 import {
   chooseSessionPermissionMode,
   contextUsage,
@@ -64,6 +80,8 @@ import {
   subscribeContextUsage,
 } from "../composerStatusStore";
 import { permissionMode } from "../permissionPolicyStore";
+import { transcriptPlanArtifact } from "../planToolArtifact";
+import { PlanArtifactCard, type PlanArtifactOwner } from "../ui/PlanArtifactCard";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import {
   MARKDOWN_MEDIA_EXTENSION,
@@ -79,6 +97,7 @@ import {
   persistedToolState,
   resetExpandedCards,
   ToolCard,
+  toolKindOf,
   toolTargetOf,
   toolTitleOf,
   TRANSCRIPT_ROW_RAIL_OFFSET,
@@ -87,7 +106,8 @@ import {
   transcriptRowStyle,
 } from "../ui/toolCards";
 import {
-  addFileAttachment,
+  attachFileToDraft,
+  attachImageToDraft,
   attachmentNotice,
   attachmentPreviewSrc,
   fileUrlOfPath,
@@ -99,7 +119,9 @@ import {
   pathOfFileUrl,
   removeAttachment,
   removeFileAttachment,
+  removeSessionReference,
   saveLongTextPasteToWorkspace,
+  sessionReferenceAttachments,
   toRelativeWorkspacePath,
   type FileAttachment,
   type ImageAttachment,
@@ -146,19 +168,21 @@ import {
   type PermissionRequestView,
 } from "../permissionStore";
 import type { PromptAnswer } from "../attentionStore";
-import { fleetDeviceById, fleetSessionRow } from "../fleetStore";
+import { fleetDeviceById, fleetSessionRow, fleetWorkspaceByKey } from "../fleetStore";
 import type { FleetPrompt } from "../fleetTypes";
 import { activeConversationId } from "../superagentStore";
+import { AskUser } from "../ui/AskUser";
+import { QuestionOutcomeCard } from "../ui/QuestionOutcomeCard";
 import { PromptAttention, ReviewNotesBar, type AttentionDevice } from "../ui/attention";
 import { DeviceBadge, StateMark, deviceException, stateColor, type MarkState } from "../ui/fleet";
 import {
   loadQuestionMailbox,
+  pauseQuestionCountdown,
   type QuestionPrompt,
-  type QuestionView,
+  questionPromptKey,
   questionsForSession,
-  setQuestionOther,
   submitQuestion,
-  toggleQuestionOption,
+  updateQuestionDraft,
 } from "../userQuestionStore";
 import {
   hostQueueReorderSupported,
@@ -189,10 +213,13 @@ import {
   modelIdForSession,
   modelTextForSession,
   reasoningChoicesForSession,
+  modelChangePending,
+  modelContextForSession,
+  modelContextOf,
+  modelContextPending,
   reasoningIdForSession,
   reasoningLabelForSession,
   refreshFleetModels,
-  type FleetModelChoice,
   type FleetModelsDevice,
   type SessionModelTarget,
   ensureReasoningLoaded,
@@ -230,28 +257,35 @@ import {
   browseMentionParent,
   closeMention,
   insertMention,
-  insertSlashSkill,
-  loadSessionCommands,
-  loadSlashSkills,
+  createSlashCommandCatalog,
   mentionBrowseDir,
   mentionHits,
   mentionInline,
   mentionLoading,
   mentionNotice,
+  mentionRetryable,
   mentionOpen,
+  mentionOwnerCurrent,
+  mentionOwnerRoot,
+  mentionPane,
   mentionQuery,
+  mentionResultSource,
   mentionSearched,
+  mentionSource,
   mentionTruncated,
   openMention,
+  retryMentionCatalog,
   parseSlashCommand,
   runSlashCommand,
-  sessionCommandsUnsupported,
+  selectMentionSource,
   setMentionQuery,
   slashCommandLabel,
   slashCommandsFor,
   slashSkillsFor,
   type SlashCommand,
   type SlashSkillItem,
+  type MentionOwner,
+  type MentionSource,
   syncInlineMention,
 } from "../mentionStore";
 import {
@@ -260,6 +294,7 @@ import {
   activeSessionId,
   activeSessionKey,
   activeWorkspace,
+  activeWorkspaceKey,
   activeWorkspaceRoot,
   auxPaneOpen,
   auxPaneTab,
@@ -274,6 +309,7 @@ import {
   composerText,
   copyActiveSession,
   deleteSessionRow,
+  deviceContext,
   focusPane,
   focusedPane,
   forkActiveSession,
@@ -292,9 +328,13 @@ import {
   secondarySessionId,
   secondarySessionKey,
   secondaryWorkspaceId,
+  selectSession,
+  selectWorkspace,
   sendNotice,
   sendTurn,
   SESSION_SPLIT_DEFAULT_RATIO,
+  SESSION_PANE_MIN_WIDTH,
+  sessionKey,
   sessionSplitRatio,
   sessionTurns,
   sessions,
@@ -309,15 +349,17 @@ import {
 } from "../state";
 import {
   addSecondaryFileAttachment,
-  addSecondaryImageAttachment,
+  addSecondarySessionReference,
   closeSplitPane,
   createSecondarySession,
   loadSecondaryEarlierTurns,
+  loadSecondaryTurns,
   openSplitPane,
   registerSecondaryAutoBackfillGuard,
   registerSecondaryBeforePrependListener,
   removeSecondaryFileAttachment,
   removeSecondaryImageAttachment,
+  removeSecondarySessionReference,
   secondaryComposerText,
   secondaryFileAttachments,
   secondaryHasEarlierTurns,
@@ -325,6 +367,8 @@ import {
   secondaryPendingTurnState,
   secondaryRunningTurnId,
   secondarySendNotice,
+  secondarySessionSummary,
+  secondarySessionReferences,
   secondarySessionTitle,
   secondaryTranscriptNotice,
   secondaryTurnError,
@@ -357,8 +401,23 @@ import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import { Icon, type IconName } from "../ui/icons";
+import { ChatComposer, chatComposerMetrics } from "../ui/ChatComposer";
+import { SessionReferenceChip } from "../ui/SessionReferenceChip";
+import { PromptReferenceText } from "../ui/PromptReferenceText";
+import { PromptReferenceEditor, promptReferenceEditorAvailable, type ComposerInputHandle } from "../ui/PromptReferenceEditor";
+import { promptReferenceParts, promptReferencesIn, skillPromptToken } from "../promptReferences";
+import { TabGroup } from "../ui/TabGroup";
+import { ReasoningControl } from "../ui/ReasoningControl";
+import { ModelContextControl } from "../ui/ModelContextControl";
+import { filterModelPickerCatalog, findModelPickerMatches, modelPickerCatalog, modelPickerProviders,
+  readModelPickerCatalog, type ModelPickerGroup } from "../ui/modelPickerCatalog";
+import { composerReferenceDisplayText, mergeSessionReferences, sessionReferenceDraft, sessionReferenceKey, type SessionReferenceCandidate,
+  type SessionReferenceDraft } from "../sessionReferences";
+import { toolCardHeaderHeight, toolCardMetrics } from "../ui/ToolCardFrame";
+import { isProminentToolCall } from "../toolPresentation";
 import { openImageLightbox } from "../ui/ImageLightbox";
 import { OpenBitFunLogoMark } from "../ui/studio";
+import { MERMAID_MARKDOWN_EXTENSIONS, renderMarkdownDiagram } from "../ui/markdownEditor";
 import {
   STATIC_MARKDOWN_OPTIONS,
   STREAMING_MARKDOWN_OPTIONS,
@@ -395,26 +454,41 @@ import {
   registerEscapeDismiss,
   type DropdownMenuItem,
 } from "../ui/overlays";
+import { InlineFigureCard } from "../ui/InlineFigureCard";
+import { publishedFigure } from "../toolDetailStore";
 import {
+  acceptSideQuestionClose,
   addSideQuestionFileAttachment,
   addSideQuestionImageAttachment,
   askSideQuestion,
   cancelSideQuestion,
-  closeSideQuestion,
+  dismissSideQuestionClose,
   removeSideQuestionFileAttachment,
   removeSideQuestionImageAttachment,
-  resetSideQuestionThread,
+  requestSideQuestionClose,
   sideQuestion,
+  sideQuestionCloseRequest,
+  sideQuestionClosing,
   sideQuestionDraft,
   sideQuestionFileAttachments,
   sideQuestionHistory,
   sideQuestionImageAttachments,
   sideQuestionModelOverride,
+  sideQuestionStopError,
+  sideQuestionStopping,
+  sideQuestionTarget,
   sideQuestionUnsupported,
   type SideQuestion,
+  type SideQuestionTarget,
 } from "../btwStore";
+import { ChoiceCheckbox } from "../ui/ChoiceIndicator";
 import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
+import { ReviewProgress } from "../ui/ReviewProgress";
+import { ReviewQueue } from "../ui/ReviewQueue";
+import { reviewRecoveryPresentation } from "../reviewRecovery";
+import { openDeviceSettings } from "./SettingsScene";
+import { SessionReviewRecords } from "../ui/SessionReviewRecords";
 import {
   TurnChangesDiffModal,
   TurnFileChangesCard,
@@ -429,17 +503,15 @@ import {
   reviewNotesFor,
   sendReviewNotes,
   sendingReviewNotes,
+  type ReviewTarget,
 } from "../reviewStore";
 import { superAgentUi } from "../productGates"; // wave23-E
 // wave22-p5 session parity: goal, side questions, background commands, MCP prompts and apps.
 import {
   BackgroundCommandsStrip,
+  chooseMcpPrompt,
   GoalStrip,
   goalAvailable,
-  McpPromptRows,
-  mcpPromptMatches,
-  openGoalDialog,
-  openSideQuestion,
   runExtrasCommand,
   SessionExtrasDialogs,
   sideQuestionOpen,
@@ -453,6 +525,7 @@ import {
   InlineBanner,
   InlineConfirmBar,
   InputBox,
+  SearchInput,
   SplitHandle,
   StatusDot,
   TooltipBubble,
@@ -478,17 +551,21 @@ const queueCollapsed = signal(false);
 const composerFileDragActive = signal(false);
 const composerComposing = signal(false);
 const composerCaretBounds = signal<Bounds | null>(null);
+const secondaryComposerCaretBounds = signal<Bounds | null>(null);
 const turnChangesReview = signal<TurnChangesReviewState | null>(null);
 const mentionSelectedIndex = signal(0);
 
 const threadMenuAnchor = signal<ViewRef | null>(null);
 const composerCardAnchor = signal<ViewRef | null>(null);
+const secondaryComposerCardAnchor = signal<ViewRef | null>(null);
 const agentPickerAnchor = signal<ViewRef | null>(null);
 const composerModelAnchor = signal<ViewRef | null>(null);
+const secondaryComposerModelAnchor = signal<ViewRef | null>(null);
 const modelPickerAnchor = signal<ViewRef | null>(null);
 const reasoningPickerAnchor = signal<ViewRef | null>(null);
 const quickActionsAnchor = signal<ViewRef | null>(null);
 const composerPlusAnchor = signal<ViewRef | null>(null);
+const secondaryComposerPlusAnchor = signal<ViewRef | null>(null);
 const composerPlusOpen = signal(false);
 
 const threadMenuPlacement = signal<Placement>("bottom");
@@ -497,19 +574,34 @@ const quickActionsPlacement = signal<Placement>("top");
 const agentPickerPlacement = signal<Placement>("top");
 const modelPickerPlacement = signal<Placement>("top");
 const reasoningPickerPlacement = signal<Placement>("top");
-const slashMenuPlacement = signal<Placement>("top");
 const permissionModePlacement = signal<Placement>("top");
 const contextUsagePlacement = signal<Placement>("top");
 const transcriptScrolled = signal(false);
 const sessionsPaneWidth = signal(0);
-const sessionsCompact = computed(() => sessionsPaneWidth() > 0 && sessionsPaneWidth() < 600);
+const sessionOverlayWidth = signal(0);
+const sessionsInteractiveWidth = computed(() => Math.max(0, sessionsPaneWidth() - sessionOverlayWidth()));
+const sessionsCompact = computed(() => sessionsPaneWidth() > 0 && sessionsInteractiveWidth() < 600);
 const sessionsPadX = computed(() => (sessionsCompact() || anyRightSplitOpen() ? space.lg : space.xxl));
 function paneTranscriptPadLeft(hasRail: boolean): number {
   const base = sessionsPadX();
   return !compactLayout() && hasRail ? Math.max(base, 34) : base;
 }
 
-let composerInputRef: InputRef | undefined;
+let composerInputRef: ComposerInputHandle | undefined;
+let secondaryComposerInputRef: ComposerInputHandle | undefined;
+const secondaryMentionOwner: MentionOwner = {
+  pane: "secondary",
+  key: secondarySessionKey,
+  sessionId: secondarySessionId,
+  deviceId: secondarySessionDevice,
+  workspaceId: secondaryWorkspaceId,
+  workspaceRoot: secondaryWorkspaceRoot,
+  remoteWorkspace: () => isRemoteWorkspace(secondaryWorkspaceRecord()),
+  draft: secondaryComposerText,
+  setDraft: secondaryComposerText.set,
+  addFile: file => addSecondaryFileAttachment({ ...file, id: `secondary-mention:${file.path}` }),
+  addSession: addSecondarySessionReference,
+};
 let nextDroppedAttachmentId = 0;
 
 const enabledQuickActions = computed(() => quickActions().filter(action => action.enabled));
@@ -796,6 +888,11 @@ function userPartsOf(turn: unknown): TurnPart[] {
   return turnParts(turn).filter(part => part.role === "user");
 }
 
+function turnReferenceDraft(turn: unknown): SessionReferenceDraft | undefined {
+  const view = turn as (Partial<TranscriptTurnView> & { userMessage?: { metadata?: { composerPresentation?: unknown } } }) | null;
+  return sessionReferenceDraft(view?.user?.composerPresentation ?? view?.userMessage?.metadata?.composerPresentation);
+}
+
 function thinkingPartsOf(turn: unknown): TurnPart[] {
   return turnParts(turn).filter(part => part.role === "thinking");
 }
@@ -998,7 +1095,9 @@ function mimeFromFilename(name: string): string {
   }
 }
 
-async function attachRemoteDroppedImage(uri: string, name: string, mime: string): Promise<boolean> {
+async function attachRemoteDroppedImage(
+  uri: string, name: string, mime: string, add: (item: ImageAttachment) => void,
+): Promise<boolean> {
   try {
     const response = await fetch(uri);
     if (!response.ok) return false;
@@ -1011,8 +1110,7 @@ async function attachRemoteDroppedImage(uri: string, name: string, mime: string)
       fileSize: bytes.byteLength,
       dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`,
     };
-    imageAttachments.update(list => [...list, attachment]);
-    attachmentNotice.set("");
+    add(attachment);
     return true;
   } catch {
     return false;
@@ -1036,11 +1134,26 @@ function estimateCaretAfterEdit(prev: string, next: string): number {
   return next.length - suffix;
 }
 
-function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
+function primaryPasteOwner() {
+  return {
+    target: primaryComposerDraft.capture(),
+    workspaceId: activeWorkspaceId() ?? undefined,
+    workspaceRoot: activeWorkspaceRoot(),
+    deviceId: activeSessionDevice() || deviceContext(),
+    isRemote: isRemoteWorkspace(activeWorkspace()),
+    allowLocalPath: isLocalAttachmentPathAllowed(),
+  };
+}
+
+function insertIntoDraft(target: ComposerDraftTarget, insert: (text: string) => void, text: string): void {
+  if (target.isVisible()) insert(text);
+  else target.update(draft => ({ ...draft, text: draft.text + text }));
+}
+
+function attachOrReferenceFileUris(uris: string[], mimeTypes: string[], owner = primaryPasteOwner()): void {
   let attachedImages = 0;
   let attachedFiles = 0;
-  const allowLocalPath = isLocalAttachmentPathAllowed();
-  const wsRoot = activeWorkspaceRoot();
+  const addImage = (item: ImageAttachment) => attachImageToDraft(owner.target, item);
 
   for (let i = 0; i < uris.length; i += 1) {
     const uri = uris[i];
@@ -1049,11 +1162,11 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
     const filePath = decodeFileUri(uri);
     const name = basename(filePath) || "file";
     if (isImageMimeOrPath(mime, name)) {
-      if (!allowLocalPath) {
+      if (!owner.allowLocalPath) {
         // Never send controller-local `imagePath` to a remote peer or remote workspace;
         // try reading bytes into a `dataUrl`, else refuse loudly.
-        void attachRemoteDroppedImage(uri, name, mime).then(ok => {
-          if (!ok) {
+        void attachRemoteDroppedImage(uri, name, mime, addImage).then(ok => {
+          if (!ok && owner.target.isVisible()) {
             attachmentNotice.set(tr("error.unsupported"));
             pushToast(tr("error.unsupported"), "error");
           }
@@ -1067,11 +1180,12 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
         fileSize: 0,
         imagePath: filePath,
       };
-      imageAttachments.update(list => [...list, attachment]);
+      addImage(attachment);
       attachedImages += 1;
     } else {
-      const relativePath = toRelativeWorkspacePath(filePath, wsRoot);
-      addFileAttachment({
+      const relativePath = toRelativeWorkspacePath(filePath, owner.workspaceRoot);
+      attachFileToDraft(owner.target, {
+        id: `attachment-file-${++nextDroppedAttachmentId}`,
         name,
         path: filePath,
         relativePath,
@@ -1082,13 +1196,19 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
     }
   }
 
-  if (attachedImages > 0 || attachedFiles > 0) {
+  if ((attachedImages > 0 || attachedFiles > 0) && owner.target.isVisible()) {
     attachmentNotice.set("");
     composerInputRef?.focus();
   }
 }
 
 async function handleComposerPaste(event: PasteEvent, insertText: (text: string) => void): Promise<void> {
+  const owner = primaryPasteOwner();
+  const save = async (text: string, fileName?: string) => {
+    const entry = await saveLongTextPasteToWorkspace(text, { ...owner, fileName, connection: owner.target.connection });
+    if (entry) attachFileToDraft(owner.target, entry);
+    return entry;
+  };
   let handledMediaOrFiles = false;
   if (event.files && event.files.length > 0) {
     for (const file of event.files) {
@@ -1104,29 +1224,27 @@ async function handleComposerPaste(event: PasteEvent, insertText: (text: string)
             fileSize: bytes.byteLength,
             dataUrl: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
           };
-          imageAttachments.update(list => [...list, attachment]);
-          attachmentNotice.set("");
+          attachImageToDraft(owner.target, attachment);
+          if (owner.target.isVisible()) attachmentNotice.set("");
           handledMediaOrFiles = true;
         } catch (error) {
-          attachmentNotice.set(localizeHostError(error));
+          if (owner.target.isVisible()) attachmentNotice.set(localizeHostError(error));
         }
       } else if (file.type.startsWith("text/") || /\.(md|txt|json|ts|tsx|js|jsx|rs|py|yml|yaml|toml|csv|log)$/i.test(file.name)) {
         try {
           const content = await file.text();
-          const saved = await saveLongTextPasteToWorkspace(content, {
-            fileName: file.name || undefined,
-          });
+          const saved = await save(content, file.name || undefined);
           if (saved) {
             handledMediaOrFiles = true;
           }
         } catch (error) {
-          attachmentNotice.set(localizeHostError(error));
+          if (owner.target.isVisible()) attachmentNotice.set(localizeHostError(error));
         }
       }
     }
   }
   if (event.uris && event.uris.length > 0) {
-    attachOrReferenceFileUris(event.uris, []);
+    attachOrReferenceFileUris(event.uris, [], owner);
     handledMediaOrFiles = true;
   }
   if (handledMediaOrFiles) {
@@ -1135,14 +1253,14 @@ async function handleComposerPaste(event: PasteEvent, insertText: (text: string)
   const text = event.text ?? "";
   if (!text) return;
   if (isLongTextPaste(text)) {
-    const saved = await saveLongTextPasteToWorkspace(text);
+    const saved = await save(text);
     if (saved) {
-      composerInputRef?.focus();
+      if (owner.target.isVisible()) composerInputRef?.focus();
       return;
     }
-    pushToast(tr("sessions.pastedSaveFailed"), "warning");
+    if (owner.target.isVisible()) pushToast(tr("sessions.pastedSaveFailed"), "warning");
   }
-  insertText(text);
+  insertIntoDraft(owner.target, insertText, text);
 }
 
 function handleComposerFileDrop(event: { uris: string[]; mimeTypes: string[] }): void {
@@ -1152,7 +1270,7 @@ function handleComposerFileDrop(event: { uris: string[]; mimeTypes: string[] }):
 }
 
 const activePermissions = computed(() => permissionsForSession(activeSessionId()));
-const activeQuestions = computed(() => questionsForSession(activeSessionId()));
+const activeQuestions = computed(() => questionsForSession(activeSessionId(), activeSessionDevice()));
 
 /** The session's one header state: shown only when it is not idle (spec §4.5). */
 const headerState = computed<MarkState | null>(() => {
@@ -1172,8 +1290,8 @@ const headerState = computed<MarkState | null>(() => {
 });
 
 /** The device the open session runs on, as a badge (fleet only; a single-device backend draws none). */
-const sessionDeviceLabel = computed<AttentionDevice | null>(() => {
-  const device = fleetDeviceById(activeSessionDevice());
+function sessionAttentionDevice(deviceId: string): AttentionDevice | null {
+  const device = fleetDeviceById(deviceId);
   if (!device) return null;
   return {
     name: device.name,
@@ -1181,7 +1299,8 @@ const sessionDeviceLabel = computed<AttentionDevice | null>(() => {
     exception: deviceException(device.state),
     onPress: () => showDevice(device.deviceId),
   };
-});
+}
+const sessionDeviceLabel = computed(() => sessionAttentionDevice(activeSessionDevice()));
 
 interface SessionOrigin {
   conversationId: string;
@@ -2390,18 +2509,20 @@ interface ParsedUserFileTag {
 function extractUserMessageFileTags(raw: string): { files: ParsedUserFileTag[]; text: string } {
   const files: ParsedUserFileTag[] = [];
   const seen = new Set<string>();
-  const stripped = raw.replace(/(?:^|\s)#(file|dir):(\S+)/g, (match, kind: "file" | "dir", ref: string) => {
-    const key = `${kind}:${ref}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      const name = basename(ref) || ref;
-      files.push({ key, kind, ref, name });
-    }
-    return match.startsWith(" ") || match.startsWith("\n") ? " " : "";
-  });
+  const stripped = promptReferenceParts(raw).map(part => {
+    if (part.kind !== "text") return part.token;
+    return part.text.replace(/(?:^|\s)#(file|dir):(\S+)/g, (match, kind: "file" | "dir", ref: string) => {
+      const key = `${kind}:${ref}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        files.push({ key, kind, ref, name: basename(ref) || ref });
+      }
+      return match.startsWith(" ") || match.startsWith("\n") ? " " : "";
+    }).replace(/[ \t]{2,}/g, " ");
+  }).join("");
   return {
     files,
-    text: stripped.replace(/[ \t]{2,}/g, " ").trim(),
+    text: stripped.trim(),
   };
 }
 
@@ -2428,9 +2549,10 @@ function UserBubble(props: {
   text: string;
   timestamp?: number;
   showCopy?: boolean;
-  allowRollback?: boolean;
   turnId?: string;
   images?: UserImage[];
+  referenceDraft?: SessionReferenceDraft;
+  pane?: 0 | 1;
 }) {
   const hovered = signal(false);
   effect(() => {
@@ -2438,7 +2560,7 @@ function UserBubble(props: {
     props.partKey;
     hovered.set(false);
   });
-  const parsed = computed(() => extractUserMessageFileTags(props.text));
+  const parsed = computed(() => extractUserMessageFileTags(props.referenceDraft?.text ?? props.text));
   const displayText = computed(() => parsed().text);
   const long = computed(
     () => displayText().split("\n").length > USER_MESSAGE_CLAMP_LINES || displayText().length > 900,
@@ -2530,7 +2652,25 @@ function UserBubble(props: {
           </Each>
         </View>
       </If>
-      <If when={displayText().length > 0 || (parsed().files.length === 0 && (props.images?.length ?? 0) === 0)}>
+      <If when={props.referenceDraft?.references.length}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: space.chip }}>
+          <Each of={props.referenceDraft?.references ?? []} key={sessionReferenceKey}>
+            {reference => <SessionReferenceChip reference={reference()}
+              label={`${props.pane === 1 ? "secondary-" : ""}user-session-reference-${reference().sessionName}`}
+              onOpen={() => {
+                const { sessionId, workspaceId } = reference();
+                if (props.pane === 1) {
+                  selectSecondarySession(sessionId, secondarySessionDevice(), workspaceId);
+                } else {
+                  const device = activeSessionDevice();
+                  if (!device && activeWorkspaceId() !== workspaceId) selectWorkspace(workspaceId);
+                  selectSession(sessionId, device, workspaceId);
+                }
+              }} />}
+          </Each>
+        </View>
+      </If>
+      <If when={displayText().length > 0 || (parsed().files.length === 0 && (props.images?.length ?? 0) === 0 && !props.referenceDraft)}>
       <View
         style={{
           backgroundColor: palette().userBubble,
@@ -2541,16 +2681,16 @@ function UserBubble(props: {
           gap: space.xs,
         }}
       >
-        <Text
+        <PromptReferenceText
+          text={displayText()}
+          labelPrefix={props.pane === 1 ? "secondary-user-prompt-reference" : "user-prompt-reference"}
           style={{
             ...textStyle("prose", { color: palette().userBubbleText }),
             userSelect: "text",
             numberOfLines: long() && !expanded() ? USER_MESSAGE_CLAMP_LINES : undefined,
             textOverflow: long() && !expanded() ? "ellipsis" : undefined,
           }}
-        >
-          {displayText()}
-        </Text>
+        />
         <If when={long()}>
           <View
             role="button"
@@ -2606,17 +2746,15 @@ function UserBubble(props: {
         <If when={props.turnId && !runningTurnId() ? props.turnId : ""}>
           {turnId => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-              <If when={props.allowRollback !== false}>
-                <IconButton
-                  icon="undo"
-                  size="xs"
-                  accessibilityLabel={`rollback-${turnId()}`}
-                  tooltip={tr("chat.rollbackAction")}
-                  disabled={messageActionBusy()}
-                  style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-                  onPress={() => beginMessageAction(turnId(), props.text, props.images, "rollback")}
-                />
-              </If>
+              <IconButton
+                icon="undo"
+                size="xs"
+                accessibilityLabel={`rollback-${turnId()}`}
+                tooltip={tr("chat.rollbackAction")}
+                disabled={messageActionBusy()}
+                style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+                onPress={() => beginMessageAction("rollback", turnId(), props.text, props.images, props.referenceDraft)}
+              />
               <IconButton
                 icon="edit"
                 size="xs"
@@ -2624,13 +2762,13 @@ function UserBubble(props: {
                 tooltip={tr("chat.editAndRerun")}
                 disabled={messageActionBusy()}
                 style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-                onPress={() => beginMessageAction(turnId(), props.text, props.images)}
+                onPress={() => beginMessageAction("edit", turnId(), props.text, props.images, props.referenceDraft)}
               />
             </View>
           )}
         </If>
         <If when={props.showCopy !== false}>
-          <CopyChip partKey={props.partKey} text={props.text} iconOnly={true} />
+          <CopyChip partKey={props.partKey} text={composerReferenceDisplayText(props.referenceDraft, props.text)} iconOnly={true} />
         </If>
       </View>
     </View>
@@ -2639,61 +2777,71 @@ function UserBubble(props: {
 
 /**
  * Both user-message actions roll back through the host. Rollback restores the
- * original message to the composer; editing sends the edited text and images.
- * The session key fences completions when the user switches devices or sessions.
+ * original draft; editing sends the edited message as a new turn.
  */
 const messageActionTarget = signal<{
   kind: "edit" | "rollback";
-  sessionKey: string | null;
+  sessionKey: string;
   turnId: string;
   text: string;
   images: ImageAttachment[];
+  references: SessionReferenceCandidate[];
 } | null>(null);
 const messageActionBusy = signal(false);
 
 function beginMessageAction(
+  kind: "edit" | "rollback",
   turnId: string,
   text: string,
   images?: UserImage[],
-  kind: "edit" | "rollback" = "edit",
+  referenceDraft?: SessionReferenceDraft,
 ): void {
-  if (messageActionBusy()) return;
+  const key = activeSessionKey();
+  if (!key || messageActionBusy()) return;
   messageActionTarget.set({
     kind,
-    sessionKey: activeSessionKey(),
+    sessionKey: key,
     turnId,
-    text,
-    images: images && images.length > 0 ? userImagesToAttachments(images) : [],
+    text: referenceDraft?.text ?? text,
+    images: images?.length ? userImagesToAttachments(images) : [],
+    references: referenceDraft?.references ?? [],
   });
 }
 
 async function confirmMessageAction(): Promise<void> {
   const target = messageActionTarget();
   const sessionId = activeSessionId();
-  const workspaceId = activeWorkspaceId();
+  const workspaceId = activeSession()?.workspaceId ?? activeWorkspaceId();
+  const device = activeSessionDevice();
   if (!target || !sessionId || !workspaceId || messageActionBusy() || target.sessionKey !== activeSessionKey()) return;
   const text = target.text.trim();
-  if (target.kind === "edit" && !text && target.images.length === 0) return;
+  if (target.kind === "edit" && !text && !target.images.length && !target.references.length) return;
+  const composer = primaryComposerDraft.capture();
+  const draftBefore = composer.read();
   messageActionBusy.set(true);
   try {
-    clearPromptSuggestion(sessionId, activeSessionDevice());
-    await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
-    if (target.sessionKey !== activeSessionKey()) return;
+    clearPromptSuggestion(sessionId, device);
+    await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId },
+      fleetActive() && device ? { target: device } : undefined);
+    if (!composer.isVisible()) return;
     messageActionTarget.set(null);
     await loadTurns(sessionId);
-    if (target.sessionKey !== activeSessionKey()) return;
+    if (!composer.isVisible()) return;
     jumpToTranscriptEnd();
     if (target.kind === "rollback") {
-      composerText.set(target.text);
-      imageAttachments.set(target.images);
-      fileAttachments.set([]);
-    } else {
-      await sendTurn(text, undefined, target.images.length > 0 ? { attachments: target.images } : undefined);
+      composer.update(draft => draft === draftBefore
+        ? { text: target.text, images: target.images, files: [], references: target.references }
+        : draft);
+      return;
+    }
+    const outcome = await sendTurn(text, undefined, { attachments: target.images, files: [], references: target.references });
+    if (!outcome && composer.isVisible()) {
+      composer.update(draft => !draft.text.trim() && !draft.references.length
+        ? { ...draft, text, images: [...draft.images, ...target.images], references: target.references }
+        : draft);
     }
   } catch (error) {
-    if (target.sessionKey === activeSessionKey()) {
-      turnError.set(error instanceof Error ? error.message : String(error));
-    }
+    if (composer.isVisible()) turnError.set(error instanceof Error ? error.message : String(error));
   } finally {
     messageActionBusy.set(false);
   }
@@ -2705,6 +2853,20 @@ function UserMessageActionEditor() {
       {target => (
         <View style={{ gap: 8, alignSelf: "stretch" }}>
           <If when={target().kind === "edit"}>
+            <If when={target().references.length > 0}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.chip }}>
+                <Each of={target().references} key={sessionReferenceKey}>
+                  {reference => <SessionReferenceChip reference={reference()}
+                    label={`rerun-session-reference-${reference().sessionName}`}
+                    onRemove={() => {
+                      const key = sessionReferenceKey(reference());
+                      messageActionTarget.update(current => current && {
+                        ...current, references: current.references.filter(item => sessionReferenceKey(item) !== key),
+                      });
+                    }} />}
+                </Each>
+              </View>
+            </If>
             <If when={target().images.length > 0}>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                 <Each of={target().images} key={image => image.id}>
@@ -2763,10 +2925,8 @@ function UserMessageActionEditor() {
                 </Each>
               </View>
             </If>
-            <InputBox
-              value={target().text}
-              multiline={true}
-              accessibilityLabel="rerun-input"
+            <RerunPromptInput
+              draft={() => target().text}
               onChange={value => {
                 const current = messageActionTarget();
                 if (current) messageActionTarget.set({ ...current, text: value });
@@ -2784,6 +2944,36 @@ function UserMessageActionEditor() {
           />
         </View>
       )}
+    </If>
+  );
+}
+
+function RerunPromptInput(props: { draft: () => string; onChange: (value: string) => void }) {
+  const rich = signal(false);
+  effect(() => {
+    if (promptReferencesIn(props.draft()).length && promptReferenceEditorAvailable()) rich.set(true);
+  });
+  return (
+    <If when={rich()} else={
+      <InputBox value={props.draft()} multiline={true} accessibilityLabel="rerun-input" onChange={props.onChange} />
+    }>
+      <View style={{
+        borderWidth: 1, borderColor: palette().border, borderRadius: radii.md,
+        backgroundColor: palette().panelRaised, padding: space.sm,
+      }}>
+        <PromptReferenceEditor
+          draft={props.draft}
+          inputLabel="rerun-input"
+          labelPrefix="rerun-prompt-reference"
+          placeholder=""
+          disabled={messageActionBusy()}
+          fontSize={textSize(14)}
+          lineHeight={textLineHeight(14, 1.5)}
+          minHeight={controlHeight.md}
+          maxHeight={textLineHeight(14, 1.5) * 5}
+          onChange={props.onChange}
+        />
+      </View>
     </If>
   );
 }
@@ -2897,73 +3087,6 @@ function handleMarkdownImagePress(event: { image: { src: string; alt?: string; t
 }
 
 /** Structured summary card for an inline visualization figure (`visualize{...}` or `publishedFigures`). */
-function InlineFigureCard(props: { figure: InlineFigureDirective }) {
-  const canOpenInFiles = () => !props.figure.path.startsWith("openbitfun://");
-  return (
-    <View
-      testID={`inline-figure-${props.figure.slug}`}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.sm,
-        paddingHorizontal: space.md,
-        paddingVertical: space.sm,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().surfaceTertiary,
-      }}
-    >
-      <Icon name="sparkles" size={14} color={palette().accent} />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text
-          style={{
-            ...textStyle("label", { color: palette().text }),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.figure.title || props.figure.slug}
-        </Text>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontFamily: fontMono(),
-            fontSize: textSize(11),
-            lineHeight: textLineHeight(11, 1.3),
-            numberOfLines: 1,
-            textOverflow: "ellipsis-middle",
-          }}
-        >
-          {props.figure.path}
-        </Text>
-      </View>
-      <If when={canOpenInFiles()}>
-        <Button
-          label={tr("common.open")}
-          variant="ghost"
-          size="xs"
-          accessibilityLabel={`open-figure-${props.figure.slug}`}
-          onPress={() => openInAuxPane("files", props.figure.path)}
-        />
-      </If>
-      <Button
-        label={tr("pane.files.copyPath")}
-        variant="ghost"
-        size="xs"
-        accessibilityLabel={`copy-figure-${props.figure.slug}`}
-        onPress={() => {
-          void Clipboard.writeText(props.figure.path).then(
-            () => pushToast(tr("common.copied"), "success"),
-            () => undefined,
-          );
-        }}
-      />
-    </View>
-  );
-}
-
 /** Reads any backend-projected `publishedFigures` attached to a turn that weren't already emitted inline. */
 function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
   if (!turn || typeof turn !== "object") return [];
@@ -2982,13 +3105,38 @@ function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
     const item = entry as Record<string, unknown>;
     const path = typeof item.uri === "string" ? item.uri.trim() : typeof item.path === "string" ? item.path.trim() : "";
     if (!path || inlinePaths.has(path)) continue;
-    inlinePaths.add(path);
     const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined;
+    if (typeof item.uri === "string" && !title && !publishedFigure(turn as TranscriptTurnView, path)) continue;
+    inlinePaths.add(path);
     const base = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
     const slug = base.replace(/\.html?$/i, "") || "figure";
     figures.push({ path, slug, ...(title ? { title } : {}) });
   }
   return figures;
+}
+
+function openFigurePath(path: string) {
+  openInAuxPane("files", path);
+}
+
+function captureFigureSession(pane: 0 | 1, sessionKey: string | null | undefined) {
+  const currentKey = pane === 1 ? secondarySessionKey : activeSessionKey;
+  if (!sessionKey || currentKey() !== sessionKey) return undefined;
+  const target = (pane === 1 ? secondaryComposerDraft : primaryComposerDraft).capture();
+  const appendDraft = (message: string) => {
+    if (!target.isVisible()) return false;
+    target.update(draft => ({ ...draft, text: draft.text ? `${draft.text}\n\n${message}` : message }));
+    focusPane(pane);
+    queueMicrotask(() => {
+      if (target.isVisible()) (pane === 1 ? secondaryComposerInputRef : composerInputRef)?.focus();
+    });
+    return true;
+  };
+  return {
+    appendDraft,
+    isVisible: () => target.isVisible(),
+    turns: () => target.isVisible() ? (pane === 1 ? secondaryTurns() : sessionTurns()) : [],
+  };
 }
 
 /** Which oversized replies the reader opened in full, one signal per item key. */
@@ -3006,11 +3154,13 @@ function fullReplySignal(key: string): Signal<boolean> {
 }
 
 const SESSION_MARKDOWN_EXTENSIONS = [MARKDOWN_MEDIA_EXTENSION];
+const COMPLETED_MARKDOWN_EXTENSIONS = [...SESSION_MARKDOWN_EXTENSIONS, ...MERMAID_MARKDOWN_EXTENSIONS];
 
-function MarkdownBody(props: { text: string; live?: boolean }) {
+function MarkdownBody(props: { text: string; live?: boolean; turn?: TranscriptTurnView; fullText?: string; pane?: 0 | 1; sessionKey?: string | null }) {
   const parsed = computed(() => extractVisualizeDirectives(props.text, { streaming: props.live }));
   const columnWidth = signal<number>(layout.conversationWidth);
   const preparedText = () => (props.live ? parsed().text : transformEmbeddedMediaMarkdown(parsed().text));
+  const figures = computed(() => props.fullText ? extractVisualizeDirectives(props.fullText).figures : parsed().figures);
   return (
     <View
       onLayout={event => {
@@ -3026,13 +3176,13 @@ function MarkdownBody(props: { text: string; live?: boolean }) {
           links="report"
           onLinkPress={handleMarkdownLink}
           onImagePress={handleMarkdownImagePress}
-          extensions={SESSION_MARKDOWN_EXTENSIONS}
+          extensions={props.live ? SESSION_MARKDOWN_EXTENSIONS : COMPLETED_MARKDOWN_EXTENSIONS}
           renderImage={image => <MarkdownImageView image={image} containerWidth={() => columnWidth()} />}
           renderCustom={node =>
             node.name === "media" ? (
               <MarkdownMediaEmbed rawJson={node.text ?? ""} containerWidth={() => columnWidth()} />
             ) : (
-              <Text style={textStyle("body")}>{node.text ?? ""}</Text>
+              renderMarkdownDiagram(node)
             )
           }
           options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
@@ -3040,10 +3190,13 @@ function MarkdownBody(props: { text: string; live?: boolean }) {
           styles={createMarkdownStyles()}
         />
       </If>
-      <If when={parsed().figures.length > 0}>
+      <If when={figures().length > 0}>
         <View style={{ gap: space.xs }}>
-          <Each of={parsed().figures} key={fig => fig.path}>
-            {fig => <InlineFigureCard figure={fig()} />}
+          <Each of={figures()} key={fig => fig.path}>
+            {fig => (
+              <InlineFigureCard figure={fig()} turn={props.turn} onOpenPath={openFigurePath}
+                captureSession={() => captureFigureSession(props.pane ?? 0, props.sessionKey)} />
+            )}
           </Each>
         </View>
       </If>
@@ -3056,7 +3209,7 @@ function MarkdownBody(props: { text: string; live?: boolean }) {
  * opens as a preview cut at a safe paragraph break, and lays out the rest only
  * when the reader asks for it, so a session with a few huge answers opens fast.
  */
-function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string; preserveFullReply?: boolean }) {
+function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string; preserveFullReply?: boolean; turn?: TranscriptTurnView; pane?: 0 | 1; sessionKey?: string | null }) {
   const large = computed(() => !props.live && !props.preserveFullReply && props.text.length > LARGE_MARKDOWN_CHARS);
   const cut = computed(() => (large() ? markdownPreviewCut(props.text) : props.text.length));
   const collapsed = computed(
@@ -3066,9 +3219,9 @@ function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string;
     <View style={{ width: "100%", gap: 6 }}>
       <If
         when={collapsed()}
-        else={<MarkdownBody text={props.text} live={props.live} />}
+        else={<MarkdownBody text={props.text} live={props.live} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />}
       >
-        <MarkdownBody text={markdownPreviewSlice(props.text, cut())} />
+        <MarkdownBody text={markdownPreviewSlice(props.text, cut())} fullText={props.text} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />
         <View style={{ alignSelf: "flex-start" }}>
           <Button
             label={tr("chat.polish.showFullReply", { count: formatCount(lineCountOf(props.text.slice(cut()))) })}
@@ -3086,6 +3239,80 @@ function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string;
 
 type ItemOf<K extends TranscriptItem["kind"]> = Extract<TranscriptItem, { kind: K }>;
 
+async function sendSessionCardMessage(origin: string, text: string, sendDuringTurn?: "immediate"): Promise<boolean> {
+  const context = { attachments: [], files: [], references: [] };
+  if (activeSessionKey() === origin) return Boolean(await sendTurn(text, sendDuringTurn, context));
+  if (secondarySessionKey() === origin) return Boolean(await sendSecondaryTurn(text, sendDuringTurn, context));
+  return false;
+}
+
+function SessionGenUIToolCard(props: { call: ToolCallView; cardId: string; sessionKey: string | null; turnId: string }) {
+  const state = computed(() => persistedToolState(props.call));
+  return (
+    <GenUIToolItem
+      call={props.call}
+      cardId={props.cardId}
+      status={state()}
+      sessionKey={props.sessionKey}
+      turnId={props.turnId}
+      onSubmit={sendSessionCardMessage}
+      fallback={<ToolCard call={props.call} cardId={props.cardId} status={state()} />}
+    />
+  );
+}
+
+function SessionToolCard(props: {
+  call: ToolCallView;
+  cardId: string;
+  pane: 0 | 1;
+  sessionKey: string | null;
+  turnId: string;
+  live?: boolean;
+  ephemeral?: boolean;
+}) {
+  const state = computed(() => persistedToolState(props.call));
+  if (props.ephemeral) return <ToolCard call={props.call} cardId={props.cardId} status={state()} live={props.live} />;
+  const artifact = computed(() => state() === "failed" || state() === "cancelled"
+    ? null : transcriptPlanArtifact(props.call, state() === "running"));
+  const owner = computed<PlanArtifactOwner | null>(() => {
+    const secondary = props.pane === 1;
+    const sessionKey = secondary ? secondarySessionKey() : activeSessionKey();
+    const workspaceId = secondary ? secondaryWorkspaceId() : activeSession()?.workspaceId;
+    const deviceId = secondary ? secondarySessionDevice() : activeSessionDevice();
+    const record = secondary ? secondaryWorkspaceRecord() : activeWorkspace();
+    if (!sessionKey || !workspaceId || record?.id !== workspaceId) return null;
+    return { sessionKey, workspace: { workspaceId, deviceId }, root: record.rootPath, remote: isRemoteWorkspace(record) };
+  });
+  const activate = (target: PlanArtifactOwner): boolean => {
+    const current = owner();
+    if (!current || current.sessionKey !== target.sessionKey || current.workspace.workspaceId !== target.workspace.workspaceId) return false;
+    const previous = activeWorkspaceKey();
+    if (previous?.workspaceId === target.workspace.workspaceId && previous.deviceId === target.workspace.deviceId) return true;
+    if (props.pane === 1) swapSplitPanes();
+    const workspace = activeWorkspaceKey();
+    return activeSessionKey() === target.sessionKey && workspace?.workspaceId === target.workspace.workspaceId
+      && workspace?.deviceId === target.workspace.deviceId;
+  };
+  const reportTarget = () => {
+    if (state() !== "completed" || toolKindOf(props.call) !== "review") return null;
+    const target = reviewParentTarget(props.pane);
+    if (!target || !["CodeReview", "DeepReview"].includes(agentTypeOf(target.sessionId, target.deviceId))) return null;
+    return target;
+  };
+  return <If when={artifact()} else={
+    <If when={toolKindOf(props.call) === "question" && state() !== "running" && state() !== "confirmation"}
+      else={<ToolCard call={props.call} cardId={props.cardId} status={state()} reviewTarget={reportTarget()} live={props.live} />}>
+      <QuestionOutcomeCard call={props.call} id={props.call.id ?? props.cardId} sessionKey={props.sessionKey}
+        turnId={props.turnId} send={(origin, message) => sendSessionCardMessage(origin, message, "immediate")}
+        fallback={<ToolCard call={props.call} cardId={props.cardId} status={state()} live={props.live} />} />
+    </If>
+  }>
+    {plan => <Each of={[props.cardId]} key={id => id}>
+      {() => <PlanArtifactCard artifact={plan()} state={state()} pane={props.pane} owner={owner()} activate={activate} />}
+    </Each>}
+  </If>;
+}
+
 function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking" }>, pane: LivePane = 0, prefix = ""): JSX.Element {
   const text: string | (() => string) = item.roundId
     ? () => livePaneThinking(pane, item.roundId!)
@@ -3100,20 +3327,27 @@ function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking
  */
 function TranscriptItemView(props: {
   item: TranscriptItem;
+  turn?: TranscriptTurnView;
+  sessionKey?: string | null;
+  turnId?: string;
   live?: boolean;
   preserveFullReply?: boolean;
   pane?: 0 | 1;
+  ephemeral?: boolean;
   /** In the virtualized transcript an open group's steps are rows of their own. */
   stepsAsRows?: boolean;
 }) {
   const kind = () => props.item.kind;
-  const isGenUI = () => kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
+  const isGenUI = () => !props.ephemeral && kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
   const pane = props.pane ?? 0;
   return (
     <View style={{ width: "100%" }}>
       <If when={kind() === "text"}>
         <AnswerMarkdown
           text={(props.item as ItemOf<"text">).text}
+          turn={props.turn}
+          pane={pane}
+          sessionKey={props.sessionKey}
           live={props.live}
           itemKey={props.item.key}
           preserveFullReply={props.preserveFullReply}
@@ -3137,24 +3371,21 @@ function TranscriptItemView(props: {
         }}
       </If>
       <If when={isGenUI()}>
-        <GenUIToolItem
+        <SessionGenUIToolCard
           call={(props.item as ItemOf<"tool">).call}
           cardId={props.item.key}
-          status={persistedToolState((props.item as ItemOf<"tool">).call)}
-          fallback={
-            <ToolCard
-              call={(props.item as ItemOf<"tool">).call}
-              cardId={props.item.key}
-              status={persistedToolState((props.item as ItemOf<"tool">).call)}
-            />
-          }
+          sessionKey={props.sessionKey ?? null}
+          turnId={props.turnId ?? ""}
         />
       </If>
       <If when={kind() === "tool" && !isGenUI()}>
-        <ToolCard
+        <SessionToolCard
           call={(props.item as ItemOf<"tool">).call}
           cardId={props.item.key}
-          status={persistedToolState((props.item as ItemOf<"tool">).call)}
+          pane={pane}
+          ephemeral={props.ephemeral}
+          sessionKey={props.sessionKey ?? null}
+          turnId={props.turnId ?? ""}
         />
       </If>
       <If when={kind() === "explore"}>
@@ -3173,7 +3404,7 @@ function TranscriptItemView(props: {
 }
 
 /** Renders an ordered item list; rows are kept by the item's key. */
-function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean; preserveFullReply?: boolean; pane?: 0 | 1 }) {
+function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean; preserveFullReply?: boolean; pane?: 0 | 1; ephemeral?: boolean }) {
   return (
     <View style={{ gap: 8 }}>
       <Each of={props.items} key={item => item.key}>
@@ -3183,34 +3414,12 @@ function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean; prese
             live={props.live}
             preserveFullReply={props.preserveFullReply}
             pane={props.pane}
+            ephemeral={props.ephemeral}
           />
         )}
       </Each>
     </View>
   );
-}
-
-function liveToolToCallView(tool: LiveToolItem): ToolCallView {
-  return {
-    id: tool.toolId,
-    name: tool.effectiveToolName || tool.toolName,
-    detail: tool.progressMessage || tool.detail,
-    ...(tool.input !== undefined ? { input: tool.input } : {}),
-    status: tool.status,
-    ...(tool.error ? { error: tool.error } : {}),
-    ...(tool.result !== undefined ? { result: tool.result } : {}),
-    ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
-    ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
-    ...(tool.genuiStream
-      ? {
-          genuiStream: {
-            source: tool.genuiStream.source,
-            format: tool.genuiStream.format,
-            ...(tool.genuiStream.title ? { title: tool.genuiStream.title } : {}),
-          },
-        }
-      : {}),
-  };
 }
 
 const liveRounds = computed<LiveModelRound[]>(() => liveTurn()?.rounds ?? []);
@@ -3481,12 +3690,19 @@ function LiveTextSegment(props: { roundId: string; start: number; end?: number; 
 /** Shared live-turn block list used identically by Primary and Secondary split panes. */
 function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: LivePane; cardPrefix?: string; live?: boolean }) {
   const prefix = props.cardPrefix ?? "";
+  const ephemeral = typeof props.pane === "function";
+  const pane = props.pane === 1 ? 1 : 0;
+  const source = () => ephemeral ? null : pane === 1 ? secondaryLiveTurn() : liveTurn();
+  const sourceSessionKey = () => {
+    const turn = source();
+    return turn ? sessionKey(turn.sessionId, turn.deviceId ?? "") : null;
+  };
   return (
     <View style={{ gap: 8 }}>
       <Each of={props.blocks()} key={block => block.key}>
         {block => {
           const kind = () => block().kind;
-          const isGenUI = () => kind() === "tool" && isGenUICall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
+          const isGenUI = () => !ephemeral && kind() === "tool" && isGenUICall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
           return (
             <View style={{ width: "100%" }}>
               <If when={kind() === "liveText"}>
@@ -3515,24 +3731,22 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
                 }}
               </If>
               <If when={isGenUI()}>
-                <GenUIToolItem
+                <SessionGenUIToolCard
                   call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
                   cardId={`${prefix}${block().key}`}
-                  status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
-                  fallback={
-                    <ToolCard
-                      call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
-                      cardId={`${prefix}${block().key}`}
-                      status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
-                    />
-                  }
+                  sessionKey={sourceSessionKey()}
+                  turnId={source()?.turnId ?? ""}
                 />
               </If>
               <If when={kind() === "tool" && !isGenUI()}>
-                <ToolCard
+                <SessionToolCard
+                  live={props.live !== false}
                   call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
                   cardId={`${prefix}${block().key}`}
-                  status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
+                  pane={pane}
+                  ephemeral={ephemeral}
+                  sessionKey={sourceSessionKey()}
+                  turnId={source()?.turnId ?? ""}
                 />
               </If>
               <If when={kind() === "explore"}>
@@ -3688,7 +3902,7 @@ function failureDetailLines(failure: TurnFailure): string[] {
     return "";
   };
   const provider = read(["provider", "providerId", "provider_id"]);
-  const code = read(["code", "errorCode", "error_code", "statusCode", "status_code", "httpStatus"]);
+  const code = read(["providerCode", "provider_code", "code", "errorCode", "error_code", "statusCode", "status_code", "httpStatus", "http_status"]);
   const requestId = read(["requestId", "request_id"]);
   if (provider) lines.push(tr("chat.failureProvider", { value: provider }));
   if (code) lines.push(tr("chat.failureCode", { value: code }));
@@ -3707,27 +3921,46 @@ function interruptedRecoveryOf(turn: unknown): { generation: number } | null {
   return typeof generation === "number" ? { generation } : null;
 }
 
-const resumingTurn = signal("");
+const resumingTurns = signal<ReadonlySet<string>>(new Set());
 
-async function resumeInterruptedTurn(turn: unknown): Promise<void> {
-  const sessionId = activeSessionId();
+function recoveryTarget(pane: 0 | 1) {
+  const sessionId = pane === 1 ? secondarySessionId() : activeSessionId();
+  const deviceId = pane === 1 ? secondarySessionDevice() : activeSessionDevice();
+  const workspaceId = (pane === 1 ? secondaryWorkspaceId() : activeSession()?.workspaceId ?? activeWorkspaceId()) ?? undefined;
+  const workspace = pane === 1 ? secondaryWorkspaceRecord() : activeWorkspace();
+  if (!sessionId || (workspace && workspace.id === workspaceId && isRemoteWorkspace(workspace))) return null;
+  return { sessionId, deviceId, workspaceId, workspacePath: workspace && workspace.id === workspaceId ? workspace.rootPath : undefined };
+}
+
+function recoveryKey(target: ReturnType<typeof recoveryTarget>, turn: unknown): string {
+  return target ? JSON.stringify([sessionKey(target.sessionId, target.deviceId), turnKeyOf(turn)]) : "";
+}
+
+async function resumeInterruptedTurn(turn: unknown, pane: 0 | 1): Promise<void> {
+  const target = recoveryTarget(pane);
   const turnId = turnKeyOf(turn);
   const recovery = interruptedRecoveryOf(turn);
-  if (!sessionId || !turnId || !recovery || resumingTurn()) return;
-  resumingTurn.set(turnId);
+  const key = recoveryKey(target, turn);
+  if (!target || !turnId || !recovery || resumingTurns().has(key)) return;
+  resumingTurns.update(current => new Set([...current, key]));
+  const isCurrent = () => recoveryKey(recoveryTarget(pane), turn) === key;
   try {
     await recoverInterruptedDialogTurn({
-      sessionId,
+      sessionId: target.sessionId,
       dialogTurnId: turnId,
       executionGeneration: recovery.generation,
-      ...(activeWorkspaceId() ? { workspaceId: activeWorkspaceId()! } : {}),
-      ...(activeWorkspace()?.rootPath ? { workspacePath: activeWorkspace()!.rootPath } : {}),
-    });
-    jumpToTranscriptEnd();
+      ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
+      ...(target.workspacePath ? { workspacePath: target.workspacePath } : {}),
+    }, target.deviceId ? { target: target.deviceId } : undefined);
+    if (pane === 0 && isCurrent()) jumpToTranscriptEnd();
   } catch (error) {
-    turnError.set(error instanceof Error ? error.message : String(error));
+    if (isCurrent()) (pane === 1 ? secondaryTurnError : turnError).set(localizeHostError(error));
   } finally {
-    resumingTurn.set("");
+    resumingTurns.update(current => {
+      const remaining = new Set(current);
+      remaining.delete(key);
+      return remaining;
+    });
   }
 }
 
@@ -3739,10 +3972,20 @@ async function resumeInterruptedTurn(turn: unknown): Promise<void> {
  */
 function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure; pane?: 0 | 1 }) {
   const isSecondary = props.pane === 1;
+  const reviewTarget = computed(() => {
+    const target = reviewParentTarget(props.pane ?? 0);
+    return target && agentTypeOf(target.sessionId, target.deviceId) === "DeepReview" ? target : null;
+  });
+  const guidance = computed(() => reviewTarget() ? reviewRecoveryPresentation(props.failure) : null);
   const cancelled = computed(() => props.failure.status === "cancelled" || props.failure.status === "interrupted");
-  const prompt = computed(() => userPartsOf(props.turn)[0]?.text ?? "");
+  const referenceDraft = computed(() => turnReferenceDraft(props.turn));
+  const prompt = computed(() => referenceDraft()?.text ?? userPartsOf(props.turn)[0]?.text ?? "");
   const promptImages = computed(() => userImagesOf(props.turn));
-  const reason = computed(() => (props.failure.message ? localizeHostError(props.failure.message) : ""));
+  const title = computed(() => {
+    const reason = guidance()?.reason || (!cancelled() ? localizeHostError(props.failure.message) : "");
+    if (reason) return tr("session.turnStopped", { reason });
+    return tr(cancelled() ? "chat.turnInterrupted" : "chat.turnFailed");
+  });
   const isBusy = () => Boolean(isSecondary ? secondaryRunningTurnId() : runningTurnId());
   const raw = computed(() => {
     try {
@@ -3775,45 +4018,61 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure; pane?: 
             userSelect: "text",
           }}
         >
-          {cancelled()
-            ? tr("chat.turnInterrupted")
-            : reason()
-              ? tr("session.turnStopped", { reason: reason() })
-              : tr("chat.turnFailed")}
+          {title()}
         </Text>
-        <If when={!cancelled() && props.failure.message ? "copy" : ""}>
+        <If when={!guidance()?.diagnostic && !cancelled() && props.failure.message ? "copy" : ""}>
           <CopyChip partKey={`failure-${isSecondary ? "sec-" : ""}${turnKeyOf(props.turn)}`} text={raw()} />
         </If>
       </View>
       <If when={!cancelled() ? failureDetailLines(props.failure).join(" · ") : ""}>
         {line => <Text style={{ ...textStyle("mono", { color: palette().textMuted }), userSelect: "text" }}>{line()}</Text>}
       </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        <If when={!isSecondary && interruptedRecoveryOf(props.turn) && !isBusy() ? "resume" : ""}>
+      <If when={guidance()?.constraint}>
+        {constraint => <Text style={textStyle("caption")}>{constraint()}</Text>}
+      </If>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+        <If when={guidance()?.modelAction}>
+          {label => <Button label={tr(label())} size="sm" variant="secondary"
+            accessibilityLabel="review-recovery-model-settings" onPress={() => {
+              const target = reviewTarget();
+              if (target) openDeviceSettings("models", target.deviceId, "models");
+            }} />}
+        </If>
+        <If when={guidance()?.diagnostic}>
+          {diagnostic => <Button label={tr("review.recovery.copyDiagnostics")} size="sm" variant="ghost"
+            accessibilityLabel="review-recovery-copy-diagnostics" onPress={() => {
+              void Clipboard.writeText(diagnostic()).then(
+                () => pushToast(tr("common.copied"), "success"),
+                () => pushToast(tr("review.recovery.copyFailed"), "warning"),
+              );
+            }} />}
+        </If>
+        <If when={interruptedRecoveryOf(props.turn) && recoveryTarget(props.pane ?? 0) && !isBusy()}>
           <Button
             label={tr("chat.resume")}
             variant="ghost"
             size="sm"
-            loading={resumingTurn() === turnKeyOf(props.turn)}
-            accessibilityLabel={`resume-turn-${turnKeyOf(props.turn)}`}
-            onPress={() => void resumeInterruptedTurn(props.turn)}
+            loading={resumingTurns().has(recoveryKey(recoveryTarget(props.pane ?? 0), props.turn))}
+            accessibilityLabel={`${isSecondary ? "secondary-" : ""}resume-turn-${turnKeyOf(props.turn)}`}
+            onPress={() => void resumeInterruptedTurn(props.turn, props.pane ?? 0)}
           />
         </If>
-        <If when={(prompt() || promptImages().length > 0) && !isBusy()}>
+        <If when={(prompt() || promptImages().length > 0 || referenceDraft()?.references.length) && !isBusy()}>
           <Button
             label={tr("common.tryAgain")}
             variant="ghost"
             size="sm"
             accessibilityLabel={`${isSecondary ? "secondary-" : ""}retry-turn-${turnKeyOf(props.turn)}`}
             onPress={() => {
+              const preserved = userImagesToAttachments(promptImages());
+              const references = referenceDraft()?.references;
               if (isSecondary) {
                 focusPane(1);
-                void sendSecondaryTurn(prompt());
+                void sendSecondaryTurn(prompt(), undefined, { attachments: preserved, references: references ?? [] });
                 return;
               }
               jumpToTranscriptEnd();
-              const preserved = userImagesToAttachments(promptImages());
-              void sendTurn(prompt(), undefined, preserved.length > 0 ? { attachments: preserved } : undefined);
+              void sendTurn(prompt(), undefined, { attachments: preserved, files: [], references: references ?? [] });
             }}
           />
         </If>
@@ -4081,6 +4340,7 @@ const primaryReserveFooterSpace = computed<boolean>(() =>
  */
 interface TurnRow {
   key: string;
+  sessionKey: string | null;
   turn: unknown;
 }
 
@@ -4089,15 +4349,11 @@ let turnRowSession: string | null = null;
 
 function turnSignature(turn: unknown): string {
   if (!turn || typeof turn !== "object") return String(turn ?? "");
-  const view = turn as Partial<TranscriptTurnView> & { publishedFigures?: unknown[]; published_figures?: unknown[] };
+  const view = turn as Partial<TranscriptTurnView> & { published_figures?: TranscriptTurnView["publishedFigures"] };
   const userText = view.user?.text ?? "";
   const userImages = Array.isArray(view.user?.images) ? view.user.images.length : 0;
   const items = Array.isArray(view.items) ? view.items : [];
-  const figures = Array.isArray(view.publishedFigures)
-    ? view.publishedFigures.length
-    : Array.isArray(view.published_figures)
-      ? view.published_figures.length
-      : 0;
+  const figures = view.publishedFigures ?? view.published_figures;
   const parts: string[] = [
     String(view.turnId ?? ""),
     String(view.turnIndex ?? ""),
@@ -4110,7 +4366,7 @@ function turnSignature(turn: unknown): string {
     `${userText.length}:${userText.slice(0, 24)}:${userText.slice(-16)}:${userImages}`,
     String(view.tokenUsage?.totalTokens ?? ""),
     `${view.recovery?.status ?? ""}:${view.recovery?.executionGeneration ?? ""}`,
-    String(figures),
+    Array.isArray(figures) ? figures.map(f => `${f?.uri}:${f?.contentBytes}`).join("|") : "",
     String(items.length),
   ];
   for (let i = 0; i < items.length; i += 1) {
@@ -4159,7 +4415,7 @@ const stableTurnRows = computed<TurnRow[]>(() => {
       return previous.row;
     }
     const signature = turnSignature(turn);
-    const row = previous && previous.signature === signature ? previous.row : { key, turn };
+    const row = previous && previous.signature === signature ? previous.row : { key, turn, sessionKey: sessionKeyId };
     next.set(key, { row, signature });
     return row;
   });
@@ -4246,6 +4502,7 @@ type TranscriptBlockRow =
       text: string;
       timestamp?: number;
       images: UserImage[];
+      referenceDraft?: SessionReferenceDraft;
       showRerunSlot: boolean;
       topGap: number;
     }
@@ -4254,6 +4511,8 @@ type TranscriptBlockRow =
       key: string;
       turnKey: string;
       turnId: string;
+      sessionKey: string | null;
+      transcriptTurn?: TranscriptTurnView;
       item: TranscriptItem;
       preserveFullReply: boolean;
       topGap: number;
@@ -4274,6 +4533,8 @@ type TranscriptBlockRow =
       key: string;
       turnKey: string;
       turnId: string;
+      sessionKey: string | null;
+      transcriptTurn?: TranscriptTurnView;
       figures: InlineFigureDirective[];
       topGap: number;
     }
@@ -4328,6 +4589,10 @@ function estimatedRowHeightOf(row: TranscriptBlockRow): number {
       return 72 + Math.min(6, Math.floor(row.text.length / 90)) * 22;
     case "item":
       if (row.item.kind === "text") return 48 + Math.min(18, Math.floor(row.item.text.length / 110)) * 22;
+      if (row.item.kind === "tool") {
+        const prominent = isProminentToolCall(row.item.call);
+        return toolCardHeaderHeight(prominent) + (prominent ? 2 * toolCardMetrics.borderWidth : 0);
+      }
       return controlHeight.sm;
     case "groupStep":
       return controlHeight.sm + space.hair;
@@ -4358,8 +4623,12 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
 
   const turnKey = turnRow.key;
   const turnId = turnKeyOf(turn);
+  const transcriptTurn = turn && typeof turn === "object" && Array.isArray((turn as TranscriptTurnView).publishedFigures)
+    ? turn as TranscriptTurnView
+    : undefined;
   const blocks: TranscriptBlockRow[] = [];
   const userParts = userPartsOf(turn);
+  const referenceDraft = turnReferenceDraft(turn);
   const images = userImagesOf(turn);
   const timestamp = turnTimestampOf(turn);
   const prefix = isSecondary ? "sec-" : "";
@@ -4374,6 +4643,7 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       text: part.text,
       timestamp,
       images,
+      ...(index === 0 && referenceDraft ? { referenceDraft } : {}),
       showRerunSlot: !isSecondary && index === userParts.length - 1,
       topGap: 0,
     });
@@ -4390,6 +4660,8 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       key,
       turnKey,
       turnId,
+      sessionKey: turnRow.sessionKey,
+      transcriptTurn,
       item,
       preserveFullReply,
       topGap: TRANSCRIPT_ROW_GAP + (index === 0 && userParts.length > 0 ? space.xs : 0),
@@ -4419,6 +4691,8 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       key: `${turnKey}|figures`,
       turnKey,
       turnId,
+      sessionKey: turnRow.sessionKey,
+      transcriptTurn,
       figures,
       topGap: TRANSCRIPT_ROW_GAP,
     });
@@ -4555,9 +4829,10 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
               partKey={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).partKey}
               text={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).text}
               timestamp={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).timestamp}
-              turnId={turnId()}
-              allowRollback={!isSecondary}
+              turnId={isSecondary ? undefined : turnId()}
               images={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).images}
+              referenceDraft={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).referenceDraft}
+              pane={props.pane}
             />
             <If
               when={
@@ -4574,6 +4849,9 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
         <If when={kind() === "item"}>
           <TranscriptItemView
             item={(props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).item}
+            turn={(props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).transcriptTurn}
+            sessionKey={(props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).sessionKey}
+            turnId={turnId()}
             preserveFullReply={
               !isSecondary &&
               ((props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).preserveFullReply ||
@@ -4601,7 +4879,14 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
               of={(props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).figures}
               key={fig => fig.path}
             >
-              {fig => <InlineFigureCard figure={fig()} />}
+              {fig => (
+                <InlineFigureCard figure={fig()}
+                  turn={(props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).transcriptTurn}
+                  onOpenPath={openFigurePath}
+                  captureSession={() => captureFigureSession(
+                    props.pane ?? 0, (props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).sessionKey,
+                  )} />
+              )}
             </Each>
           </View>
         </If>
@@ -5220,7 +5505,6 @@ function Transcript() {
         liveStreamedTurnIds.clear();
         thinkingOverrides.set({});
         expandedUserMessages.set([]);
-        questionPages.set({});
       });
     }
     if (isTranscriptEmpty()) {
@@ -5317,27 +5601,61 @@ function Transcript() {
   );
 }
 
-/** The tool the running turn is in right now, as its row would title it. */
-const slashMatches = computed(() => slashCommandsFor(composerText(), Boolean(runningTurnId())));
-const slashSkillMatches = computed(() => slashSkillsFor(composerText()));
-const slashSelectedIndex = signal(0);
 const composerCaretPos = signal(0);
 
-const slashPopoverVisible = computed(
-  () =>
-    ((slashMatches()?.length ?? 0) > 0 ||
-      slashSkillMatches().length > 0 ||
-      mcpPromptMatches().length > 0) &&
-    !mentionOpen(),
-);
+interface ComposerSlashPane {
+  index: 0 | 1;
+  sessionId: () => string | null;
+  sessionKey: () => string | null;
+  deviceId: () => string;
+  workspaceId: () => string | null;
+  workspace: () => WorkspaceRecord | null;
+  draft: Signal<string>;
+  images: () => ImageAttachment[];
+  files: () => FileAttachment[];
+  references: () => SessionReferenceCandidate[];
+  running: () => string | null;
+  pending: () => unknown;
+  anchor: () => ViewRef | null;
+  modelAnchor: () => ViewRef | null;
+  focus: () => void;
+  error: (message: string) => void;
+  reloadTurns: (sessionId: string) => void;
+  send: (text: string, policy?: "immediate" | "queue", expansion?: ExternalCommandSubmission) => Promise<void>;
+}
 
-async function runUsageSlashCommand(sessionId: string): Promise<void> {
+function composerSlashScope(pane: ComposerSlashPane): ExternalSlashScope | null {
+  const sessionId = pane.sessionId();
+  const sessionKey = pane.sessionKey();
+  const device = pane.deviceId();
+  const agent = agentTypeOf(sessionId, device);
+  if (!sessionId || !sessionKey || agent.startsWith("acp:")) return null;
+  const fleet = fleetActive();
+  const workspaceId = pane.workspaceId();
+  if (!workspaceId) return null;
+  const owner = fleet ? fleetWorkspaceByKey({ deviceId: device, workspaceId }) : null;
+  if (owner) {
+    if (owner.kind !== "local" && owner.kind !== "assistant") return null;
+  } else {
+    const workspace = pane.workspace();
+    if (!workspace || workspace.id !== workspaceId
+      || !["local", "normal", "assistant"].includes(workspace.workspaceKind?.toLowerCase() ?? "normal")
+      || (workspace.sshHost && workspace.sshHost !== "localhost") || workspace.connectionId) return null;
+  }
+  const workspaceRoot = owner?.rootPath ?? pane.workspace()?.rootPath ?? "";
+  return { pane: pane.index, key: JSON.stringify([sessionKey, workspaceId, workspaceRoot, agent]), workspaceId, workspaceRoot,
+    route: fleet && device ? { target: device } : undefined };
+}
+
+async function runUsageSlashCommand(sessionId: string, pane: ComposerSlashPane): Promise<void> {
+  const workspaceId = pane.workspaceId();
+  const device = pane.deviceId();
   try {
     const report = await invokeCommand<Record<string, unknown>>("get_session_usage_report", {
       session_id: sessionId,
-      ...(activeWorkspaceId() ? { workspace_id: activeWorkspaceId() } : {}),
-      workspace_path: activeWorkspaceRoot() || "",
-    });
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      workspace_path: pane.workspace()?.rootPath ?? "",
+    }, fleetActive() && device ? { target: device } : undefined);
     const summary = (report?.summary ?? report?.totals ?? report) as Record<string, unknown> | undefined;
     const input = Number(
       summary?.total_input_tokens ?? summary?.totalInputTokens ?? summary?.input_tokens ?? summary?.inputTokens ?? 0,
@@ -5366,163 +5684,478 @@ async function runUsageSlashCommand(sessionId: string): Promise<void> {
   }
 }
 
-function openComposerModelPicker(): void {
-  modelPickerTarget.set(null);
-  modelPickerAnchor.set(composerModelAnchor() ?? composerPlusAnchor());
-  closePickers("model");
-  modelPickerOpen.set(true);
-}
-
 /** Resolves `/model [query]`: opens the model picker or switches directly to a unique match. */
-async function runModelSlashCommand(arg: string): Promise<void> {
-  composerText.set("");
+async function runModelSlashCommand(arg: string, pane: ComposerSlashPane): Promise<void> {
+  pane.draft.set("");
   ensureModelsLoaded();
-  const query = arg.trim().toLowerCase();
+  const target = { sessionId: pane.sessionId(), deviceId: pane.deviceId(), workspaceId: pane.workspaceId() };
+  const query = arg.trim();
+  const openPicker = () => {
+    modelPickerRequestedSearch.set(query);
+    modelPickerTarget.set({ kind: "session", ...target });
+    modelPickerAnchor.set(pane.modelAnchor() ?? pane.anchor());
+    closePickers("model");
+    modelPickerOpen.set(true);
+  };
   if (!query) {
-    openComposerModelPicker();
+    openPicker();
     return;
   }
-  const candidates: Array<{ ref: string; label: string; keys: string[] }> = [];
-  const groups = fleetModelGroups();
-  if (groups && groups.length > 0) {
-    for (const device of groups) {
-      for (const model of device.models) {
-        if (!model.selectable) continue;
-        const text = fleetModelText(model);
-        const label = device.isThisDevice
-          ? text.label
-          : tr("models.onDevice", { model: text.label, device: device.name });
-        candidates.push({
-          ref: model.modelRef,
-          label,
-          keys: [model.modelRef, model.modelId, model.displayName, model.modelName ?? "", text.label].map(v => v.toLowerCase()),
-        });
+  const owner = alternateModelCatalogOwner(target.deviceId);
+  const groups = owner ? await readModelPickerCatalog(owner).catch(() => []) : modelPickerCatalog(chatModels(), fleetModelGroups());
+  if (pane.sessionId() !== target.sessionId || pane.deviceId() !== target.deviceId || pane.workspaceId() !== target.workspaceId) return;
+  const matches = findModelPickerMatches(groups, query);
+  if (matches.length === 1) {
+    const { row, device } = matches[0]!;
+    await chooseModel(row.ref, target);
+    const label = device && !device.isThisDevice ? tr("models.onDevice", { model: row.label, device: device.name }) : row.label;
+    pushToast(tr("sessions.modelLabel", { name: label }), "success");
+    return;
+  }
+  openPicker();
+}
+
+type SlashPickerRow = { kind: "command"; item: SlashCommand }
+  | { kind: "skill"; item: SlashSkillItem }
+  | { kind: "mcp"; item: McpPromptEntry }
+  | { kind: "external"; item: ExternalSlashItem };
+
+function slashPickerRowContent(row: SlashPickerRow): { id: string; icon: IconName; title: string; subtitle: string } {
+  switch (row.kind) {
+    case "command":
+      return { id: "slash-command-" + row.item.id, icon: "command", title: row.item.command, subtitle: slashCommandLabel(row.item) };
+    case "external":
+      return {
+        id: "slash-external-" + row.item.id, icon: "command", title: "/" + row.item.name,
+        subtitle: [row.item.source, externalSlashItemDetail(row.item)].filter(Boolean).join(" · "),
+      };
+    case "mcp":
+      return {
+        id: "mcp-prompt-" + row.item.serverId + "-" + row.item.name, icon: "plug",
+        title: row.item.title ?? row.item.name, subtitle: row.item.description ?? row.item.serverName,
+      };
+    case "skill":
+      return {
+        id: "slash-skill-" + row.item.name, icon: "sparkles", title: "/" + row.item.name,
+        subtitle: row.item.description || row.item.argumentHint || "",
+      };
+  }
+}
+
+function createComposerSlash(pane: ComposerSlashPane) {
+  const catalog = createSlashCommandCatalog();
+  const mcp = createMcpPromptCatalog();
+  const scope = computed(() => composerSlashScope(pane));
+  const placement = signal<Placement>("top");
+  const selectedIndex = signal(0);
+  const picked = signal<{ key: string; name: string; id: string; version?: string } | null>(null);
+  const tokenOpen = computed(() => /^\/\S*$/.test(pane.draft()));
+  const scopeKey = computed(() => scope()?.key);
+  const matches = {
+    commands: computed(() => slashCommandsFor(pane.draft(), Boolean(pane.running()), catalog.commands())),
+    skills: computed(() => slashSkillsFor(pane.draft(), catalog.skills())),
+    prompts: computed(() => mcpPromptsFor(pane.draft(), mcp.prompts())),
+    external: computed(() => externalSlashMatches(scope(), pane.draft())),
+  };
+  const sections = computed(() => {
+    const groups: { label: MessageKey; rows: SlashPickerRow[] }[] = [
+      { label: "chat.slash.title", rows: matches.commands().map(item => ({ kind: "command", item })) },
+      { label: "chat.externalSlash.title", rows: matches.external().map(item => ({ kind: "external", item })) },
+      { label: "mcpPrompts.title", rows: matches.prompts().map(item => ({ kind: "mcp", item })) },
+      { label: "sessions.slashSkillsSection", rows: matches.skills().map(item => ({ kind: "skill", item })) },
+    ];
+    let offset = 0;
+    return groups.filter(group => group.rows.length > 0).map(group => {
+      const section = { ...group, offset };
+      offset += group.rows.length;
+      return section;
+    });
+  });
+  const rows = computed(() => sections().flatMap(section => section.rows));
+  const visible = () => Boolean(pane.sessionKey()) && focusedPane() === pane.index
+    && tokenOpen() && !mentionOpen();
+  const model = () => agentTypeOf(pane.sessionId(), pane.deviceId());
+  const root = () => pane.workspace()?.rootPath ?? "";
+  const notice = (message: string) => pushToast(localizeHostError(message), "warning");
+  let revision = 0;
+  let lastDraft = "";
+  let lastKey: string | null = null;
+  let lastScope: string | undefined;
+
+  function recordDraft(): number {
+    const text = pane.draft();
+    const key = pane.sessionKey();
+    const owner = scopeKey();
+    if (lastDraft !== text || lastKey !== key || lastScope !== owner) {
+      revision += 1;
+      lastDraft = text;
+      lastKey = key;
+      lastScope = owner;
+    }
+    return revision;
+  }
+
+  function currentDraft(): () => boolean {
+    const stamp = recordDraft();
+    const images = pane.images();
+    const files = pane.files();
+    const references = pane.references();
+    return () => stamp === recordDraft() && pane.images() === images && pane.files() === files && pane.references() === references;
+  }
+
+  function target(sessionId: string): ReviewTarget {
+    const key = pane.sessionKey();
+    const deviceId = pane.deviceId();
+    const workspaceId = pane.workspaceId();
+    return {
+      sessionId, deviceId, workspaceId, workspacePath: root(),
+      ...(pane.index === 1 ? { openChild: (id: string) => {
+        if (pane.sessionKey() === key) selectSecondarySession(id, deviceId, workspaceId ?? undefined);
+      } } : {}),
+    };
+  }
+
+  function loadNative(sessionId: string | null, workspaceId = pane.workspaceId(), path = root()) {
+    const device = pane.deviceId();
+    return Promise.all([
+      catalog.loadCommands(sessionId, device),
+      catalog.loadSkills(device, model(), workspaceId, path),
+      mcp.load(device),
+    ]);
+  }
+
+  async function execute(command: SlashCommand, args = ""): Promise<void> {
+    const sessionId = pane.sessionId();
+    if (!sessionId) return;
+    const invoking = target(sessionId);
+    const key = pane.sessionKey();
+    if (command.local) {
+      if (command.id === "model") {
+        await runModelSlashCommand(args, pane);
+        return;
+      }
+      if (command.id === "goal" || command.id === "btw") {
+        pane.draft.set("");
+        runExtrasCommand([command.command, args].filter(Boolean).join(" "), invoking);
+        return;
+      }
+      if (command.id === "review") {
+        if (args) await runReview("/review " + args);
+        else {
+          pane.draft.set("");
+          openReviewLauncher({ target: invoking });
+        }
+        return;
+      }
+      if (command.id === "usage") {
+        pane.draft.set("");
+        await runUsageSlashCommand(sessionId, pane);
+        return;
       }
     }
-  } else {
-    for (const option of chatModels()) {
-      candidates.push({
-        ref: option.id,
-        label: option.label,
-        keys: [option.id, option.configId, option.modelName, option.label].map(v => v.toLowerCase()),
-      });
+    if (command.idleOnly && pane.running()) {
+      pushToast(tr("sessions.steeringRunning"), "info");
+      return;
+    }
+    pane.draft.set("");
+    const result = await runSlashCommand(sessionId, command, args, invoking.workspaceId ?? null, invoking.deviceId);
+    if (pane.sessionKey() !== key) return;
+    if (!result.ok) {
+      pane.error(result.message);
+      return;
+    }
+    pushToast(result.message, "success");
+    if (result.outcome === "compaction_started") pane.reloadTurns(sessionId);
+    if (result.outcome === "reloaded") {
+      void catalog.loadSkills(invoking.deviceId, model(), invoking.workspaceId ?? null, invoking.workspacePath ?? "", true);
     }
   }
-  const exact = candidates.filter(entry => entry.keys.includes(query));
-  const matches = exact.length > 0 ? exact : candidates.filter(entry => entry.keys.some(k => k && k.includes(query)));
-  if (matches.length === 1) {
-    await chooseModel(matches[0]!.ref);
-    pushToast(tr("sessions.modelLabel", { name: matches[0]!.label }), "success");
-    return;
-  }
-  openComposerModelPicker();
-}
 
-async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<void> {
-  const sessionId = activeSessionId();
-  if (!sessionId) return;
-  if (command.local) {
-    if (command.id === "model") {
-      await runModelSlashCommand(arg);
-      return;
+  function nativeRow(row: Exclude<SlashPickerRow, { kind: "external" }>, args = ""): NativeSlashItem {
+    if (row.kind === "command") {
+      const command = row.item;
+      const kind = "action";
+      return {
+        descriptor: {
+          commandName: command.command.slice(1).toLowerCase(),
+          candidateId: "openbitfun.desktop:" + kind + ":" + command.id,
+          behaviorVersion: JSON.stringify({ kind, id: command.id, command: command.command }),
+        },
+        label: tr("chat.externalSlash.builtIn"),
+        description: slashCommandLabel(command),
+        run: () => execute(command, args),
+      };
     }
-    if (command.id === "goal") {
-      composerText.set("");
-      if (!arg || /^edit$/i.test(arg)) openGoalDialog();
-      else runExtrasCommand(`/goal ${arg}`);
-      return;
+    if (row.kind === "skill") {
+      const skill = row.item;
+      const id = skill.key ?? skill.name;
+      const kind = "skill";
+      return {
+        descriptor: {
+          commandName: skill.name.toLowerCase(),
+          candidateId: "openbitfun.desktop:" + kind + ":" + id,
+          behaviorVersion: JSON.stringify({ kind, id, skillName: skill.name }),
+        },
+        label: tr("sessions.slashSkillsSection"),
+        description: skill.description,
+        run: () => {
+          pane.draft.set(skillPromptToken(skill.name) + " " + args);
+          pane.focus();
+        },
+      };
     }
-    if (command.id === "btw") {
-      composerText.set("");
-      if (!arg) openSideQuestion();
-      else runExtrasCommand(`/btw ${arg}`);
-      return;
-    }
-    if (command.id === "review") {
-      composerText.set("");
-      if (!arg) openReviewLauncher();
-      else await launchReviewFromCommand(`/review ${arg}`);
-      return;
-    }
-    if (command.id === "usage") {
-      composerText.set("");
-      await runUsageSlashCommand(sessionId);
-      return;
-    }
+    const prompt = row.item;
+    return {
+      descriptor: {
+        commandName: mcpPromptSlug(prompt),
+        candidateId: "openbitfun.desktop:mcpPrompt:" + prompt.serverId + ":" + prompt.name,
+        behaviorVersion: JSON.stringify({
+          kind: "mcpPrompt", serverId: prompt.serverId, promptName: prompt.name,
+          arguments: prompt.arguments.map(({ name, required }) => ({ name, required })),
+        }),
+      },
+      label: prompt.serverName,
+      description: prompt.description || prompt.title || prompt.name,
+      run: () => chooseMcpPrompt(prompt, { deviceId: pane.deviceId(), current: currentDraft(), insert: pane.draft.set }),
+    };
   }
-  if (command.idleOnly && runningTurnId()) {
-    pushToast(tr("sessions.steeringRunning"), "info");
-    return;
-  }
-  composerText.set("");
-  const outcome = await runSlashCommand(sessionId, command, arg);
-  if (outcome.ok) {
-    pushToast(outcome.message, "success");
-    if (outcome.outcome === "compaction_started") void loadTurns(sessionId, { silent: true });
-    if (outcome.outcome === "reloaded") {
-      void loadSlashSkills(agentTypeOf(sessionId), activeWorkspaceId(), activeWorkspaceRoot(), true);
-    }
-  } else {
-    turnError.set(outcome.message);
-  }
-}
 
-function handleSlashKeyNavigation(key: string): boolean {
-  if (!slashPopoverVisible()) return false;
-  const cmds = slashMatches() ?? [];
-  const skills = slashSkillMatches();
-  const total = cmds.length + skills.length;
-  if (key === "Escape") {
-    composerText.set("");
-    return true;
+  function nativeCandidates(line: NonNullable<ReturnType<typeof externalSlashInvocation>>, draft: string): NativeSlashItem[] {
+    const parsed = parseSlashCommand(draft, catalog.commands());
+    const commands = catalog.commands().filter(command => command.command.toLowerCase() === "/" + line.name);
+    if (parsed && !commands.some(command => command.id === parsed.command.id)) commands.push(parsed.command);
+    return [
+      ...commands.map(command => {
+        const item = nativeRow({ kind: "command", item: command }, parsed?.command.id === command.id ? parsed.arg : line.args);
+        item.descriptor.commandName = line.name;
+        if (command.id === "review" && isReviewCommand(draft)) {
+          item.run = () => runReview(draft);
+        }
+        return item;
+      }),
+      ...catalog.skills().filter(item => item.name.toLowerCase() === line.name).map(item => nativeRow({ kind: "skill", item }, line.args)),
+      ...mcp.prompts().filter(item => mcpPromptSlug(item) === line.name).map(item => nativeRow({ kind: "mcp", item })),
+    ].map(item => ({
+      ...item,
+      run: () => {
+        if (pane.references().length) {
+          notice(tr("chat.externalSlash.nativeContext"));
+          return;
+        }
+        picked.set(null);
+        return item.run();
+      },
+    }));
   }
-  if (total <= 0) return false;
-  if (key === "ArrowDown") {
-    slashSelectedIndex.update(idx => (idx + 1) % total);
-    return true;
+
+  async function runReview(draft: string): Promise<void> {
+    const sessionId = pane.sessionId();
+    if (!sessionId) return;
+    const invoking = target(sessionId);
+    const owner = scope()?.key;
+    pane.draft.set("");
+    const consumed = await launchReviewFromCommand(draft, invoking);
+    if (!consumed && owner === scope()?.key && pane.sessionId() === sessionId && !pane.draft()) {
+      pane.draft.set(draft);
+    }
   }
-  if (key === "ArrowUp") {
-    slashSelectedIndex.update(idx => (idx - 1 + total) % total);
-    return true;
-  }
-  if (key === "Tab") {
-    const idx = Math.max(0, Math.min(slashSelectedIndex(), total - 1));
-    if (idx < cmds.length) {
-      const cmd = cmds[idx]!;
-      composerText.set(`${cmd.command} `);
-      composerInputRef?.focus();
+
+  function stage(row: SlashPickerRow): void {
+    const owner = scope();
+    if (row.kind === "external") {
+      if (!owner || row.item.availability.state !== "available") {
+        notice(externalSlashItemDetail(row.item));
+        return;
+      }
+      pane.draft.set("/" + row.item.name + " ");
+      picked.set({ key: owner.key, name: row.item.name.toLowerCase(), id: row.item.id, version: row.item.version });
     } else {
-      const skill = skills[idx - cmds.length];
-      if (skill) insertSlashSkill(skill, composerInputRef);
+      const item = nativeRow(row);
+      if (owner || row.kind === "command") {
+        const { commandName: name, candidateId: id } = item.descriptor;
+        pane.draft.set("/" + name + " ");
+        picked.set(owner ? { key: owner.key, name, id } : null);
+      } else {
+        void item.run();
+      }
     }
-    return true;
+    pane.focus();
   }
-  return false;
+
+  function select(row: SlashPickerRow): void {
+    if (row.kind === "external") stage(row);
+    else if (!scope()) void nativeRow(row).run();
+    else {
+      stage(row);
+      void submit();
+    }
+  }
+
+  function handleKey(key: string): boolean {
+    if (!visible()) return false;
+    const items = rows();
+    if (!items.length && !catalog.unsupported()) return false;
+    if (key === "Escape") {
+      pane.draft.set("");
+      return true;
+    }
+    if (items.length && (key === "ArrowDown" || key === "ArrowUp")) {
+      const delta = key === "ArrowDown" ? 1 : -1;
+      selectedIndex.update(index => (index + delta + items.length) % items.length);
+      return true;
+    }
+    if (key === "Tab" && items.length) {
+      stage(items[Math.min(selectedIndex(), items.length - 1)]!);
+      return true;
+    }
+    return false;
+  }
+
+  async function submit(policy?: "immediate" | "queue"): Promise<void> {
+    if (insertSelectedMention(pane.index === 0 ? "primary" : "secondary")) return;
+    if (!pane.sessionId() || externalSlashDialog()?.current()) return;
+    if (externalSlashDialog()) dismissExternalSlashDialog();
+    const draft = pane.draft();
+    const owner = scope();
+    const line = externalSlashInvocation(draft);
+    const current = currentDraft();
+    if (owner && line) {
+      const selected = picked();
+      const pick = selected?.key === owner.key && selected.name === line.name ? selected : undefined;
+      const handled = await submitExternalSlash({
+        scope: owner, line, pick, current, notice,
+        native: async () => {
+          await loadNative(pane.sessionId(), owner.workspaceId, owner.workspaceRoot);
+          return current() ? nativeCandidates(line, draft) : [];
+        },
+        canSend: execution => {
+          if (execution.kind === "inline") return true;
+          if (pane.running() || pane.pending()) {
+            notice(tr("chat.externalSlash.freshBusy"));
+            return false;
+          }
+          if (pane.images().length || pane.files().length || pane.references().length) {
+            notice(tr("chat.externalSlash.freshContext"));
+            return false;
+          }
+          return true;
+        },
+        send: async (text, execution) => {
+          picked.set(null);
+          await pane.send(text, policy, { invocation: draft, execution });
+        },
+      });
+      if (handled || !current()) return;
+      const native = pick && nativeCandidates(line, draft).find(item => item.descriptor.candidateId === pick.id);
+      if (native) {
+        await native.run();
+        return;
+      }
+    }
+    if (!pane.references().length && (line || tokenOpen())) {
+      await loadNative(pane.sessionId());
+      if (!current()) return;
+      if (isReviewCommand(draft)) {
+        await runReview(draft);
+        return;
+      }
+      const parsed = parseSlashCommand(draft, catalog.commands());
+      if (parsed) {
+        await execute(parsed.command, parsed.arg);
+        return;
+      }
+      if (tokenOpen()) {
+        const items = rows();
+        const row = items[Math.min(selectedIndex(), items.length - 1)];
+        if (row) {
+          select(row);
+          return;
+        }
+      }
+    }
+    await pane.send(draft, policy);
+  }
+
+  function mount(): void {
+    effect(() => {
+      const id = pane.sessionId();
+      const device = pane.deviceId();
+      if (id) {
+        void catalog.loadCommands(id, device);
+        void mcp.load(device);
+      } else {
+        catalog.reset();
+        mcp.reset();
+      }
+    });
+    const slashStarted = computed(() => Boolean(pane.sessionId()) && /^\s*\//.test(pane.draft()));
+    effect(() => {
+      if (!slashStarted()) return;
+      void catalog.loadSkills(pane.deviceId(), model(), pane.workspaceId(), root());
+    });
+    effect(() => {
+      if (!slashStarted() || !scopeKey()) return;
+      const owner = untracked(scope);
+      if (!owner) return;
+      untracked(() => prefetchExternalSlashCatalog(owner, true));
+      const poll = setInterval(() => prefetchExternalSlashCatalog(owner, false), 1500);
+      cleanup(() => clearInterval(poll));
+    });
+    effect(() => {
+      pane.draft();
+      selectedIndex.set(0);
+    });
+    effect(() => {
+      recordDraft();
+      const dialog = externalSlashDialog();
+      if (dialog && !dialog.current()) dismissExternalSlashDialog();
+      const pick = picked();
+      if (pick && (pick.key !== scopeKey() || pick.name !== externalSlashInvocation(pane.draft())?.name)) picked.set(null);
+    });
+    cleanup(() => {
+      revision += 1;
+      const dialog = externalSlashDialog();
+      if (dialog && !dialog.current()) dismissExternalSlashDialog();
+      picked.set(null);
+      catalog.reset();
+      mcp.reset();
+      resetExternalSlashCatalog(pane.index);
+    });
+  }
+
+  return { pane, sections, rows, visible, unsupported: catalog.unsupported, selectedIndex, placement, handleKey, select, submit, mount };
 }
 
-function selectHighlightedSlashItem(): boolean {
-  if (!slashPopoverVisible()) return false;
-  const cmds = slashMatches() ?? [];
-  const skills = slashSkillMatches();
-  const total = cmds.length + skills.length;
-  if (total <= 0) return false;
-  const idx = Math.max(0, Math.min(slashSelectedIndex(), total - 1));
-  if (idx < cmds.length) {
-    const cmd = cmds[idx]!;
-    void executeSlashCommand(cmd);
-    return true;
-  }
-  const skill = skills[idx - cmds.length];
-  if (skill) {
-    insertSlashSkill(skill, composerInputRef);
-    return true;
-  }
-  return false;
-}
+const primarySlash = createComposerSlash({
+  index: 0, sessionId: activeSessionId, sessionKey: activeSessionKey, deviceId: activeSessionDevice,
+  workspaceId: () => (fleetActive() && fleetSessionRow(activeSessionDevice(), activeSessionId() ?? "")?.workspaceId)
+    || activeSession()?.workspaceId || null,
+  workspace: () => {
+    if (fleetActive() && activeWorkspaceKey()?.deviceId !== activeSessionDevice()) return null;
+    return activeWorkspace();
+  },
+  draft: composerText, images: imageAttachments, files: fileAttachments, references: sessionReferenceAttachments,
+  running: runningTurnId, pending: pendingTurnState, anchor: composerCardAnchor, focus: () => composerInputRef?.focus(),
+  modelAnchor: () => composerModelAnchor() ?? composerPlusAnchor(),
+  error: turnError.set, reloadTurns: id => { void loadTurns(id, { silent: true }); }, send: sendComposerTurn,
+});
+
+const secondarySlash = createComposerSlash({
+  index: 1, sessionId: secondarySessionId, sessionKey: secondarySessionKey, deviceId: secondarySessionDevice,
+  workspaceId: secondaryWorkspaceId, workspace: secondaryWorkspaceRecord, draft: secondaryComposerText,
+  images: secondaryImageAttachments, files: secondaryFileAttachments, references: secondarySessionReferences,
+  running: secondaryRunningTurnId, pending: secondaryPendingTurnState, anchor: secondaryComposerCardAnchor,
+  modelAnchor: () => secondaryComposerModelAnchor() ?? secondaryComposerPlusAnchor(),
+  focus: () => secondaryComposerInputRef?.focus(), error: secondaryTurnError.set,
+  reloadTurns: id => { void loadSecondaryTurns(id, { silent: true }); },
+  send: async (text, policy, externalCommand) => { await sendSecondaryTurn(text, policy, { externalCommand }); },
+});
+
+type ComposerSlash = ReturnType<typeof createComposerSlash>;
 
 /** Shown under a typed `/` when the host offers no session commands at all. */
-function SlashCommandsUnavailable(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
+function SlashCommandsUnavailable(props: { placement: Placement; dismiss: () => void }) {
+  const motion = usePopoverMotion(() => props.placement, "start", props.dismiss);
   return (
     <View
       style={[
@@ -5556,14 +6189,18 @@ function SlashCommandRow(props: {
   children: JSX.Element;
 }) {
   let rowRef: ViewRef | null = null;
+  let laidOut = false;
   const revealSelected = () => {
-    if (props.selected()) rowRef?.reveal({ vertical: "nearest", animated: false });
+    if (props.selected() && laidOut) rowRef?.reveal({ vertical: "nearest", animated: false });
   };
   effect(revealSelected);
   return (
     <View
       ref={el => { rowRef = el; }}
-      onLayout={revealSelected}
+      onLayout={() => {
+        laidOut = true;
+        revealSelected();
+      }}
       role="button"
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{ selected: props.selected() }}
@@ -5578,86 +6215,54 @@ function SlashCommandRow(props: {
   );
 }
 
-function SlashCommandSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
-  const cmdCount = () => (slashMatches() ?? []).length;
+function SlashCommandSurface(props: { placement: Placement; slash: ComposerSlash }) {
+  const slash = props.slash;
+  const prefix = slash.pane.index === 1 ? "secondary-" : "";
+  const motion = usePopoverMotion(() => props.placement, "start", () => slash.pane.draft.set(""));
   // Hardware arrow keys are not delivered by Input.onKeyPress on every NSH target.
   cleanup(keymap.bind({
-    down: () => handleSlashKeyNavigation("ArrowDown"),
-    up: () => handleSlashKeyNavigation("ArrowUp"),
+    down: () => slash.handleKey("ArrowDown"),
+    up: () => slash.handleKey("ArrowUp"),
   }, { when: "always" }));
   return (
     <View
       style={[
         overlayPopoverStyle(),
         {
-          width: 380,
-          maxWidth: "92%",
-          padding: POPOVER_PADDING,
-          gap: space.hair,
+          width: 380, maxWidth: "92%", padding: POPOVER_PADDING, gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
-      <Scroll testID="slash-command-list" smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+      <Scroll testID={`${prefix}slash-command-list`} smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
-          <If when={cmdCount() > 0}>
-            <PopoverSectionHeader label={tr("chat.slash.title")} />
-            <Each of={slashMatches() ?? []} key={entry => entry.id}>
-              {entry => (
-                <SlashCommandRow
-                  selected={() => (slashMatches() ?? [])[slashSelectedIndex()]?.id === entry().id}
-                  accessibilityLabel={`slash-command-${entry().id}`}
-                  onPress={() => void executeSlashCommand(entry())}
-                >
-                  <ListRowContent
-                    icon="command"
-                    iconColor={palette().textSecondary}
-                    title={entry().command}
-                    titleWeight="500"
-                    subtitle={slashCommandLabel(entry())}
-                  />
-                </SlashCommandRow>
-              )}
-            </Each>
-          </If>
-
-          <If when={slashSkillMatches().length > 0}>
-            <PopoverSectionHeader label={tr("sessions.slashSkillsSection")} first={cmdCount() === 0} />
-            <Each of={slashSkillMatches()} key={skill => skill.name}>
-              {skill => {
-                return (
-                  <SlashCommandRow
-                    selected={() => slashSkillMatches()[slashSelectedIndex() - cmdCount()]?.name === skill().name}
-                    accessibilityLabel={`slash-skill-${skill().name}`}
-                    onPress={() => insertSlashSkill(skill(), composerInputRef)}
-                  >
-                    <ListRowContent
-                      icon="sparkles"
-                      iconColor={palette().textSecondary}
-                      title={`/${skill().name}`}
-                      titleWeight="500"
-                      subtitle={skill().description || skill().argumentHint || ""}
-                    />
-                  </SlashCommandRow>
-                );
-              }}
-            </Each>
-          </If>
-
-          <McpPromptRows />
-          <If when={sessionCommandsUnsupported()}>
-            <Text
-              style={{
-                paddingHorizontal: space.sm,
-                paddingTop: space.xs,
-                paddingBottom: space.hair,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-              }}
-            >
+          <Each of={slash.sections()} key={section => section.label}>
+            {section => (
+              <View style={{ gap: space.hair }}>
+                <PopoverSectionHeader label={tr(section().label)} first={section().offset === 0} />
+                <Each of={section().rows} key={row => row.kind === "mcp"
+                  ? JSON.stringify([row.item.serverId, row.item.name]) : slashPickerRowContent(row).id}>
+                  {(row, index) => {
+                    const content = () => slashPickerRowContent(row());
+                    return (
+                      <SlashCommandRow accessibilityLabel={prefix + content().id}
+                        selected={() => section().offset + index() === slash.selectedIndex()}
+                        onPress={() => slash.select(row())}>
+                        <ListRowContent icon={content().icon} iconColor={palette().textSecondary}
+                          title={content().title} titleWeight="500" subtitle={content().subtitle} />
+                      </SlashCommandRow>
+                    );
+                  }}
+                </Each>
+              </View>
+            )}
+          </Each>
+          <If when={slash.unsupported()}>
+            <Text style={{
+              paddingHorizontal: space.sm, paddingTop: space.xs, paddingBottom: space.hair,
+              color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4),
+            }}>
               {tr("chat.slash.hostUpdateRequired")}
             </Text>
           </If>
@@ -5667,67 +6272,78 @@ function SlashCommandSurface(props: { placement: Placement }) {
   );
 }
 
-async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<void> {
-  if (insertSelectedMention()) return;
-  // review launcher (wave 5): `/review …` asks the host to start a Review.
-  if (activeSessionId() && isReviewCommand(composerText())) {
-    const line = composerText();
-    composerText.set("");
-    await launchReviewFromCommand(line);
-    return;
-  }
-  const slash = parseSlashCommand(composerText());
-  if (slash && activeSessionId()) {
-    await executeSlashCommand(slash.command, slash.arg);
-    return;
-  }
-  // Partial `/...` token matching a highlighted slash command or skill selects it on Return.
-  if (activeSessionId() && composerText().startsWith("/") && !/\s/.test(composerText())) {
-    if (selectHighlightedSlashItem()) return;
-  }
-  // `/goal [objective|clear|pause|resume|edit]` and `/btw [question]`
-  if (activeSessionId()) {
-    if (runExtrasCommand(composerText())) {
-      composerText.set("");
-      return;
-    }
-  }
-  const text = composerText();
-  const hasPayload = Boolean(text.trim() || imageAttachments().length > 0 || fileAttachments().length > 0);
+async function sendComposerTurn(
+  text: string,
+  sendDuringTurn?: "immediate" | "queue",
+  externalCommand?: ExternalCommandSubmission,
+): Promise<void> {
+  const hasPayload = Boolean(text.trim() || imageAttachments().length || fileAttachments().length || sessionReferenceAttachments().length);
   if (hasPayload && !runningTurnId()) jumpToTranscriptEnd();
   // The host decides whether a message written during a turn steers it or
   // waits in its queue; the composer clears immediately and follows the answer.
   const outcome = await sendTurn(text, sendDuringTurn, {
+    externalCommand,
     onQueued: info => {
-      recordQueuedFromSubmit(info.sessionId, info.turnId, info.content, info.attachmentCount, info.attachments);
+      recordQueuedFromSubmit(info.sessionId, info.turnId, info.content, info.attachmentCount, info.attachments, info.referenceDraft);
       void loadQueueForSession(info.sessionId, true);
     },
   });
   if (outcome === "steered" && hasPayload) jumpToTranscriptEnd();
 }
 
-function insertSelectedMention(): boolean {
-  if (!mentionOpen() || !mentionInline()) return false;
+function mentionInputRef(): ComposerInputHandle | undefined {
+  return mentionPane() === "secondary" ? secondaryComposerInputRef : composerInputRef;
+}
+
+const mentionSourceRows = [
+  { id: "files", label: "sessions.mentionFiles", icon: "folder" },
+  { id: "skills", label: "sessions.slashSkillsSection", icon: "sparkles" },
+  { id: "mcp", label: "sessions.mentionMcp", icon: "plug" },
+  { id: "sessions", label: "sessions.mentionSessions", icon: "chat" },
+  { id: "images", label: "chat.attach.pickImages", icon: "image" },
+] as const;
+
+function selectMentionSourceRow(id: typeof mentionSourceRows[number]["id"]): void {
+  if (id !== "images") {
+    selectMentionSource(id);
+    return;
+  }
+  if (!mentionOwnerCurrent()) return;
+  const secondary = mentionPane() === "secondary";
+  const target = (secondary ? secondaryComposerDraft : primaryComposerDraft).capture();
+  closeMentionPopover();
+  if (secondary) focusPane(1);
+  void attachImagesFromPicker(image => attachImageToDraft(target, image), target.isVisible);
+}
+
+function insertSelectedMention(pane: "primary" | "secondary"): boolean {
+  if (!mentionOpen() || !mentionInline() || mentionPane() !== pane) return false;
+  return insertHighlightedMention();
+}
+
+function insertHighlightedMention(): boolean {
   const hits = mentionHits();
   if (hits.length === 0) return false;
   const idx = Math.max(0, Math.min(mentionSelectedIndex(), hits.length - 1));
   const chosen = hits[idx] ?? hits[0];
   if (!chosen) return false;
   mentionSelectedIndex.set(0);
-  insertMention(chosen, composerInputRef);
+  insertMention(chosen, mentionInputRef());
   return true;
 }
 
 function handleMentionKeyNavigation(key: string): void {
   if (!mentionOpen()) return;
   const hits = mentionHits();
-  const count = hits.length;
+  const sourceList = mentionResultSource() === "sources";
+  const count = sourceList ? mentionSourceRows.length : hits.length;
   if (key === "Escape") {
-    closeMention();
+    closeMentionPopover();
     return;
   }
-  if (key === "ArrowLeft" && !mentionQuery().trim() && mentionBrowseDir()) {
-    browseMentionParent();
+  if (key === "ArrowLeft" && !mentionQuery().trim()) {
+    if (mentionBrowseDir()) browseMentionParent();
+    else if (!mentionInline() && !sourceList) selectMentionSource("sources");
     return;
   }
   if (count <= 0) return;
@@ -5735,7 +6351,7 @@ function handleMentionKeyNavigation(key: string): void {
     mentionSelectedIndex.update(idx => (idx + 1) % count);
   } else if (key === "ArrowUp") {
     mentionSelectedIndex.update(idx => (idx - 1 + count) % count);
-  } else if (key === "ArrowRight") {
+  } else if (key === "ArrowRight" && !sourceList) {
     const chosen = hits[Math.max(0, Math.min(mentionSelectedIndex(), count - 1))];
     if (chosen?.directory) browseMentionDir(chosen.path);
   }
@@ -5806,8 +6422,8 @@ function ComposerFullAccessShield(props: {
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          width: compactLayout() || props.compact?.() ? layout.touchTarget : 28,
-          height: compactLayout() || props.compact?.() ? layout.touchTarget : 28,
+          width: compactLayout() || props.compact?.() ? layout.touchTarget : chatComposerMetrics.controlHeight,
+          height: compactLayout() || props.compact?.() ? layout.touchTarget : chatComposerMetrics.controlHeight,
           borderRadius: radii.pill,
           backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
           cursor: "pointer",
@@ -5896,11 +6512,7 @@ const contextTargetDeviceId = signal<string>("");
 function contextUsageFor(sessionId: string | null, deviceId?: string) {
   const usage = sessionId ? contextUsage()[sessionId] : undefined;
   if (!usage) return null;
-  const modelId = modelIdForSession(sessionId, deviceId);
-  const fallbackMax =
-    chatModels().find(model => model.id === modelId)?.contextWindow ??
-    fleetChoiceOf(modelId)?.choice.contextWindow ??
-    null;
+  const fallbackMax = modelContextForSession({ sessionId, deviceId })?.contextWindow ?? null;
   const max = usage.max ?? fallbackMax;
   return { ...usage, max, ratio: max && max > 0 ? Math.min(1, usage.used / max) : null };
 }
@@ -5951,8 +6563,8 @@ function ContextUsageRing(props: {
               contextPopoverOpen.set(next);
             }}
             style={{
-              width: 28,
-              height: 28,
+              width: chatComposerMetrics.controlHeight,
+              height: chatComposerMetrics.controlHeight,
               alignItems: "center",
               justifyContent: "center",
               borderRadius: radii.pill,
@@ -6299,12 +6911,14 @@ function ComposerAttachmentStrip(props: {
   notice?: () => string;
   onRemoveImage: (id: string) => void;
   onRemoveFile: (id: string) => void;
+  references?: () => readonly SessionReferenceCandidate[];
+  onRemoveReference?: (key: string) => void;
   idPrefix?: string;
 }) {
   const prefix = props.idPrefix ?? "";
   const noticeText = () => props.notice?.() ?? "";
   return (
-    <If when={props.images().length > 0 || props.files().length > 0 || noticeText().length > 0}>
+    <If when={props.images().length > 0 || props.files().length > 0 || (props.references?.().length ?? 0) > 0 || noticeText().length > 0}>
       <View
         style={{
           paddingHorizontal: space.md,
@@ -6544,6 +7158,11 @@ function ComposerAttachmentStrip(props: {
           }}
         </Each>
 
+        <Each of={props.references?.() ?? []} key={sessionReferenceKey}>
+          {reference => <SessionReferenceChip reference={reference()}
+            label={`${prefix}session-reference-${reference().sessionName}`}
+            onRemove={() => props.onRemoveReference?.(sessionReferenceKey(reference()))} />}
+        </Each>
         <If when={noticeText().length > 0}>
           <Text
             style={{
@@ -6560,13 +7179,8 @@ function ComposerAttachmentStrip(props: {
   );
 }
 
-/**
- * Shared floating elevated composer container used identically by Primary, Secondary Split, and BTW panes.
- * Guarantees pixel-identical padding, width, radius, border, shadow, hover/focus ring, and drag feedback.
- */
-function ComposerCardShell(props: {
-  dragActive?: () => boolean;
-  cardRef?: (el: ViewRef | null) => void;
+/** Positions the shared composer on the same reading column as its transcript. */
+function ComposerDockLayout(props: {
   onLayoutWidth?: (width: number) => void;
   onFileDragEnter?: () => void;
   onFileDragLeave?: () => void;
@@ -6575,7 +7189,6 @@ function ComposerCardShell(props: {
   belowCard?: JSX.Element;
   children?: JSX.Element;
 }) {
-  const dragging = () => Boolean(props.dragActive?.());
   return (
     <View
       onLayout={
@@ -6605,29 +7218,7 @@ function ComposerCardShell(props: {
         }}
       >
         {props.aboveCard}
-        <View
-          ref={el => props.cardRef?.(el)}
-          style={{
-            width: "100%",
-            borderRadius: radii.xl,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: dragging() ? palette().accent : palette().border,
-            backgroundColor: dragging() ? palette().accentSoft : palette().inputBg,
-            boxShadow: palette().shadowComposer,
-            overflow: "hidden",
-            ...paintTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{
-            borderColor: dragging() ? palette().accent : palette().borderStrong,
-          }}
-          focusWithinStyle={{
-            borderColor: palette().fieldFocusBorder,
-            boxShadow: palette().shadowComposerFocus,
-          }}
-        >
-          {props.children}
-        </View>
+        {props.children}
         {props.belowCard}
       </View>
     </View>
@@ -6650,125 +7241,41 @@ function ComposerSubmitAction(props: {
   const showStop = () => props.running() && !props.canSend();
   const isDisabled = () => Boolean(props.disabled?.()) || !props.canSend();
   const useTouch = () => Boolean(props.compact?.()) || compactLayout();
+  const disabled = () => !showStop() && isDisabled();
+  const icon = () => showStop() ? "stop" : "arrow-up";
+  const label = () => showStop() ? props.stopLabel ?? "Stop" : props.sendLabel ?? "Send";
+  const activate = () => showStop() ? props.onStop() : props.onSend();
   return (
-    <>
-      <If when={showStop()}>
-        <View style={{ flexShrink: 0, paddingLeft: props.compact?.() ? space.hair : space.xs }}>
-          <If
-            when={useTouch()}
-            else={
-              <View
-                role="button"
-                accessibilityLabel={props.stopLabel ?? "Stop"}
-                tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
-                onPress={props.onStop}
-                style={{
-                  boxSizing: "border-box",
-                  width: 32,
-                  height: 32,
-                  borderRadius: radii.pill,
-                  backgroundColor: palette().actionPrimaryBg,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{ backgroundColor: palette().danger }}
-                activeStyle={tactileActiveStyle(0.94)}
-                focusVisibleStyle={focusRingStyle()}
-              >
-                <View
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2.5,
-                    backgroundColor: palette().actionPrimaryFg,
-                    pointerEvents: "none",
-                  }}
-                />
-              </View>
-            }
-          >
-            <View
-              role="button"
-              accessibilityLabel={props.stopLabel ?? "Stop"}
-              onPress={props.onStop}
-              style={{
-                width: layout.touchTarget,
-                height: layout.touchTarget,
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                userSelect: "none",
-                ...pressTransition(MOTION_DURATION.fast),
-              }}
-              activeStyle={tactileActiveStyle(0.94)}
-              focusVisibleStyle={focusRingStyle(-4)}
-            >
-              <View
-                style={{
-                  boxSizing: "border-box",
-                  width: 34,
-                  height: 34,
-                  borderRadius: radii.pill,
-                  backgroundColor: palette().actionPrimaryBg,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  pointerEvents: "none",
-                }}
-              >
-                <View
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2.5,
-                    backgroundColor: palette().actionPrimaryFg,
-                  }}
-                />
-              </View>
-            </View>
-          </If>
-        </View>
-      </If>
-
-      <If when={!showStop()}>
-        <View style={{ flexShrink: 0, paddingLeft: props.compact?.() ? 0 : space.xs }}>
-          <If
-            when={Boolean(props.compact?.())}
-            else={
-              <IconCircleButton
-                icon="arrow-up"
-                variant={isDisabled() ? "subtle" : "primary"}
-                size={32}
-                iconSize={16}
-                accessibilityLabel={props.sendLabel ?? "Send"}
-                tooltip={tr("sessions.sendMessage")}
-                disabled={isDisabled()}
-                onPress={props.onSend}
-              />
-            }
-          >
-            <TouchTargetButton
-              icon="arrow-up"
-              tone={isDisabled() ? "subtle" : "primary"}
-              disabled={isDisabled()}
-              accessibilityLabel={props.sendLabel ?? "Send"}
-              onPress={props.onSend}
-            />
-          </If>
-        </View>
-      </If>
-    </>
+    <If when={useTouch()} else={
+      <IconCircleButton
+        icon={icon()}
+        variant={disabled() ? "subtle" : "primary"}
+        size={chatComposerMetrics.controlHeight}
+        iconSize={chatComposerMetrics.actionIconSize}
+        accessibilityLabel={label()}
+        tooltip={tr(showStop() ? "sessions.stopTurn" : "sessions.sendMessage")}
+        disabled={disabled()}
+        onPress={activate}
+      />
+    }>
+      <TouchTargetButton
+        icon={icon()}
+        tone={disabled() ? "subtle" : "primary"}
+        disabled={disabled()}
+        accessibilityLabel={label()}
+        onPress={activate}
+      />
+    </If>
   );
 }
 
-/** Shared file-URI drop handler reused by Primary, Secondary Split, and BTW composers. */
+/** Shared file-URI drop handler for the secondary and side-question composers. */
 function handlePaneUriDrop(
   uris: string[],
   mimeTypes: string[],
   opts: {
     workspaceRoot: string;
+    allowLocalPath?: boolean;
     idPrefix: string;
     onAddImage: (item: ImageAttachment) => void;
     onAddFile: (item: FileAttachment) => void;
@@ -6781,13 +7288,17 @@ function handlePaneUriDrop(
     const path = uri.startsWith("file://") ? pathOfFileUrl(uri) : uri;
     const name = basename(path) || `file-${i + 1}`;
     if (isImageMimeOrPath(mime, path)) {
-      if (isLocalAttachmentPathAllowed()) {
+      if (opts.allowLocalPath ?? isLocalAttachmentPathAllowed()) {
         opts.onAddImage({
           id: `${opts.idPrefix}img-${++nextDroppedAttachmentId}`,
           name,
           mimeType: mime || mimeFromFilename(path),
           fileSize: 0,
           imagePath: path,
+        });
+      } else {
+        void attachRemoteDroppedImage(uri, name, mime, opts.onAddImage).then(ok => {
+          if (!ok) pushToast(tr("error.unsupported"), "error");
         });
       }
     } else {
@@ -6809,7 +7320,10 @@ async function handlePanePaste(
   opts: {
     workspaceId?: string;
     workspaceRoot: string;
+    deviceId?: string;
+    connection?: ComposerDraftTarget["connection"];
     isRemote: boolean;
+    allowLocalPath?: boolean;
     idPrefix: string;
     onAddImage: (item: ImageAttachment) => void;
     onAddFile: (item: FileAttachment) => void;
@@ -6844,9 +7358,10 @@ async function handlePanePaste(
           const saved = await saveLongTextPasteToWorkspace(content, {
             workspaceId: opts.workspaceId,
             workspaceRoot: opts.workspaceRoot,
+            deviceId: opts.deviceId,
+            connection: opts.connection,
             isRemote: opts.isRemote,
             fileName: file.name || undefined,
-            skipPrimaryStore: true,
           });
           if (saved) {
             opts.onAddFile(saved);
@@ -6869,8 +7384,9 @@ async function handlePanePaste(
     const saved = await saveLongTextPasteToWorkspace(text, {
       workspaceId: opts.workspaceId,
       workspaceRoot: opts.workspaceRoot,
+      deviceId: opts.deviceId,
+      connection: opts.connection,
       isRemote: opts.isRemote,
-      skipPrimaryStore: true,
     });
     if (saved) {
       opts.onAddFile(saved);
@@ -6892,6 +7408,7 @@ interface SessionComposerProps {
   disabled?: () => boolean;
   running: () => boolean;
   canSend: () => boolean;
+  newSession?: () => boolean;
   compact?: () => boolean;
   images: () => ImageAttachment[];
   files: () => FileAttachment[];
@@ -6899,6 +7416,8 @@ interface SessionComposerProps {
   attachmentIdPrefix?: string;
   onRemoveImage: (id: string) => void;
   onRemoveFile: (id: string) => void;
+  references?: () => readonly SessionReferenceCandidate[];
+  onRemoveReference?: (key: string) => void;
   onSubmit: () => void;
   onStop: () => void;
   onFocusPane?: () => void;
@@ -6906,7 +7425,7 @@ interface SessionComposerProps {
   dragActive?: Signal<boolean>;
   onFileDrop?: (event: { uris: string[]; mimeTypes: string[] }) => void;
   cardRef?: (el: ViewRef | null) => void;
-  inputRef?: (el: InputRef | undefined) => void;
+  inputRef?: (el: ComposerInputHandle | undefined) => void;
   autoFocus?: boolean;
   inputAccessibilityLabel: string;
   sendAccessibilityLabel: string;
@@ -6941,8 +7460,7 @@ interface SessionComposerProps {
 
 /**
  * Single unified composer component shared by Primary, Secondary Split, and BTW panes.
- * Every pane renders the exact same card shell, attachment strip,
- * multiline input geometry, toolbar rhythm, model capsule, and send/stop button.
+ * The shared ChatComposer owns layout while this component supplies session controls.
  */
 function SessionComposer(props: SessionComposerProps) {
   const paneWidth = signal(0);
@@ -6954,11 +7472,51 @@ function SessionComposer(props: SessionComposerProps) {
   const isCompact = () => Boolean(props.compact?.());
   const collapseInline = () => isCompact() || (paneWidth() > 0 && paneWidth() < 420);
   const isDisabled = () => Boolean(props.disabled?.());
+  const touch = () => isCompact() || compactLayout();
+  const editorFontSize = () => touch() ? Math.max(16, textSize(chatComposerMetrics.textSize)) : textSize(chatComposerMetrics.textSize);
+  const forceExpanded = () => touch() || richDraft() || Boolean(props.newSession?.()) || props.images().length > 0 ||
+    props.files().length > 0 || (props.references?.().length ?? 0) > 0 || Boolean(props.attachmentNotice?.());
   const btwMode = props.pane === "btw";
   let localInputRef: InputRef | undefined;
+  let richInputRef: ComposerInputHandle | undefined;
+  let pendingRichSelection: { start: number; end: number } | undefined;
+  let pendingRichFocus = false;
+  const richDraft = signal(false);
   let selectionStart: number | null = null;
   let selectionEnd: number | null = null;
   let lastTrackedText = props.draft();
+  let lastOwner = "";
+  effect(() => {
+    const owner = JSON.stringify([props.deviceId?.(), props.sessionId(), props.workspaceId?.()]);
+    const text = props.draft();
+    if (owner !== lastOwner || !text) {
+      lastOwner = owner;
+      selectionStart = null;
+      selectionEnd = null;
+      richDraft.set(false);
+    }
+    if (!btwMode && promptReferencesIn(text).length && promptReferenceEditorAvailable()) richDraft.set(true);
+  });
+  const inputHandle: ComposerInputHandle = {
+    focus: () => {
+      if (!richDraft()) localInputRef?.focus();
+      else if (richInputRef) richInputRef.focus();
+      else pendingRichFocus = true;
+    },
+    setSelection: (start, end = start) => {
+      if (!richDraft()) localInputRef?.setSelection(start, end);
+      else if (richInputRef) richInputRef.setSelection(start, end);
+      else pendingRichSelection = { start, end };
+    },
+    selection: () => {
+      if (richDraft()) return richInputRef?.selection();
+      return selectionStart !== null && selectionEnd !== null
+        ? { text: lastTrackedText, start: selectionStart, end: selectionEnd }
+        : undefined;
+    },
+  };
+  props.inputRef?.(inputHandle);
+  cleanup(() => props.inputRef?.(undefined));
 
   const acceptPromptSuggestion = () => {
     const suggestion = props.promptSuggestion?.() ?? "";
@@ -6968,8 +7526,8 @@ function SessionComposer(props: SessionComposerProps) {
     lastTrackedText = suggestion;
     props.onAcceptPromptSuggestion?.();
     queueMicrotask(() => {
-      localInputRef?.focus();
-      localInputRef?.setSelection(suggestion.length, suggestion.length);
+      inputHandle.focus();
+      inputHandle.setSelection(suggestion.length, suggestion.length);
     });
   };
 
@@ -7016,15 +7574,15 @@ function SessionComposer(props: SessionComposerProps) {
     const text = rawText.replace(/\r\n?/g, "\n");
     if (!text) return;
     const cur = props.draft();
-    const selectionFresh = cur === lastTrackedText && selectionStart !== null && selectionEnd !== null;
-    const start = selectionFresh ? Math.max(0, Math.min(cur.length, selectionStart!)) : cur.length;
-    const end = selectionFresh ? Math.max(start, Math.min(cur.length, selectionEnd!)) : cur.length;
+    const selection = inputHandle.selection();
+    const start = selection?.text === cur ? selection.start : cur.length;
+    const end = selection?.text === cur ? selection.end : cur.length;
     const next = `${cur.slice(0, start)}${text}${cur.slice(end)}`;
     const caret = start + text.length;
     applyDraftValue(next, caret);
     queueMicrotask(() => {
-      localInputRef?.focus();
-      localInputRef?.setSelection(caret, caret);
+      inputHandle.focus();
+      inputHandle.setSelection(caret);
     });
   };
 
@@ -7040,9 +7598,7 @@ function SessionComposer(props: SessionComposerProps) {
 
   return (
     <View>
-      <ComposerCardShell
-        dragActive={localDrag}
-        cardRef={props.cardRef}
+      <ComposerDockLayout
         onLayoutWidth={w => {
           if (Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
         }}
@@ -7060,196 +7616,214 @@ function SessionComposer(props: SessionComposerProps) {
         aboveCard={props.aboveCard}
         belowCard={props.belowCard}
       >
-        <ComposerAttachmentStrip
-          images={props.images}
-          files={props.files}
-          notice={props.attachmentNotice}
-          idPrefix={props.attachmentIdPrefix}
-          onRemoveImage={props.onRemoveImage}
-          onRemoveFile={props.onRemoveFile}
-        />
-
-        {/* Multiline Editor — identical geometry across Primary, Split, and BTW */}
-        <View
-          style={{
-            paddingLeft: space.lg,
-            paddingRight: collapseInline() ? space.sm : space.md,
-            paddingTop: space.md,
-            paddingBottom: space.xs,
-          }}
-        >
-          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
-            <Input
-              ref={el => {
-                localInputRef = el;
-                props.inputRef?.(el);
-              }}
-              value={props.draft()}
-              placeholder={props.placeholder()}
-              accessibilityLabel={props.inputAccessibilityLabel}
-              multiline={true}
-              autoFocus={props.autoFocus}
-              readonly={isDisabled()}
-              submitBehavior="submit"
-              pasteBehavior={props.onPaste ? "report" : undefined}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-                maxHeight: 160,
-                fontFamily: inputFontSans(),
-                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
-                lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
-                color: palette().text,
-                placeholderColor: palette().textMuted,
-                caretColor: palette().accent,
-              }}
-              onFocus={() => {
-                inputFocused.set(true);
-                props.onFocusPane?.();
-              }}
-              onBlur={() => {
-                inputFocused.set(false);
-              }}
-              onChange={event => {
-                const prev = props.draft();
-                const next = event.value;
-                const caret = next === prev ? (selectionEnd ?? next.length) : estimateCaretAfterEdit(prev, next);
-                applyDraftValue(next, caret);
-              }}
-              onCompositionChange={event => {
-                localComposing.set(event.composing);
-                props.onComposingChange?.(event.composing);
-              }}
-              onSelectionChange={event => {
-                selectionStart = event.start;
-                selectionEnd = event.end;
-                lastTrackedText = props.draft();
-                props.onSelectionChange?.(event.end);
-              }}
-              onCaretMove={props.onCaretMove ? event => props.onCaretMove!(event.pageBounds) : undefined}
-              onPaste={
-                props.onPaste
-                  ? event => {
-                      if (!isDisabled()) props.onPaste!(event, insertTextAtSelection);
-                    }
-                  : undefined
-              }
-              onKeyPress={props.onKeyPress ? event => props.onKeyPress!(event.key) : undefined}
-              onSubmit={() => {
-                if (!localComposing()) props.onSubmit();
-              }}
+        <ChatComposer
+          value={props.draft}
+          forceExpanded={forceExpanded}
+          editorFontSize={editorFontSize}
+          cardRef={props.cardRef}
+          dragging={localDrag()}
+          attachmentStrip={
+            <ComposerAttachmentStrip
+              images={props.images}
+              files={props.files}
+              notice={props.attachmentNotice}
+              idPrefix={props.attachmentIdPrefix}
+              onRemoveImage={props.onRemoveImage}
+              onRemoveFile={props.onRemoveFile}
+              references={props.references}
+              onRemoveReference={props.onRemoveReference}
             />
-            <If when={props.promptSuggestion?.() ?? ""}>
-              <View
-                role="button"
-                focusable={false}
-                accessibilityLabel="accept-prompt-suggestion"
-                tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
-                onPress={acceptPromptSuggestion}
+          }
+          editor={expanded => (
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
+              <If when={richDraft()} else={<Input
+                ref={el => {
+                  localInputRef = el;
+                }}
+                value={props.draft()}
+                placeholder={props.placeholder()}
+                accessibilityLabel={props.inputAccessibilityLabel}
+                multiline={true}
+                autoFocus={props.autoFocus}
+                readonly={isDisabled()}
+                submitBehavior="submit"
+                pasteBehavior={props.onPaste ? "report" : undefined}
                 style={{
-                  boxSizing: "border-box",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                  marginTop: 2,
-                  width: compactLayout() ? layout.touchTarget : 32,
-                  height: compactLayout() ? layout.touchTarget : 22,
-                  borderRadius: radii.pill,
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  backgroundColor: palette().surfaceSubtle,
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...pressTransition(MOTION_DURATION.fast),
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: expanded() ? chatComposerMetrics.editorMinHeight : chatComposerMetrics.compactTrackHeight,
+                  maxHeight: expanded() ? textLineHeight(chatComposerMetrics.textSize, 1.5) * 5 : chatComposerMetrics.compactTrackHeight,
+                  padding: 0,
+                  fontFamily: inputFontSans(),
+                  fontSize: editorFontSize(),
+                  lineHeight: touch() ? textLineHeight(16, 1.5) : textLineHeight(chatComposerMetrics.textSize, 1.5),
+                  color: palette().text,
+                  placeholderColor: palette().textMuted,
+                  caretColor: palette().accent,
                 }}
-                hoverStyle={{
-                  backgroundColor: palette().panelHover,
-                  borderColor: palette().borderStrong,
+                onFocus={() => {
+                  inputFocused.set(true);
+                  props.onFocusPane?.();
                 }}
-                activeStyle={tactileActiveStyle(0.95)}
-                focusVisibleStyle={focusRingStyle()}
-              >
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(10.5),
-                    lineHeight: textLineHeight(10.5, 1.15),
-                    fontWeight: "500",
-                    fontFamily: compactLayout() ? undefined : fontMono(),
-                  }}
-                >
-                  {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
-                </Text>
-              </View>
-            </If>
-          </View>
-        </View>
-
-        {/* Unified Bottom Action Bar */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: collapseInline() ? space.xs : space.chip,
-            paddingHorizontal: collapseInline() ? space.sm : space.md,
-            paddingTop: space.xs,
-            paddingBottom: space.sm,
-          }}
-        >
-          <View
-            style={{
-              flex: 1,
-              minWidth: 0,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.xs,
-              overflow: "hidden",
-            }}
-          >
-            <View
-              ref={el => {
-                localPlusAnchor.set(el);
-                props.onPlusAnchorEl?.(el);
-              }}
-              style={{ flexShrink: 0 }}
-            >
-              <If
-                when={isCompact()}
-                else={
-                  <IconButton
-                    icon="plus"
-                    size="sm"
-                    iconSize={15}
-                    active={localPlusOpen()}
-                    accessibilityLabel={props.plusAccessibilityLabel}
-                    tooltip={tr("chat.polish.moreControls")}
-                    style={{ borderRadius: radii.pill }}
-                    onPress={togglePlus}
-                  />
+                onBlur={() => inputFocused.set(false)}
+                onChange={event => {
+                  const prev = props.draft();
+                  const next = event.value;
+                  const caret = next === prev ? (selectionEnd ?? next.length) : estimateCaretAfterEdit(prev, next);
+                  applyDraftValue(next, caret);
+                }}
+                onCompositionChange={event => {
+                  localComposing.set(event.composing);
+                  props.onComposingChange?.(event.composing);
+                }}
+                onSelectionChange={event => {
+                  selectionStart = event.start;
+                  selectionEnd = event.end;
+                  lastTrackedText = props.draft();
+                  props.onSelectionChange?.(event.end);
+                }}
+                onCaretMove={props.onCaretMove ? event => props.onCaretMove!(event.pageBounds) : undefined}
+                onPaste={
+                  props.onPaste
+                    ? event => {
+                        if (!isDisabled()) props.onPaste!(event, insertTextAtSelection);
+                      }
+                    : undefined
                 }
-              >
-                <TouchTargetButton
-                  icon="plus"
-                  tone={localPlusOpen() ? "active" : "ghost"}
-                  accessibilityLabel={props.plusAccessibilityLabel}
-                  onPress={togglePlus}
+                onKeyPress={props.onKeyPress ? event => props.onKeyPress!(event.key) : undefined}
+                onSubmit={() => {
+                  if (!localComposing()) props.onSubmit();
+                }}
+              />}>
+                <PromptReferenceEditor
+                  draft={props.draft}
+                  inputLabel={props.inputAccessibilityLabel}
+                  labelPrefix={props.pane === 1 ? "secondary-composer-prompt-reference" : undefined}
+                  placeholder={props.placeholder()}
+                  disabled={isDisabled()}
+                  fontSize={editorFontSize()}
+                  lineHeight={touch() ? textLineHeight(16, 1.5) : textLineHeight(chatComposerMetrics.textSize, 1.5)}
+                  minHeight={expanded() ? chatComposerMetrics.editorMinHeight : chatComposerMetrics.compactTrackHeight}
+                  maxHeight={textLineHeight(chatComposerMetrics.textSize, 1.5) * 5}
+                  pickerOpen={() => mentionOpen() && mentionInline() &&
+                    mentionPane() === (props.pane === 1 ? "secondary" : "primary")}
+                  onChange={applyDraftValue}
+                  onSelection={selection => {
+                    if (selection.text !== props.draft()) return;
+                    lastTrackedText = selection.text;
+                    selectionStart = selection.start;
+                    selectionEnd = selection.end;
+                    props.onSelectionChange?.(selection.end);
+                  }}
+                  onCaretMove={props.onCaretMove}
+                  onFocus={props.onFocusPane}
+                  onComposition={composing => {
+                    localComposing.set(composing);
+                    props.onComposingChange?.(composing);
+                  }}
+                  onMount={handle => {
+                    richInputRef = handle;
+                    if (!handle) return;
+                    if (pendingRichFocus) handle.focus();
+                    if (pendingRichSelection) handle.setSelection(pendingRichSelection.start, pendingRichSelection.end);
+                    pendingRichFocus = false;
+                    pendingRichSelection = undefined;
+                  }}
+                  onSubmit={props.onSubmit}
+                  onPickerKey={props.onKeyPress}
+                  onPaste={event => {
+                    if (!isDisabled()) props.onPaste?.(event, insertTextAtSelection);
+                  }}
                 />
               </If>
+              <If when={props.promptSuggestion?.() ?? ""}>
+                <View
+                  role="button"
+                  focusable={false}
+                  accessibilityLabel="accept-prompt-suggestion"
+                  tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
+                  onPress={acceptPromptSuggestion}
+                  style={{
+                    boxSizing: "border-box",
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    marginTop: 2,
+                    width: compactLayout() ? layout.touchTarget : 32,
+                    height: compactLayout() ? layout.touchTarget : 22,
+                    borderRadius: radii.pill,
+                    borderWidth: 1,
+                    borderColor: palette().borderSubtle,
+                    backgroundColor: palette().surfaceSubtle,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{
+                    backgroundColor: palette().panelHover,
+                    borderColor: palette().borderStrong,
+                  }}
+                  activeStyle={tactileActiveStyle(0.95)}
+                  focusVisibleStyle={focusRingStyle()}
+                >
+                  <Text
+                    style={{
+                      color: palette().textMuted,
+                      fontSize: textSize(10.5),
+                      lineHeight: textLineHeight(10.5, 1.15),
+                      fontWeight: "500",
+                      fontFamily: compactLayout() ? undefined : fontMono(),
+                    }}
+                  >
+                    {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
+                  </Text>
+                </View>
+              </If>
             </View>
-            <If when={!collapseInline()}>
+          )}
+          startActions={
+            <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.xs }}>
               <View
-                style={{
-                  width: 1,
-                  height: 14,
-                  marginHorizontal: space.hair,
-                  flexShrink: 0,
-                  backgroundColor: palette().borderSubtle,
+                ref={el => {
+                  localPlusAnchor.set(el);
+                  props.onPlusAnchorEl?.(el);
                 }}
-              />
-              <If when={props.showAgentPicker !== false}>
+                style={{ flexShrink: 0 }}
+              >
+                <If
+                  when={isCompact()}
+                  else={
+                    <IconButton
+                      icon="plus"
+                      size="sm"
+                      iconSize={chatComposerMetrics.actionIconSize}
+                      active={localPlusOpen()}
+                      accessibilityLabel={props.plusAccessibilityLabel}
+                      tooltip={tr("chat.polish.moreControls")}
+                      style={{ width: chatComposerMetrics.controlHeight, height: chatComposerMetrics.controlHeight, borderRadius: radii.pill }}
+                      onPress={togglePlus}
+                    />
+                  }
+                >
+                  <TouchTargetButton
+                    icon="plus"
+                    tone={localPlusOpen() ? "active" : "ghost"}
+                    accessibilityLabel={props.plusAccessibilityLabel}
+                    onPress={togglePlus}
+                  />
+                </If>
+              </View>
+              <If when={!collapseInline() && props.showAgentPicker !== false}>
+                <View
+                  style={{
+                    width: 1,
+                    height: chatComposerMetrics.dividerHeight,
+                    marginHorizontal: space.hair,
+                    flexShrink: 0,
+                    backgroundColor: palette().borderSubtle,
+                  }}
+                />
                 <AgentPickerTrigger
                   compact={isCompact}
                   sessionId={props.sessionId}
@@ -7258,58 +7832,55 @@ function SessionComposer(props: SessionComposerProps) {
                   onFocusPane={props.onFocusPane}
                 />
               </If>
-              <ModelReasoningCapsule
-                primary={props.pane === 0}
+            </View>
+          }
+          endActions={
+            <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.xs }}>
+              <If when={!collapseInline()}>
+                <ModelReasoningCapsule
+                  primary={props.pane === 0}
+                  modelAnchor={props.pane === 0 ? composerModelAnchor : props.pane === 1 ? secondaryComposerModelAnchor : undefined}
+                  compact={isCompact}
+                  sessionId={props.sessionId}
+                  deviceId={props.deviceId}
+                  workspaceId={props.workspaceId}
+                  btwMode={btwMode}
+                  showReasoning={props.showReasoning}
+                  modelAccessibilityLabel={props.modelAccessibilityLabel}
+                  reasoningAccessibilityLabel={props.reasoningAccessibilityLabel}
+                  onFocusPane={props.onFocusPane}
+                />
+              </If>
+              <If when={Boolean(props.showPermissionShield)}>
+                <ComposerFullAccessShield
+                  sessionId={props.sessionId}
+                  compact={isCompact}
+                  accessibilityLabel={props.permissionAccessibilityLabel ?? "permission-mode-warning"}
+                  onPress={anchor => props.onOpenPermissionPicker?.(anchor)}
+                />
+              </If>
+              <If when={Boolean(props.showContextRing) && !isCompact()}>
+                <ContextUsageRing
+                  sessionId={props.sessionId}
+                  deviceId={props.deviceId}
+                  accessibilityLabel={props.contextAccessibilityLabel}
+                  onFocusPane={props.onFocusPane}
+                />
+              </If>
+              <ComposerSubmitAction
+                running={props.running}
+                canSend={props.canSend}
+                disabled={props.disabled}
                 compact={isCompact}
-                sessionId={props.sessionId}
-                deviceId={props.deviceId}
-                workspaceId={props.workspaceId}
-                btwMode={btwMode}
-                showReasoning={props.showReasoning}
-                modelAccessibilityLabel={props.modelAccessibilityLabel}
-                reasoningAccessibilityLabel={props.reasoningAccessibilityLabel}
-                onFocusPane={props.onFocusPane}
+                sendLabel={props.sendAccessibilityLabel}
+                stopLabel={props.stopAccessibilityLabel}
+                onSend={props.onSubmit}
+                onStop={props.onStop}
               />
-            </If>
-          </View>
-
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              flexShrink: 0,
-              gap: isCompact() ? space.hair : space.xs,
-            }}
-          >
-            <If when={Boolean(props.showPermissionShield)}>
-              <ComposerFullAccessShield
-                sessionId={props.sessionId}
-                compact={isCompact}
-                accessibilityLabel={props.permissionAccessibilityLabel ?? "permission-mode-warning"}
-                onPress={anchor => props.onOpenPermissionPicker?.(anchor)}
-              />
-            </If>
-            <If when={Boolean(props.showContextRing) && !isCompact()}>
-              <ContextUsageRing
-                sessionId={props.sessionId}
-                deviceId={props.deviceId}
-                accessibilityLabel={props.contextAccessibilityLabel}
-                onFocusPane={props.onFocusPane}
-              />
-            </If>
-            <ComposerSubmitAction
-              running={props.running}
-              canSend={props.canSend}
-              disabled={props.disabled}
-              compact={isCompact}
-              sendLabel={props.sendAccessibilityLabel}
-              stopLabel={props.stopAccessibilityLabel}
-              onSend={props.onSubmit}
-              onStop={props.onStop}
-            />
-          </View>
-        </View>
-      </ComposerCardShell>
+            </View>
+          }
+        />
+      </ComposerDockLayout>
 
       <DropdownMenu
         open={localPlusOpen()}
@@ -7324,18 +7895,37 @@ function SessionComposer(props: SessionComposerProps) {
 }
 
 /** Shared anchored composer popovers rendered once at scene level for Primary, Split, and BTW panes. */
+function ComposerSlashOverlay(props: { slash: ComposerSlash }) {
+  const slash = props.slash;
+  const dismiss = () => slash.pane.draft.set("");
+  return (
+    <If when={slash.visible() && (slash.rows().length > 0 || slash.unsupported())}>
+      <Overlay anchor={slash.pane.anchor()} placement="top" align="start" offset={6} margin={8}
+        onPosition={pos => slash.placement.set(pos.placement)} onPressOutside={() => undefined} onCancel={dismiss}>
+        <If when={slash.rows().length > 0}
+          else={<SlashCommandsUnavailable placement={slash.placement()} dismiss={dismiss} />}>
+          <SlashCommandSurface placement={slash.placement()} slash={slash} />
+        </If>
+      </Overlay>
+    </If>
+  );
+}
+
 function ComposerOverlays() {
+  effect(() => {
+    if (mentionOpen() && !mentionOwnerCurrent()) closeMentionPopover();
+  });
+  const mentionAnchor = () => {
+    const secondary = mentionPane() === "secondary";
+    const caret = secondary ? secondaryComposerCaretBounds() : composerCaretBounds();
+    return mentionInline() && caret && caret.size.height > 0
+      ? caret : secondary ? secondaryComposerCardAnchor() : composerCardAnchor();
+  };
   return (
     <>
       <If when={mentionOpen()}>
         <Overlay
-          anchor={
-            mentionInline() &&
-            composerCaretBounds() &&
-            composerCaretBounds()!.size.height > 0
-              ? composerCaretBounds()
-              : composerCardAnchor()
-          }
+          anchor={mentionAnchor()}
           placement="top"
           align="start"
           offset={6}
@@ -7379,55 +7969,11 @@ function ComposerOverlays() {
       </If>
 
       <If when={modelPickerOpen()}>
-        <Overlay
-          anchor={modelPickerAnchor()}
-          placement="top"
-          align="start"
-          offset={6}
-          margin={8}
-          onPosition={pos => modelPickerPlacement.set(pos.placement)}
-          onPressOutside={() => {
-            modelPickerTarget.set(null);
-            closePickers();
-          }}
-          onCancel={() => {
-            modelPickerTarget.set(null);
-            closePickers();
-          }}
-        >
-          <ModelPickerSurface placement={modelPickerPlacement()} />
-        </Overlay>
+        <ModelPickerOverlay />
       </If>
 
-      <If when={slashPopoverVisible()}>
-        <Overlay
-          anchor={composerCardAnchor()}
-          placement="top"
-          align="start"
-          offset={6}
-          margin={8}
-          onPosition={pos => slashMenuPlacement.set(pos.placement)}
-          onPressOutside={() => undefined}
-          onCancel={() => composerText.set("")}
-        >
-          <SlashCommandSurface placement={slashMenuPlacement()} />
-        </Overlay>
-      </If>
-
-      <If when={sessionCommandsUnsupported() && !slashPopoverVisible() && composerText().startsWith("/") && !/\s/.test(composerText()) && !mentionOpen()}>
-        <Overlay
-          anchor={composerCardAnchor()}
-          placement="top"
-          align="start"
-          offset={6}
-          margin={8}
-          onPosition={pos => slashMenuPlacement.set(pos.placement)}
-          onPressOutside={() => undefined}
-          onCancel={() => composerText.set("")}
-        >
-          <SlashCommandsUnavailable placement={slashMenuPlacement()} />
-        </Overlay>
-      </If>
+      <ComposerSlashOverlay slash={primarySlash} />
+      <ComposerSlashOverlay slash={secondarySlash} />
 
       <If when={permissionModePickerOpen()}>
         <Overlay
@@ -7504,6 +8050,7 @@ function SessionPaneShell(props: {
   testID?: string;
   accessibilityLabel?: string;
   style: () => ViewStyle;
+  controlInsets?: () => ViewStyle;
   interactive?: () => boolean;
   onInteract?: () => void;
   onPress?: () => (() => void) | undefined;
@@ -7531,16 +8078,22 @@ function SessionPaneShell(props: {
         ...props.style(),
       }}
     >
-      {props.header}
-      {props.banners}
+      <View style={props.controlInsets?.()}>
+        {props.header}
+        {props.banners}
+      </View>
       {props.transcript}
-      {props.preComposer}
-      {props.composer}
+      <View testID={props.testID === "primary-session-pane" ? "primary-session-controls" : undefined}
+        style={props.controlInsets?.()}>
+        {props.preComposer}
+        {props.composer}
+      </View>
     </View>
   );
 }
 
 function ComposerDock() {
+  primarySlash.mount();
   ensureModelsLoaded();
   ensureQuickActions();
   ensurePromptSuggestionSettingLoaded();
@@ -7552,15 +8105,8 @@ function ComposerDock() {
   });
   effect(() => {
     const id = activeSessionId();
+    activeSessionDevice();
     if (id) void loadQueueForSession(id);
-    void loadSessionCommands(id);
-  });
-  effect(() => {
-    const id = activeSessionId();
-    const wsId = activeWorkspaceId();
-    const wsRoot = activeWorkspaceRoot();
-    const modeId = agentTypeOf(id);
-    if (id && composerText().startsWith("/")) void loadSlashSkills(modeId, wsId, wsRoot);
   });
   effect(() => {
     activeSessionId();
@@ -7573,18 +8119,16 @@ function ComposerDock() {
     void ensureReasoningLoaded();
   });
   effect(() => {
-    composerText();
-    slashSelectedIndex.set(0);
-  });
-  effect(() => {
     mentionQuery();
+    mentionSource();
     mentionBrowseDir();
     mentionOpen();
     mentionSelectedIndex.set(0);
   });
 
   const hasPayload = () =>
-    composerText().trim().length > 0 || imageAttachments().length > 0 || fileAttachments().length > 0;
+    composerText().trim().length > 0 || imageAttachments().length > 0 || fileAttachments().length > 0 ||
+    sessionReferenceAttachments().length > 0;
 
   return (
     <SessionComposer
@@ -7597,21 +8141,25 @@ function ComposerDock() {
         composerDisabled()
           ? offlineNoticeText() || tr("sessions.noSessionSelected")
           : runningTurnId()
-            ? midTurnSendPolicy() === "queue"
+            ? midTurnSendPolicy() === "queue" || sessionReferenceAttachments().length > 0
               ? tr("sessions.composerQueuePlaceholder")
               : tr("session.placeholderRunning")
             : activePromptSuggestion() || tr("session.placeholder")
       }
       disabled={composerDisabled}
       running={() => Boolean(runningTurnId())}
+      newSession={() => !!activeSessionId() && !runningTurnId() && !turnsLoading() &&
+        sessionTurns().length === 0 && (activeSession()?.messageCount ?? 0) === 0}
       canSend={hasPayload}
       compact={sessionsCompact}
       images={imageAttachments}
       files={fileAttachments}
+      references={sessionReferenceAttachments}
+      onRemoveReference={removeSessionReference}
       attachmentNotice={attachmentNotice}
       onRemoveImage={id => removeAttachment(id)}
       onRemoveFile={id => removeFileAttachment(id)}
-      onSubmit={() => void submitComposer()}
+      onSubmit={() => void primarySlash.submit()}
       onStop={() => void stopRunningTurn()}
       onFocusPane={() => {
         if (splitPaneOpen()) focusPane(0);
@@ -7666,11 +8214,11 @@ function ComposerDock() {
       }}
       onCaretMove={bounds => composerCaretBounds.set(bounds)}
       onKeyPress={key => {
-        if (mentionOpen() && mentionInline()) {
+        if (mentionOpen() && mentionInline() && mentionPane() === "primary") {
           handleMentionKeyNavigation(key);
           return;
         }
-        if (slashPopoverVisible() && handleSlashKeyNavigation(key)) {
+        if (primarySlash.handleKey(key)) {
           return;
         }
         if (
@@ -7783,7 +8331,7 @@ function AgentPickerTrigger(props: {
             agentPickerOpen.set(next);
           }}
           style={{
-            height: 28,
+            height: chatComposerMetrics.controlHeight,
             minWidth: 0,
             flexShrink: 1,
             maxWidth: props.compact() ? 120 : 148,
@@ -7832,7 +8380,7 @@ function AgentPickerTrigger(props: {
           />
         }
         style={{
-          height: 28,
+          height: chatComposerMetrics.controlHeight,
           minWidth: 0,
           flexShrink: 1,
           maxWidth: props.compact() ? 120 : 148,
@@ -7871,11 +8419,17 @@ type ComposerModelTarget =
   | { kind: "btw" };
 
 const modelPickerTarget = signal<ComposerModelTarget | null>(null);
+const modelPickerRequestedSearch = signal("");
+
+function alternateModelCatalogOwner(deviceId: string | undefined): string | null {
+  return fleetActive() && deviceId && deviceId !== activeSessionDevice() ? deviceId : null;
+}
 
 function pickerTargetModelId(): string | null {
   const target = modelPickerTarget();
   if (target?.kind === "btw") {
-    return sideQuestionModelOverride() ?? modelIdForSession(activeSessionId(), activeSessionDevice());
+    const parent = currentSideQuestionParent();
+    return sideQuestionModelOverride() ?? modelIdForSession(parent?.sessionId ?? null, parent?.deviceId);
   }
   if (target?.kind === "session") {
     return modelIdForSession(target.sessionId, target.deviceId);
@@ -7915,19 +8469,19 @@ function selectModelForPickerTarget(modelId: string): void {
   void chooseModel(modelId, sessionTarget);
 }
 
-function selectReasoningForPickerTarget(presetId: string | null): void {
+function pickerSessionTarget(): SessionModelTarget | undefined {
   const target = modelPickerTarget();
-  const sessionTarget: SessionModelTarget | undefined =
-    target?.kind === "session"
-      ? { sessionId: target.sessionId, deviceId: target.deviceId, workspaceId: target.workspaceId }
-      : undefined;
-  modelPickerTarget.set(null);
-  void chooseReasoning(presetId, sessionTarget);
+  return target?.kind === "session" ? target : undefined;
+}
+
+function selectReasoningForPickerTarget(presetId: string | null): Promise<boolean> {
+  return chooseReasoning(presetId, pickerSessionTarget());
 }
 
 /** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
 function ModelReasoningCapsule(props: {
   primary: boolean;
+  modelAnchor?: Signal<ViewRef | null>;
   compact: () => boolean;
   sessionId?: () => string | null;
   deviceId?: () => string;
@@ -7941,7 +8495,7 @@ function ModelReasoningCapsule(props: {
   let modelTriggerRef: ViewRef | null = null;
   let reasoningTriggerRef: ViewRef | null = null;
   cleanup(() => {
-    if (props.primary && composerModelAnchor() === modelTriggerRef) composerModelAnchor.set(null);
+    if (props.modelAnchor?.() === modelTriggerRef) props.modelAnchor?.set(null);
   });
   const resolvedText = computed(() => {
     if (props.btwMode) {
@@ -8001,7 +8555,7 @@ function ModelReasoningCapsule(props: {
       <View
         ref={el => {
           modelTriggerRef = el;
-          if (props.primary) composerModelAnchor.set(el);
+          props.modelAnchor?.set(el);
         }}
         role="button"
         accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
@@ -8023,7 +8577,7 @@ function ModelReasoningCapsule(props: {
           if (next) void refreshFleetModels();
         }}
         style={{
-          height: 28,
+          height: chatComposerMetrics.controlHeight,
           minWidth: props.compact() ? 52 : 64,
           flexShrink: 1,
           maxWidth: props.compact() ? 172 : 216,
@@ -8052,6 +8606,7 @@ function ModelReasoningCapsule(props: {
             flexShrink: 1,
             minWidth: 0,
             color: palette().text,
+            maxWidth: chatComposerMetrics.modelNameWidth,
             fontSize: textSize(12.5),
             lineHeight: textLineHeight(12.5, 1.35),
             fontWeight: "500",
@@ -8090,9 +8645,9 @@ function ModelReasoningCapsule(props: {
             reasoningPickerOpen.set(next);
           }}
           style={{
-            height: 28,
-            width: reasoningElevated() ? undefined : 28,
-            minWidth: 28,
+            height: chatComposerMetrics.controlHeight,
+            width: reasoningElevated() ? undefined : chatComposerMetrics.controlHeight,
+            minWidth: chatComposerMetrics.controlHeight,
             flexShrink: 0,
             maxWidth: 100,
             paddingHorizontal: reasoningElevated() ? space.sm : 0,
@@ -8159,6 +8714,9 @@ function MentionPopoverSurface(props: { placement: Placement }) {
   } else {
     motion = usePopoverMotion(() => props.placement, "start", closeMentionPopover);
   }
+  const source = () => mentionResultSource();
+  const browsedSource = () => mentionInline() || mentionBrowseDir()
+    ? undefined : mentionSourceRows.find(row => row.id === source());
   return (
     <View
       style={[
@@ -8179,20 +8737,59 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           autoFocus={true}
           size="sm"
           leadingIcon="search"
-          placeholder={tr("sessions.searchFilesPlaceholder")}
+          placeholder={tr("sessions.mentionSearchReferences")}
           accessibilityLabel="mention-query"
           onChange={value => setMentionQuery(value)}
           onKeyPress={event => handleMentionKeyNavigation(event.key)}
           onSubmit={() => {
-            const hits = mentionHits();
-            if (hits.length === 0) return;
-            const idx = Math.max(0, Math.min(mentionSelectedIndex(), hits.length - 1));
-            const chosen = hits[idx] ?? hits[0];
-            if (chosen) insertMention(chosen, composerInputRef);
+            if (source() === "sources") {
+              const row = mentionSourceRows[mentionSelectedIndex()];
+              if (row) selectMentionSourceRow(row.id);
+            } else insertHighlightedMention();
           }}
         />
       </If>
-      <If when={!mentionQuery().trim()}>
+      <If when={mentionInline()}><TabGroup<MentionSource> size="sm" wrap={true} value={mentionSource()} items={[
+        ...(mentionInline() && mentionQuery().trim()
+          ? [{ value: "all" as const, label: tr("common.all"), testID: "mention-source-all" }] : []),
+        ...mentionSourceRows.filter(row => row.id !== "images").map(row => ({
+          value: row.id, label: tr(row.label), testID: `mention-source-${row.id}`,
+        })),
+      ]} onChange={source => {
+        selectMentionSource(source);
+        mentionSelectedIndex.set(0);
+        if (mentionInline()) mentionInputRef()?.focus();
+      }} /></If>
+      <If when={source() === "sources"}>
+        <View style={{ gap: space.hair }}>
+          <Each of={mentionSourceRows} key={row => row.id}>{(row, idx) => (
+            <View role="button" testID={`mention-source-${row().id}`}
+              accessibilityLabel={tr(row().label)} onPress={() => selectMentionSourceRow(row().id)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: space.sm, cursor: "pointer",
+                minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                paddingHorizontal: space.sm, borderRadius: radii.xs,
+                backgroundColor: idx() === mentionSelectedIndex() ? listRowHoverBg() : "transparent",
+              }}
+              hoverStyle={{ backgroundColor: listRowHoverBg() }}
+              focusVisibleStyle={focusRingStyle(-1)}
+            >
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <ListRowContent title={tr(row().label)} icon={row().icon} titleWeight="500" />
+              </View>
+              <If when={row().id !== "images"}><Icon name="chevron-right" size={12} color={palette().textMuted} /></If>
+            </View>
+          )}</Each>
+        </View>
+      </If>
+      <If when={browsedSource()}>
+        {row => <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <IconButton icon="arrow-left" size="xs" accessibilityLabel="mention-source-back"
+            tooltip={tr("common.back")} onPress={() => selectMentionSource("sources")} />
+          <Text style={textStyle("label")}>{tr(row().label)}</Text>
+        </View>}
+      </If>
+      <If when={source() === "files" && !mentionQuery().trim()}>
         <View
           style={{
             flexDirection: "row",
@@ -8223,8 +8820,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
             }}
           >
             {mentionBrowseDir()
-              ? toRelativeWorkspacePath(mentionBrowseDir(), activeWorkspaceRoot()) || mentionBrowseDir()
-              : activeWorkspace()?.name || tr("sessions.mentionRootLabel")}
+              ? toRelativeWorkspacePath(mentionBrowseDir(), mentionOwnerRoot()) || mentionBrowseDir()
+              : (mentionPane() === "secondary" ? secondaryWorkspaceName() : activeWorkspace()?.name) || tr("sessions.mentionRootLabel")}
           </Text>
         </View>
       </If>
@@ -8238,7 +8835,9 @@ function MentionPopoverSurface(props: { placement: Placement }) {
               lineHeight: textLineHeight(12, 1.35),
             }}
           >
-            {tr("sessions.searchingFiles")}
+            {tr(source() === "all" ? "sessions.mentionSearchingReferences"
+              : source() === "sessions" ? "sessions.mentionSearchingSessions"
+              : source() === "skills" || source() === "mcp" ? "common.loading" : "sessions.searchingFiles")}
           </Text>
         </View>
       </If>
@@ -8252,6 +8851,10 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         >
           {localizeHostError(mentionNotice())}
         </Text>
+      </If>
+      <If when={mentionRetryable()}>
+        <Button label={tr("common.retry")} size="sm" variant="secondary"
+          accessibilityLabel="mention-retry-catalog" onPress={retryMentionCatalog} />
       </If>
       <If
         when={
@@ -8269,13 +8872,17 @@ function MentionPopoverSurface(props: { placement: Placement }) {
             lineHeight: textLineHeight(12, 1.35),
           }}
         >
-          {tr("sessions.mentionNoMatch", { query: mentionQuery().trim() })}
+            {tr(source() === "all" ? "sessions.mentionReferencesNoMatch"
+              : source() === "sessions" ? "sessions.mentionSessionsNoMatch"
+              : source() === "skills" || source() === "mcp" ? "sessions.mentionReferencesNoMatch" : "sessions.mentionNoMatch",
+            { query: mentionQuery().trim() })}
         </Text>
       </If>
       <If
         when={
           !mentionLoading() &&
           !mentionNotice() &&
+          source() !== "sources" &&
           !mentionQuery().trim() &&
           mentionHits().length === 0
         }
@@ -8287,7 +8894,9 @@ function MentionPopoverSurface(props: { placement: Placement }) {
             lineHeight: textLineHeight(12, 1.35),
           }}
         >
-          {tr("sessions.mentionEmptyDir")}
+          {tr(source() === "sessions" ? "sessions.mentionSessionsEmpty"
+            : source() === "mcp" ? "sessions.mentionMcpEmpty"
+            : source() === "skills" ? "sessions.mentionSkillsEmpty" : "sessions.mentionEmptyDir")}
         </Text>
       </If>
       <If when={mentionTruncated()}>
@@ -8321,7 +8930,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                   <View
                     role="button"
                     accessibilityLabel={`mention-option-${hit().name}`}
-                    onPress={() => insertMention(hit(), composerInputRef)}
+                    onPress={() => insertMention(hit(), mentionInputRef())}
                     style={{
                       flex: 1,
                       minWidth: 0,
@@ -8337,7 +8946,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                     focusVisibleStyle={focusRingStyle(-1)}
                   >
                     <ListRowContent
-                      icon={hit().directory ? "folder" : "file-code"}
+                      icon={hit().prompt?.kind === "mcp" ? "plug" : hit().prompt?.kind === "skills" ? "sparkles"
+                        : hit().session ? "chat" : hit().directory ? "folder" : "file-code"}
                       iconColor={palette().textSecondary}
                       title={hit().name}
                       titleWeight="500"
@@ -8580,8 +9190,164 @@ function AgentPickerSurface(props: { placement: Placement }) {
   );
 }
 
-function ModelPickerSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
+function pickerModelContext() {
+  if (modelPickerTarget()?.kind === "btw") {
+    const context = modelContextOf(pickerTargetModelId(), currentSideQuestionParent()?.deviceId ?? activeSessionDevice());
+    return context && { ...context, editable: false };
+  }
+  return modelContextForSession(pickerSessionTarget());
+}
+
+function ModelPickerOverlay() {
+  const editingContext = signal<string | null>(null);
+  const initialQuery = untracked(modelPickerRequestedSearch);
+  modelPickerRequestedSearch.set("");
+  const searchOpen = signal(Boolean(initialQuery));
+  const filterOpen = signal(false);
+  const composingSearch = signal(false);
+  let lastDismiss = -Infinity;
+  const close = () => {
+    modelPickerTarget.set(null);
+    closePickers();
+  };
+  const dismiss = () => {
+    if (composingSearch() || Date.now() - lastDismiss < 150) return;
+    lastDismiss = Date.now();
+    if (filterOpen()) {
+      filterOpen.set(false);
+      return;
+    }
+    if (searchOpen()) {
+      searchOpen.set(false);
+      return;
+    }
+    const context = pickerModelContext();
+    if (context && editingContext() === context.key) {
+      if (!modelContextPending(context)) editingContext.set(null);
+      return;
+    }
+    close();
+  };
+  return <Overlay anchor={modelPickerAnchor()} placement="top" align="start" offset={6} margin={8}
+    onPosition={pos => modelPickerPlacement.set(pos.placement)} onPressOutside={close} onCancel={dismiss}>
+    <ModelPickerSurface placement={modelPickerPlacement()} editingContext={editingContext()} onContextEdit={editingContext.set}
+      initialQuery={initialQuery} searchOpen={searchOpen()} onSearchOpen={open => {
+        if (open) editingContext.set(null);
+        else filterOpen.set(false);
+        searchOpen.set(open);
+      }} filterOpen={filterOpen()} onFilterOpen={open => {
+        if (!open) lastDismiss = Date.now();
+        filterOpen.set(open);
+      }} onCompositionChange={composingSearch.set} onDismiss={dismiss} />
+  </Overlay>;
+}
+
+function ModelPickerSurface(props: {
+  placement: Placement;
+  editingContext: string | null;
+  onContextEdit: (key: string | null) => void;
+  initialQuery: string;
+  searchOpen: boolean;
+  onSearchOpen: (open: boolean) => void;
+  filterOpen: boolean;
+  onFilterOpen: (open: boolean) => void;
+  onCompositionChange: (active: boolean) => void;
+  onDismiss: () => void;
+}) {
+  const motion = usePopoverMotion(() => props.placement, "start", props.onDismiss);
+  const model = () => pickerModelContext();
+  const reportedContext = () => {
+    if (modelPickerTarget()?.kind === "btw") return null;
+    const target = pickerSessionTarget();
+    return contextUsageFor(target ? target.sessionId : activeSessionId(), target?.deviceId)?.max;
+  };
+  const savingModel = () => modelPickerTarget()?.kind !== "btw" && modelChangePending(pickerSessionTarget());
+  const savingContext = () => modelContextPending(model());
+  const disabled = () => savingModel() || savingContext();
+  const hasReasoning = () => modelPickerTarget()?.kind !== "btw" && Boolean(pickerSessionTarget()?.sessionId ?? activeSessionId()) && pickerTargetReasoningChoices().length > 0;
+  const query = signal(props.initialQuery);
+  const provider = signal<string | null>(null);
+  const highlighted = signal<string | null>(null);
+  const inputFocused = signal(false);
+  const composing = signal(false);
+  const rowRefs = new Map<string, ViewRef>();
+  let input: InputRef | null = null;
+  const filterAnchor = signal<ViewRef | null>(null);
+  let restoreSearchFocus = false;
+  const alternateOwner = computed(() => alternateModelCatalogOwner(modelPickerTarget()?.kind === "btw"
+    ? currentSideQuestionParent()?.deviceId : pickerSessionTarget()?.deviceId));
+  const alternateCatalog = signal<{ owner: string; groups: ModelPickerGroup[] | null } | null>(null);
+  effect(() => {
+    const owner = alternateOwner();
+    if (!owner) return;
+    let cancelled = false;
+    void readModelPickerCatalog(owner).then(groups => {
+      if (!cancelled) alternateCatalog.set({ owner, groups });
+    }, () => {
+      if (!cancelled) alternateCatalog.set({ owner, groups: null });
+    });
+    return () => { cancelled = true; };
+  });
+  const catalog = computed(() => {
+    const owner = alternateOwner();
+    if (!owner) return modelPickerCatalog(chatModels(), fleetModelGroups());
+    const resolved = alternateCatalog();
+    return resolved?.owner === owner ? resolved.groups ?? [] : [];
+  });
+  const catalogStatus = computed(() => {
+    const owner = alternateOwner();
+    if (!owner) return "ready";
+    const resolved = alternateCatalog();
+    if (resolved?.owner !== owner) return "loading";
+    return resolved.groups ? "ready" : "unavailable";
+  });
+  const providers = computed(() => modelPickerProviders(catalog()));
+  const activeProvider = computed(() => providers().find(item => item.id === provider()));
+  const visible = computed(() => props.searchOpen ? filterModelPickerCatalog(catalog(), query(), activeProvider()?.id ?? null) : catalog());
+  const selectable = computed(() => visible().flatMap(group => group.rows.filter(row => row.selectable)));
+
+  effect(() => {
+    if (props.searchOpen) return;
+    query.set("");
+    provider.set(null);
+    highlighted.set(null);
+    inputFocused.set(false);
+    composing.set(false);
+    props.onCompositionChange(false);
+  });
+
+  const move = (offset: number) => {
+    const rows = selectable();
+    if (!rows.length) return;
+    const index = rows.findIndex(row => row.ref === highlighted());
+    const next = index === -1 && offset < 0 ? rows.at(-1) : rows[Math.max(0, Math.min(rows.length - 1, index + offset))];
+    if (!next) return;
+    highlighted.set(next.ref);
+    rowRefs.get(next.ref)?.reveal({ vertical: "nearest", animated: false });
+  };
+  effect(() => {
+    if (!props.searchOpen || !inputFocused() || composing() || props.filterOpen || disabled()) return;
+    return keymap.bind({ down: () => move(1), up: () => move(-1) }, { when: "always", overFocused: true, repeat: true });
+  });
+
+  const submitSearch = () => {
+    if (disabled() || composing() || props.filterOpen) return;
+    const rows = selectable();
+    const next = rows.find(row => row.ref === highlighted()) ?? rows[0];
+    if (next) selectModelForPickerTarget(next.ref);
+  };
+  const selectProvider = (id: string | null) => {
+    provider.set(id);
+    highlighted.set(null);
+    input?.focus();
+  };
+  const filterItems = computed<DropdownMenuItem[]>(() => [{
+    id: "all-model-providers", label: tr("sessions.modelAllProviders"), active: !activeProvider(),
+    accessibilityLabel: "model-provider-all", onSelect: () => selectProvider(null),
+  }, ...providers().map(item => ({
+    id: `provider:${item.id}`, label: item.label, active: activeProvider()?.id === item.id,
+    accessibilityLabel: `model-provider-${item.id}`, onSelect: () => selectProvider(item.id),
+  }))]);
   return (
     <View
       testID="model-picker"
@@ -8597,34 +9363,45 @@ function ModelPickerSurface(props: { placement: Placement }) {
         motion.style,
       ]}
     >
-      <PopoverSectionHeader label={tr("sessions.model")} />
-      <If when={fleetModelGroups()}>
-        {groups => <FleetModelList groups={groups()} />}
+      <If when={props.searchOpen ? null : model()}>
+        {context => <ModelContextControl model={context()} reportedWindow={reportedContext()}
+          editing={props.editingContext === context().key} disabled={savingModel()} onEditingChange={props.onContextEdit} />}
       </If>
-      <If when={!fleetModelGroups()}>
-        <Scroll smoothWheel style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
-          <View style={{ gap: space.hair }}>
-            <Each of={chatModels()} key="index">
-              {option => (
-                <View
-                  role="button"
-                  accessibilityLabel={`model-option-${option().id}`}
-                  onPress={() => selectModelForPickerTarget(option().id)}
-                  style={popoverRowStyle()}
-                  hoverStyle={popoverRowHoverStyle()}
-                  activeStyle={popoverRowActiveStyle()}
-                  focusVisibleStyle={focusRingStyle(-1)}
-                >
-                  <ModelRowText
-                    active={option().id === pickerTargetModelId()}
-                    label={option().label}
-                    detail={option().detail}
-                  />
-                </View>
-              )}
-            </Each>
-          </View>
-        </Scroll>
+      <If when={!props.searchOpen && hasReasoning()}>
+        <ReasoningControl choices={pickerTargetReasoningChoices()} selected={pickerTargetReasoningId()}
+          pending={savingModel() || savingContext()} expandable onSelect={selectReasoningForPickerTarget} />
+      </If>
+      <If when={!props.searchOpen && (model() || hasReasoning())}><PopoverSeparator /></If>
+      <If when={props.searchOpen} else={<View style={{ flexDirection: "row", alignItems: "center", paddingRight: space.xs }}>
+        <View style={{ flex: 1, minWidth: 0 }}><PopoverSectionHeader label={tr("sessions.model")} /></View>
+        <IconButton icon="search" size="xs" accessibilityLabel="model-picker-search-open" tooltip={tr("sessions.modelSearch")}
+          disabled={disabled()} buttonRef={node => { if (restoreSearchFocus) { restoreSearchFocus = false; node.focus(); } }}
+          onPress={() => { restoreSearchFocus = true; props.onSearchOpen(true); }} />
+      </View>}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, padding: space.xs }}>
+          <IconButton icon="chevron-left" size="sm" accessibilityLabel="model-picker-search-back" tooltip={tr("common.back")}
+            onPress={() => props.onSearchOpen(false)} />
+          <SearchInput value={query()} onChange={value => { query.set(value); highlighted.set(null); }} onSubmit={submitSearch}
+            onFocus={() => inputFocused.set(true)} onBlur={() => inputFocused.set(false)}
+            onCompositionChange={active => { composing.set(active); props.onCompositionChange(active); }}
+            inputRef={node => { input = node; }} placeholder={tr("sessions.modelSearch")}
+            accessibilityLabel="model-picker-search-input" accessibilityActiveDescendant={rowRefs.get(highlighted() ?? "") ?? null}
+            size="sm" autoFocus style={{ flex: 1 }} />
+          <IconButton icon="filter" size="sm" accessibilityLabel="model-picker-provider-filter" buttonRef={filterAnchor.set}
+            tooltip={activeProvider()?.label ?? tr("sessions.modelFilterProvider")} active={Boolean(activeProvider())}
+            disabled={disabled() || !providers().length} onPress={() => props.onFilterOpen(!props.filterOpen)} />
+        </View>
+        <DropdownMenu open={props.filterOpen} anchor={filterAnchor()} align="end" items={filterItems()}
+          onClose={() => props.onFilterOpen(false)} />
+      </If>
+      <If when={catalogStatus() !== "ready"} else={<If when={props.searchOpen && !visible().some(group => group.rows.length > 0)}
+        else={<ModelPickerList groups={visible()} disabled={disabled()}
+          highlighted={props.searchOpen ? highlighted() : null} rowRefs={rowRefs} />}>
+        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>{tr("sessions.modelNoMatches")}</Text>
+      </If>}>
+        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>
+          {tr(catalogStatus() === "loading" ? "common.loading" : "sessions.modelCatalogUnavailable")}
+        </Text>
       </If>
     </View>
   );
@@ -8644,18 +9421,18 @@ function deviceModelsNote(device: FleetModelsDevice): string {
   }
 }
 
-/** Every device's models in the entry's order, one header per device. */
-function FleetModelList(props: { groups: FleetModelsDevice[] }) {
+/** Preserves the catalog's order and device headings, including unavailable rows. */
+function ModelPickerList(props: { groups: ModelPickerGroup[]; disabled: boolean; highlighted: string | null; rowRefs: Map<string, ViewRef> }) {
   return (
-    <Scroll smoothWheel style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
+    <Scroll smoothWheel style={{ maxHeight: props.groups[0]?.device ? 320 : 240, minHeight: 0 }} scrollbar={true}>
       <View style={{ gap: space.hair }}>
-        <Each of={props.groups} key="index">
-          {(device, idx) => (
-            <View testID={`model-device-${device().deviceId}`} style={{ gap: space.hair }}>
+        <Each of={props.groups} key={group => group.device?.deviceId ?? ""}>
+          {(group, idx) => (
+            <View testID={group().device && `model-device-${group().device!.deviceId}`} style={{ gap: space.hair }}>
               <If when={idx() > 0}>
                 <PopoverSeparator />
               </If>
-              <View
+              <If when={group().device}>{device => <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
@@ -8696,9 +9473,10 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
                     {deviceModelsNote(device())}
                   </Text>
                 </If>
-              </View>
-              <Each of={device().models} key="index">
-                {choice => <FleetModelRow choice={choice()} />}
+              </View>}</If>
+              <Each of={group().rows} key={choice => choice.ref}>
+                {choice => <ModelPickerRow choice={choice()} disabled={props.disabled}
+                  highlighted={choice().ref === props.highlighted} refs={props.rowRefs} />}
               </Each>
             </View>
           )}
@@ -8733,26 +9511,30 @@ function ModelRowText(props: { active: boolean; label: string; detail: string; t
   );
 }
 
-function FleetModelRow(props: { choice: FleetModelChoice }) {
-  const active = () => props.choice.modelRef === pickerTargetModelId();
+function ModelPickerRow(props: { choice: ModelPickerGroup["rows"][number]; disabled: boolean; highlighted: boolean; refs: Map<string, ViewRef> }) {
+  const ref = props.choice.ref;
+  cleanup(() => props.refs.delete(ref));
+  const active = () => props.choice.ref === pickerTargetModelId();
+  const disabled = () => props.disabled || !props.choice.selectable;
   return (
     <View
+      ref={node => { props.refs.set(ref, node); }}
       role="button"
-      accessibilityLabel={`model-option-${props.choice.modelRef}`}
-      disabled={!props.choice.selectable}
-      accessibilityState={{ disabled: !props.choice.selectable, selected: active() }}
+      accessibilityLabel={`model-option-${props.choice.ref}`}
+      disabled={disabled()}
+      accessibilityState={{ disabled: disabled(), selected: active() }}
       onPress={() => {
-        if (props.choice.selectable) selectModelForPickerTarget(props.choice.modelRef);
+        if (!disabled()) selectModelForPickerTarget(props.choice.ref);
       }}
-      style={popoverRowStyle(false, !props.choice.selectable)}
-      hoverStyle={popoverRowHoverStyle(!props.choice.selectable)}
-      activeStyle={props.choice.selectable ? popoverRowActiveStyle() : {}}
+      style={popoverRowStyle(props.highlighted, disabled())}
+      hoverStyle={popoverRowHoverStyle(disabled())}
+      activeStyle={disabled() ? {} : popoverRowActiveStyle()}
       focusVisibleStyle={focusRingStyle(-1)}
     >
       <ModelRowText
         active={active()}
-        label={fleetModelText(props.choice).label}
-        detail={fleetModelText(props.choice).detail}
+        label={props.choice.label}
+        detail={props.choice.detail}
         trailing={
           props.choice.primary ? (
             <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
@@ -8772,8 +9554,8 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
       style={[
         overlayPopoverStyle(),
         {
-          minWidth: 228,
-          maxWidth: 300,
+          width: 344,
+          maxWidth: "92%",
           padding: POPOVER_PADDING,
           gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "start"),
@@ -8782,44 +9564,9 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
       ]}
     >
       <PopoverSectionHeader label={tr("sessions.reasoning")} />
-      <Scroll smoothWheel style={{ maxHeight: 208, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: space.hair }}>
-          <View
-            role="button"
-            accessibilityLabel="reasoning-option-default"
-            onPress={() => selectReasoningForPickerTarget(null)}
-            style={popoverRowStyle()}
-            hoverStyle={popoverRowHoverStyle()}
-            activeStyle={popoverRowActiveStyle()}
-            focusVisibleStyle={focusRingStyle(-1)}
-          >
-            <ListRowContent
-              title={tr("common.default")}
-              titleWeight={pickerTargetReasoningId() === null ? "500" : "400"}
-              trailing={pickerTargetReasoningId() === null ? <PopoverCheck /> : undefined}
-            />
-          </View>
-          <Each of={pickerTargetReasoningChoices()} key={choice => choice.id}>
-            {choice => (
-              <View
-                role="button"
-                accessibilityLabel={`reasoning-option-${choice().id}`}
-                onPress={() => selectReasoningForPickerTarget(choice().id)}
-                style={popoverRowStyle()}
-                hoverStyle={popoverRowHoverStyle()}
-                activeStyle={popoverRowActiveStyle()}
-                focusVisibleStyle={focusRingStyle(-1)}
-              >
-                <ListRowContent
-                  title={choice().label}
-                  titleWeight={choice().id === pickerTargetReasoningId() ? "500" : "400"}
-                  trailing={choice().id === pickerTargetReasoningId() ? <PopoverCheck /> : undefined}
-                />
-              </View>
-            )}
-          </Each>
-        </View>
-      </Scroll>
+      <ReasoningControl choices={pickerTargetReasoningChoices()} selected={pickerTargetReasoningId()}
+        pending={modelChangePending(pickerSessionTarget())} onSelect={selectReasoningForPickerTarget}
+        onConfirmed={() => { modelPickerTarget.set(null); closePickers(); }} />
     </View>
   );
 }
@@ -8992,21 +9739,13 @@ function PermissionPrompts(props: { sessionId?: () => string | null } = {}) {
 }
 
 
-function QuestionPrompts(props: { sessionId?: () => string | null } = {}) {
-  const items = () => (props.sessionId ? questionsForSession(props.sessionId()) : activeQuestions());
+function QuestionPrompts(props: { items: () => QuestionPrompt[]; device: () => AttentionDevice | null }) {
   return (
-    <If when={items().length > 0}>
+    <If when={props.items().length > 0}>
       <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.chip }}>
-        <View
-          style={{
-            width: "100%",
-            maxWidth: contentWidth(),
-            alignSelf: "center",
-            gap: space.sm,
-          }}
-        >
-          <Each of={items()} key={prompt => prompt.toolId}>
-            {prompt => <QuestionCard prompt={prompt} />}
+        <View style={{ width: "100%", maxWidth: contentWidth(), alignSelf: "center", gap: space.sm }}>
+          <Each of={props.items()} key={prompt => JSON.stringify([questionPromptKey(prompt), prompt.seenAt])}>
+            {prompt => <SessionQuestionCard prompt={prompt} device={props.device} />}
           </Each>
         </View>
       </View>
@@ -9014,444 +9753,69 @@ function QuestionPrompts(props: { sessionId?: () => string | null } = {}) {
   );
 }
 
-function formatQuestionCountdown(seconds: number): string {
-  const clamped = Math.max(0, Math.ceil(seconds));
-  const mins = Math.floor(clamped / 60);
-  const secs = clamped % 60;
-  return `${mins}:${String(secs).padStart(2, "0")}`;
-}
-
-function QuestionCard(props: { prompt: () => QuestionPrompt }) {
+function SessionQuestionCard(props: { prompt: () => QuestionPrompt; device: () => AttentionDevice | null }) {
   const prompt = props.prompt;
-  const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
   const nowMs = signal(Date.now());
   let expiredTriggered = false;
 
-  // Live 1s countdown ticker while an unattended host deadline is active.
   effect(() => {
     const deadline = prompt().localDeadlineMs;
-    const started = prompt().interactionStarted;
-    if (!deadline || started) return;
+    if (!deadline || prompt().interactionStarted) return;
     nowMs.set(Date.now());
     const timer = setInterval(() => {
       const current = Date.now();
       nowMs.set(current);
       if (current >= deadline && !expiredTriggered) {
         expiredTriggered = true;
-        const p = prompt();
-        void loadQuestionMailbox(p.sessionId, p.deviceId);
+        const source = prompt();
+        void loadQuestionMailbox(source.sessionId, source.deviceId);
       }
     }, 1000);
     cleanup(() => clearInterval(timer));
   });
 
-  const remainingSeconds = computed(() => {
-    const p = prompt();
-    if (!p.localDeadlineMs || p.interactionStarted) return null;
-    return Math.max(0, Math.ceil((p.localDeadlineMs - nowMs()) / 1000));
+  const remaining = computed(() => {
+    const source = prompt();
+    if (!source.localDeadlineMs || source.interactionStarted) return null;
+    return Math.max(0, Math.ceil((source.localDeadlineMs - nowMs()) / 1000));
   });
-
-  const isUrgent = computed(() => {
-    const rem = remainingSeconds();
-    return rem !== null && rem <= 30;
-  });
-
-  return (
-    <View
-      accessibilityLabel={`question-card-${prompt().toolId}`}
-      style={[
-        {
-          borderRadius: radii.xl,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().surfaceElevated,
-          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
-          overflow: "hidden",
-        },
-        motion.style,
-      ]}
-    >
-      {/* Compact Header Bar */}
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space.sm,
-          paddingHorizontal: space.lg,
-          paddingVertical: space.md,
-          borderBottomWidth: 1,
-          borderColor: palette().borderSubtle,
-        }}
-      >
-        <StateMark state="needs_you" />
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-          <If when={sessionDeviceLabel()}>
-            {device => (
-              <>
-                <DeviceBadge
-                  name={device().name}
-                  kind={device().kind}
-                  exception={device().exception}
-                  onPress={compactLayout() ? undefined : device().onPress}
-                />
-                <Text style={textStyle("caption")}>·</Text>
-              </>
-            )}
-          </If>
-          <Text
-            style={{
-              ...textStyle("label", { color: palette().text }),
-              fontWeight: "600",
-              flexShrink: 1,
-              minWidth: 0,
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {tr("sessions.questionTitle")}
-          </Text>
-        </View>
-        <If when={remainingSeconds() !== null}>
-          <View
-            accessibilityLabel={`question-countdown-${prompt().toolId}`}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.xs,
-              paddingHorizontal: space.sm,
-              paddingVertical: 3,
-              borderRadius: radii.pill,
-              borderWidth: 1,
-              borderColor: isUrgent() ? palette().warningBorder : palette().borderSubtle,
-              backgroundColor: isUrgent() ? palette().warningSoft : palette().surfaceSubtle,
-              flexShrink: 0,
-            }}
-          >
-            <Icon
-              name="clock"
-              size={11}
-              color={isUrgent() ? palette().warning : palette().textMuted}
-            />
-            <Text
-              style={{
-                color: isUrgent() ? palette().warning : palette().textSecondary,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.2),
-                fontWeight: "500",
-                fontFamily: fontMono(),
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {formatQuestionCountdown(remainingSeconds() ?? 0)}
-            </Text>
-          </View>
-        </If>
-        <If when={prompt().questions.length > 1}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
-            <IconButton
-              icon="chevron-left"
-              size="xs"
-              accessibilityLabel={`question-prev-${prompt().toolId}`}
-              tooltip={tr("chat.question.previous")}
-              disabled={questionPageOf(prompt().toolId, prompt().questions.length) === 0}
-              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-              onPress={() => stepQuestionPage(prompt().toolId, -1, prompt().questions.length)}
-            />
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.3),
-                fontVariant: ["tabular-nums"],
-                paddingHorizontal: space.hair,
-              }}
-            >
-              {`${questionPageOf(prompt().toolId, prompt().questions.length) + 1}/${prompt().questions.length}`}
-            </Text>
-            <IconButton
-              icon="chevron-right"
-              size="xs"
-              accessibilityLabel={`question-next-${prompt().toolId}`}
-              tooltip={tr("chat.question.next")}
-              disabled={questionPageOf(prompt().toolId, prompt().questions.length) >= prompt().questions.length - 1}
-              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-              onPress={() => stepQuestionPage(prompt().toolId, 1, prompt().questions.length)}
-            />
-          </View>
-        </If>
-      </View>
-
-      {/* Question & Clean Grouped Option Menu */}
-      <Scroll smoothWheel style={{ maxHeight: 420, minHeight: 0 }} scrollbar={true}>
-        <View style={{ paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.md }}>
-          <Each of={prompt().questions} key="index">
-            {(question, index) => (
-              <If when={prompt().questions.length <= 1 || index() === questionPageOf(prompt().toolId, prompt().questions.length)}>
-                <QuestionBlock prompt={prompt} question={question} index={index()} />
-              </If>
-            )}
-          </Each>
-        </View>
-      </Scroll>
-
-      {/* Footer Action Bar */}
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: space.md,
-          paddingHorizontal: space.lg,
-          paddingVertical: space.sm + 2,
-          borderTopWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().surfaceSubtle,
-        }}
-      >
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <If
-            when={prompt().error}
-            else={
-              <If when={remainingSeconds() !== null}>
-                <Text
-                  style={{
-                    color: isUrgent() ? palette().warning : palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    fontVariant: ["tabular-nums"],
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {tr("sessions.questionAutoProceed", {
-                    remaining: formatQuestionCountdown(remainingSeconds() ?? 0),
-                  })}
-                </Text>
-              </If>
-            }
-          >
-            {message => (
-              <Text style={textStyle("caption", { color: palette().danger })}>
-                {localizeHostError(message())}
-              </Text>
-            )}
-          </If>
-        </View>
-        <Button
-          label={prompt().submitting ? tr("common.sending") : tr("sessions.sendAnswer")}
-          variant="primary"
-          size="sm"
-          loading={prompt().submitting}
-          disabled={prompt().submitting}
-          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-          onPress={() => void submitQuestion(prompt().toolId)}
-        />
-      </View>
-    </View>
-  );
-}
-
-/** Which question of a multi-question prompt is on screen, per tool call. */
-const questionPages = signal<Record<string, number>>({});
-
-function questionPageOf(toolId: string, total: number): number {
-  return Math.max(0, Math.min(total - 1, questionPages()[toolId] ?? 0));
-}
-
-function stepQuestionPage(toolId: string, direction: -1 | 1, total: number): void {
-  const next = Math.max(0, Math.min(total - 1, questionPageOf(toolId, total) + direction));
-  questionPages.update(current => ({ ...current, [toolId]: next }));
-}
-
-function QuestionMenuRow(props: {
-  label: string;
-  detail?: string;
-  selected: boolean;
-  multiSelect: boolean;
-  first?: boolean;
-  accessibilityLabel: string;
-  onPress: () => void;
-}) {
-  return (
-    <View
-      role={props.multiSelect ? "checkbox" : "radio"}
-      accessibilityLabel={props.accessibilityLabel}
-      accessibilityState={{ selected: props.selected, checked: props.selected }}
-      onPress={props.onPress}
-      style={{
-        flexDirection: "row",
-        alignItems: "flex-start",
-        gap: space.md,
-        minHeight: compactLayout() ? layout.touchTarget : 38,
-        paddingHorizontal: space.md,
-        paddingVertical: space.sm + 1,
-        borderTopWidth: props.first ? 0 : 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: props.selected ? palette().accentSoft : "transparent",
-        cursor: "pointer",
-        userSelect: "none",
-        ...pressTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{
-        backgroundColor: props.selected ? palette().accentSoft : palette().panelHover,
-      }}
-      activeStyle={tactileActiveStyle(0.99)}
-      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
-    >
-      {/* Crisp Radio circle or Checkbox square */}
-      <View
-        style={{
-          width: 15,
-          height: 15,
-          marginTop: 2,
-          flexShrink: 0,
-          borderRadius: props.multiSelect ? 4 : radii.pill,
-          borderWidth: 1.5,
-          borderColor: props.selected ? palette().accent : palette().borderStrong,
-          backgroundColor: props.selected ? palette().accent : "transparent",
-          alignItems: "center",
-          justifyContent: "center",
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-      >
-        <If when={props.selected}>
-          <If
-            when={props.multiSelect}
-            else={
-              <View
-                style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: radii.pill,
-                  backgroundColor: palette().actionSolidFg,
-                }}
-              />
-            }
-          >
-            <Icon name="check" size={10} color={palette().actionSolidFg} />
-          </If>
-        </If>
-      </View>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text
-          style={{
-            color: palette().text,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.38),
-            fontWeight: props.selected ? "600" : "500",
-          }}
-        >
-          {props.label}
-        </Text>
-        <If when={props.detail ?? ""}>
-          {desc => (
-            <Text
-              style={{
-                color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-              }}
-            >
-              {desc()}
-            </Text>
-          )}
-        </If>
-      </View>
-    </View>
-  );
-}
-
-function QuestionBlock(props: {
-  prompt: () => QuestionPrompt;
-  question: () => QuestionView;
-  index: number;
-}) {
-  const prompt = props.prompt;
-  const question = props.question;
-  const chosen = (): string[] => {
-    const answer = prompt().answers[String(props.index)];
-    return Array.isArray(answer) ? answer : answer ? [answer] : [];
+  const urgent = () => remaining() !== null && remaining()! <= 30;
+  const countdown = () => {
+    const seconds = remaining() ?? 0;
+    return `${formatCount(Math.floor(seconds / 60))}:${formatCount(seconds % 60).padStart(2, "0")}`;
   };
-  const typingOther = () =>
-    chosen().includes("Other") || Boolean((prompt().others[String(props.index)] ?? "").length);
+
   return (
-    <View style={{ gap: space.sm }}>
-      <View style={{ gap: 3 }}>
-        <Text
-          style={{
-            color: palette().text,
-            fontSize: textSize(14),
-            lineHeight: textLineHeight(14, 1.45),
-            fontWeight: "500",
-          }}
-        >
-          {question().header ? `${question().header}: ${question().question}` : question().question}
-        </Text>
-        <Text style={textStyle("caption", { color: palette().textElevatedMuted })}>
-          {question().multiSelect
-            ? tr("sessions.questionChooseMulti")
-            : tr("sessions.questionChooseOne")}
-        </Text>
-      </View>
-      <View
-        style={{
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().panelRaised,
-          overflow: "hidden",
-        }}
-      >
-        <Each of={question().options} key={option => option.label}>
-          {(option, optIdx) => (
-            <QuestionMenuRow
-              first={optIdx() === 0}
-              label={option().label}
-              detail={option().description}
-              selected={chosen().includes(option().label)}
-              multiSelect={question().multiSelect}
-              accessibilityLabel={`question-${prompt().toolId}-${props.index}-${option().label}`}
-              onPress={() =>
-                toggleQuestionOption(prompt().toolId, props.index, option().label)
-              }
-            />
-          )}
-        </Each>
-        <QuestionMenuRow
-          first={question().options.length === 0}
-          label={tr("sessions.questionOther")}
-          detail={typingOther() ? undefined : tr("sessions.questionOtherDetail")}
-          selected={typingOther()}
-          multiSelect={question().multiSelect}
-          accessibilityLabel={`question-${prompt().toolId}-${props.index}-other`}
-          onPress={() =>
-            toggleQuestionOption(prompt().toolId, props.index, "Other")
-          }
-        />
-        <If when={typingOther()}>
-          <View
-            style={{
-              paddingHorizontal: space.md,
-              paddingBottom: space.md,
-              paddingTop: space.xs,
-              backgroundColor: palette().accentSoft,
-            }}
-          >
-            <InputBox
-              autoFocus
-              size="sm"
-              accessibilityLabel={`question-${prompt().toolId}-${props.index}-text`}
-              value={prompt().others[String(props.index)] ?? ""}
-              placeholder={tr("sessions.questionPlaceholder")}
-              onChange={value => setQuestionOther(prompt().toolId, props.index, value)}
-              onSubmit={() => void submitQuestion(prompt().toolId)}
-            />
-          </View>
+    <AskUser id={prompt().toolId} questions={prompt().questions} draft={prompt().draft}
+      busy={prompt().submitting} submitting={prompt().submitting}
+      error={prompt().error ? localizeHostError(prompt().error) : undefined}
+      onChange={update => updateQuestionDraft(prompt(), update)}
+      onSubmit={() => void submitQuestion(prompt())}
+      leading={
+        <If when={props.device()}>
+          {device => <DeviceBadge name={device().name} kind={device().kind} exception={device().exception}
+            onPress={compactLayout() ? undefined : device().onPress} />}
         </If>
-      </View>
-    </View>
+      }
+      trailing={
+        <If when={remaining() !== null} else={
+          <If when={prompt().unboundedWait && !prompt().interactionStarted}>
+            <Text style={{ ...textStyle("caption"), flexShrink: 1, numberOfLines: 1 }}>
+              {tr("chat.question.unlimitedWait")}
+            </Text>
+          </If>
+        }>
+          <Button label={countdown()} leadingIcon="clock" size="xs" variant="ghost"
+            testID={`question-countdown-${prompt().toolId}`}
+            tooltip={tr("sessions.questionAutoProceed", { remaining: countdown() })}
+            accessibilityLabel={tr("sessions.pauseQuestionCountdown")}
+            disabled={prompt().submitting}
+            style={{ paddingHorizontal: space.xs, minHeight: compactLayout() ? layout.touchTarget : undefined,
+              backgroundColor: urgent() ? palette().warningSoft : undefined }}
+            onPress={() => pauseQuestionCountdown(prompt())} />
+        </If>
+      }
+    />
   );
 }
 
@@ -9583,7 +9947,13 @@ function QueuedPanel() {
                         {String(index() + 1)}
                       </Text>
                     </If>
-                    <Text
+                    <PromptReferenceText
+                      labelPrefix="queued-prompt-reference"
+                      text={composerReferenceDisplayText(item().referenceDraft, item().content) || formatPlural(
+                        item().attachments?.length ?? item().attachmentCount ?? 1,
+                        "format.imageOne",
+                        "format.imageOther",
+                      )}
                       style={{
                         flex: 1,
                         minWidth: 0,
@@ -9593,14 +9963,7 @@ function QueuedPanel() {
                         numberOfLines: 2,
                         textOverflow: "ellipsis",
                       }}
-                    >
-                      {item().content ||
-                        formatPlural(
-                          item().attachments?.length ?? item().attachmentCount ?? 1,
-                          "format.imageOne",
-                          "format.imageOther",
-                        )}
-                    </Text>
+                    />
                     <View
                       style={{
                         flexDirection: "row",
@@ -9678,25 +10041,22 @@ function QueuedPanel() {
                         accessibilityLabel={tr("common.edit")}
                         style={{ borderRadius: radii.pill }}
                         onPress={() => {
-                          const content = item().content;
+                          const target = primaryComposerDraft.capture();
+                          const draft = target.read();
+                          const referenceDraft = item().referenceDraft;
+                          const content = referenceDraft?.text ?? item().content;
                           const queuedAttachments = [...(item().attachments ?? [])];
-                          const prevDraft = composerText();
-                          const prevAttachments = [...imageAttachments()];
-                          const nextDraft = prevDraft.trim()
-                            ? content
-                              ? `${prevDraft.trimEnd()}\n${content}`
-                              : prevDraft
+                          const text = draft.text.trim()
+                            ? content ? `${draft.text.trimEnd()}\n${content}` : draft.text
                             : content;
-                          composerText.set(nextDraft);
-                          if (queuedAttachments.length > 0) {
-                            imageAttachments.set([...prevAttachments, ...queuedAttachments]);
-                          }
+                          const rollback = stageComposerChange(target, {
+                            text,
+                            ...(queuedAttachments.length ? { images: [...draft.images, ...queuedAttachments] } : {}),
+                            ...(referenceDraft ? { references: mergeSessionReferences(draft.references, referenceDraft.references) } : {}),
+                          });
                           composerInputRef?.focus();
                           void takeQueuedEntry(item().id).then(taken => {
-                            if (!taken) {
-                              if (composerText() === nextDraft) composerText.set(prevDraft);
-                              if (queuedAttachments.length > 0) imageAttachments.set(prevAttachments);
-                            }
+                            if (!taken) rollback();
                           });
                         }}
                       />
@@ -9817,7 +10177,7 @@ function followSearchRevealRequests(): void {
 // ── Secondary Split Session Pane (Pane 1) ───────────────────────────────────
 
 const secondaryPermissions = computed(() => permissionsForSession(secondarySessionId()));
-const secondaryQuestions = computed(() => questionsForSession(secondarySessionId()));
+const secondaryQuestions = computed(() => questionsForSession(secondarySessionId(), secondarySessionDevice()));
 
 const secondaryHeaderState = computed<MarkState | null>(() => {
   if (secondaryRunningTurnId()) return "working";
@@ -9878,25 +10238,18 @@ const secondaryReserveFooterSpace = computed<boolean>(() =>
 
 const secondaryVisibleTurnRows = computed(() => {
   const list = secondaryTurns();
+  const origin = secondarySessionKey();
   const live = secondaryLiveTurn();
   const activeTurnId = live?.turnId || secondaryPendingTurnState()?.turnId || "";
   const filtered = activeTurnId ? list.filter(turn => turn.turnId !== activeTurnId || turn.settled) : list;
   return filtered.map((turn, idx) => ({
     key: turnKeyOf(turn) || `sec-turn-${idx}`,
+    sessionKey: origin,
     turn,
   }));
 });
 
-const secondaryDeviceLabel = computed<AttentionDevice | null>(() => {
-  const device = fleetDeviceById(secondarySessionDevice());
-  if (!device) return null;
-  return {
-    name: device.name,
-    kind: device.hostKind,
-    exception: deviceException(device.state),
-    onPress: () => showDevice(device.deviceId),
-  };
-});
+const secondaryDeviceLabel = computed(() => sessionAttentionDevice(secondarySessionDevice()));
 
 function SecondaryHeader() {
   const menuOpen = signal(false);
@@ -10301,7 +10654,8 @@ function SecondaryTranscript() {
 }
 
 function SecondaryComposerDock() {
-  let inputRef: InputRef | undefined;
+  secondarySlash.mount();
+  let inputRef: ComposerInputHandle | undefined;
   ensureModelsLoaded();
   subscribeContextUsage();
 
@@ -10348,23 +10702,31 @@ function SecondaryComposerDock() {
     permissionModePickerOpen.set(next);
   };
 
-  const secondaryDropOpts = () => ({
-    workspaceRoot: secondaryWorkspaceRoot() || activeWorkspaceRoot() || "",
-    idPrefix: "sec-",
-    onAddImage: addSecondaryImageAttachment,
-    onAddFile: addSecondaryFileAttachment,
-  });
+  const secondaryDropOpts = (target = secondaryComposerDraft.capture()) => {
+    const deviceId = secondarySessionDevice();
+    const workspace = secondaryWorkspaceRecord();
+    return {
+      workspaceRoot: secondaryWorkspaceRoot() || "",
+      allowLocalPath: isLocalAttachmentPathAllowed({ deviceId, workspace }),
+      idPrefix: "sec-",
+      onAddImage: (item: ImageAttachment) => attachImageToDraft(target, item),
+      onAddFile: (item: FileAttachment) => attachFileToDraft(target, item),
+    };
+  };
 
   const handleSecondaryPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
     focusPane(1);
+    const target = secondaryComposerDraft.capture();
     const ws = secondaryWorkspaceRecord();
     const isRemote = isRemoteWorkspace(ws);
     await handlePanePaste(event, {
-      ...secondaryDropOpts(),
-      workspaceId: secondaryWorkspaceId() || activeWorkspaceId() || undefined,
+      ...secondaryDropOpts(target),
+      workspaceId: secondaryWorkspaceId() ?? undefined,
+      deviceId: secondarySessionDevice(),
+      connection: target.connection,
       isRemote,
-      onInsertText: insertText,
-      onFocusInput: () => inputRef?.focus(),
+      onInsertText: text => insertIntoDraft(target, insertText, text),
+      onFocusInput: () => { if (target.isVisible()) inputRef?.focus(); },
     });
   };
 
@@ -10373,25 +10735,9 @@ function SecondaryComposerDock() {
       Boolean(secondarySessionId()) &&
       (secondaryComposerText().trim().length > 0 ||
         secondaryImageAttachments().length > 0 ||
-        secondaryFileAttachments().length > 0),
+        secondaryFileAttachments().length > 0 ||
+        secondarySessionReferences().length > 0),
   );
-
-  const submitSecondary = () => {
-    if (!canSend()) return;
-    const text = secondaryComposerText().trim();
-    if (text && secondaryImageAttachments().length === 0 && secondaryFileAttachments().length === 0) {
-      if (isReviewCommand(text)) {
-        secondaryComposerText.set("");
-        void launchReviewFromCommand(text);
-        return;
-      }
-      if (runExtrasCommand(text)) {
-        secondaryComposerText.set("");
-        return;
-      }
-    }
-    void sendSecondaryTurn(secondaryComposerText());
-  };
 
   return (
     <SessionComposer
@@ -10406,13 +10752,17 @@ function SecondaryComposerDock() {
           : tr("session.placeholder")
       }
       running={() => Boolean(secondaryRunningTurnId())}
+      newSession={() => !!secondarySessionId() && !secondaryRunningTurnId() && !secondaryTurnsLoading() &&
+        secondaryTurns().length === 0 && (secondarySessionSummary()?.messageCount ?? 0) === 0}
       canSend={canSend}
       images={secondaryImageAttachments}
       files={secondaryFileAttachments}
+      references={secondarySessionReferences}
+      onRemoveReference={removeSecondarySessionReference}
       attachmentIdPrefix="secondary-"
       onRemoveImage={id => removeSecondaryImageAttachment(id)}
       onRemoveFile={id => removeSecondaryFileAttachment(id)}
-      onSubmit={submitSecondary}
+      onSubmit={() => void secondarySlash.submit()}
       onStop={() => void stopSecondaryTurn()}
       onFocusPane={() => focusPane(1)}
       onPaste={(event, insertText) => void handleSecondaryPaste(event, insertText)}
@@ -10421,6 +10771,19 @@ function SecondaryComposerDock() {
       }}
       inputRef={el => {
         inputRef = el;
+        secondaryComposerInputRef = el;
+      }}
+      cardRef={el => secondaryComposerCardAnchor.set(el)}
+      plusAnchor={secondaryComposerPlusAnchor}
+      onInputChange={(next, caret) => {
+        secondaryComposerText.set(next);
+        syncInlineMention(next, caret, false, secondaryMentionOwner);
+      }}
+      onSelectionChange={end => syncInlineMention(secondaryComposerText(), end, true, secondaryMentionOwner)}
+      onCaretMove={bounds => secondaryComposerCaretBounds.set(bounds)}
+      onKeyPress={key => {
+        if (mentionOpen() && mentionInline() && mentionPane() === "secondary") handleMentionKeyNavigation(key);
+        else secondarySlash.handleKey(key);
       }}
       inputAccessibilityLabel="secondary-composer"
       sendAccessibilityLabel="secondary-send-turn"
@@ -10444,13 +10807,21 @@ function SecondaryComposerDock() {
         };
         const items: DropdownMenuItem[] = [
           {
+            id: "secondary-reference",
+            icon: "at",
+            label: tr("sessions.referenceFile"),
+            accessibilityLabel: "secondary-reference",
+            onSelect: fromPlus(() => openMention(secondaryMentionOwner)),
+          },
+          {
             id: "sec-pick-images",
             icon: "image",
             label: tr("chat.attach.pickImages"),
             accessibilityLabel: "secondary-attach-image-file",
             onSelect: fromPlus(() => {
               focusPane(1);
-              void attachImagesFromPicker(addSecondaryImageAttachment);
+              const target = secondaryComposerDraft.capture();
+              void attachImagesFromPicker(image => attachImageToDraft(target, image), target.isVisible);
             }),
           },
         ];
@@ -10506,6 +10877,35 @@ function SecondaryComposerDock() {
   );
 }
 
+function reviewParentTarget(pane: 0 | 1): ReviewTarget | null {
+  const sessionId = pane === 0 ? activeSessionId() : secondarySessionId();
+  const deviceId = pane === 0 ? activeSessionDevice() : secondarySessionDevice();
+  const workspaceId = pane === 0 ? activeSession()?.workspaceId ?? activeWorkspaceId() : secondaryWorkspaceId();
+  if (!sessionId || !workspaceId) return null;
+  return {
+    sessionId, deviceId, workspaceId,
+    ...(pane === 1 || (!compactLayout() && !splitPaneOpen()) ? {
+      openChild: (id: string) => selectSecondarySession(id, deviceId, workspaceId),
+    } : {}),
+  };
+}
+
+function ReviewProgressInPane(props: { pane: 0 | 1 }) {
+  const target = computed(() => reviewParentTarget(props.pane));
+  const scope = computed(() => {
+    const current = target();
+    return current && agentTypeOf(current.sessionId, current.deviceId) === "DeepReview"
+      ? sessionKey(current.sessionId, current.deviceId) : "";
+  });
+  const turns = props.pane === 1 ? secondaryTurns : sessionTurns;
+  const live = computed(() => {
+    const current = props.pane === 1 ? secondaryLiveTurn() : liveTurn();
+    return current && sessionKey(current.sessionId, current.deviceId) === scope() ? current : null;
+  });
+  return <ReviewProgress scope={scope} turns={turns} liveTurnId={() => live()?.turnId}
+    liveTools={() => live()?.reviewTools} padding={sessionsPadX} width={contentWidth} />;
+}
+
 function SecondarySessionPane() {
   const activateSecondary = () => {
     if (splitPaneOpen()) focusPane(1);
@@ -10518,10 +10918,16 @@ function SecondarySessionPane() {
       style={() => ({
         flexGrow: 1 - sessionSplitRatio(),
         flexBasis: 0,
-        minWidth: 260,
+        minWidth: SESSION_PANE_MIN_WIDTH,
       })}
       header={<SecondaryHeader />}
-      banners={<RemoteWorkspaceStatusBanner compact={true} workspace={secondaryWorkspaceRecord} />}
+      banners={<>
+        <RemoteWorkspaceStatusBanner compact={true} workspace={secondaryWorkspaceRecord} />
+        <GoalStrip prefix="secondary-" target={() => {
+          const id = secondarySessionId();
+          return id ? { sessionId: id, deviceId: secondarySessionDevice(), workspaceId: secondaryWorkspaceId() } : null;
+        }} />
+      </>}
       transcript={
         <If when={Boolean(secondarySessionId())} else={<SecondaryEmptyPicker />}>
           <SecondaryTranscript />
@@ -10531,7 +10937,10 @@ function SecondarySessionPane() {
         <If when={Boolean(secondarySessionId())}>
           <>
             <PermissionPrompts sessionId={secondarySessionId} />
-            <QuestionPrompts sessionId={secondarySessionId} />
+            <QuestionPrompts items={secondaryQuestions} device={secondaryDeviceLabel} />
+            <ReviewQueue target={() => reviewParentTarget(1)} padding={sessionsPadX} width={contentWidth} />
+            <ReviewProgressInPane pane={1} />
+            <SessionReviewRecords target={() => reviewParentTarget(1)} padding={sessionsPadX} width={contentWidth} />
           </>
         </If>
       }
@@ -10571,11 +10980,10 @@ function BtwTurn(props: { entry: SideQuestion }) {
         text={props.entry.question}
         timestamp={props.entry.transcript?.user.timestampMs}
         images={props.entry.images}
-        allowRollback={false}
       />
       <View accessibilityLabel="side-question-answer" style={{ width: "100%", gap: space.sm }}>
         <If when={Boolean(props.entry.transcript)}>
-          <TranscriptItems items={turnItems(props.entry.transcript)} preserveFullReply={true} />
+          <TranscriptItems items={turnItems(props.entry.transcript)} preserveFullReply={true} ephemeral={true} />
         </If>
         <If when={!props.entry.transcript}>
           <LiveTranscriptBlocks blocks={blocks} pane={rounds} cardPrefix={prefix()} live={props.entry.state === "running"} />
@@ -10596,9 +11004,58 @@ function BtwTurn(props: { entry: SideQuestion }) {
  * `SessionPaneShell`, `SessionHeaderBar`, `UserBubble`, `MarkdownBody`,
  * `CopyChip`, `TurnJumpRail`, `LatestPill`, and `SessionComposer`.
  */
+function currentSideQuestionParent(): SideQuestionTarget | null {
+  const target = sideQuestionTarget();
+  if (target) return target;
+  const sessionId = activeSessionId();
+  return sessionId ? {
+    sessionId, deviceId: activeSessionDevice(), workspaceId: activeWorkspaceId(), workspacePath: activeWorkspaceRoot(),
+  } : null;
+}
+
+export function SideQuestionCloseDialog() {
+  const skipNextTime = signal(false);
+  const action = () => sideQuestionCloseRequest()?.action;
+  effect(() => {
+    if (!action()) skipNextTime.set(false);
+  });
+  const title = () => action() === "reset" ? tr("btw.resetTitle")
+    : action() === "replace" ? tr("btw.replaceTitle") : tr("btw.closeTitle");
+  return (
+    <ModalDialog
+      open={Boolean(action())}
+      title={title()}
+      size="sm"
+      accessibilityLabel="side-question-close-dialog"
+      onClose={dismissSideQuestionClose}
+      footer={<>
+        <Button label={tr("common.cancel")} size="md" variant="secondary"
+          accessibilityLabel="side-question-close-cancel"
+          disabled={sideQuestionClosing()} onPress={dismissSideQuestionClose} />
+        <Button label={action() === "reset" ? tr("btw.resetAction")
+          : action() === "replace" ? tr("btw.replaceAction") : tr("common.close")}
+          size="md" variant="danger" accessibilityLabel="side-question-close-confirm"
+          loading={sideQuestionClosing()} onPress={() => void acceptSideQuestionClose(skipNextTime())} />
+      </>}
+    >
+      <View style={{ gap: space.md }}>
+        <Text style={{ ...textStyle("body"), color: palette().textSecondary }}>{tr("btw.closeBody")}</Text>
+        <ChoiceCheckbox checked={skipNextTime()} onChange={checked => skipNextTime.set(checked)}
+          disabled={sideQuestionClosing()} testID="side-question-skip-close"
+          accessibilityLabel={tr("btw.skipClosePrompt")} style={{ minHeight: layout.touchTarget }}>
+          <Text style={{ ...textStyle("label"), color: palette().text }}>{tr("btw.skipClosePrompt")}</Text>
+        </ChoiceCheckbox>
+        <If when={sideQuestionStopError()}>
+          {error => <InlineBanner tone="danger" message={tr("btw.stopFailed", { error: localizeHostError(error()) })} />}
+        </If>
+      </View>
+    </ModalDialog>
+  );
+}
+
 function BtwSessionPane(props?: { compact?: boolean }) {
   let scrollRef: ScrollRef | undefined;
-  let inputRef: InputRef | undefined;
+  let inputRef: ComposerInputHandle | undefined;
   let btwSuppressAutoFollowUntil = 0;
   const btwFollowLatest = signal(true);
   const btwActiveRailKey = signal("");
@@ -10612,11 +11069,11 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   const running = computed(() => current()?.state === "running");
   const canSend = computed(
     () =>
-      !running() &&
+      !running() && !sideQuestionClosing() && !sideQuestionStopping() &&
       (Boolean(sideQuestionDraft().trim()) ||
         sideQuestionImageAttachments().length > 0 ||
         sideQuestionFileAttachments().length > 0) &&
-      Boolean(activeSessionId()) &&
+      Boolean(currentSideQuestionParent()) &&
       !sideQuestionUnsupported(),
   );
   const firstSubtitle = computed(() => {
@@ -10674,17 +11131,22 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   });
 
   const btwDropOpts = () => ({
-    workspaceRoot: activeWorkspaceRoot() || "",
+    workspaceRoot: currentSideQuestionParent()?.workspacePath || "",
     idPrefix: "btw-",
     onAddImage: addSideQuestionImageAttachment,
     onAddFile: addSideQuestionFileAttachment,
   });
 
   const handleBtwPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
-    const isRemote = isRemoteWorkspace(activeWorkspace());
+    const parent = currentSideQuestionParent();
+    const owner = parent?.workspaceId
+      ? fleetWorkspaceByKey({ deviceId: parent.deviceId, workspaceId: parent.workspaceId }) : null;
+    const isRemote = owner ? owner.kind === "remote_ssh"
+      : parent?.workspaceId === activeWorkspaceId() && isRemoteActiveWorkspace();
     await handlePanePaste(event, {
       ...btwDropOpts(),
-      workspaceId: activeWorkspaceId() || undefined,
+      workspaceId: parent?.workspaceId || undefined,
+      deviceId: parent?.deviceId,
       isRemote,
       onInsertText: insertText,
       onFocusInput: () => inputRef?.focus(),
@@ -10692,15 +11154,12 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   };
 
   const submit = () => {
-    const sid = activeSessionId();
-    if (!canSend() || !sid) return;
+    const parent = currentSideQuestionParent();
+    if (!canSend() || !parent) return;
     btwFollowLatest.set(true);
     void askSideQuestion(
       {
-        sessionId: sid,
-        deviceId: activeSessionDevice(),
-        workspaceId: activeWorkspaceId(),
-        workspacePath: activeWorkspaceRoot() || null,
+        ...parent,
         modelId: sideQuestionModelOverride(),
       },
       sideQuestionDraft(),
@@ -10730,7 +11189,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
           : {
               flexGrow: 1 - sessionSplitRatio(),
               flexBasis: 0,
-              minWidth: 260,
+              minWidth: SESSION_PANE_MIN_WIDTH,
             }
       }
       header={
@@ -10749,7 +11208,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
                     size="sm"
                     accessibilityLabel="side-question-new"
                     tooltip={tr("nav.newSession")}
-                    onPress={() => resetSideQuestionThread()}
+                    onPress={() => requestSideQuestionClose(undefined, "reset")}
                   />
                 </If>
                 <IconButton
@@ -10757,7 +11216,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
                   size="sm"
                   accessibilityLabel="side-question-close"
                   tooltip={tr("common.close")}
-                  onPress={() => closeSideQuestion()}
+                  onPress={() => requestSideQuestionClose()}
                 />
               </>
             }
@@ -10790,6 +11249,9 @@ function BtwSessionPane(props?: { compact?: boolean }) {
                 gap: 16,
               }}
             >
+              <If when={!sideQuestionCloseRequest() && sideQuestionStopError()}>
+                {error => <InlineBanner tone="danger" message={tr("btw.stopFailed", { error: localizeHostError(error()) })} />}
+              </If>
               <If when={sideQuestionUnsupported()}>
                 <InlineBanner
                   tone="warning"
@@ -10920,18 +11382,21 @@ function BtwSessionPane(props?: { compact?: boolean }) {
       preComposer={
         <>
           <PermissionPrompts sessionId={() => sideQuestion()?.childSessionId ?? null} />
-          <QuestionPrompts sessionId={() => sideQuestion()?.childSessionId ?? null} />
+          <QuestionPrompts
+            items={() => questionsForSession(sideQuestion()?.childSessionId ?? null, sideQuestion()?.deviceId ?? "")}
+            device={() => sessionAttentionDevice(sideQuestion()?.deviceId ?? "")}
+          />
         </>
       }
       composer={
         <SessionComposer
           pane="btw"
-          sessionId={activeSessionId}
-          deviceId={activeSessionDevice}
-          workspaceId={activeWorkspaceId}
+          sessionId={() => currentSideQuestionParent()?.sessionId ?? null}
+          deviceId={() => currentSideQuestionParent()?.deviceId ?? ""}
+          workspaceId={() => currentSideQuestionParent()?.workspaceId ?? null}
           draft={sideQuestionDraft}
           placeholder={() => tr("btw.placeholder")}
-          disabled={() => !activeSessionId() || sideQuestionUnsupported()}
+          disabled={() => !currentSideQuestionParent() || sideQuestionUnsupported()}
           running={running}
           canSend={canSend}
           compact={() => isCompact}
@@ -10976,9 +11441,9 @@ function BtwSessionPane(props?: { compact?: boolean }) {
               },
             ];
             if (compact) {
+              const parent = currentSideQuestionParent();
               const btwModelLabel =
-                sideQuestionModelOverride() ||
-                modelTextForSession(activeSessionId(), activeSessionDevice()).label;
+                sideQuestionModelOverride() || modelTextForSession(parent?.sessionId ?? null, parent?.deviceId).label;
               items.push({
                 id: "btw-model",
                 icon: "cpu",
@@ -11002,7 +11467,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   );
 }
 
-export function SessionsScene() {
+export function SessionsScene(props?: { overlayInset?: () => { side: "left" | "right"; width: number } | null }) {
   followSearchRevealRequests();
   useSessionExtras(); // wave22-p5
   effect(() => {
@@ -11013,6 +11478,15 @@ export function SessionsScene() {
   const showSecondarySplit = () => splitPaneOpen() && !compactLayout();
   const showBtwSplit = () => !showSecondarySplit() && sideQuestionOpen() && !compactLayout();
   const showSplit = () => showSecondarySplit() || showBtwSplit();
+  const hasConversation = () => Boolean(activeSessionId());
+  const reserveSpaceForPanes = () => showSplit() || !hasConversation();
+  const overlayInset = () => {
+    const inset = props?.overlayInset?.();
+    return { paddingLeft: inset?.side === "left" ? inset.width : undefined,
+      paddingRight: inset?.side === "right" ? inset.width : undefined };
+  };
+  effect(() => sessionOverlayWidth.set(props?.overlayInset?.()?.width ?? 0));
+  cleanup(() => sessionOverlayWidth.set(0));
   const dividerNear = signal(false);
   let dividerLeaveTimer: ReturnType<typeof setTimeout> | null = null;
   const enterDividerNear = () => {
@@ -11063,6 +11537,7 @@ export function SessionsScene() {
         minHeight: 0,
         flexDirection: showSplit() ? "row" : "column",
         backgroundColor: palette().canvas,
+        ...(reserveSpaceForPanes() ? overlayInset() : {}),
       }}
     >
       <SessionPaneShell
@@ -11072,11 +11547,12 @@ export function SessionsScene() {
           if (splitPaneOpen()) focusPane(0);
         }}
         onPress={() => (splitPaneOpen() && focusedPane() !== 0 ? () => focusPane(0) : undefined)}
+        controlInsets={() => reserveSpaceForPanes() ? {} : overlayInset()}
         style={() => ({
           flex: showSplit() ? undefined : 1,
           flexGrow: showSplit() ? sessionSplitRatio() : 1,
           flexBasis: showSplit() ? 0 : undefined,
-          minWidth: showSplit() ? 260 : 0,
+          minWidth: showSplit() ? SESSION_PANE_MIN_WIDTH : 0,
         })}
         header={<ConversationHeader paneToRight={showSplit} />}
         banners={
@@ -11090,8 +11566,11 @@ export function SessionsScene() {
           <>
             <SessionOfflineNotice />
             <PermissionPrompts />
-            <QuestionPrompts />
+            <QuestionPrompts items={activeQuestions} device={sessionDeviceLabel} />
             <SessionReviewNotes />
+            <ReviewQueue target={() => reviewParentTarget(0)} padding={sessionsPadX} width={contentWidth} />
+            <ReviewProgressInPane pane={0} />
+            <SessionReviewRecords target={() => reviewParentTarget(0)} padding={sessionsPadX} width={contentWidth} />
             <ReviewLauncherDialog />
             <BackgroundCommandsStrip />
           </>
@@ -11161,7 +11640,7 @@ export function SessionsScene() {
             }}
             onDelta={delta => {
               splitDragAccumPx += delta;
-              const total = Math.max(400, sessionsPaneWidth());
+              const total = Math.max(400, sessionsInteractiveWidth());
               const base = splitDragStartRatio ?? sessionSplitRatio();
               setSessionSplitRatio(base + splitDragAccumPx / total);
             }}
@@ -11214,7 +11693,8 @@ export function SessionsScene() {
         title={tr("btw.title")}
         size="lg"
         accessibilityLabel="side-question-compact-sheet"
-        onClose={() => closeSideQuestion()}
+        onClose={() => requestSideQuestionClose()}
+        keepsInputOnClose
       >
         <View style={{ minHeight: 340, maxHeight: 560 }}>
           <BtwSessionPane compact={true} />
@@ -11223,6 +11703,7 @@ export function SessionsScene() {
 
       <ComposerOverlays />
       <SessionExtrasDialogs />
+      <ExternalSlashDialogs />
       <TurnChangesDiffModal
         review={turnChangesReview}
         onSelectFile={filePath => {

@@ -604,6 +604,7 @@ impl DialogScheduler {
             reason: None,
             target_turn_id: None,
             steering_id: None,
+            composer_presentation: message.metadata.get("composerPresentation").cloned(),
             steering_display: None,
         };
         s.entries.insert(

@@ -179,3 +179,30 @@ test("a turn this surface followed from its start is not replayed again", async 
   await openSession(app, "NSH skeleton");
   await app.waitFor("Snapshot text and live text.");
 });
+
+test("a Mermaid reply keeps its source while streaming and uses the shared block when settled", async () => {
+  const backend = createBackend();
+  const history: Record<string, unknown[]> = { "session-1": [] };
+  withTurns(backend, history);
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  const turnId = "diagram-turn";
+  const source = "flowchart LR\n  Draft --> Review";
+  const markdown = `Here is the workflow.\n\n\`\`\`mermaid\n${source}\n\`\`\``;
+  const send = (event: string, payload: Record<string, unknown> = {}) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-1", turnId, ...payload } });
+  backend.setRunningTurn("session-1", turnId);
+  await send("agentic://dialog-turn-started", { userInput: "Show the workflow" });
+  await send("agentic://text-chunk", { roundId: "r1", text: markdown });
+  await app.waitFor("Here is the workflow.");
+  expect(app.shows("doc-mermaid-copy-source")).toBe(false);
+  history["session-1"] = [{
+    turnId, userMessage: { id: "diagram-user", content: "Show the workflow" },
+    modelRounds: [{ textItems: [{ id: "workflow-reply", content: markdown }] }],
+  }];
+  backend.setRunningTurn("session-1", null);
+  await send("agentic://dialog-turn-completed");
+  await app.waitFor("doc-mermaid-source");
+  await app.press("doc-mermaid-copy-source");
+  expect(app.clipboard()?.trim()).toBe(source);
+});

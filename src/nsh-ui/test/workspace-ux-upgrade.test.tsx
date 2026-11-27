@@ -101,6 +101,65 @@ test("dual 2-session split view streams concurrently, coexists with right AuxPan
   expect(app.texts()).not.toContain("Secondary live stream OK");
 });
 
+test("session panel layout keeps overlay geometry separate from docking and the composer reachable", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", {
+    ...DESKTOP,
+    storage: { "openbitfun:sessionOverlayWidth": "360" },
+    host: { handlers: backend.handlers },
+  });
+  await openSession(app, "NSH skeleton");
+  const primary = "id:primary-session-pane";
+  await app.waitFor(primary);
+  const fullWidth = app.layout(primary)!.width;
+  await app.type("composer", "Keep this draft");
+  await app.press("session-tool-files");
+  await app.waitFor("aux-split-handle-right");
+  const dockedWidth = app.layout("id:session-panel-docked-pane")!.width;
+  expect(app.layout(primary)!.width).toBeLessThan(fullWidth);
+
+  const pickLayout = async (mode: "split" | "overlay") => {
+    await app.press("Settings");
+    await app.press("nav-settings-page-appearance");
+    await app.press("id:session-panel-layout");
+    await app.press(`label:session-panel-${mode}`);
+    await app.waitUntil(() => app.storage()["openbitfun:sessionPaneDisplayMode"] === mode);
+    await openSession(app, "NSH skeleton");
+  };
+
+  await pickLayout("overlay");
+  const overlay = "id:session-panel-overlay-pane";
+  await app.waitFor(overlay);
+  expect(app.shows("aux-pane-sheet-scrim")).toBe(false);
+  expect(app.layout(primary)!.width).toBe(fullWidth);
+  expect(app.layout(overlay)!.width).toBeLessThan(dockedWidth);
+  expect(app.value("composer")).toBe("Keep this draft");
+  const panel = app.layout(overlay)!;
+  const composer = app.layout("composer")!;
+  expect(composer.x + composer.width).toBeLessThan(panel.x);
+
+  await app.drag("aux-overlay-split-handle-right", { x: -70 });
+  await app.waitUntil(() => Number(app.storage()["openbitfun:sessionOverlayWidth"]) > 400);
+  expect(app.layout(primary)!.width).toBe(fullWidth);
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  const secondary = app.layout("id:secondary-session-pane")!;
+  expect(secondary.x + secondary.width).toBeLessThanOrEqual(app.layout(overlay)!.x + 1);
+  await app.press("session-pane-close-1");
+  await app.waitFor("id:secondary-session-pane", { state: "gone" });
+  await app.press("aux-dock-toggle");
+  await app.waitFor("aux-split-handle-bottom");
+  expect(app.shows(overlay)).toBe(false);
+  await app.press("aux-dock-toggle");
+  await app.waitFor(overlay);
+
+  await pickLayout("split");
+  await app.waitFor("aux-split-handle-right");
+  expect(app.layout("id:session-panel-docked-pane")!.width).toBe(dockedWidth);
+  expect(app.value("composer")).toBe("Keep this draft");
+});
+
 test("long text paste (>50 lines or >1000 chars) auto-saves to .openbitfun/pasted/ and attaches a styled chip", async () => {
   const backend = createBackend();
   const sent = withCommands(backend, {
@@ -241,8 +300,8 @@ test("slash keyboard navigation keeps commands and skills visible across scroll 
     expectVisible(`slash-skill-${skill}`);
   }
   await app.submit("composer");
-  expect(app.value("composer")).toBe("[$test-skill-5] ");
-  expect(app.shows("id:slash-command-list")).toBe(false);
+  await app.waitFor("composer-prompt-reference-skill-test-skill-5");
+  await app.waitFor("id:slash-command-list", { state: "gone" });
   expect(backend.actions()).not.toContain("submit_user_message");
 });
 
@@ -278,10 +337,11 @@ test("slash menu includes /goal, /btw, /review, /usage and searchable Skills ins
   await app.type("composer", "/code-rev");
   await app.waitFor("slash-skill-code-review");
   await app.press("slash-skill-code-review");
-  expect(app.value("composer")).toBe("[$code-review] ");
+  await app.waitFor("composer-prompt-reference-skill-code-review");
 
   // Running `/usage` calls `get_session_usage_report` with snake_case keys and surfaces totals.
-  await app.clear("composer");
+  await app.keyboard.press("mod+a");
+  await app.keyboard.press("backspace");
   await app.type("composer", "/usage");
   await app.press("Send");
   await app.waitUntil(() => (sent.get_session_usage_report ?? []).length === 1);
@@ -465,13 +525,22 @@ test("/btw opens unified right-side ephemeral split pane with workspace context,
   expect(btwRequests[1]?.modelId).toBe("fast-small");
   await app.waitFor("btw-turn-jump-rail");
 
-  // Closing the split pane discards ephemeral state cleanly.
-  await app.press("side-question-close");
+  // A split session replaces the side pane only after confirmation.
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("Replace side conversation?");
+  await app.press("side-question-close-cancel");
+  await app.waitFor("btw-turn-jump-rail");
+  expect(app.shows("id:secondary-session-pane")).toBe(false);
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.press("side-question-close-confirm");
   await app.waitFor("id:side-question-pane", { state: "gone" });
+  await app.waitFor("id:secondary-session-pane");
   expect(app.shows("turn-jump-rail")).toBe(true);
 });
 
-test("Frameless ImageLightbox and FilesScene image preview share 25% step zoom, percentage, and Copy toolbar", async () => {
+test("image viewers share zoom controls and keep the file view when entering and leaving full screen", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
@@ -515,6 +584,15 @@ test("Frameless ImageLightbox and FilesScene image preview share 25% step zoom, 
   expect(app.shows("image-lightbox-copy")).toBe(true);
   await app.press("image-zoom-in");
   await app.waitFor("125%");
+  await app.press("image-rotate-clockwise");
+  await app.press("image-fullscreen");
+  await app.waitFor("image-lightbox-dialog");
+  await app.waitFor("125%");
+  await app.press("image-lightbox-dialog >> image-zoom-in");
+  await app.waitFor("150%");
+  await app.keyboard.press("escape");
+  await app.waitFor("image-lightbox-dialog", { state: "gone" });
+  await app.waitFor("150%");
 });
 
 test("split pane focus switches on clicking anywhere in either pane, and bottom-docked AuxPane uses wide side-by-side Files layout", async () => {

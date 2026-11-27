@@ -11,13 +11,14 @@
 // the backend this surface drives (a peer, when one is selected): a Space installs
 // on that machine.
 
-import { signal } from "nsh";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { computed, signal } from "nsh";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand, invokeRawCommand, transportKind } from "./bridge";
+import { fleetDeviceById } from "./fleetStore";
 import { isCommandUnavailable } from "./hostCommands";
 import { isAuthRequiredError, tr } from "./i18n";
 import { isAccountSignedIn, loadAccountState } from "./homeStore";
-import { loadSpaces, openSpaceWindow, spaceWindowBlockedReason } from "./spacesStore";
-import { activeWorkspace } from "./state";
+import { loadSpaces, localizedSpace, normalizeSpaceLocales, type SpaceMeta } from "./spacesStore";
+import { activeWorkspace, deviceContext } from "./state";
 import { pushToast } from "./ui/overlays";
 
 // "cards": the device's desktop cards under Library › Spaces (wave 22, P4).
@@ -61,6 +62,7 @@ export interface MarketListing {
   icon: string;
   category: string;
   tags: string[];
+  localized?: SpaceMeta["localized"];
   ownerLogin: string;
   latestRelease: number;
   minOpenBitFunVersion: string;
@@ -88,12 +90,23 @@ export interface MarketListingDetail extends MarketListing {
   license: string;
   repositoryUrl: string;
   releases: MarketRelease[];
+  screenshotHashes: string[];
 }
 
 export interface MarketOrigin {
   listingId: string;
   releaseId: string;
   releaseNumber: number;
+}
+
+function captureMarketScope() {
+  return { device: deviceContext(), connection: backendConnection() };
+}
+
+type MarketScope = ReturnType<typeof captureMarketScope>;
+
+function marketScopeIsCurrent(scope: MarketScope): boolean {
+  return scope.device === deviceContext() && scope.connection === backendConnection();
 }
 
 export interface MarketInstalledStatus {
@@ -150,12 +163,90 @@ export const marketInitialLoad = signal(true);
 export const marketError = signal("");
 /** The host has no market commands at all (an older backend or peer). */
 export const marketUnsupported = signal(false);
-/** Listing id -> installed origin, from `miniapp_market_installed_origins`. */
-export const marketOrigins = signal<Record<string, MarketOrigin & { appId: string }>>({});
+type MarketOrigins = Record<string, MarketOrigin & { appId: string }>;
+const marketOriginsSnapshot = signal<{ scope: MarketScope; origins: MarketOrigins } | null>(null);
+/** Listing id -> installed origin for the selected device and backend. */
+export const marketOrigins = computed(() => {
+  const snapshot = marketOriginsSnapshot();
+  return snapshot && marketScopeIsCurrent(snapshot.scope) ? snapshot.origins : {};
+});
+
+const emptyInstalledSummaries: ReadonlyMap<string, MarketListing> = new Map();
+type InstalledMarketSummaries = {
+  items: ReadonlyMap<string, MarketListing>;
+  status: "idle" | "loading" | "ready" | "unsupported" | "unavailable";
+};
+const installedSummariesSnapshot = signal<{
+  scope: MarketScope;
+  key: string;
+  result: InstalledMarketSummaries;
+} | null>(null);
+export const installedMarketSummaries = computed<InstalledMarketSummaries>(() => {
+  const snapshot = installedSummariesSnapshot();
+  return snapshot && marketScopeIsCurrent(snapshot.scope) ? snapshot.result
+    : { items: emptyInstalledSummaries, status: "idle" };
+});
+
+function deviceSupportsMarketCapability(capability: "miniapp_market_listing_id_v1" | "miniapp_market_summaries_v1"): boolean {
+  if (!fleetActive()) return true;
+  const owner = deviceContext() || entryDeviceId();
+  return (transportKind() === "native" && owner === entryDeviceId())
+    || fleetDeviceById(owner)?.hostCapabilities?.includes(capability) === true;
+}
+
+export const installedMarketSummariesSupported = computed(() =>
+  deviceSupportsMarketCapability("miniapp_market_summaries_v1"));
+
+let installedSummaryTicket = 0;
+
+/** Reads only installed listing IDs, independently of Market's search and pagination. */
+export async function loadInstalledMarketSummaries(listingIds: readonly string[]): Promise<void> {
+  const scope = captureMarketScope();
+  const key = JSON.stringify(listingIds);
+  const snapshot = installedSummariesSnapshot();
+  const sameRequest = snapshot && marketScopeIsCurrent(snapshot.scope) && snapshot.key === key;
+  const supported = installedMarketSummariesSupported();
+  if (sameRequest && snapshot.result.status === "loading" && supported) return;
+  const ticket = ++installedSummaryTicket;
+  const isCurrent = () => ticket === installedSummaryTicket && marketScopeIsCurrent(scope);
+  const setResult = (result: InstalledMarketSummaries) => installedSummariesSnapshot.set({ scope, key, result });
+  if (!listingIds.length) {
+    setResult({ items: emptyInstalledSummaries, status: "idle" });
+    return;
+  }
+  if (!supported) {
+    setResult({ items: emptyInstalledSummaries, status: "unsupported" });
+    return;
+  }
+  setResult({ items: sameRequest ? snapshot.result.items : emptyInstalledSummaries, status: "loading" });
+  const items = new Map<string, MarketListing>();
+  try {
+    for (let offset = 0; offset < listingIds.length; offset += MARKET_PAGE_SIZE) {
+      const batch = listingIds.slice(offset, offset + MARKET_PAGE_SIZE);
+      const requested = new Set(batch);
+      const page = asRecord(await invokeCommand<unknown>("miniapp_market_browse", { listingIds: batch }));
+      if (!isCurrent()) return;
+      const rows = Array.isArray(page.items) ? page.items.map(normalizeListing) : null;
+      if (!rows || page.nextCursor || rows.some(item => !item.slug || !requested.has(item.listingId))) {
+        setResult({ items: emptyInstalledSummaries, status: "unavailable" });
+        return;
+      }
+      for (const listing of rows) items.set(listing.listingId, listing);
+    }
+    setResult({ items, status: "ready" });
+  } catch {
+    if (isCurrent()) setResult({ items: emptyInstalledSummaries, status: "unavailable" });
+  }
+}
 
 // ── Listing detail ────────────────────────────────────────────────────────────
-export const marketDetailSlug = signal<string | null>(null);
+export type MarketListingTarget = { slug: string } | { listingId: string };
+export const marketDetailTarget = signal<MarketListingTarget | null>(null);
 export const marketDetail = signal<MarketListingDetail | null>(null);
+export const marketDetailSlug = computed(() => {
+  const target = marketDetailTarget();
+  return target && "slug" in target ? target.slug : marketDetail()?.slug ?? null;
+});
 export const marketDetailLoading = signal(false);
 export const marketDetailError = signal("");
 export const marketInstalled = signal<MarketInstalledStatus | null>(null);
@@ -253,6 +344,7 @@ export function normalizeListing(raw: unknown): MarketListing {
     icon: str(rec.icon) || "box",
     category: str(rec.category) || "other",
     tags: strings(rec.tags),
+    localized: normalizeSpaceLocales(rec.i18n),
     ownerLogin: str(owner.login),
     latestRelease: num(rec.latestRelease),
     minOpenBitFunVersion: str(rec.minOpenBitFunVersion),
@@ -290,6 +382,10 @@ function normalizeDetail(raw: unknown): MarketListingDetail {
     license: str(license.spdxExpression) || str(license.customUrl),
     repositoryUrl: str(rec.repositoryUrl),
     releases,
+    screenshotHashes: [...new Set(strings(rec.screenshotUrls).flatMap(source => {
+      const hash = /^https?:\/\/[^?#]+\/screenshots\/([a-f0-9]{64})(?:[?#]|$)/i.exec(source)?.[1];
+      return hash ? [hash.toLowerCase()] : [];
+    }))],
   };
 }
 
@@ -325,11 +421,22 @@ function describeFailure(error: unknown, command: string): string {
 // ── Catalogue reads ───────────────────────────────────────────────────────────
 
 let browseTicket = 0;
+let browseScope: MarketScope | null = null;
 
 /** Reads the first catalogue page for the current query, category and sort. */
 export async function loadMarket(): Promise<void> {
   const ticket = ++browseTicket;
+  const scope = captureMarketScope();
+  const isCurrent = () => ticket === browseTicket && marketScopeIsCurrent(scope);
+  if (!browseScope || !marketScopeIsCurrent(browseScope)) {
+    marketItems.set([]);
+    marketNextCursor.set(null);
+    marketInitialLoad.set(true);
+    marketUnsupported.set(false);
+    browseScope = scope;
+  }
   marketLoading.set(true);
+  marketLoadingMore.set(false);
   marketError.set("");
   try {
     const page = asRecord(
@@ -341,18 +448,18 @@ export async function loadMarket(): Promise<void> {
         limit: MARKET_PAGE_SIZE,
       }),
     );
-    if (ticket !== browseTicket) return;
+    if (!isCurrent()) return;
     marketUnsupported.set(false);
     marketItems.set((Array.isArray(page.items) ? page.items : []).map(normalizeListing).filter(item => item.slug));
     marketNextCursor.set(str(page.nextCursor) || null);
   } catch (error) {
-    if (ticket !== browseTicket) return;
+    if (!isCurrent()) return;
     marketItems.set([]);
     marketNextCursor.set(null);
     marketUnsupported.set(isCommandUnavailable(error, "miniapp_market_browse"));
     marketError.set(describeFailure(error, "miniapp_market_browse"));
   } finally {
-    if (ticket === browseTicket) {
+    if (isCurrent()) {
       marketLoading.set(false);
       marketInitialLoad.set(false);
     }
@@ -362,8 +469,10 @@ export async function loadMarket(): Promise<void> {
 /** Appends the next page the host offered (`nextCursor`). */
 export async function loadMoreMarket(): Promise<void> {
   const cursor = marketNextCursor();
-  if (!cursor || marketLoadingMore() || marketLoading()) return;
+  if (!browseScope || !marketScopeIsCurrent(browseScope) || !cursor || marketLoadingMore() || marketLoading()) return;
   const ticket = browseTicket;
+  const scope = captureMarketScope();
+  const isCurrent = () => ticket === browseTicket && marketScopeIsCurrent(scope);
   marketLoadingMore.set(true);
   try {
     const page = asRecord(
@@ -375,7 +484,7 @@ export async function loadMoreMarket(): Promise<void> {
         limit: MARKET_PAGE_SIZE,
       }),
     );
-    if (ticket !== browseTicket) return;
+    if (!isCurrent()) return;
     const seen = new Set(marketItems().map(item => item.listingId));
     const next = (Array.isArray(page.items) ? page.items : [])
       .map(normalizeListing)
@@ -383,9 +492,9 @@ export async function loadMoreMarket(): Promise<void> {
     marketItems.update(items => [...items, ...next]);
     marketNextCursor.set(str(page.nextCursor) || null);
   } catch (error) {
-    pushToast(tr("market.loadMoreFailed", { error: marketErrorMessage(error) }), "error");
+    if (isCurrent()) pushToast(tr("market.loadMoreFailed", { error: marketErrorMessage(error) }), "error");
   } finally {
-    marketLoadingMore.set(false);
+    if (isCurrent()) marketLoadingMore.set(false);
   }
 }
 
@@ -413,20 +522,26 @@ export function setMarketSort(value: MarketSort): void {
   void loadMarket();
 }
 
+let originsTicket = 0;
+
 /** Which listings are installed on the host (keyed by listing id). */
 export async function loadMarketOrigins(): Promise<void> {
+  const ticket = ++originsTicket;
+  const scope = captureMarketScope();
+  const isCurrent = () => ticket === originsTicket && marketScopeIsCurrent(scope);
   try {
     const raw = asRecord(await invokeRawCommand<unknown>("miniapp_market_installed_origins", {}));
-    const byListing: Record<string, MarketOrigin & { appId: string }> = {};
+    if (!isCurrent()) return;
+    const byListing: MarketOrigins = {};
     for (const [appId, value] of Object.entries(raw)) {
       const origin = normalizeOrigin(value);
       if (origin.listingId) byListing[origin.listingId] = { ...origin, appId };
     }
-    marketOrigins.set(byListing);
+    marketOriginsSnapshot.set({ scope, origins: byListing });
   } catch {
     // An older host cannot say which listings are installed; the cards then
     // carry no "Installed" mark and the detail asks per listing.
-    marketOrigins.set({});
+    if (isCurrent()) marketOriginsSnapshot.set({ scope, origins: {} });
   }
 }
 
@@ -441,34 +556,69 @@ export function enterMarket(): void {
 
 let detailTicket = 0;
 
-export async function openMarketListing(slug: string): Promise<void> {
-  if (!slug) return;
+function listingLookupUnavailable(error: unknown): boolean {
+  return /missing field .*slug|HTTP 404|listing (?:was )?not found/i.test(marketErrorMessage(error));
+}
+
+async function readListing(target: MarketListingTarget, isCurrent: () => boolean): Promise<MarketListingDetail> {
+  const known = "listingId" in target
+    ? installedMarketSummaries().items.get(target.listingId) ?? (browseScope && marketScopeIsCurrent(browseScope)
+      ? marketItems().find(item => item.listingId === target.listingId) : undefined)
+    : undefined;
+  let request = target;
+  if ("listingId" in target && !deviceSupportsMarketCapability("miniapp_market_listing_id_v1")) {
+    if (!known) throw new Error(tr("market.listingLookupOutdated"));
+    request = { slug: known.slug };
+  }
+  let raw: unknown;
+  try {
+    raw = await invokeCommand<unknown>("miniapp_market_get_listing", request);
+  } catch (error) {
+    // Older hosts and markets accept the slug. Reuse one only if this device
+    // already browsed the matching listing.
+    if (!known || request !== target || !listingLookupUnavailable(error) || !isCurrent()) throw error;
+    raw = await invokeCommand<unknown>("miniapp_market_get_listing", { slug: known.slug });
+  }
+  const detail = normalizeDetail(raw);
+  if (!detail.slug || !detail.listingId || ("listingId" in target && detail.listingId !== target.listingId)) {
+    throw new Error(tr("market.listingUnavailable"));
+  }
+  return detail;
+}
+
+export async function openMarketListing(target: MarketListingTarget): Promise<void> {
+  const scope = captureMarketScope();
   const ticket = ++detailTicket;
-  marketDetailSlug.set(slug);
+  const isCurrent = () => ticket === detailTicket && marketScopeIsCurrent(scope);
+  marketDetailTarget.set(target);
   marketDetail.set(null);
   marketInstalled.set(null);
   marketDetailError.set("");
   marketInstallPrompt.set(null);
+  marketActionBusy.set(false);
+  marketInstalling.set(false);
   marketSignInRequired.set(false);
   marketReleasesExpanded.set(false);
   marketDetailLoading.set(true);
   try {
-    const detail = normalizeDetail(await invokeCommand<unknown>("miniapp_market_get_listing", { slug }));
-    if (ticket !== detailTicket) return;
+    const detail = await readListing(target, isCurrent);
+    if (!isCurrent()) return;
     marketDetail.set(detail);
-    await refreshInstalledStatus(detail.listingId, ticket);
+    await refreshInstalledStatus(detail.listingId, isCurrent);
   } catch (error) {
-    if (ticket !== detailTicket) return;
-    marketDetailError.set(describeFailure(error, "miniapp_market_get_listing"));
+    if (!isCurrent()) return;
+    marketDetailError.set("listingId" in target && listingLookupUnavailable(error)
+      ? tr("market.listingUnavailable")
+      : describeFailure(error, "miniapp_market_get_listing"));
   } finally {
-    if (ticket === detailTicket) marketDetailLoading.set(false);
+    if (isCurrent()) marketDetailLoading.set(false);
   }
 }
 
-async function refreshInstalledStatus(listingId: string, ticket = detailTicket): Promise<void> {
+async function refreshInstalledStatus(listingId: string, isCurrent: () => boolean): Promise<void> {
   try {
     const raw = await invokeCommand<unknown>("miniapp_market_installed_status", { listingId });
-    if (ticket !== detailTicket) return;
+    if (!isCurrent()) return;
     if (!raw) {
       marketInstalled.set(null);
       return;
@@ -480,32 +630,48 @@ async function refreshInstalledStatus(listingId: string, ticket = detailTicket):
       localOverride: rec.localOverride === true,
     });
   } catch {
-    if (ticket !== detailTicket) return;
+    if (!isCurrent()) return;
     // Without the status the detail offers a fresh install; the host itself
     // refuses an install that would collide with an installed copy.
     marketInstalled.set(null);
   }
 }
 
+/** Reconcile the open listing after its managing device confirms removal. */
+export function clearDeletedMarketInstall(appId: string): void {
+  const installed = marketInstalled();
+  if (installed?.appId !== appId) return;
+  marketInstalled.set(null);
+  const listingId = installed.origin.listingId;
+  const origins = { ...marketOrigins() };
+  if (origins[listingId]?.appId === appId) delete origins[listingId];
+  marketOriginsSnapshot.set({ scope: captureMarketScope(), origins });
+  void loadMarketOrigins();
+}
+
 export function closeMarketListing(): void {
   detailTicket += 1;
-  marketDetailSlug.set(null);
+  marketDetailTarget.set(null);
   marketDetail.set(null);
   marketInstalled.set(null);
   marketDetailError.set("");
   marketInstallPrompt.set(null);
+  marketActionBusy.set(false);
+  marketInstalling.set(false);
   marketSignInRequired.set(false);
   marketDetailLoading.set(false);
 }
 
 /** Re-reads the open listing (its rating and favourite are per account). */
 export async function refreshMarketListing(): Promise<void> {
-  const slug = marketDetailSlug();
-  if (!slug) return;
+  const target = marketDetailTarget();
+  if (!target) return;
   const ticket = detailTicket;
+  const scope = captureMarketScope();
+  const isCurrent = () => ticket === detailTicket && marketScopeIsCurrent(scope);
   try {
-    const detail = normalizeDetail(await invokeCommand<unknown>("miniapp_market_get_listing", { slug }));
-    if (ticket === detailTicket) marketDetail.set(detail);
+    const detail = await readListing(target, isCurrent);
+    if (isCurrent()) marketDetail.set(detail);
   } catch {
     // The listing on screen stays as it was.
   }
@@ -538,6 +704,7 @@ export async function toggleMarketFavorite(): Promise<void> {
     marketSignInRequired.set(true);
     return;
   }
+  const ticket = detailTicket;
   marketActionBusy.set(true);
   try {
     const result = asRecord(
@@ -546,11 +713,13 @@ export async function toggleMarketFavorite(): Promise<void> {
         enabled: !(detail.isFavorited === true),
       }),
     );
-    applyListingPatch({ isFavorited: result.isFavorited === true, favoriteCount: num(result.count) });
+    if (ticket === detailTicket) {
+      applyListingPatch({ isFavorited: result.isFavorited === true, favoriteCount: num(result.count) });
+    }
   } catch (error) {
-    handlePersonalActionError(error);
+    if (ticket === detailTicket) handlePersonalActionError(error);
   } finally {
-    marketActionBusy.set(false);
+    if (ticket === detailTicket) marketActionBusy.set(false);
   }
 }
 
@@ -562,12 +731,14 @@ export async function rateMarketListing(value: number): Promise<void> {
     marketSignInRequired.set(true);
     return;
   }
+  const ticket = detailTicket;
   marketActionBusy.set(true);
   try {
     const next = detail.myRating === value ? null : value;
     const result = asRecord(
       await invokeCommand<unknown>("miniapp_market_set_rating", { slug: detail.slug, value: next }),
     );
+    if (ticket !== detailTicket) return;
     const mine = result.myRating;
     applyListingPatch({
       ratingAverage: num(result.average),
@@ -575,9 +746,9 @@ export async function rateMarketListing(value: number): Promise<void> {
       myRating: typeof mine === "number" ? mine : null,
     });
   } catch (error) {
-    handlePersonalActionError(error);
+    if (ticket === detailTicket) handlePersonalActionError(error);
   } finally {
-    marketActionBusy.set(false);
+    if (ticket === detailTicket) marketActionBusy.set(false);
   }
 }
 
@@ -630,6 +801,8 @@ export async function installMarketListing(
     return;
   }
   const installed = marketInstalled();
+  const scope = captureMarketScope();
+  const ticket = detailTicket;
   marketInstallPrompt.set(null);
   marketInstalling.set(true);
   try {
@@ -642,19 +815,22 @@ export async function installMarketListing(
         confirmOverwrite: confirm.overwrite,
       }),
     );
+    if (!marketScopeIsCurrent(scope)) return;
     const app = asRecord(result.app);
     const origin = normalizeOrigin(result.origin);
     const appId = str(app.id);
-    marketInstalled.set({ appId, origin, localOverride: false });
+    if (ticket === detailTicket) marketInstalled.set({ appId, origin, localOverride: false });
     if (origin.listingId) {
-      marketOrigins.update(current => ({ ...current, [origin.listingId]: { ...origin, appId } }));
+      marketOriginsSnapshot.set({ scope, origins: { ...marketOrigins(), [origin.listingId]: { ...origin, appId } } });
     }
+    void loadMarketOrigins();
     pushToast(
-      tr(result.updated === true ? "market.updated" : "market.installed", { name: str(app.name) || detail.name }),
+      tr(result.updated === true ? "market.updated" : "market.installed", { name: localizedSpace(detail).name }),
       "success",
     );
     void loadSpaces();
   } catch (error) {
+    if (ticket !== detailTicket || !marketScopeIsCurrent(scope)) return;
     const message = marketErrorMessage(error);
     if (message.startsWith(PERMISSION_PREFIX)) {
       marketInstallPrompt.set({
@@ -670,7 +846,7 @@ export async function installMarketListing(
       pushToast(tr("market.installFailed", { error: describeFailure(error, "miniapp_market_install") }), "error");
     }
   } finally {
-    marketInstalling.set(false);
+    if (ticket === detailTicket && marketScopeIsCurrent(scope)) marketInstalling.set(false);
   }
 }
 
@@ -687,18 +863,6 @@ export function confirmMarketInstallPrompt(): void {
 
 export function cancelMarketInstallPrompt(): void {
   marketInstallPrompt.set(null);
-}
-
-/** Opens the installed copy in its own Space window. */
-export function openInstalledMarketApp(): void {
-  const installed = marketInstalled();
-  if (!installed?.appId) return;
-  const blocked = spaceWindowBlockedReason();
-  if (blocked) {
-    pushToast(blocked, "error");
-    return;
-  }
-  void openSpaceWindow(installed.appId);
 }
 
 // ── Submissions ───────────────────────────────────────────────────────────────

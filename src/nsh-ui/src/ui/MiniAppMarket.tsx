@@ -2,13 +2,12 @@
 // language. Display only — every number, permission and decision is the host's
 // (`src/miniAppMarketStore.ts`); this file draws it.
 
-import { Canvas, openUrl, Path2D, Text, View } from "nsh";
+import { Canvas, openUrl, Path2D, Text, View, type ViewRef } from "nsh";
 import { formatCount, formatDate } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
   canWithdrawSubmission,
   cancelMarketInstallPrompt,
-  closeMarketListing,
   closePackageImport,
   confirmingWithdrawId,
   confirmMarketInstallPrompt,
@@ -27,7 +26,7 @@ import {
   marketDetail,
   marketDetailError,
   marketDetailLoading,
-  marketDetailSlug,
+  marketDetailTarget,
   marketError,
   marketInitialLoad,
   marketInstalled,
@@ -46,7 +45,6 @@ import {
   marketSort,
   marketUnsupported,
   marketWorkspaceBlockedReason,
-  openInstalledMarketApp,
   openMarketListing,
   packageImportBusy,
   packageImportError,
@@ -73,7 +71,8 @@ import {
   type MarketSort,
   type MarketSubmission,
 } from "../miniAppMarketStore";
-import { spaceWindowBlockedReason } from "../spacesStore";
+import { openInstalledSpace, spaceOpenBlockedReason } from "../spaceViewStore";
+import { localizedSpace, spaceInCurrentCatalog } from "../spacesStore";
 import {
   compactLayout,
   fontMono,
@@ -83,14 +82,19 @@ import {
   space,
   textLineHeight,
   textSize,
+  textStyle,
   touchSlop,
 } from "../theme";
 import { openAccountAuthModal } from "./AccountAuthModal";
+import { CatalogCard } from "./CatalogCard";
+import { MarketScreenshots } from "./MarketScreenshots";
+import { SpacePinButton, SpaceWindowButton } from "./SpaceDetailActions";
 import { stateColor } from "./fleet";
-import { Icon, type IconName } from "./icons";
+import { Icon } from "./icons";
+import { SpaceIcon } from "./SpaceIcon";
 import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { ModalDialog, pushToast, SelectDropdown, type SelectDropdownOption } from "./overlays";
-import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, InlineDeleteConfirm, InputBox, SearchInput } from "./primitives";
+import { Badge, Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, InlineDeleteConfirm, InputBox, SearchInput } from "./primitives";
 import {
   GalleryGrid,
   GallerySkeleton,
@@ -98,68 +102,8 @@ import {
   InsetRow,
   StudioEmpty,
   StudioSection,
-  firstAvatarGrapheme,
-  galleryCardHoverStyle,
-  galleryCardStyle,
   studioCompact,
 } from "./studio";
-
-// ── Icons ─────────────────────────────────────────────────────────────────────
-
-/**
- * Manifest icon names the desktop's miniAppIcons map knows (kebab-case lucide
- * names), projected onto glyphs this surface draws. Unknown names fall back
- * to the package glyph, as the desktop falls back to lucide's Box.
- */
-const SPACE_ICON_MAP: Readonly<Record<string, IconName>> = {
-  "app-window": "layers",
-  aperture: "compass",
-  bot: "bot",
-  box: "package",
-  code: "code",
-  database: "database",
-  "file-text": "file-text",
-  "git-pull-request": "git-pull-request",
-  globe: "globe",
-  "grid-3x3": "layout-grid",
-  grid3x3: "layout-grid",
-  image: "image",
-  "layout-grid": "layout-grid",
-  "pen-tool": "edit",
-  presentation: "monitor",
-  regex: "hash",
-  rocket: "zap",
-  settings: "settings",
-  sparkles: "sparkles",
-  terminal: "terminal",
-  workflow: "network",
-  wrench: "wrench",
-};
-
-export function spaceIconName(icon: string): IconName {
-  const key = icon
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .toLowerCase();
-  return SPACE_ICON_MAP[key] ?? "package";
-}
-
-/**
- * A Space's icon as its manifest names it: an emoji is drawn as it is written
- * (the authoring guide's examples use them), a name as this surface's glyph.
- */
-export function SpaceIcon(props: { icon: string; color: string }) {
-  const emoji = () => (/\p{Extended_Pictographic}/u.test(props.icon) ? firstAvatarGrapheme(props.icon) : "");
-  return (
-    <If when={emoji()} else={<Icon name={spaceIconName(props.icon)} size={16} color={props.color} />}>
-      {glyph => (
-        <Text style={{ flexShrink: 0, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.2), textAlign: "center" }}>
-          {glyph()}
-        </Text>
-      )}
-    </If>
-  );
-}
 
 const HEART_PATH =
   "M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z";
@@ -260,58 +204,36 @@ function listingStats(item: MarketListing): string {
   ].join(" · ");
 }
 
-function sortOptions(): ReadonlyArray<SelectDropdownOption<MarketSort>> {
+function sortOptions(rankingsAvailable = true): ReadonlyArray<SelectDropdownOption<MarketSort>> {
   return [
     { value: "newest", label: tr("market.sortNewest") },
-    { value: "downloads", label: tr("market.sortDownloads") },
-    { value: "rating", label: tr("market.sortRating") },
+    { value: "downloads", label: tr("market.sortDownloads"), disabled: !rankingsAvailable },
+    { value: "rating", label: tr("market.sortRating"), disabled: !rankingsAvailable },
   ];
-}
-
-function categoryOptions(): ReadonlyArray<SelectDropdownOption<MarketCategory>> {
-  return MARKET_CATEGORIES.map(value => ({
-    value,
-    label: marketCategoryLabel(value),
-    accessibilityLabel: `market-category-${value}`,
-  }));
 }
 
 // ── Market view ───────────────────────────────────────────────────────────────
 
-function MarketCard(props: { item: () => MarketListing }) {
+function MarketCard(props: { item: () => MarketListing; onRef: (node: ViewRef | null) => void }) {
   const installed = () => Boolean(marketOrigins()[props.item().listingId]);
+  const copy = () => localizedSpace(props.item());
   return (
-    <View
-      role="button"
-      accessibilityLabel={`market-card-${props.item().slug}`}
-      onPress={() => void openMarketListing(props.item().slug)}
-      style={{
-        ...galleryCardStyle(),
-        minHeight: 148,
-        gap: space.xs,
-        cursor: "pointer",
-        borderColor: marketDetailSlug() === props.item().slug ? palette().borderFocus : palette().borderSubtle,
-        ...pressTransition(),
-      }}
-      hoverStyle={compactLayout() ? undefined : galleryCardHoverStyle()}
-      activeStyle={tactileActiveStyle(0.99)}
-      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
-    >
+    <CatalogCard testID={`market-card-${props.item().slug}`}
+      label={tr("spaces.detail.open", { name: copy().name })} description={copy().description}
+      onOpen={() => void openMarketListing({ slug: props.item().slug })} viewRef={props.onRef}
+      style={{ minHeight: 148 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
         <SpaceIcon icon={props.item().icon} color={palette().textSecondary} />
         <Text
           style={{
+            ...textStyle("sectionTitle"),
             flex: 1,
             minWidth: 0,
-            color: palette().text,
-            fontSize: textSize(14),
-            fontWeight: "600",
-            lineHeight: textLineHeight(14, 1.35),
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {props.item().name}
+          {copy().name}
         </Text>
         <If when={installed()}>
           <Text
@@ -353,7 +275,7 @@ function MarketCard(props: { item: () => MarketListing }) {
           textOverflow: "ellipsis",
         }}
       >
-        {props.item().description || tr("common.noDescription")}
+        {copy().description || tr("common.noDescription")}
       </Text>
       <View style={{ flex: 1 }} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
@@ -373,11 +295,25 @@ function MarketCard(props: { item: () => MarketListing }) {
           {listingStats(props.item())}
         </Text>
       </View>
-    </View>
+    </CatalogCard>
   );
 }
 
-function MarketToolbar() {
+export function SpaceCatalogToolbar(props: {
+  scope: "spaces" | "market";
+  query: string;
+  placeholder: string;
+  onQueryChange: (value: string) => void;
+  category: MarketCategory;
+  onCategoryChange: (value: MarketCategory) => void;
+  sort?: { value: MarketSort; onChange: (value: MarketSort) => void; rankingsAvailable?: boolean };
+}) {
+  const categoryOptions = (): ReadonlyArray<SelectDropdownOption<MarketCategory>> =>
+    MARKET_CATEGORIES.map(value => ({
+      value,
+      label: marketCategoryLabel(value),
+      accessibilityLabel: `${props.scope}-category-${value}`,
+    }));
   return (
     <View
       style={{
@@ -389,10 +325,10 @@ function MarketToolbar() {
     >
       <SearchInput
         size={compactLayout() ? "lg" : "md"}
-        value={marketQuery()}
-        placeholder={tr("market.searchPlaceholder")}
-        accessibilityLabel="market-search"
-        onChange={value => setMarketQuery(value)}
+        value={props.query}
+        placeholder={props.placeholder}
+        accessibilityLabel={`${props.scope}-search`}
+        onChange={props.onQueryChange}
         style={{
           flex: 1,
           minWidth: 0,
@@ -411,32 +347,36 @@ function MarketToolbar() {
       >
         <SelectDropdown
           options={categoryOptions()}
-          value={marketCategory()}
+          value={props.category}
           size="md"
           minWidth={compactLayout() ? 120 : 150}
-          accessibilityLabel="market-category"
+          accessibilityLabel={`${props.scope}-category`}
           style={compactLayout() ? { flex: 1, minWidth: 120 } : undefined}
-          onChange={value => setMarketCategory(value)}
+          onChange={props.onCategoryChange}
         />
-        <SelectDropdown
-          options={sortOptions()}
-          value={marketSort()}
-          size="md"
-          minWidth={compactLayout() ? 120 : 140}
-          accessibilityLabel="market-sort"
-          style={compactLayout() ? { flex: 1, minWidth: 120 } : undefined}
-          onChange={value => setMarketSort(value)}
-        />
+        <If when={props.sort}>
+          {sort => <SelectDropdown
+            options={sortOptions(sort().rankingsAvailable)}
+            value={sort().value}
+            size="md"
+            minWidth={compactLayout() ? 120 : 140}
+            accessibilityLabel={`${props.scope}-sort`}
+            style={compactLayout() ? { flex: 1, minWidth: 120 } : undefined}
+            onChange={value => sort().onChange(value)}
+          />}
+        </If>
       </View>
     </View>
   );
 }
 
-export function MiniAppMarketView() {
+export function MiniAppMarketView(props: { onCardRef: (slug: string, node: ViewRef | null) => void }) {
   const hasMarketFilters = () => Boolean(marketQuery().trim()) || marketCategory() !== "all";
   return (
     <View style={{ gap: space.xl, minWidth: 0 }}>
-      <MarketToolbar />
+      <SpaceCatalogToolbar scope="market" query={marketQuery()} placeholder={tr("market.searchPlaceholder")}
+        onQueryChange={setMarketQuery} category={marketCategory()} onCategoryChange={setMarketCategory}
+        sort={{ value: marketSort(), onChange: setMarketSort }} />
 
       <StudioSection
         title={tr("market.catalogTitle")}
@@ -521,7 +461,7 @@ export function MiniAppMarketView() {
           <View style={{ gap: 16, minWidth: 0 }}>
             <GalleryGrid minColumn={280}>
               <Each of={marketItems()} key={item => item.listingId || item.slug}>
-                {item => <MarketCard item={item} />}
+                {item => <MarketCard item={item} onRef={node => props.onCardRef(item().slug, node)} />}
               </Each>
             </GalleryGrid>
             <If when={Boolean(marketNextCursor())}>
@@ -539,8 +479,6 @@ export function MiniAppMarketView() {
           </View>
         </If>
       </StudioSection>
-
-      <MarketListingModal />
     </View>
   );
 }
@@ -678,12 +616,18 @@ function InstallPromptBar() {
   );
 }
 
-function MarketListingFooter() {
+interface MarketManageActions {
+  manageButtonRef: (node: ViewRef | null) => void;
+  onManage: (appId: string) => void;
+}
+
+function MarketListingActions(props: MarketManageActions) {
   const blocked = () => marketWorkspaceBlockedReason();
+  const openBlocked = () => blocked() || spaceOpenBlockedReason();
   const installed = () => marketInstalled();
   const showInstall = () => Boolean(marketDetail()) && (!installed() || marketCanUpdate());
   return (
-    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
+    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
       <If when={Boolean(marketDetail())}>
         <View
           role="button"
@@ -726,15 +670,6 @@ function MarketListingFooter() {
           </Text>
         </View>
       </If>
-      <View style={{ flex: 1, minWidth: space.sm }} />
-      <Button
-        label={tr("common.close")}
-        variant="secondary"
-        size="md"
-        accessibilityLabel="market-close"
-        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-        onPress={() => closeMarketListing()}
-      />
       <If when={Boolean(installed()) && !marketCanUpdate()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <Icon name="check" size={14} color={palette().textMuted} />
@@ -751,12 +686,16 @@ function MarketListingFooter() {
           label={tr("market.open")}
           variant={marketCanUpdate() ? "outline" : "primary"}
           size="md"
-          leadingIcon="external-link"
-          disabled={Boolean(blocked()) || Boolean(spaceWindowBlockedReason())}
-          tooltip={blocked() || spaceWindowBlockedReason() || undefined}
+          leadingIcon="play"
+          disabled={Boolean(openBlocked()) || marketInstalling()}
+          tooltip={openBlocked() || undefined}
           accessibilityLabel="market-open"
           style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-          onPress={() => openInstalledMarketApp()}
+          onPress={() => {
+            const id = installed()?.appId;
+            const detail = marketDetail();
+            if (id && detail && !openBlocked()) openInstalledSpace({ id, name: localizedSpace(detail).name });
+          }}
         />
       </If>
       <If when={showInstall()}>
@@ -773,39 +712,57 @@ function MarketListingFooter() {
           onPress={() => void installMarketListing()}
         />
       </If>
+      <If when={spaceInCurrentCatalog(installed()?.appId)}>
+        {app => <>
+          <SpaceWindowButton appId={app().id} accessibilityLabel="market-open-window" disabled={marketInstalling()} />
+          <SpacePinButton appId={app().id} accessibilityLabel="market-pin" />
+          <Button label={tr("market.manage")} variant="outline" size={compactLayout() ? "md" : "sm"}
+            accessibilityLabel="market-manage" buttonRef={props.manageButtonRef} disabled={marketInstalling()}
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => props.onManage(app().id)} />
+        </>}
+      </If>
+      <If when={marketDetail()?.repositoryUrl}>
+        {url => <Button label={tr("market.repository")} variant="outline" size="md" leadingIcon="external-link"
+          accessibilityLabel="market-repository" onPress={() => void openRepository(url())} />}
+      </If>
     </View>
   );
 }
 
-function MarketListingModal() {
+export function MarketListingDetails(props: MarketManageActions) {
+  const detailLabel = () => {
+    const detail = marketDetail();
+    return detail?.ownerLogin ? tr("market.by", { owner: detail.ownerLogin }) : "";
+  };
+  const copy = () => {
+    const detail = marketDetail();
+    return detail ? localizedSpace(detail) : null;
+  };
   return (
-    <ModalDialog
-      open={Boolean(marketDetailSlug())}
-      title={marketDetail()?.name ?? tr("market.loadingListing")}
-      subtitle={
-        marketDetail()
-          ? [
-              marketCategoryLabel(marketDetail()!.category),
-              marketDetail()!.ownerLogin ? tr("market.by", { owner: marketDetail()!.ownerLogin }) : "",
-              `v${marketDetail()!.latestRelease}`,
-            ]
-              .filter(Boolean)
-              .join(" · ")
-          : undefined
-      }
-      size="lg"
-      accessibilityLabel="market-listing"
-      onClose={() => closeMarketListing()}
-      footer={<MarketListingFooter />}
-    >
-      <View style={{ gap: 20 }}>
+      <View style={{ gap: space.lg, minWidth: 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+          <If when={marketDetail()}>
+            {detail => <SpaceIcon icon={detail().icon} color={palette().textSecondary} size={32} />}
+          </If>
+          <Text role="header" style={{ ...textStyle("pageTitle"), flex: 1, minWidth: 0 }}>
+            {copy()?.name ?? (marketDetailLoading() ? tr("market.loadingListing") : tr("market.catalogTitle"))}
+          </Text>
+        </View>
+        <If when={detailLabel()}>
+          {label => <MutedLine text={label()} />}
+        </If>
         <If when={marketDetailLoading()}>
           <View style={{ padding: 24, alignItems: "center" }}>
             <Spinner size={18} />
           </View>
         </If>
         <If when={!marketDetailLoading() ? marketDetailError() : ""}>
-          {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
+          {error => <InlineBanner tone="danger" message={localizeHostError(error())}
+            actionLabel={tr("common.retry")} onAction={() => {
+              const target = marketDetailTarget();
+              if (target) void openMarketListing(target);
+            }} />}
         </If>
         <If when={marketSignInRequired()}>
           <InlineBanner
@@ -813,22 +770,29 @@ function MarketListingModal() {
             accessibilityLabel="market-sign-in"
             message={tr("market.signInToAct")}
             actionLabel={tr("market.signIn")}
-            onAction={() =>
+            onAction={() => {
+              const target = marketDetailTarget();
               openAccountAuthModal({
                 autoStart: true,
                 onSuccess: () => {
+                  if (!target || marketDetailTarget() !== target) return;
                   marketSignInRequired.set(false);
                   void refreshMarketListing();
                 },
-              })
-            }
+              });
+            }}
             onDismiss={() => marketSignInRequired.set(false)}
           />
         </If>
         <If when={!marketDetailLoading() ? marketDetail() : null}>
           {detail => (
             <View style={{ gap: 20, minWidth: 0 }}>
-              <BodyText text={detail().description || tr("common.noDescription")} secondary />
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+                <Badge tone="neutral" label={marketCategoryLabel(detail().category)} />
+                <Badge tone="neutral" label={tr("market.reviewed")} />
+              </View>
+              <Text style={textStyle("prose")}>{copy()?.description || tr("common.noDescription")}</Text>
+              <MarketListingActions manageButtonRef={props.manageButtonRef} onManage={props.onManage} />
               <If when={marketWorkspaceBlockedReason(detail())}>
                 {reason => <InlineBanner tone="warning" message={reason()} accessibilityLabel="market-remote-blocked" />}
               </If>
@@ -839,6 +803,17 @@ function MarketListingModal() {
                 <InlineBanner tone="warning" message={tr("market.installedYanked")} />
               </If>
               <InstallPromptBar />
+              <If when={detail().screenshotHashes.length > 0}>
+                <MarketScreenshots hashes={detail().screenshotHashes} name={copy()?.name ?? detail().name} />
+              </If>
+
+              <StudioSection title={tr("spaces.detail.information")}>
+                <InsetGroup>
+                  <InsetRow first label={tr("spaces.detail.version")} value={`v${detail().latestRelease}`} />
+                  <InsetRow label={tr("market.author")} value={detail().ownerLogin || "—"} />
+                  <InsetRow label={tr("market.category")} value={marketCategoryLabel(detail().category)} />
+                </InsetGroup>
+              </StudioSection>
 
               <View style={{ gap: 6 }}>
                 <SectionHeader text={tr("market.permissions")} />
@@ -879,29 +854,14 @@ function MarketListingModal() {
                 <If when={detail().license}>
                   {license => <MutedLine text={tr("market.license", { license: license() })} />}
                 </If>
-                <If when={detail().tags.length > 0}>
-                  <MutedLine text={detail().tags.slice(0, 8).join(" · ")} />
-                </If>
-                <If when={detail().repositoryUrl}>
-                  {url => (
-                    <View style={{ alignItems: "flex-start", marginTop: 4 }}>
-                      <Button
-                        label={tr("market.repository")}
-                        variant="ghost"
-                        size="sm"
-                        leadingIcon="external-link"
-                        accessibilityLabel="market-repository"
-                        onPress={() => void openRepository(url())}
-                      />
-                    </View>
-                  )}
+                <If when={Boolean(copy()?.tags.length)}>
+                  <MutedLine text={copy()?.tags.slice(0, 8).join(" · ") ?? ""} />
                 </If>
               </View>
             </View>
           )}
         </If>
       </View>
-    </ModalDialog>
   );
 }
 

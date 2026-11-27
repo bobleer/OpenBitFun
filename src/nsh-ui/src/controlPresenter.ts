@@ -19,10 +19,10 @@
 // the live UI and acknowledged; non-transactional changes
 // (`openbitfun-control-applied`) re-read the settings values.
 
-import { invokeCommand, listenEvent } from "./bridge";
+import { invokeCommand, listenEvent, windowShellId } from "./bridge";
 import { syncLocaleFromHost } from "./i18n";
 import { servedBackendParams } from "./servedBackend";
-import { loadSettingsValues } from "./settingsStore";
+import { loadSettingsValues, type SettingsPageId } from "./settingsStore";
 import { navigateScene, type SceneId } from "./state";
 import { APPEARANCE_PRESETS, selectAppearancePreset, type AppearanceId } from "./theme";
 import { applyLocalAppearance } from "./themeStore";
@@ -58,7 +58,7 @@ interface ControlEffect {
 
 /** What the shell does for the destinations that are actions rather than screens. */
 export interface ControlPresenterActions {
-  openSettingsPage(pageId: string, anchor?: string): void;
+  openSettingsPage(pageId: SettingsPageId, anchor?: string): void;
   openFolder(): void;
   newWorkspace(): void;
   newSession(): void;
@@ -69,12 +69,12 @@ export interface ControlPresenterActions {
  * `src/shared/interactive-capabilities/destinations.json`) onto this UI's pages
  * and, where the catalog names a view or section, the section to reveal.
  */
-const SETTINGS_PAGES: Record<string, { page: string; anchor?: string }> = {
+const SETTINGS_PAGES: Record<string, { page: SettingsPageId; anchor?: string }> = {
   "application.general": { page: "general" },
   "application.appearance": { page: "appearance" },
+  "application.pet": { page: "pet" },
   "application.input": { page: "input", anchor: "input" },
-  "application.voice": { page: "input", anchor: "input" },
-  "application.shortcuts": { page: "input", anchor: "shortcuts" },
+  "application.shortcuts": { page: "shortcuts", anchor: "shortcuts" },
   "application.editor": { page: "editor" },
   "development.editor": { page: "editor" },
   "application.terminal": { page: "terminal" },
@@ -98,6 +98,7 @@ const SETTINGS_PAGES: Record<string, { page: string; anchor?: string }> = {
   "tools.external-import": { page: "external-import" },
   "data.storage": { page: "storage" },
   "data.usage": { page: "usage" },
+  "data.archived": { page: "archived" },
   "data.diagnostics": { page: "diagnostics" },
 };
 
@@ -111,6 +112,11 @@ const SETTINGS_ANCHORS: Record<string, string> = {
   session: "session",
   "workspace-search": "workspace-search",
   git: "git",
+  "text-selection": "input",
+  worktrees: "workspace",
+  local: "acp",
+  ssh: "acp",
+  json: "acp",
 };
 
 const SCENES: Record<string, SceneId> = {
@@ -131,6 +137,12 @@ const ACTION_SCENES: Record<string, SceneId> = {
   "surface.todos.open": "routines",
 };
 
+const ACTION_SETTINGS: Record<string, { page: SettingsPageId; anchor?: string }> = {
+  "settings.shortcuts.open": { page: "shortcuts", anchor: "shortcuts" },
+  "surface.insights.open": { page: "activity" },
+  "surface.ecosystemCompatibility.open": { page: "external-import" },
+};
+
 const EVENT_SCENES: Record<string, SceneId> = {
   "openbitfun:open-remote-connect": "devices",
 };
@@ -148,61 +160,82 @@ function describe(destination: ControlDestination): string {
   }
 }
 
-/**
- * Presents one destination; returns what was opened, or throws an error that
- * names a destination this UI cannot show.
- */
-export function presentDestination(destination: ControlDestination, actions: ControlPresenterActions): string {
+export type ControlSurfaceTarget =
+  | { kind: "settings"; page: SettingsPageId; anchor?: string }
+  | { kind: "scene"; scene: SceneId }
+  | { kind: "action"; action: "project.open" | "project.new" | "session.new" };
+
+export function isRetiredVoiceDestination(destination: ControlDestination): boolean {
+  if (destination.kind !== "settings") return false;
+  const section = destination.sectionId ?? destination.viewId;
+  return destination.pageId === "application.voice" || section === "voice" || section === "voice-call";
+}
+
+/** Search requires a real section. Older host presentation requests retain their page fallback. */
+export function resolveControlDestination(destination: ControlDestination, requireSection = false): ControlSurfaceTarget | null {
+  if (isRetiredVoiceDestination(destination)) return null;
   switch (destination.kind) {
     case "settings": {
       const target = SETTINGS_PAGES[destination.pageId];
-      if (!target) break;
+      if (!target || (target.page === "pet" && windowShellId() !== "nsh-desktop")) break;
       const section = destination.sectionId ?? destination.viewId;
-      const anchor = (section && SETTINGS_ANCHORS[section]) || target.anchor;
-      navigateScene("settings");
-      actions.openSettingsPage(target.page, anchor);
-      return anchor ? `settings:${target.page}#${anchor}` : `settings:${target.page}`;
+      if (section === "shortcuts" && target.page === "input") {
+        return { kind: "settings", page: "shortcuts", anchor: "shortcuts" };
+      }
+      const anchor = section ? SETTINGS_ANCHORS[section] : undefined;
+      if (requireSection && section && !anchor) break;
+      return { kind: "settings", page: target.page, anchor: anchor ?? target.anchor };
     }
     case "scene": {
       const scene = SCENES[destination.sceneId];
-      if (!scene) break;
-      navigateScene(scene);
-      return `scene:${scene}`;
+      if (scene) return { kind: "scene", scene };
+      break;
     }
     case "action": {
       const scene = ACTION_SCENES[destination.actionId];
-      if (scene) {
-        navigateScene(scene);
-        return `scene:${scene}`;
-      }
+      if (scene) return { kind: "scene", scene };
+      const settings = ACTION_SETTINGS[destination.actionId];
+      if (settings) return { kind: "settings", ...settings };
       switch (destination.actionId) {
         case "project.open":
-          actions.openFolder();
-          return "action:project.open";
         case "project.new":
-          actions.newWorkspace();
-          return "action:project.new";
         case "session.new":
-          actions.newSession();
-          return "action:session.new";
+          return { kind: "action", action: destination.actionId };
         case "settings.open":
-          navigateScene("settings");
-          return "scene:settings";
-        case "settings.shortcuts.open":
-          navigateScene("settings");
-          actions.openSettingsPage("input", "shortcuts");
-          return "settings:input#shortcuts";
+          return { kind: "scene", scene: "settings" };
       }
       break;
     }
     case "event": {
       const scene = EVENT_SCENES[destination.eventName];
-      if (!scene) break;
-      navigateScene(scene);
-      return `scene:${scene}`;
+      if (scene) return { kind: "scene", scene };
+      break;
     }
   }
-  throw new Error(`The OpenBitFun desktop UI has no screen for the ${describe(destination)} yet.`);
+  return null;
+}
+
+export function presentControlTarget(target: ControlSurfaceTarget, actions: ControlPresenterActions): string {
+  switch (target.kind) {
+    case "settings":
+      navigateScene("settings");
+      actions.openSettingsPage(target.page, target.anchor);
+      return target.anchor ? `settings:${target.page}#${target.anchor}` : `settings:${target.page}`;
+    case "scene":
+      navigateScene(target.scene);
+      return `scene:${target.scene}`;
+    case "action":
+      if (target.action === "project.open") actions.openFolder();
+      else if (target.action === "project.new") actions.newWorkspace();
+      else actions.newSession();
+      return `action:${target.action}`;
+  }
+}
+
+export function presentDestination(destination: ControlDestination, actions: ControlPresenterActions): string {
+  const target = resolveControlDestination(destination);
+  if (!target) throw new Error(`The OpenBitFun desktop UI has no screen for the ${describe(destination)} yet.`);
+  return presentControlTarget(target, actions);
 }
 
 function errorText(error: unknown): string {

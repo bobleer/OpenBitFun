@@ -490,6 +490,7 @@ pub fn project_agentic_frontend_event(event: AgenticEvent) -> Option<AgenticFron
                     "runElapsedMs": queue_state.run_elapsed_ms,
                     "maxQueueWaitSeconds": queue_state.max_queue_wait_seconds,
                     "sessionConcurrencyHigh": queue_state.session_concurrency_high,
+                    "controlsAvailable": queue_state.controls_available,
                 },
             }),
         )),
@@ -916,6 +917,7 @@ mod tests {
                 run_elapsed_ms: None,
                 max_queue_wait_seconds: Some(60),
                 session_concurrency_high: true,
+                controls_available: true,
             },
         })
         .expect("projected");
@@ -925,6 +927,7 @@ mod tests {
             "agentic://deep-review-queue-state-changed"
         );
         assert_eq!(projected.payload["queueState"]["toolId"], "tool-1");
+        assert_eq!(projected.payload["queueState"]["controlsAvailable"], true);
         assert_eq!(
             projected.payload["queueState"]["reason"],
             json!("provider_concurrency_limit")

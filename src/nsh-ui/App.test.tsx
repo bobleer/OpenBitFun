@@ -217,6 +217,7 @@ test("settings switches the scheme it draws and remembers the choice", async () 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor("Showing the dark scheme");
+  expect(app.spanStyle("Showing the dark scheme").color).toBe("#b0b0b0ff");
   // Follow system starts ON and hides the theme gallery until turned off.
   expect(app.shows("appearance-swatch-openbitfun-light")).toBe(false);
 
@@ -227,8 +228,8 @@ test("settings switches the scheme it draws and remembers the choice", async () 
   // The choice survives a restart of the surface.
   expect(app.storage()["openbitfun.nsh.appearance.v1"]).toBe("light");
   expect(app.storage()["openbitfun.nsh.appearance-id.v1"]).toBe("openbitfun-light");
-  // The light scheme's own muted text: the scene repainted, not just its state.
-  expect(app.spanStyle("Showing the light scheme").color).toBe("#5c6672ff");
+  // Config row descriptions use the active scheme's secondary content token.
+  expect(app.spanStyle("Showing the light scheme").color).toBe("#00000099");
 
   await app.press("appearance-follow-system");
   await app.waitFor("Showing the dark scheme");
@@ -516,6 +517,31 @@ test("editing or cancelling a queued message never wipes the currently running t
   expect(app.texts().join("\n")).not.toContain("STALE CLOBBER");
   expect(app.texts()).toContain("Search the web for this");
   expect(app.texts()).toContain("Searching now...");
+});
+
+test("the session composer expands for wrapped drafts and keeps the same input and send behavior", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  const height = () => app.layout("id:chat-composer-surface")?.height ?? 0;
+  await app.waitFor("composer");
+  await app.waitUntil(() => height() === 42);
+  const short = app.layout("composer")!;
+  expect(app.layout("composer-plus")!.x).toBeLessThan(short.x);
+  expect(app.layout("bot-capsule-trigger")!.x).toBeGreaterThan(short.x);
+
+  await app.type("composer", "A draft long enough to wrap in the text track. ".repeat(14));
+  await app.waitUntil(() => height() >= 120);
+  expect(app.layout("composer")!.y).toBeLessThan(app.layout("composer-plus")!.y);
+  await app.clear("composer");
+  await app.waitUntil(() => height() === 42);
+
+  await app.type("composer", "First line");
+  await app.keyboard.press("shift+enter");
+  await app.waitUntil(() => height() >= 120);
+  expect(app.value("composer")).toBe("First line\n");
+  expect(backend.userMessages).toHaveLength(0);
+  await app.submit("composer");
+  await app.waitUntil(() => backend.userMessages.some(message => message.text === "First line"));
 });
 
 test("a pasted image rides into the turn as a compact thumbnail attachment without a clipboard button", async () => {
@@ -892,12 +918,9 @@ test("a tool card expands into its checklist and its edit", async () => {
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  // Consecutive non-text tool calls (todo_write + edit) fold into one collapsed activity row.
-  await app.waitFor("Completed");
-  expect(app.texts().join("")).toContain("1 edit, 1 step");
-  await app.press("Completed");
-
-  // Expanding the activity group reveals the compact todo strip and edit card.
+  // Actionable edits and checklist updates remain visible in their own cards.
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-todo_write");
+  await app.waitFor("id:prominent-tool-card >> label:tool-card-edit");
   await app.waitFor("checklist 1/3");
   await app.press("tool-card-todo_write");
   await app.waitFor("Move the list");
@@ -905,6 +928,10 @@ test("a tool card expands into its checklist and its edit", async () => {
 
   // A tool call that carries an edit renders it as a diff.
   await app.press("tool-card-edit");
+  await app.waitUntil(() => {
+    const height = app.layout("id:tool-diff-preview")?.height ?? 0;
+    return height > 0 && height < 120;
+  });
   expect(app.texts().join("\n")).toContain("hello, cards");
 });
 
@@ -1188,14 +1215,14 @@ test("a question the host is waiting on is recovered from the mailbox and answer
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("The agent needs an answer");
-  await app.waitFor("Port: Which port should the server use?");
+  await app.waitFor("Which port should the server use?");
   await app.waitFor("8080");
   await app.waitFor("the documented default");
   // Arrival alone must not cancel the host's unattended auto-proceed deadline.
   expect(backend.questionStarts).toEqual([]);
 
   // Interacting with an option signals the host to pause the auto-proceed timer.
-  await app.press("question-tool-q1-0-8080");
+  await app.press("id:question-tool-q1-0-8080");
   expect(backend.questionStarts).toEqual([{ sessionId: "session-1", toolId: "tool-q1" }]);
   await app.press("Send answer");
   expect(backend.userAnswers).toEqual([
@@ -1234,18 +1261,17 @@ test("a live question takes several options and a typed answer", async () => {
       },
     },
   });
-  await app.waitFor("Checks: Which checks should run?");
+  await app.waitFor("Which checks should run?");
   await app.waitFor("Choose one or more");
 
   // An unanswered question cannot be sent: the host would reject an empty answer.
-  await app.press("Send answer");
-  await app.waitFor("Answer every question first");
+  expect(app.enabled("id:question-send-tool-q2")).toBe(false);
   expect(backend.userAnswers).toEqual([]);
 
-  await app.press("question-tool-q2-0-Lint");
-  await app.press("question-tool-q2-0-Tests");
-  await app.press("question-tool-q2-0-other");
-  await app.type("question-tool-q2-0-text", "smoke");
+  await app.press("id:question-tool-q2-0-Lint");
+  await app.press("id:question-tool-q2-0-Tests");
+  await app.press("id:question-tool-q2-0-other");
+  await app.type("id:question-tool-q2-0-text", "smoke");
   await app.press("Send answer");
   expect(backend.userAnswers).toEqual([
     { toolId: "tool-q2", answers: { "0": ["Lint", "Tests", "smoke"] }, sessionId: "session-1" },
@@ -1266,7 +1292,7 @@ test("settings scene reads the configured fields", async () => {
   // A number field shows the stored value in its own input, read from the leaf
   // inside the document the host stores.
   await app.press("nav-settings-page-editor");
-  await app.waitFor("Font size inside code and markdown previews");
+  await app.waitFor("Font size inside code and source views");
   expect(app.value("editor-font-size")).toBe("14");
   await app.press("nav-settings-page-terminal");
   await app.waitFor("Maximum lines preserved in terminal scroll history");
@@ -1288,7 +1314,8 @@ test("settings scene writes toggles, selects and numbers", async () => {
 
   // Each field writes its own leaf; the `editor` document is never replaced.
   await app.press("nav-settings-page-editor");
-  await app.press("editor-word-wrap-on");
+  await app.press("id:editor-word-wrap");
+  await app.press("label:editor-word-wrap-on");
   expect(backend.settingsWrites).toContainEqual({ path: "editor.word_wrap", value: "on" });
 
   // A typed number saves on Return (or when the field loses focus); no Save button moves the row.
@@ -1395,10 +1422,14 @@ test("settings switches interface language live across English, Simplified Chine
   await app.press("close-button-quit");
   expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "quit" });
 
+  const chooseLocale = async (locale: string) => {
+    await app.press("id:app-language-select");
+    await app.press(`label:app-language-${locale}`);
+  };
   // Switch live to Simplified Chinese -> entire shell + settings repaint immediately.
   // The host keeps the language through `i18n_set_language`; no `app` document is
   // read and written back from here.
-  await app.press("app-language-zh-CN");
+  await chooseLocale("zh-CN");
   await app.waitFor("界面语言");
   await app.waitFor("启动");
   expect(app.shows("设置")).toBe(true);
@@ -1412,7 +1443,7 @@ test("settings switches interface language live across English, Simplified Chine
   expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "ask" });
 
   // Switch live to Traditional Chinese -> repaints immediately with canonical zh-TW copy.
-  await app.press("app-language-zh-TW");
+  await chooseLocale("zh-TW");
   await app.waitFor("介面語言");
   expect(app.shows("設定")).toBe(true);
   expect(languageCalls().pop()).toBe("zh-TW");
@@ -1421,12 +1452,47 @@ test("settings switches interface language live across English, Simplified Chine
   expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "minimize_to_tray" });
 
   // Switch back to English -> restores cleanly and persists canonical en-US.
-  await app.press("app-language-en-US");
+  await chooseLocale("en-US");
   await app.waitFor("Interface language");
   await app.waitFor("Startup");
   expect(languageCalls().pop()).toBe("en-US");
   expectCloseButtonSegments(enUSMessages);
   expect(backend.settingsWrites.some(entry => entry.path === "app")).toBe(false);
+});
+
+test("the language selector keeps the window usable while saving and retries a refused preference", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let attempts = 0;
+  let finish: ((reply: unknown) => void) | undefined;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    if ((data as { action?: string }).action === "i18n_set_language") {
+      attempts += 1;
+      if (attempts === 1) return new Promise(resolve => { finish = resolve; });
+    }
+    return invoke(data);
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  const select = "id:app-language-select";
+  await app.press("Settings");
+  await app.press("nav-settings-page-general");
+  await app.press(select);
+  const first = app.press("label:app-language-zh-CN");
+  await app.waitUntil(() => finish !== undefined && !app.enabled(select));
+  await app.waitFor("界面语言");
+  expect(app.shows("设置")).toBe(true);
+  finish!({ ok: false, error: "host offline" });
+  await first;
+  await app.waitFor("语言已在当前窗口切换，但设备版本较旧未能保存，请更新 OpenBitFun。");
+  expect(app.enabled(select)).toBe(true);
+  await app.press(select);
+  await app.press("label:app-language-zh-CN");
+  await app.waitUntil(() => attempts === 2 && app.enabled(select));
+  expect(app.storage()["openbitfun.nsh.locale.v1"]).toBe("zh-CN");
+  // Selecting the stored value again has no effect.
+  await app.press(select);
+  await app.press("label:app-language-zh-CN");
+  expect(attempts).toBe(2);
 });
 
 test("i18n normalizes locales, translates reactively across en-US/zh-CN/zh-TW, and formats durations cleanly", async () => {
@@ -1784,16 +1850,22 @@ test("the search field answers with sessions, messages and files, and runs what 
 
   await app.waitFor("global-search-trigger");
   await app.press("global-search-trigger");
-  // An empty field lists the commands, which is what `>` is for.
+  // An empty field previews the frequent actions and the current workspaces.
   await app.waitFor("Go to Files");
-  expect(app.texts()).toContain("Commands");
+  expect(app.texts()).toContain("Frequent actions");
 
+  await app.press("id:global-search-scope-actions");
   await app.type("global-search-input", "terminal");
+  await app.waitFor("id:global-search-item-command:terminal");
+  expect(backend.calls.some(call => call.action === "search_session_content")).toBe(false);
+
+  await app.press("id:global-search-scope-content");
   await app.waitFor("Terminal migration");
   // A session-name hit, a message hit from the host and a file hit from
   // `search_files` are grouped by kind rather than merged into one list.
   await app.waitFor("Terminal is wired to terminal_create.");
   expect(app.texts()).toContain("Messages");
+  expect(app.shows("id:global-search-item-command:terminal")).toBe(false);
   // Every opened workspace is asked once, the active one first.
   const searched = backend.calls.filter(call => call.action === "search_session_content");
   expect(searched).toHaveLength(2);
@@ -1801,15 +1873,17 @@ test("the search field answers with sessions, messages and files, and runs what 
   expect(searched[1].request).toMatchObject({ workspaceId: "workspace-2", query: "terminal" });
 
   // Running a session hit closes the panel and opens that session.
-  await app.press("label:global-search-item-session:session-2");
+  await app.keyboard.press("home");
+  await app.submit("global-search-input");
+  await app.waitFor("global-search-dialog", { state: "gone" });
   await app.waitFor("Terminal migration");
-  expect(app.texts().some(text => text === "Commands")).toBe(false);
 
   // A command query stays inside this surface and switches the scene.
   await app.press("global-search-trigger");
   await app.type("global-search-input", ">files");
   await app.waitFor("Go to Files");
-  await app.press("label:global-search-item-command:files");
+  expect(app.enabled("id:global-search-scope-content")).toBe(false);
+  await app.press("id:global-search-item-command:files");
   await app.waitFor("Select a file to preview");
 });
 
@@ -1870,7 +1944,7 @@ test("session memory takes its models and its window from this page", async () =
 
   // A rollout window that outlives the retention is refused with the reason, and
   // nothing is written: the host would reject the pair as well.
-  await app.press("memory-processing-toggle");
+  await app.press("id:memory-advanced-toggle");
   const before = backend.settingsWrites.length;
   await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "5");
@@ -1901,7 +1975,7 @@ test("a connected MCP server's resources are browsed and read through the host",
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
-  await app.waitFor("Filesystem · fs-server");
+  await app.waitFor("mcp-row-status-fs-server");
   await app.press("mcp-resources-fs-server");
   await app.waitFor("Resources of fs-server");
   await app.waitFor("Team notes");
@@ -1943,8 +2017,19 @@ test("a connected MCP server's resources are browsed and read through the host",
   expect(app.texts().some(text => text.startsWith("Resources of"))).toBe(false);
 });
 
-test("settings creates a model pool the host keeps, and deletes it", async () => {
+test("settings uses the model pool strategy cards, searchable member picker, retries and delete confirmation", async () => {
   const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const call = data as { action: string; request?: { path: string } };
+    if (call.action !== "get_config" || call.request?.path !== "ai.models") return invoke(data);
+    const reply = invoke(data) as { ok: true; value: Array<Record<string, unknown>> };
+    const model = reply.value[0];
+    return { ...reply, value: [...reply.value,
+      { ...model, id: "disabled-model", enabled: false },
+      { ...model, id: "speech-model", category: "speech_recognition", capabilities: ["speech_recognition"] },
+    ] };
+  };
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
@@ -1955,33 +2040,48 @@ test("settings creates a model pool the host keeps, and deletes it", async () =>
 
   await app.press("add-pool");
   await app.type("model-pool-name", "Fast fallbacks");
-  // The members are the configured models' own ids, as the desktop editor stores them.
+  expect(app.accessibility("id:pool-strategy-ordered")?.checked).toBe("true");
+  await app.press("id:pool-strategy-balanced");
+  expect(app.accessibility("id:pool-strategy-balanced")?.checked).toBe("true");
+  await app.press("pool-add-members");
+  await app.waitFor("pool-member-picker");
+  expect(app.shows("pool-toggle-disabled-model")).toBe(false);
+  expect(app.shows("pool-toggle-speech-model")).toBe(false);
+  await app.type("pool-member-search", "no-match-fixture");
+  await app.waitFor("No matching models.");
+  await app.clear("pool-member-search");
+  await app.type("pool-member-search", "model-1");
   await app.press("pool-toggle-model-1");
-  // The member list is the draft, so the press has to show there before the save.
+  await app.press("pool-member-picker-done");
   await app.waitFor("Members, in order (1)");
   await app.press("save-pool");
 
   await app.waitFor("Saved Fast fallbacks");
   const save = backend.calls.find(call => call.action === "save_model_pool")?.request;
   expect(save).toMatchObject({
-    pool: { id: "", name: "Fast fallbacks", strategy: "ordered", member_model_ids: ["model-1"] },
+    pool: { id: "", name: "Fast fallbacks", strategy: "balanced", member_model_ids: ["model-1"] },
   });
-  // The row drawn is the host's document, not the draft this surface just typed.
-  await app.waitFor("Ordered · 1 members");
+  await app.waitFor("Balanced assignment · 1 members");
 
-  // Editing an existing pool starts from what the host holds for it.
-  await app.press("pool-actions-pool-1");
   await app.press("edit-pool-pool-1");
   await app.waitFor("Members, in order (1)");
-  await app.press("Cancel");
-
-  await app.press("check-pool-pool-1");
   const statusCalls = await waitForCalls(backend, "get_model_pool_status");
   expect(statusCalls[0]?.request).toMatchObject({ poolId: "pool-1" });
-  await app.waitFor("text:model-1: cooling_down (rate limited)");
+  await app.waitFor("Cooling down");
+  await app.waitFor("Too many requests. Please wait a moment and try again.");
+  await app.press("pool-member-actions-model-1");
+  await app.press("pool-member-retry-model-1");
+  await app.waitFor("Available");
+  expect(backend.calls.find(call => call.action === "retry_model_pool_member")?.request).toEqual({ modelId: "model-1" });
+  await app.press("pool-cancel");
 
-  await app.press("pool-actions-pool-1");
   await app.press("delete-pool-pool-1");
+  await app.waitFor("pool-delete-dialog");
+  expect(backend.actions()).not.toContain("delete_model_pool");
+  await app.press("pool-delete-cancel");
+  await app.waitFor("pool-delete-dialog", { state: "gone" });
+  await app.press("delete-pool-pool-1");
+  await app.press("pool-delete-confirm");
   expect(backend.calls.find(call => call.action === "delete_model_pool")?.request).toMatchObject({
     poolId: "pool-1",
   });
@@ -2304,7 +2404,7 @@ test("settings exposes the AI execution scalars the host reconciles", async () =
 
   await app.press("Settings");
   await app.press("nav-settings-page-execution");
-  await app.waitFor("AI execution");
+  await app.waitFor("Tool schema loading");
   await app.press("deferred-tool-loading");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.enable_deferred_tool_loading", value: false });
 
@@ -2321,6 +2421,8 @@ test("settings exposes the AI execution scalars the host reconciles", async () =
   // A timeout the host keeps as `Option` clears to null ("no limit").
   await app.press("user-question-timeout-clear");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.user_question_timeout_secs", value: null });
+  await app.press("execution-manage-subagents");
+  await app.waitFor("Agents your sessions can use, and the helpers they call.");
 });
 
 test("settings reads the permission policy and writes the mode back as the desktop does", async () => {
@@ -2534,9 +2636,13 @@ test("usage draws the host's totals for the chosen range", async () => {
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
   await app.waitFor("Usage");
-  await app.waitFor("42 requests · 120K tokens");
-  await app.waitFor("90.0K in · 30.0K out · 40.0K cached · 5.0K cache writes");
-  await app.waitFor("Cache hit rate 50.0%");
+  await app.waitFor("id:usage-total-tokens >> text:120K");
+  await app.waitFor("id:usage-input-tokens >> text:90.0K");
+  await app.waitFor("id:usage-output-tokens >> text:30.0K");
+  await app.waitFor("id:usage-requests >> text:42");
+  await app.waitFor("id:usage-cache-rate >> text:50.0%");
+  await app.waitFor("id:usage-cache-tokens >> text:40.0K");
+  await app.waitFor("id:usage-cache-writes >> text:5.0K");
   await app.waitFor("2 failed · 1 without usage data");
   await app.waitFor("primary-large · openai");
   await app.waitFor("30 req · 100K tokens");
@@ -2545,11 +2651,14 @@ test("usage draws the host's totals for the chosen range", async () => {
   // The range decides the bucketing the host is asked for; the fixed activity
   // window below it asks for days whatever the range is.
   expect(backend.usageRequests[0]).toMatchObject({ timeRange: "thisMonth", granularity: "day", includeSubagent: true });
-  await app.press("usage-range-today");
+  await app.press("id:usage-range-select");
+  await app.press("label:usage-range-today");
   expect(backend.usageRequests.find(call => call.timeRange === "today")).toMatchObject({
     granularity: "hour",
   });
-  await app.press("usage-range-all");
+  await app.waitUntil(() => app.enabled("id:usage-range-select"));
+  await app.press("id:usage-range-select");
+  await app.press("label:usage-range-all");
   expect(backend.usageRequests.find(call => call.timeRange === "all")).toMatchObject({
     granularity: "day",
   });
@@ -2564,6 +2673,9 @@ test("usage draws the fixed six-month activity grid beside the range", async () 
   await app.waitFor("Usage");
   // The grid is the host's view model: its total, not a sum of trend buckets.
   await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
+  expect(app.texts().findIndex(text => text.startsWith("Activity ·"))).toBeLessThan(
+    app.texts().indexOf("Selected period"),
+  );
 
   // One read of the host's day-keyed activity, in this surface's zone.
   const window = backend.usageRequests.find(call => call.command === "get_token_usage_activity");
@@ -2571,9 +2683,16 @@ test("usage draws the fixed six-month activity grid beside the range", async () 
   expect(backend.usageRequests.some(call => call.timeRange === "custom")).toBe(false);
 
   // Switching the range reads the range again; the grid's window does not move.
-  await app.press("usage-range-today");
+  await app.waitUntil(() => app.enabled("id:usage-range-select"));
+  await app.press("id:usage-range-select");
+  await app.press("label:usage-range-today");
   await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
-  expect(backend.usageRequests.filter(call => call.command === "get_token_usage_activity").length).toBe(2);
+  expect(backend.usageRequests.filter(call => call.command === "get_token_usage_activity").length).toBe(1);
+
+  await app.waitUntil(() => app.enabled("label:usage-reload"));
+  await app.press("label:usage-reload");
+  await app.waitUntil(() => backend.usageRequests.filter(call => call.command === "get_token_usage_activity").length === 2);
+  expect(backend.usageRequests.filter(call => call.timeRange === "today").length).toBe(2);
 });
 
 test("a host that refuses the activity window keeps the range and says why", async () => {
@@ -2582,7 +2701,7 @@ test("a host that refuses the activity window keeps the range and says why", asy
 
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
-  await app.waitFor("42 requests · 120K tokens");
+  await app.waitFor("id:usage-total-tokens >> text:120K");
   await app.waitFor("This host would not answer the six-month activity window.");
   expect(app.texts().join("\n")).not.toContain("tokens over the window.");
 });
@@ -2593,7 +2712,7 @@ test("a host older than the activity view model asks for an update instead of ke
 
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
-  await app.waitFor("42 requests · 120K tokens");
+  await app.waitFor("id:usage-total-tokens >> text:120K");
   await app.waitFor("Update OpenBitFun on this device to see the activity chart; its version is too old to compute it.");
   expect(app.texts().join("\n")).not.toContain("tokens over the window.");
 });
@@ -2605,7 +2724,21 @@ test("a host that offers no usage statistics says so instead of showing zeros", 
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
   await app.waitFor("This device reports no usage statistics, so nothing is invented here.");
-  expect(app.texts()).not.toContain("0 requests · 0 tokens");
+  expect(app.shows("id:usage-total-tokens")).toBe(false);
+});
+
+test("usage distinguishes an empty period from an empty history", async () => {
+  const backend = createBackend({ usage: { ...DEFAULT_USAGE, totalRequests: 0, trend: [], byModel: [], byGroup: [], byEndpoint: [] } });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-usage");
+  await app.waitFor("No calls in this period");
+  expect(app.shows("id:usage-total-tokens")).toBe(false);
+
+  await app.press("id:usage-range-select");
+  await app.press("label:usage-range-all");
+  await app.waitFor("No usage data yet");
 });
 
 /** Six models, two groups and one endpoint, so a cut at five rows is visible. */
@@ -2691,15 +2824,27 @@ test("content width is a stepper over the preference both frontends keep", async
 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("1100px · the transcript column, shared with the desktop surface");
+  await app.waitUntil(() => app.value("id:content-width") === "1100");
 
   await app.press("content-width-increase");
-  await app.waitFor("1110px · the transcript column, shared with the desktop surface");
+  await app.waitUntil(() => app.storage()["openbitfun:appearance:flowChatWidth"] === "1110");
+
+  await app.clear("id:content-width");
+  await app.type("id:content-width", "950");
   expect(app.storage()["openbitfun:appearance:flowChatWidth"]).toBe("1110");
+  await app.submit("id:content-width");
+  await app.waitUntil(() => app.storage()["openbitfun:appearance:flowChatWidth"] === "950");
+
+  await app.clear("id:content-width");
+  await app.type("id:content-width", "400");
+  await app.submit("id:content-width");
+  await app.waitUntil(() => app.storage()["openbitfun:appearance:flowChatWidth"] === "600");
+  expect(app.value("id:content-width")).toBe("600");
 
   await app.press("content-width-reset");
-  await app.waitFor("760px · the transcript column, shared with the desktop surface");
-  expect(app.storage()["openbitfun:appearance:flowChatWidth"]).toBe("760");
+  await app.waitUntil(() => app.storage()["openbitfun:appearance:flowChatWidth"] === "760");
+  expect(app.value("id:content-width")).toBe("760");
+  expect(app.enabled("label:content-width-reset")).toBe(false);
 });
 
 test("a stored content width below the floor falls back to the default", async () => {
@@ -2713,7 +2858,7 @@ test("a stored content width below the floor falls back to the default", async (
 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("760px · the transcript column, shared with the desktop surface");
+  await app.waitUntil(() => app.value("id:content-width") === "760");
 });
 
 test("log files show the run's folder, the crash hint, and pack a bundle on request", async () => {  const backend = createBackend({
@@ -2813,27 +2958,24 @@ test("settings writes tool and hook switches as leaf paths, not whole objects", 
   });
 });
 
-test("settings reaches the session-memory switches", async () => {
+test("settings reaches the paired session-memory switch and its dependent controls", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Memory");
-  await app.press("memory-processing-toggle");
+  await app.waitFor("Sessions and memory");
+  await app.press("id:memory-advanced-toggle");
   await app.waitFor("Days before unused memories expire");
   expect(app.value("memory-max-unused-days")).toBe("30");
 
-  await app.press("memory-enabled");
-  expect(backend.calls).toContainEqual({
-    action: "product_control_invoke",
-    request: { action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value: false },
-    raw: false,
-  });
-  expect(backend.settingsWrites.find(write => write.path === "memories")?.value).toMatchObject({
-    generate_memories: false,
-    use_memories: false,
-  });
+  await app.press("id:memory-enabled");
+  await app.waitUntil(() => !app.enabled("id:memory-extract-model") && app.enabled("id:memory-enabled"));
+  const memoryWrite = backend.calls.find(call => call.action === "product_control_invoke"
+    && (call.request as { capabilityId?: string } | undefined)?.capabilityId === "setting.ai.memory");
+  expect(memoryWrite?.request).toEqual({ action: "configure", capabilityId: "setting.ai.memory", optionId: "enabled", value: false });
+  await app.press("id:memory-enabled");
+  await app.waitUntil(() => app.enabled("id:memory-extract-model"));
 
   // An enum the host deserializes: skip extraction for polluted sessions.
   await app.press("memory-external-context");
@@ -2882,7 +3024,8 @@ test("a field the host stores nothing for shows its default and stays writable",
   await app.press("prevent-sleep");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Extract useful facts and preferences from conversations and use saved memories in future sessions");
+  await app.waitFor("Learn from conversations and include relevant memories in future sessions.");
+  await app.waitUntil(() => app.enabled("id:memory-enabled"));
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
 });
 test("settings carries the input and workspace groups as leaf writes", async () => {
@@ -3149,7 +3292,7 @@ test("the reference picker says when nothing matches and when the host cannot se
   await app.press("composer-plus");
   await app.press("Reference");
   await app.type("mention-query", "zzz");
-  await app.waitFor("No file names match “zzz”");
+  await app.waitFor("No references match “zzz”");
   // Nothing is invented to fill the list, and no tag can be pressed.
   expect(app.texts()).not.toContain("README.md");
 
@@ -3180,18 +3323,26 @@ test("the font baseline the host stores sets the size the whole surface draws", 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor(baseline(18));
+  await app.type("id:font-size-preview", "Temporary sample");
+  expect(backend.settingsWrites.filter(write => write.path === "font")).toHaveLength(0);
 
   // A preset writes the level alone: the desktop drops the custom px with it.
-  await app.press("font-level-large");
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-large");
   await waitForCalls(backend, "set_config");
   expect(backend.settingsWrites.at(-1)).toMatchObject({
     path: "font",
     value: { uiSize: { level: "large" } },
   });
   await app.waitFor(baseline(16));
+  expect(app.shows("id:font-size")).toBe(false);
+  expect(app.value("id:font-size-preview")).toBe("Temporary sample");
 
-  // One step off a preset is a custom size, which is how the desktop's own
-  // stepper leaves the presets.
+  // Custom starts at the current preset, then exposes the editable stepper.
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-custom");
+  await app.waitFor("id:font-size");
+  expect(app.value("id:font-size")).toBe("16");
   await app.press("font-size-increase");
   await app.waitFor(baseline(17));
   expect(backend.settingsWrites.at(-1)).toMatchObject({
@@ -3199,17 +3350,16 @@ test("the font baseline the host stores sets the size the whole surface draws", 
     value: { uiSize: { level: "custom", customPx: 17 } },
   });
 
-  // The stored size is clamped to the range the desktop allows: the last step
-  // lands on 20 and the next one is refused before it reaches the host.
-  const writes = backend.settingsWrites.length;
-  await app.press("font-size-increase");
-  await app.waitFor(baseline(18));
-  await app.press("font-size-increase");
-  await app.waitFor(baseline(19));
-  await app.press("font-size-increase");
+  await app.clear("id:font-size");
+  await app.type("id:font-size", "24");
+  expect(app.shows(baseline(17))).toBe(true);
+  await app.submit("id:font-size");
   await app.waitFor(baseline(20));
-  expect(app.texts()).toContain(baseline(20));
-  expect(backend.settingsWrites.length).toBe(writes + 3);
+  expect(app.value("id:font-size")).toBe("20");
+  expect(app.enabled("label:font-size-increase")).toBe(false);
+  expect(backend.settingsWrites.at(-1)).toMatchObject({
+    path: "font", value: { uiSize: { level: "custom", customPx: 20 } },
+  });
 
   await app.press("font-size-reset");
   await app.waitFor(baseline(14));
@@ -3229,7 +3379,8 @@ test("a host that stores no font baseline keeps the default size", async () => {
   // Nothing is written until the user asks for another size.
   expect(backend.settingsWrites.filter(write => write.path === "font")).toHaveLength(0);
 
-  await app.press("font-level-compact");
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-compact");
   await waitForCalls(backend, "set_config");
   expect(backend.settingsWrites.at(-1)).toMatchObject({
     path: "font",
@@ -3238,15 +3389,43 @@ test("a host that stores no font baseline keeps the default size", async () => {
   await app.waitFor("12px · this device's font baseline");
 });
 
-test("MCP servers start, add through the document, and refuse a stale write", async () => {
+test("a refused font size keeps the preview live and can be retried", async () => {
   const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let attempts = 0;
+  backend.handlers["openbitfun.invoke"] = data => {
+    const { action, request } = data as { action?: string; request?: { path?: string } };
+    if (action === "set_config" && request?.path === "font" && ++attempts === 1) {
+      return { ok: false, error: "Settings storage is offline." };
+    }
+    return invoke(data);
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
+  await app.type("id:font-size-preview", "Sample");
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-large");
+  await app.waitFor("The font size could not be saved. Choose the size again to retry.");
+  await app.waitFor("16px · this device's font baseline");
+  expect(app.value("id:font-size-preview")).toBe("Sample");
+
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-large");
+  await app.waitUntil(() => attempts === 2);
+  expect(backend.settingsWrites.at(-1)).toMatchObject({ path: "font", value: { uiSize: { level: "large" } } });
+  await app.waitFor("The font size could not be saved. Choose the size again to retry.", { state: "gone" });
+});
+
+test("MCP servers start, and new entries preserve existing fields and stay disabled", async () => {
+  const backend = createBackend({ mcpRemoteAuthConfigured: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
   await app.waitFor("MCP servers");
-  await app.waitFor("Filesystem · fs-server");
-  await app.waitFor("Docs · remote-docs");
+  await app.waitFor("mcp-row-status-fs-server");
+  await app.waitFor("mcp-row-status-remote-docs");
 
   // A stopped, disabled server is enabled in the stored document first (the
   // host refuses to start a disabled one), then started through the host, and
@@ -3280,39 +3459,254 @@ test("MCP servers start, add through the document, and refuse a stale write", as
   // Writing a configuration is not permission to launch what it names.
   expect(added.mcpServers.weather.enabled).toBe(false);
   expect(added.mcpServers["fs-server"].keepMe).toBe("unknown field");
-
-  // The JSON view edits the very document that is stored.
-  await app.press("mcp-json-toggle");
-  await app.waitFor("Save JSON");
-  await app.press("mcp-json-save");
-  await waitForCalls(backend, "save_mcp_json_config", 3);
-  expect(backend.mcpSaves[2].jsonConfig).toBe(backend.mcpSaves[1].jsonConfig);
-
-  // A document that moved after it was read is not overwritten: the save is
-  // refused, the reason is shown, and nothing is written.
-  backend.changeMcpDocumentElsewhere();
-  await app.press("mcp-json-save");
-  await app.waitFor("The MCP configuration changed elsewhere; reloaded it");
-  await app.waitFor("Not saved");
-  expect(backend.mcpSaves).toHaveLength(3);
 });
 
-test("a remote MCP server authorizes through the host's browser flow", async () => {
+test("the MCP server form guards edits, masks stored values, and shares its draft with server JSON", async () => {
+  const backend = createBackend();
+  const stored = backend.mcpDocument() as { mcpServers: Record<string, Record<string, unknown>> };
+  const entry = stored.mcpServers["fs-server"];
+  entry.args = ["", "  spaced argument  "];
+  entry.env = { FIXTURE_SETTING: "  stored value  " };
+  entry.timeouts = { executionMs: 3500 };
+  backend.changeMcpDocumentElsewhere(JSON.stringify(stored));
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-edit-fs-server");
+  expect(app.enabled("mcp-draft-save")).toBe(false);
+  expect(app.value("mcp-draft-env-value-0") ?? "").toBe("");
+  expect(app.texts().join("\n")).not.toContain("stored value  ");
+  expect(app.value("mcp-draft-arg-1")).toBe("  spaced argument  ");
+  expect(app.shows("mcp-draft-id")).toBe(false);
+  await app.press("mcp-draft-advanced");
+  expect(app.value("mcp-draft-id")).toBe("fs-server");
+  await app.clear("mcp-draft-name");
+  await app.type("mcp-draft-name", "Fixture Files");
+  await app.press("mcp-draft-cancel");
+  await app.waitFor("settings-unsaved-dialog");
+  await app.press("settings-unsaved-keep");
+  expect(app.value("mcp-draft-name")).toBe("Fixture Files");
+
+  await app.press("mcp-draft-switch-editor");
+  const json = JSON.parse(app.value("mcp-draft-json")!);
+  expect(json).toMatchObject({ name: "Fixture Files", env: { FIXTURE_SETTING: "  stored value  " }, keepMe: "unknown field" });
+  await app.clear("mcp-draft-json");
+  await app.type("mcp-draft-json", JSON.stringify({ ...json, extraJsonField: true }));
+  await app.press("mcp-draft-switch-editor");
+  expect(app.value("mcp-draft-name")).toBe("Fixture Files");
+  expect(app.value("mcp-draft-env-value-0") ?? "").toBe("");
+
+  await app.keyboard.press("escape");
+  await app.waitFor("settings-unsaved-dialog");
+  await app.press("settings-unsaved-save");
+  await app.waitFor("mcp-draft-modal", { state: "gone" });
+  expect(backend.mcpSaves).toHaveLength(1);
+  expect(backend.mcpSaves[0].expectedFingerprint).toBe("fp-2");
+  expect(backend.mcpDocument()).toMatchObject({ mcpServers: { "fs-server": {
+    name: "Fixture Files", env: { FIXTURE_SETTING: "  stored value  " }, args: ["", "  spaced argument  "],
+    extraJsonField: true, timeouts: { executionMs: 3500 }, keepMe: "unknown field",
+  } } });
+});
+
+test("the MCP server editor opens advanced entries as JSON and reloads after a fingerprint conflict", async () => {
+  const backend = createBackend();
+  const stored = backend.mcpDocument() as { mcpServers: Record<string, Record<string, unknown>> };
+  stored.mcpServers["fs-server"].env = { FIXTURE_SETTING: 1 };
+  backend.changeMcpDocumentElsewhere(JSON.stringify(stored));
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-edit-fs-server");
+  const raw = JSON.parse(app.value("mcp-draft-json")!);
+  expect(raw.env).toEqual({ FIXTURE_SETTING: 1 });
+  expect(app.shows("mcp-draft-command")).toBe(false);
+  await app.clear("mcp-draft-json");
+  await app.type("mcp-draft-json", JSON.stringify({ ...raw, env: { FIXTURE_SETTING: "converted" } }));
+  await app.press("mcp-draft-switch-editor");
+  await app.waitFor("mcp-draft-command");
+
+  stored.mcpServers["fs-server"].env = { FIXTURE_SETTING: "changed elsewhere" };
+  stored.mcpServers["fs-server"].otherClientEdit = true;
+  backend.changeMcpDocumentElsewhere(JSON.stringify(stored));
+  await app.press("mcp-draft-save");
+  await app.waitFor("Reload configuration");
+  expect(app.enabled("mcp-draft-save")).toBe(false);
+  expect(backend.mcpSaves).toHaveLength(0);
+  expect(backend.calls.find(call => call.action === "save_mcp_json_config")?.request).toMatchObject({ expectedFingerprint: "fp-2" });
+
+  await app.press("Reload configuration");
+  await app.waitFor("settings-unsaved-dialog");
+  expect(app.enabled("settings-unsaved-save")).toBe(false);
+  await app.press("settings-unsaved-discard");
+  await app.waitFor("mcp-draft-command");
+  await app.clear("mcp-draft-name");
+  await app.type("mcp-draft-name", "Latest Files");
+  await app.press("mcp-draft-save");
+  await app.waitFor("mcp-draft-modal", { state: "gone" });
+  expect(backend.mcpSaves).toHaveLength(1);
+  expect(backend.mcpSaves[0].expectedFingerprint).toBe("fp-3");
+  expect(backend.mcpDocument()).toMatchObject({ mcpServers: { "fs-server": {
+    name: "Latest Files", env: { FIXTURE_SETTING: "changed elsewhere" }, otherClientEdit: true,
+  } } });
+});
+
+test("a new MCP server form stores the selected authorization and leaves the server disabled", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-add");
+  await app.type("mcp-draft-name", "Token fixture");
+  await app.type("mcp-draft-url", "https://example.invalid/mcp");
+  await app.press("mcp-draft-auth");
+  await app.press("mcp-draft-auth-token");
+  await app.type("mcp-draft-token", "fixture-only-token");
+  await app.press("mcp-draft-save");
+  await app.waitFor("mcp-draft-modal", { state: "gone" });
+  expect(backend.mcpDocument()).toMatchObject({ mcpServers: { "token-fixture": {
+    transport: "streamable-http", url: "https://example.invalid/mcp", enabled: false, oauthEnabled: false,
+    headers: { Authorization: "Bearer fixture-only-token" },
+  } } });
+  expect(backend.actions()).not.toContain("start_mcp_server");
+});
+
+test("the MCP JSON editor guards draft exits and blocks stale saves until the stored version is reloaded", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.waitFor("mcp-row-status-fs-server");
+  await app.press("mcp-json-toggle");
+  await app.waitUntil(() => (app.value("mcp-json") ?? "").includes("fs-server"));
+  expect(app.enabled("mcp-json-save")).toBe(false);
+  expect(app.shows("mcp-row-status-fs-server")).toBe(false);
+
+  const stored = JSON.parse(app.value("mcp-json")!);
+  await app.clear("mcp-json");
+  await app.type("mcp-json", "{}");
+  await app.waitFor("The document needs an mcpServers object.");
+  await app.press("mcp-json-cancel");
+  await app.waitFor("settings-unsaved-dialog");
+  expect(app.enabled("settings-unsaved-save")).toBe(false);
+  await app.press("settings-unsaved-keep");
+  expect(app.value("mcp-json")).toBe("{}");
+  const sceneBack = app.shows("nav-back") ? "nav-back" : "topbar-nav-back";
+  await app.press(sceneBack);
+  await app.waitFor("settings-unsaved-dialog");
+  await app.press("settings-unsaved-keep");
+  expect(app.value("mcp-json")).toBe("{}");
+
+  const draft = JSON.stringify({ ...stored, localDraft: true });
+  await app.clear("mcp-json");
+  await app.type("mcp-json", draft);
+  const moved = JSON.stringify({ ...stored, otherClientEdit: true });
+  backend.changeMcpDocumentElsewhere(moved);
+  await app.press("nav-settings-page-general");
+  await app.press("settings-unsaved-save");
+  await app.waitFor("Not saved");
+  expect(app.shows("settings-unsaved-dialog")).toBe(false);
+  expect(app.value("mcp-json")).toBe(draft);
+  expect(app.enabled("mcp-json-save")).toBe(false);
+  expect(backend.mcpSaves).toHaveLength(0);
+  expect(backend.calls.find(call => call.action === "save_mcp_json_config")?.request).toMatchObject({ expectedFingerprint: "fp-1" });
+  expect(backend.mcpDocument()).toMatchObject({ otherClientEdit: true });
+
+  await app.press("Reload configuration");
+  await app.waitFor("settings-unsaved-dialog");
+  expect(app.enabled("settings-unsaved-save")).toBe(false);
+  await app.press("settings-unsaved-discard");
+  await app.waitUntil(() => app.value("mcp-json") === moved);
+  const merged = JSON.stringify({ ...JSON.parse(moved), localDraft: true });
+  await app.clear("mcp-json");
+  await app.type("mcp-json", merged);
+  await app.press("nav-settings-page-general");
+  await app.press("settings-unsaved-save");
+  await app.waitFor("Interface language");
+  expect(backend.mcpSaves).toEqual([{ jsonConfig: merged, expectedFingerprint: "fp-2" }]);
+  expect(app.shows("mcp-json-editor")).toBe(false);
+
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-json-toggle");
+  await app.clear("mcp-json");
+  await app.type("mcp-json", '{"mcpServers":{}}');
+  await app.press(sceneBack);
+  await app.waitFor("settings-unsaved-dialog");
+  await app.press("settings-unsaved-discard");
+  await app.waitFor("nav-settings-page-mcp", { state: "gone" });
+  expect(backend.mcpSaves).toHaveLength(1);
+});
+
+test("MCP JSON can repair stored text and handles the host acknowledgement of a saved file", async () => {
+  const backend = createBackend();
+  backend.changeMcpDocumentElsewhere('{"mcpServers":');
+  const original = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const reply = original(data);
+    if ((data as { action?: string }).action === "save_mcp_json_config" && (reply as { ok?: boolean }).ok) {
+      return { ok: false, error: "MCP config was saved, but runtime reconciliation failed: fixture runtime unavailable" };
+    }
+    return reply;
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-json-toggle");
+  await app.waitUntil(() => app.value("mcp-json") === '{"mcpServers":');
+  expect(app.enabled("mcp-json-save")).toBe(false);
+  await app.clear("mcp-json");
+  await app.type("mcp-json", '{"mcpServers":{}}');
+  await app.press("mcp-json-save");
+  await app.waitFor("MCP config was saved, but runtime reconciliation failed: fixture runtime unavailable");
+  expect(app.shows("mcp-json-editor")).toBe(false);
+  expect(backend.mcpSaves).toEqual([{ jsonConfig: '{"mcpServers":{}}', expectedFingerprint: "fp-2" }]);
+});
+
+test("the MCP collection shows runtime details and disables actions while its status is stale", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let failList = false;
+  backend.handlers["openbitfun.invoke"] = data => {
+    if ((data as { action?: string }).action === "get_mcp_servers" && failList) {
+      return { ok: false, error: "Fixture MCP service temporarily unavailable" };
+    }
+    return invoke(data);
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.waitFor("Managed by OpenBitFun");
+  await app.waitFor("/runtimes/node/bin/npx");
+  await app.waitFor("Not configured");
+  await app.waitUntil(() => app.enabled("mcp-edit-fs-server"));
+  expect(app.enabled("mcp-stop-fs-server")).toBe(true);
+  failList = true;
+  await app.press("mcp-reload");
+  await app.waitFor("Server status could not be refreshed. The last loaded details are shown.");
+  expect(app.shows("/runtimes/node/bin/npx")).toBe(true);
+  expect(app.enabled("mcp-stop-fs-server")).toBe(false);
+  failList = false;
+  await app.press("Retry");
+  await app.waitUntil(() => app.enabled("mcp-stop-fs-server"));
+  await app.press("mcp-edit-fs-server");
+  await app.waitFor("mcp-draft-save");
+  expect(backend.mcpSaves).toHaveLength(0);
+});
+
+test("starting an unauthorized remote MCP server opens the host's browser flow first", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
-  await app.waitFor("Docs · remote-docs");
+  await app.waitFor("mcp-row-status-remote-docs");
   // Only a server with an address has an authorization entry.
   expect(app.shows("mcp-auth-fs-server")).toBe(false);
 
-  await app.press("mcp-auth-remote-docs");
+  await app.press("mcp-start-remote-docs");
   await app.waitFor("Authorize remote-docs");
-  await app.waitFor("OAuth status: not started");
-
-  await app.press("mcp-auth-start");
   await app.waitFor("OAuth status: waiting for the browser");
+  expect(backend.actions()).not.toContain("start_mcp_server");
+  expect(backend.mcpSaves).toHaveLength(0);
   // The address the host answered with is opened outside the app.
   expect(app.openedUrls()).toContain("https://auth.example/authorize?state=abc123");
   await app.waitFor("The provider redirects to http://127.0.0.1:45871/oauth/callback");
@@ -3324,7 +3718,7 @@ test("a remote MCP server authorizes through the host's browser flow", async () 
     status: "authorized",
     message: "Docs is authorized",
   });
-  await app.waitFor("OAuth status: authorized");
+  await app.waitFor("mcp-auth-modal", { state: "gone" });
   await app.waitFor("Docs is authorized");
 });
 
@@ -3334,8 +3728,9 @@ test("an OAuth flow can be cancelled, and a typed authorization value reaches th
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
-  await app.waitFor("Docs · remote-docs");
+  await app.waitFor("mcp-row-status-remote-docs");
   await app.press("mcp-auth-remote-docs");
+  await app.waitUntil(() => app.enabled("mcp-auth-start"));
   await app.press("mcp-auth-start");
   await app.waitFor("OAuth status: waiting for the browser");
 
@@ -3346,16 +3741,52 @@ test("an OAuth flow can be cancelled, and a typed authorization value reaches th
   // A server without a browser flow still takes the value its operator pastes.
   await app.type("mcp-auth-value", "secret-token");
   await app.press("mcp-auth-save-value");
+  await app.waitFor("mcp-auth-modal", { state: "gone" });
   await app.waitFor("Saved the authorization value for remote-docs");
   expect(backend.mcpAuthWrites).toEqual([
     { serverId: "remote-docs", authorizationValue: "secret-token" },
   ]);
   // The row reports the authorization the host now holds.
-  await app.waitFor("Reauthorize");
+  await app.waitFor("Configured");
 
+  await app.press("mcp-auth-remote-docs");
+  await app.waitUntil(() => app.enabled("mcp-auth-clear"));
   await app.press("mcp-auth-clear");
   await app.waitFor("Cleared the authorization for remote-docs");
   expect(backend.mcpAuthClears).toEqual(["remote-docs"]);
+});
+
+test("MCP connection failures offer manual authorization only for remote authentication errors", async () => {
+  const backend = createBackend({ mcpRemoteAuthConfigured: true });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let remoteError = "Connection timed out";
+  backend.handlers["openbitfun.invoke"] = data => {
+    const action = (data as { action: string }).action;
+    if (action === "start_mcp_server") return { ok: false, error: remoteError };
+    if (action === "restart_mcp_server") return { ok: false, error: "Authentication failed in local fixture" };
+    if (action !== "get_mcp_servers") return invoke(data);
+    const reply = invoke(data) as { ok: true; value: Array<Record<string, unknown>> };
+    return { ...reply, value: reply.value.map(row => row.id === "remote-docs"
+      ? { ...row, enabled: true, oauthEnabled: false } : row) };
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.waitFor("mcp-start-remote-docs");
+
+  await app.press("mcp-restart-fs-server");
+  await app.waitFor("Authentication failed in local fixture");
+  expect(app.shows("mcp-auth-modal")).toBe(false);
+  await app.press("mcp-start-remote-docs");
+  await app.waitFor("Request timed out. Check your connection and try again.");
+  expect(app.shows("mcp-auth-modal")).toBe(false);
+
+  remoteError = "Handshake failed: status code: 401";
+  await app.press("mcp-start-remote-docs");
+  await app.waitFor("This server requires authorization before it can connect.");
+  await app.waitFor("mcp-auth-value");
+  expect(app.shows("mcp-auth-start")).toBe(false);
+  expect(backend.actions()).not.toContain("start_mcp_remote_oauth");
 });
 
 test("a pasted MCP configuration imports only the entries this form can express", async () => {
@@ -3364,7 +3795,7 @@ test("a pasted MCP configuration imports only the entries this form can express"
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
-  await app.waitFor("Docs · remote-docs");
+  await app.waitFor("mcp-row-status-remote-docs");
   await app.press("mcp-import");
   await app.waitFor("Import servers");
 
@@ -3380,8 +3811,9 @@ test("a pasted MCP configuration imports only the entries this form can express"
   };
   await app.type("mcp-import-text", JSON.stringify(pasted, null, 2));
   await app.press("mcp-import-preview");
-  await app.waitFor("3 servers read; 1 cannot be imported by this form");
+  await app.waitFor("mcp-import-review");
   await app.waitFor("weird-one");
+  expect(app.enabled("mcp-import-select-weird-one")).toBe(false);
 
   // Only the fresh, expressible entry is selected; the import writes it disabled.
   await app.press("mcp-import-save");
@@ -3395,7 +3827,72 @@ test("a pasted MCP configuration imports only the entries this form can express"
   // The entry the id collided with keeps the document's own shape.
   expect(saved.mcpServers["fs-server"].keepMe).toBe("unknown field");
   expect(saved.mcpServers["fs-server"].command).toBe("npx");
-  await app.waitFor("Imported 1 server; each is stored disabled");
+  await app.waitFor("Imported 1 as disabled.");
+});
+
+test("a picked MCP configuration keeps its review on cancellation and rechecks IDs after a concurrent change", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.press("mcp-import");
+  const contents = JSON.stringify({ mcpServers: {
+    "file-alpha": { command: "fixture-command", enabled: true, _openbitfunImport: { sourceId: "untrusted-fixture" } },
+    "file-beta": { url: "https://example.invalid/mcp" },
+  } });
+  let pickAgain = false;
+  app.onPick(request => {
+    expect(request).toMatchObject({ kind: "files", multiple: false, filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (pickAgain) return null;
+    pickAgain = true;
+    return [{ name: "mcp-fixture.json", type: "application/json", data: new TextEncoder().encode(contents) }];
+  });
+  await app.press("mcp-import-pick");
+  await app.waitFor("mcp-fixture.json");
+  expect(app.value("mcp-import-text")).toBe(contents);
+  expect(app.shows("mcp-import-review")).toBe(false);
+  expect(app.enabled("mcp-import-save")).toBe(false);
+  expect(backend.mcpSaves).toHaveLength(0);
+
+  await app.press("mcp-import-close");
+  await app.waitFor("settings-unsaved-dialog");
+  expect(app.enabled("settings-unsaved-save")).toBe(false);
+  await app.press("settings-unsaved-keep");
+  await app.press("mcp-import-preview");
+  await app.waitFor("mcp-import-review");
+  await app.clear("mcp-import-target-file-beta");
+  await app.type("mcp-import-target-file-beta", "file-alpha");
+  await app.waitFor("This server ID is already in use.");
+  expect(app.enabled("mcp-import-save")).toBe(false);
+  await app.clear("mcp-import-target-file-beta");
+  await app.type("mcp-import-target-file-beta", "docs-from-file");
+  await app.press("mcp-import-pick");
+  expect(app.value("mcp-import-target-file-beta")).toBe("docs-from-file");
+  expect(app.value("mcp-import-text")).toBe(contents);
+
+  const latest = backend.mcpDocument() as { mcpServers: Record<string, unknown> };
+  latest.mcpServers["file-alpha"] = { command: "other-client", enabled: false };
+  backend.changeMcpDocumentElsewhere(JSON.stringify(latest));
+  await app.press("mcp-import-save");
+  await app.waitFor("Refresh target configuration");
+  expect(app.enabled("mcp-import-save")).toBe(false);
+  expect(backend.mcpSaves).toHaveLength(0);
+  expect(backend.calls.find(call => call.action === "save_mcp_json_config")?.request).toMatchObject({ expectedFingerprint: "fp-1" });
+  await app.press("Refresh target configuration");
+  await app.waitFor("This server ID is already in use.");
+  expect(app.value("mcp-import-target-file-beta")).toBe("docs-from-file");
+  await app.clear("mcp-import-target-file-alpha");
+  await app.type("mcp-import-target-file-alpha", "local-from-file");
+  await app.press("mcp-import-close");
+  await app.waitFor("settings-unsaved-dialog");
+  await app.press("settings-unsaved-save");
+  await app.waitFor("mcp-import-modal", { state: "gone" });
+  expect(backend.mcpSaves).toHaveLength(1);
+  expect(backend.mcpSaves[0].expectedFingerprint).toBe("fp-2");
+  const saved = backend.mcpDocument() as { mcpServers: Record<string, Record<string, unknown>> };
+  expect(saved.mcpServers["file-alpha"].command).toBe("other-client");
+  expect(saved.mcpServers["local-from-file"]).toEqual({ command: "fixture-command", enabled: false });
+  expect(saved.mcpServers["docs-from-file"].enabled).toBe(false);
 });
 
 // ── App shell & navigation (round 4) ─────────────────────────────────────────
@@ -3584,6 +4081,16 @@ test("the account menu checks for updates, offers the download and then the rest
   await app.waitFor("Restart to update");
 });
 
+test("global search opens an indexed settings section inside its page", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("global-search-trigger");
+  await app.type("global-search-input", "network");
+  await app.press("id:global-search-item-setting:anchor:models:network");
+  await app.waitFor("Use a proxy for model requests");
+  expect(app.shows("add-model")).toBe(false);
+});
+
 test("global search groups workspaces and settings pages beside sessions", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
@@ -3591,7 +4098,7 @@ test("global search groups workspaces and settings pages beside sessions", async
   await app.waitFor("global-search-trigger");
   await app.press("global-search-trigger");
   await app.type("global-search-input", "remote");
-  await app.waitFor("label:global-search-item-workspace:workspace-2");
+  await app.waitFor("id:global-search-item-workspace:workspace-2");
   expect(app.texts()).toContain("Workspaces");
   // Message hits are read from every opened workspace, not only the active one.
   await app.waitUntil(() =>
@@ -3600,7 +4107,7 @@ test("global search groups workspaces and settings pages beside sessions", async
         (call.request as { workspaceId?: string }).workspaceId === "workspace-2",
     ),
   );
-  await app.press("label:global-search-item-workspace:workspace-2");
+  await app.press("id:global-search-item-workspace:workspace-2");
   await app.waitUntil(() =>
     backend.calls.some(
       call => call.action === "set_active_workspace" &&
@@ -3660,7 +4167,7 @@ test("MCP enable flips the stored flag, and delete asks first", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-mcp");
-  await app.waitFor("Docs · remote-docs");
+  await app.waitFor("mcp-row-status-remote-docs");
 
   // The menu's Enable enables; it does not open the editor or start the server.
   await app.press("mcp-actions-remote-docs");
@@ -3704,10 +4211,13 @@ test("memory folder opens on the host and clearing memories asks first", async (
 
   await app.press("Settings");
   await app.press("nav-settings-page-session-memory");
+  await app.waitUntil(() => app.enabled("memory-manage"));
+  await app.press("memory-manage");
   await app.press("memory-open-folder");
   await waitForCalls(backend, "reveal_in_explorer");
   expect(backend.reveals).toContain("/tmp/openbitfun/memories");
 
+  await app.press("memory-manage");
   await app.press("memory-reset");
   await app.waitFor("memory-reset-confirm");
   expect(resets).toBe(0);

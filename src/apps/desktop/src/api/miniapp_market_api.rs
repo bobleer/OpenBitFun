@@ -1,12 +1,14 @@
 //! Native MiniApp marketplace adapter.
 //!
 //! Network and credential-vault details live in Services. This module maps the
-//! shared marketplace DTOs into Tauri commands and owns the local install /
+//! shared marketplace DTOs into backend commands and owns the local install /
 //! update transaction against the desktop MiniApp manager.
 
 use crate::api::app_state::AppState;
 use crate::host::State;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use openbitfun_core::infrastructure::events::{emit_global_event, BackendEvent};
+use openbitfun_core::infrastructure::try_get_path_manager_arc;
 use openbitfun_core::miniapp::lifecycle::miniapp_runtime_event_payload;
 use openbitfun_core::miniapp::{
     MiniApp, MiniAppCustomizationMetadata, MiniAppPermissionDiff, MiniAppPermissions, MiniAppSource,
@@ -14,11 +16,12 @@ use openbitfun_core::miniapp::{
 use openbitfun_product_domains::miniapp::customization::diff_permissions;
 use openbitfun_product_domains::miniapp::market::{
     CursorPage, InstalledMarketOrigin, MarketListingDetail, MarketListingSummary, MarketRelease,
-    MarketSubmission, MarketSubmissionDraftRequest,
+    MarketSubmission, MarketSubmissionDraftRequest, MARKET_MAX_SCREENSHOT_BYTES,
 };
 use openbitfun_product_domains::product_release::{
     supports_market_minimum_version, OPENBITFUN_INITIAL_RELEASE_VERSION,
 };
+use openbitfun_services_integrations::market_image::MarketImageCache;
 use openbitfun_services_integrations::miniapp_market::{
     validate_market_package, FavoriteAggregate, MarketBrowseRequest, MarketClient, RatingAggregate,
     ValidatedMarketPackage,
@@ -27,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::OnceCell;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +79,15 @@ pub struct MarketSetFavoriteRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MarketSlugRequest {
-    pub slug: String,
+pub struct MarketListingRequest {
+    pub slug: Option<String>,
+    pub listing_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketScreenshotRequest {
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,20 +137,71 @@ pub struct MarketPackageInspection {
 pub async fn miniapp_market_browse(
     request: MarketBrowseRequest,
 ) -> Result<CursorPage<MarketListingSummary>, String> {
-    let client = MarketClient::from_environment()
+    let mut client = MarketClient::from_environment()
         .await
         .map_err(market_error)?;
-    client.browse(&request).await.map_err(market_error)
+    if request.listing_ids.is_empty() {
+        client.browse(&request).await
+    } else {
+        client.lookup_listing_summaries(request.listing_ids).await
+    }
+    .map_err(market_error)
 }
 
 // @backend-command
 pub async fn miniapp_market_get_listing(
-    request: MarketSlugRequest,
+    request: MarketListingRequest,
 ) -> Result<MarketListingDetail, String> {
+    let slug = request.slug.as_deref();
+    let listing_id = request.listing_id.as_deref();
+    let (value, by_id) = match (slug, listing_id) {
+        (Some(slug), None) if !slug.trim().is_empty() => (slug, false),
+        (None, Some(id)) if !id.trim().is_empty() => (id, true),
+        _ => return Err("Provide a marketplace listing slug or its id.".to_owned()),
+    };
     let mut client = MarketClient::from_environment()
         .await
         .map_err(market_error)?;
-    client.listing(&request.slug).await.map_err(market_error)
+    if by_id {
+        client.listing_by_id(value).await
+    } else {
+        client.listing(value).await
+    }
+    .map_err(market_error)
+}
+
+// @backend-command
+pub async fn miniapp_market_read_screenshot(
+    request: MarketScreenshotRequest,
+) -> Result<String, String> {
+    static CACHE: OnceCell<MarketImageCache> = OnceCell::const_new();
+    let sha256 = request.sha256;
+    if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid marketplace screenshot digest.".to_owned());
+    }
+    let base_url = MarketClient::configured_base_url();
+    let cache = CACHE
+        .get_or_try_init(|| async {
+            let root = try_get_path_manager_arc()
+                .map_err(|error| error.to_string())?
+                .cache_root()
+                .join("market-images-v1");
+            MarketImageCache::new(root, &base_url)
+        })
+        .await?;
+    let source = format!(
+        "{}/screenshots/{}",
+        base_url.trim_end_matches('/'),
+        sha256.to_ascii_lowercase()
+    );
+    let bytes = match cache.load(&format!("{source}?variant=large-v1")).await {
+        Ok(bytes) => bytes,
+        Err(_) => cache.load(&source).await?,
+    };
+    if bytes.len() as u64 > MARKET_MAX_SCREENSHOT_BYTES {
+        return Err("Marketplace screenshot exceeds the transfer size limit.".to_owned());
+    }
+    Ok(BASE64.encode(bytes))
 }
 
 // @backend-command

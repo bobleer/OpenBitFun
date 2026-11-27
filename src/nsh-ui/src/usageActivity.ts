@@ -7,7 +7,7 @@
 // older than the command gets an explicit "update the host" state instead of a
 // client-side projection of trend buckets.
 
-import { invokeCommand } from "./bridge";
+import { invokeCommand, type InvokeCommandOptions } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
 
 export const USAGE_ACTIVITY_COMMAND = "get_token_usage_activity";
@@ -110,14 +110,17 @@ export function readUsageActivity(raw: unknown): UsageActivityView {
 }
 
 /** One read of the heatmap in this surface's zone. */
-export async function fetchUsageActivity(months = USAGE_ACTIVITY_MONTHS): Promise<UsageActivityView> {
-  const timeZone = localTimeZone();
+export async function fetchUsageActivity(
+  months = USAGE_ACTIVITY_MONTHS,
+  options?: InvokeCommandOptions,
+  timeZone = localTimeZone(),
+): Promise<UsageActivityView> {
   try {
     const raw = await invokeCommand<unknown>(USAGE_ACTIVITY_COMMAND, {
       months,
       includeSubagent: true,
       ...(timeZone ? { timeZone } : {}),
-    });
+    }, options);
     return readUsageActivity(raw);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -3,10 +3,15 @@ use std::path::Path;
 
 use super::tools::framework::{ToolPathResolution, ToolUseContext};
 
-const URI_PREFIX: &str = "openbitfun://current-session/artifacts/visualizations/v2/";
-pub(super) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "remote-connect")]
+mod bindings;
+#[cfg(feature = "remote-connect")]
+pub(crate) use bindings::{refreshed_figure_binding, sealed_figure_bindings};
 
-pub(super) fn figure_uri(path: &str, session_dir: Option<&Path>) -> Option<String> {
+const URI_PREFIX: &str = "openbitfun://current-session/artifacts/visualizations/v2/";
+pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn figure_uri(path: &str, session_dir: Option<&Path>) -> Option<String> {
     let filename = if let Some(name) = path.strip_prefix(URI_PREFIX) {
         name
     } else {

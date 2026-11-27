@@ -2,10 +2,9 @@
 // the Files pane, the assistant persona documents and other Markdown surfaces
 // share.
 //
-// - `MarkdownPreview` is `TextView` with workspace-aware images and links (the
-//   caller's), plus Mermaid diagrams and display formulas drawn in a small web
-//   view island where this client shows web views. Without one, or when the
-//   renderer cannot load, the source stays visible as code: never an empty box.
+// - `MarkdownPreview` uses `TextView` for workspace-aware images and links and
+//   for inline math. Mermaid and display math use a web view when available.
+//   The source stays visible as code if the renderer cannot draw.
 // - `MarkdownDocumentEditor` is NSH's native `RichEditor` (a ProseMirror/Tiptap
 //   kernel) over the file's Markdown: parsed once when it opens, serialized on
 //   every change and handed back as text, so the caller saves exactly what it
@@ -16,22 +15,33 @@
 //
 // Inline AI asks the document's device through `editorAiStore.ts`.
 
-import { cleanup, effect, openUrl, Scroll, signal, Text, untracked, View, WebView, type JSX } from "nsh";
+import { cleanup, Clipboard, computed, effect, keymap, openUrl, Overlay, platform, Scroll, signal, Text, untracked, View, WebView, type JSX, type Point, type ViewRef, type WebViewRef } from "nsh";
 import {
+  chain,
   createRichEditor,
   Input,
+  insertContent,
+  insertText,
   RichEditor,
+  RichEditorPlugin,
   RichImage,
   RichTable,
   RichTableCell,
   RichTableHeader,
   RichTableRow,
+  selectAll,
+  scrollIntoView,
+  setTextSelection,
   StarterKit,
   TextView,
   type RichEditorSession,
   type RichEditorStyles,
   type RichExtension,
   type RichExtensionClass,
+  type RichNodeJSON,
+  type RichNodeViewProps,
+  type TextViewBlock,
+  type TextViewCustomNode,
   type TextViewImage,
   type TextViewLinkPressEvent,
 } from "nsh/base";
@@ -42,7 +52,9 @@ import {
   finishInlineAi,
   inlineAi,
   inlineAiComposer,
+  inlineAiMarkdown,
   openInlineAiComposer,
+  type InlineAiIntent,
 } from "../editorAiStore";
 import { windowShellId } from "../bridge";
 import { currentLocale, localizeHostError, tr } from "../i18n";
@@ -53,6 +65,7 @@ import {
   layout,
   palette,
   radii,
+  resolvedAppearanceId,
   resolvedScheme,
   space,
   textLineHeight,
@@ -70,7 +83,7 @@ import {
   openMarkdownImageInLightbox,
   transformEmbeddedMediaMarkdown,
 } from "./markdownMedia";
-import { activeWorkspace, activeWorkspaceRoot, openInAuxPane } from "../state";
+import { activeWorkspace, activeWorkspaceRoot, deviceContext, openInAuxPane } from "../state";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import { Icon } from "./icons";
 import {
@@ -80,9 +93,50 @@ import {
   STATIC_MARKDOWN_OPTIONS,
 } from "./markdown";
 import { MOTION_DURATION, paintTransition, popoverEnterMotion, pressTransition, rotatingChevronStyle, Spinner, tactileActiveStyle } from "./motion";
-import { registerEscapeDismiss } from "./overlays";
-import { Button, focusRingStyle, InputBox } from "./primitives";
+import { menuSurfaceStyle, ModalDialog, pushToast, registerEscapeDismiss } from "./overlays";
+import { Button, focusRingStyle, IconButton, InputBox, SegmentedTabs, type SegmentedTabOption } from "./primitives";
+import { Toolbar } from "./Toolbar";
 import { rendererAssets } from "../documentRenderers";
+import { readRendererAsset, resolveBrowserAsset } from "./documentRendererAssets";
+import { MarkdownDocumentImage, type MarkdownImageWorkspace } from "./markdownDocumentImage";
+
+export type MarkdownDocumentMode = "preview" | "visual" | "source";
+
+export async function copyDocumentMarkdown(markdown: string): Promise<void> {
+  try {
+    await Clipboard.writeText(markdown);
+    pushToast(tr("files.copied"), "success");
+  } catch (error) {
+    pushToast(localizeHostError(error), "error");
+  }
+}
+
+export function MarkdownDocumentToolbar(props: {
+  mode: MarkdownDocumentMode;
+  onModeChange: (mode: MarkdownDocumentMode) => void;
+  markdown: string;
+  copyDisabled?: boolean;
+  sourceOnly?: boolean;
+  ids: Record<MarkdownDocumentMode | "copy", string>;
+}) {
+  const options = (): SegmentedTabOption<MarkdownDocumentMode>[] => {
+    const modes: SegmentedTabOption<MarkdownDocumentMode>[] = [
+      { value: "preview", label: tr("common.preview"), accessibilityLabel: props.ids.preview },
+    ];
+    if (!props.sourceOnly) {
+      modes.push({ value: "visual", label: tr("doc.richText"), accessibilityLabel: props.ids.visual });
+    }
+    modes.push({ value: "source", label: tr(props.sourceOnly ? "files.editAnyway" : "doc.source"),
+      accessibilityLabel: props.ids.source });
+    return modes;
+  };
+
+
+  return <Toolbar size="sm"
+    leading={<SegmentedTabs size="sm" options={options()} value={props.mode} onChange={props.onModeChange} />}
+    trailing={<IconButton icon="copy" size="sm" tooltip={tr("doc.copyMarkdown")} accessibilityLabel={props.ids.copy}
+      disabled={props.copyDisabled} onPress={() => void copyDocumentMarkdown(props.markdown)} />} />;
+}
 
 // ── Frontmatter splitting & Markdown analysis ──────────────────────────────
 
@@ -247,27 +301,13 @@ export function hasRichPreviewBlocks(text: string): boolean {
 /** Paragraphs, headings, lists, task lists, quotes, code, rules, images, links, marks and tables. */
 function markdownExtensions(
   renderImage?: (image: TextViewImage) => JSX.Element,
+  imageView?: (props: RichNodeViewProps) => JSX.Element,
 ): Array<RichExtension | RichExtensionClass> {
-  if (!renderImage) {
+  if (!renderImage && !imageView) {
     return [StarterKit, RichTable, RichTableRow, RichTableHeader, RichTableCell];
   }
   const WorkspaceImage = RichImage.extend({
-    addNodeView: () => nodeProps => {
-      const attrs = (nodeProps.node.attrs ?? {}) as Record<string, unknown>;
-      const parseAttrSize = (val: unknown): number | `${number}%` | undefined => {
-        if (typeof val === "number" && Number.isFinite(val)) return val;
-        if (typeof val === "string" && /^\d+(?:\.\d+)?%$/.test(val.trim())) return val.trim() as `${number}%`;
-        if (typeof val === "string" && /^\d+(?:\.\d+)?$/.test(val.trim())) return Number(val.trim());
-        return undefined;
-      };
-      return renderImage({
-        src: String(attrs.src ?? ""),
-        alt: String(attrs.alt ?? ""),
-        title: typeof attrs.title === "string" ? attrs.title : undefined,
-        width: parseAttrSize(attrs.width),
-        height: parseAttrSize(attrs.height),
-      });
-    },
+    addNodeView: () => imageView ?? (nodeProps => renderImage!(imageAttributes(nodeProps))),
   });
   return [
     StarterKit.configure({ image: false }),
@@ -282,11 +322,14 @@ function markdownExtensions(
 function createMarkdownSession(
   text: string,
   renderImage?: (image: TextViewImage) => JSX.Element,
+  imageView?: (props: RichNodeViewProps) => JSX.Element,
+  plugins?: RichEditorPlugin[],
 ): RichEditorSession {
   return createRichEditor({
     content: text,
     format: "markdown",
-    extensions: markdownExtensions(renderImage),
+    extensions: markdownExtensions(renderImage, imageView),
+    plugins,
   });
 }
 
@@ -424,9 +467,7 @@ function rendererFiles(kind: IslandKind): { script: string; style: string | null
 interface IslandRenderer {
   script: string;
   style: string;
-  /** When set, loaded via `<script src>` against `baseUrl` instead of duplicating the 3.26 MB script string inline. */
-  scriptSrc?: string;
-  baseUrl?: string;
+  browser?: { scriptUrl: string; bootstrapUrl: string };
 }
 
 interface CachedDiagramSvg {
@@ -500,24 +541,6 @@ function releaseMermaidSlot(): void {
   }
 }
 
-function resolveDirectScriptAsset(scriptUrl: string): { scriptSrc: string; baseUrl: string } | null {
-  const loc = typeof globalThis !== "undefined" ? (globalThis as { location?: { href?: string; origin?: string } }).location : undefined;
-  if (!loc?.href || !loc?.origin || !/^https?:\/\//i.test(loc.href)) return null;
-  try {
-    const resolved = new URL(scriptUrl, loc.href);
-    if (resolved.origin !== loc.origin) return null;
-    return { scriptSrc: resolved.href, baseUrl: loc.origin };
-  } catch {
-    return null;
-  }
-}
-
-async function readAsset(url: string): Promise<string> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`asset ${url} answered ${response.status}`);
-  return response.text();
-}
-
 /** Text that cannot end or comment out the inline `<script>` / `<style>` element it goes into. */
 function inlineSafe(text: string): string {
   return text.replace(/<\/(script|style)/gi, "<\\/$1").replace(/<!--/g, "<\\!--");
@@ -532,15 +555,12 @@ function loadRenderer(kind: IslandKind): Promise<IslandRenderer> {
   if (!load) {
     const assets = rendererFiles(kind);
     if (!assets) return Promise.reject(new Error("this app registered no document renderers"));
-    if (kind === "mermaid") {
-      const direct = resolveDirectScriptAsset(assets.script);
-      if (direct) {
-        return Promise.resolve({ script: "", style: "", scriptSrc: direct.scriptSrc, baseUrl: direct.baseUrl });
-      }
-    }
-    load = Promise.all([readAsset(assets.script), assets.style ? readAsset(assets.style) : Promise.resolve("")]).then(
-      ([script, style]) => ({ script: inlineSafe(script), style: inlineSafe(style) }),
-    );
+    const styleLoad = assets.style ? readRendererAsset(assets.style) : Promise.resolve("");
+    const bootstrap = rendererAssets()?.browserBootstrap;
+    load = platform.os === "web" && bootstrap
+      ? Promise.all([resolveBrowserAsset(assets.script), resolveBrowserAsset(bootstrap), styleLoad])
+        .then(([scriptUrl, bootstrapUrl, style]) => ({ script: "", style, browser: { scriptUrl, bootstrapUrl } }))
+      : Promise.all([readRendererAsset(assets.script), styleLoad]).then(([script, style]) => ({ script, style }));
     // A failed read is tried again by the next island, not remembered.
     load.catch(() => rendererLoads.delete(kind));
     rendererLoads.set(kind, load);
@@ -548,20 +568,18 @@ function loadRenderer(kind: IslandKind): Promise<IslandRenderer> {
   return load;
 }
 
-/** How long an island may take to draw before the source shows instead. */
+/** How long an island may take to draw after its renderer assets are ready. */
 const ISLAND_TIMEOUT_MS = 8000;
 
 type IslandKind = "mermaid" | "math";
 
 const ISLAND_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:";
-const ISLAND_SELF_SCRIPT_CSP =
-  "default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline'; font-src data:; img-src data:";
 const STATIC_SVG_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 
-/** A JSON string literal that is safe inside a `<script>` element. */
-function scriptLiteral(value: string): string {
+/** A JSON literal that is safe inside a `<script>` element. */
+function scriptLiteral(value: string | object): string {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
@@ -577,38 +595,98 @@ function staticSvgIslandHtml(svg: string, colors: { text: string; background: st
   );
 }
 
+/** Keep the HTML under WebView2's 2 MiB NavigateToString limit, including UTF-16 and the shell. */
+const MAX_INLINE_ISLAND_UNITS = 1024 * 1024 - 8192;
+const ISLAND_OUTPUT_ID = "openbitfun-document-renderer";
+
+function mermaidAppearance() {
+  const p = palette();
+  return {
+    theme: "base",
+    startOnLoad: false,
+    securityLevel: "strict",
+    themeVariables: {
+      darkMode: resolvedScheme() === "dark",
+      fontFamily: "system-ui, sans-serif",
+      fontSize: `${textSize(typeScale.label)}px`,
+      primaryColor: p.surfaceTertiary,
+      primaryTextColor: p.text,
+      primaryBorderColor: p.borderStrong,
+      secondaryColor: p.panelHover,
+      secondaryTextColor: p.text,
+      secondaryBorderColor: p.accent,
+      tertiaryColor: p.canvasSubtle,
+      tertiaryTextColor: p.textSecondary,
+      tertiaryBorderColor: p.border,
+      lineColor: p.textMuted,
+      textColor: p.text,
+      clusterBkg: p.canvasSubtle,
+      clusterBorder: p.border,
+      edgeLabelBackground: p.surfaceElevated,
+      actorBkg: p.surfaceTertiary,
+      actorBorder: p.borderStrong,
+      actorTextColor: p.text,
+      actorLineColor: p.textMuted,
+      signalColor: p.textMuted,
+      signalTextColor: p.text,
+      noteBkgColor: p.warningSoft,
+      noteBorderColor: p.warning,
+      noteTextColor: p.text,
+      pie1: p.accent,
+      pie2: p.success,
+      pie3: p.warning,
+      pie4: p.danger,
+    },
+  };
+}
+
+function islandDrawScript(kind: IslandKind, source: string): string {
+  const draw = kind === "math"
+    ? `try{katex.render(${scriptLiteral(source)},output(),{displayMode:true,throwOnError:true});done()}catch(e){fail()}`
+    : `try{mermaid.initialize(${scriptLiteral(mermaidAppearance())});` +
+      `mermaid.render('d',${scriptLiteral(source)}).then(function(r){var o=output();o.innerHTML=r.svg;` +
+      `var h=Math.ceil(o.getBoundingClientRect().height);post('svg:'+h+':'+r.svg);post('h:'+h)}).catch(fail)}catch(e){fail()}`;
+  return `if(typeof ${kind === "math" ? "katex" : "mermaid"}==='undefined'){fail()}else{${draw}}`;
+}
+
 function islandHtml(
-  kind: IslandKind,
-  source: string,
   renderer: IslandRenderer,
   colors: { text: string; background: string },
-  dark: boolean,
+  input: { kind: IslandKind; source: string },
+  injectScript: boolean,
 ): string {
   const style =
     `<style>html,body{margin:0;padding:0;background:${colors.background};color:${colors.text};` +
-    `font-family:-apple-system,system-ui,sans-serif;overflow:hidden}#out{display:flex;justify-content:center}` +
-    `#out svg{max-width:100%;height:auto}</style>`;
+    `font-family:-apple-system,system-ui,sans-serif;overflow:hidden}#${ISLAND_OUTPUT_ID}{display:flex;justify-content:center}` +
+    `#${ISLAND_OUTPUT_ID} svg{max-width:100%;height:auto}</style>`;
   const report =
+    `function output(){return document.getElementById('${ISLAND_OUTPUT_ID}')}` +
     "function post(m){try{window.nsh&&window.nsh.postMessage(m)}catch(e){}}" +
     "function fail(){post('error')}" +
-    "function done(){post('h:'+Math.ceil(document.getElementById('out').getBoundingClientRect().height))}" +
+    "function done(){post('h:'+Math.ceil(output().getBoundingClientRect().height))}" +
     "window.addEventListener('error',function(){fail()});";
-  const draw =
-    kind === "math"
-      ? `try{katex.render(${scriptLiteral(source)},document.getElementById('out'),{displayMode:true,throwOnError:true});done()}catch(e){fail()}`
-      : `try{mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:${scriptLiteral(dark ? "dark" : "default")}});` +
-        `mermaid.render('d',${scriptLiteral(source)}).then(function(r){var o=document.getElementById('out');o.innerHTML=r.svg;` +
-        `var h=Math.ceil(o.getBoundingClientRect().height);post('svg:'+h+':'+r.svg);post('h:'+h)}).catch(fail)}catch(e){fail()}`;
-  const csp = renderer.scriptSrc ? ISLAND_SELF_SCRIPT_CSP : ISLAND_CSP;
-  const scriptTag = renderer.scriptSrc
-    ? `<script src="${escapeAttr(renderer.scriptSrc)}"></script>`
-    : `<script>${renderer.script}</script>`;
+  if (renderer.browser) {
+    const { scriptUrl, bootstrapUrl } = renderer.browser;
+    // `srcdoc` has an opaque origin. Grant the bundle's origin explicitly and
+    // use external scripts so the embedding page's strict CSP also allows them.
+    const origin = escapeAttr(new URL(scriptUrl).origin);
+    const csp = `default-src 'none'; script-src ${origin}; style-src 'unsafe-inline'; font-src data:; img-src data:`;
+    const config = input.kind === "mermaid" ? mermaidAppearance() : undefined;
+    const data = escapeAttr(JSON.stringify({ ...input, config }));
+    return `<!doctype html><html><head><meta charset="utf-8">` +
+      `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
+      `${renderer.style ? `<style>${inlineSafe(renderer.style)}</style>` : ""}${style}</head>` +
+      `<body><div id="${ISLAND_OUTPUT_ID}" data-diagram="${data}"></div>` +
+      `<script src="${escapeAttr(scriptUrl)}"></script><script src="${escapeAttr(bootstrapUrl)}"></script></body></html>`;
+  }
+  const scriptTag = injectScript ? "" : `<script>${inlineSafe(renderer.script)}</script>`;
+  const drawTag = injectScript ? "" : `<script>${islandDrawScript(input.kind, input.source)}</script>`;
   return (
     `<!doctype html><html><head><meta charset="utf-8">` +
-    `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
-    `${renderer.style ? `<style>${renderer.style}</style>` : ""}${style}<script>${report}</script>` +
-    `${scriptTag}</head><body><div id="out"></div>` +
-    `<script>if(typeof ${kind === "math" ? "katex" : "mermaid"}==='undefined'){fail()}else{${draw}}</script></body></html>`
+    `<meta http-equiv="Content-Security-Policy" content="${ISLAND_CSP}">` +
+    `${renderer.style ? `<style>${inlineSafe(renderer.style)}</style>` : ""}${style}<script>${report}</script>` +
+    `${scriptTag}</head><body><div id="${ISLAND_OUTPUT_ID}"></div>` +
+    `${drawTag}</body></html>`
   );
 }
 
@@ -658,7 +736,7 @@ function IslandSource(props: { source: string; kind: IslandKind }) {
  * Until it draws (the renderer read, the page run) the source shows; after
  * `ISLAND_TIMEOUT_MS` without a drawing, or on any failure, the source stays.
  */
-function DiagramIsland(props: { kind: IslandKind; source: string }) {
+function DiagramIsland(props: { kind: IslandKind; source: string; sourceVisible?: boolean }) {
   probeIslands();
   const height = signal(0);
   const failed = signal(false);
@@ -678,7 +756,8 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
     renderer.set(null);
   });
 
-  const cacheKey = () => `${props.kind}:${resolvedScheme() === "dark" ? "d" : "l"}:${props.source}`;
+  const cacheKey = () => `${props.kind}:${resolvedAppearanceId()}:${textSize(typeScale.label)}:${props.source}`;
+  const renderContent = () => islandsAvailable() === true && !failed() ? (cachedSvg() ?? renderer()) : null;
 
   effect(() => {
     const kind = props.kind;
@@ -688,6 +767,7 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
     if (hit) {
       freeSlot();
       cachedSvg.set(hit);
+      renderer.set(null);
       height.set(hit.height);
       failed.set(false);
       return;
@@ -695,6 +775,11 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
     cachedSvg.set(null);
     height.set(0);
     failed.set(false);
+  });
+
+  effect(() => {
+    void cacheKey();
+    if (!renderer() || cachedSvg() || failed()) return;
     const timer = setTimeout(() => {
       if (!disposed && height() === 0 && !cachedSvg()) {
         freeSlot();
@@ -732,11 +817,8 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
     });
   });
 
-  return (
-    <If
-      when={islandsAvailable() === true && !failed() ? (cachedSvg() ?? renderer()) : null}
-      else={<IslandSource kind={props.kind} source={props.source} />}
-    >
+  return <>
+    <If when={renderContent()}>
       {() => {
         const hit = cachedSvg();
         if (hit) {
@@ -756,20 +838,31 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
           );
         }
         const loaded = renderer()!;
+        let view: WebViewRef | undefined;
+        const draw = () => islandDrawScript(props.kind, props.source);
+        const injectScript = () => platform.os === "windows" &&
+          loaded.script.length + loaded.style.length + draw().length > MAX_INLINE_ISLAND_UNITS;
         return (
           <WebView
+            ref={ref => { view = ref; }}
             accessibilityLabel={`doc-${props.kind}-view`}
             html={islandHtml(
-              props.kind,
-              props.source,
               loaded,
               { text: palette().text, background: palette().canvas },
-              resolvedScheme() === "dark",
+              { kind: props.kind, source: props.source },
+              injectScript(),
             )}
-            baseUrl={loaded.baseUrl}
             scrollable={false}
             incognito={true}
             style={{ alignSelf: "stretch", height: Math.max(height(), space.x4l) }}
+            onLoad={event => {
+              if (!injectScript() || disposed || renderer() !== loaded || cachedSvg()) return;
+              const url = event.url;
+              if (url && url !== "about:blank" && url !== "about:srcdoc" && !url.startsWith("data:text/html")) return;
+              view?.injectJavaScript(
+                `if (document.getElementById('${ISLAND_OUTPUT_ID}')) {\n${loaded.script}\n;\n${draw()}\n}`,
+              );
+            }}
             onMessage={event => {
               const data = String(event.data ?? "");
               if (data === "error") {
@@ -806,6 +899,47 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
         );
       }}
     </If>
+    <If when={props.kind === "mermaid" && failed() && islandsAvailable() === true && Boolean(rendererAssets())}>
+      <Text accessibilityLabel="doc-mermaid-render-failed"
+        style={{ ...textStyle("caption", { color: palette().warning }), padding: space.md }}>
+        {tr("doc.mermaidRenderFailed")}
+      </Text>
+    </If>
+    <If when={!renderContent() || props.sourceVisible === true}>
+      <IslandSource kind={props.kind} source={props.source} />
+    </If>
+  </>;
+}
+
+export const MERMAID_MARKDOWN_EXTENSIONS = [{ name: "mermaid", language: "mermaid" }];
+
+function MermaidMarkdownBlock(props: { source: string }) {
+  const sourceVisible = signal(false);
+  async function copySource() {
+    try {
+      await Clipboard.writeText(props.source);
+      pushToast(tr("files.copied"), "success");
+    } catch (error) {
+      pushToast(localizeHostError(error), "error");
+    }
+  }
+  return (
+    <View style={{ alignSelf: "stretch", overflow: "hidden", borderRadius: radii.md,
+      borderWidth: 1, borderColor: palette().borderSubtle }}>
+      <Toolbar size="sm"
+        leading={<Text style={textStyle("caption", { color: palette().textSecondary })}>{tr("doc.mermaidDiagram")}</Text>}
+        trailing={<>
+          <If when={documentWebViewsAvailable() !== false && Boolean(rendererAssets())}>
+            <IconButton icon="code" size="sm" active={sourceVisible()}
+              tooltip={tr(sourceVisible() ? "doc.mermaidHideSource" : "doc.mermaidShowSource")}
+              accessibilityLabel="doc-mermaid-toggle-source"
+              onPress={() => sourceVisible.update(value => !value)} />
+          </If>
+          <IconButton icon="copy" size="sm" tooltip={tr("common.copyCode")}
+            accessibilityLabel="doc-mermaid-copy-source" onPress={() => void copySource()} />
+        </>} />
+      <DiagramIsland kind="mermaid" source={props.source} sourceVisible={sourceVisible()} />
+    </View>
   );
 }
 
@@ -813,6 +947,11 @@ const MARKDOWN_PREVIEW_EXTENSIONS = [
   { name: "mermaid", language: "mermaid" },
   MARKDOWN_MEDIA_EXTENSION,
 ];
+export function renderMarkdownDiagram(node: TextViewCustomNode): JSX.Element {
+  return node.name === "mermaid"
+    ? <MermaidMarkdownBlock source={node.text ?? ""} />
+    : <Text style={textStyle("body")}>{node.text ?? ""}</Text>;
+}
 
 export interface MarkdownPreviewProps {
   markdown: string;
@@ -823,6 +962,7 @@ export interface MarkdownPreviewProps {
   workspaceRoot?: string;
   /** Optional custom image renderer; defaults to the shared workspace-aware image renderer. */
   renderImage?: (image: TextViewImage) => JSX.Element;
+  imageWorkspace?: MarkdownImageWorkspace;
   onLinkPress?: (event: TextViewLinkPressEvent) => void;
   onImagePress?: (event: { image: TextViewImage }) => void;
   /** Called when an embedded local media fallback asks to open a workspace path. */
@@ -846,10 +986,43 @@ function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
   openDefaultMarkdownUrl(event.url);
 }
 
-/** A Markdown document as a reader sees it, with workspace images, embedded media, Mermaid diagrams, and display formulas. */
+const DISPLAY_FORMULA_NODE = "displayFormula";
+
+export function DisplayMath(props: { tex: string }) {
+  return <DiagramIsland kind="math" source={props.tex} />;
+}
+
+/** Only display formulas use an island. Inline math stays in the selectable text flow. */
+function withDisplayFormulaIslands(blocks: TextViewBlock[]): TextViewBlock[] {
+  return blocks.map(block => {
+    if (block.type === "math") return { type: "custom", name: DISPLAY_FORMULA_NODE, text: block.tex };
+    if (block.type === "list") {
+      return {
+        ...block,
+        items: block.items.map(item => ({ ...item, children: withDisplayFormulaIslands(item.children) })),
+      };
+    }
+    if ("children" in block && block.children) {
+      return { ...block, children: withDisplayFormulaIslands(block.children) };
+    }
+    return block;
+  });
+}
+
+/** A Markdown document as a reader sees it, with typeset formulas and Mermaid diagrams. */
 export function MarkdownPreview(props: MarkdownPreviewProps) {
   const columnWidth = signal<number>(layout.conversationWidth);
   const preparedMarkdown = () => transformEmbeddedMediaMarkdown(props.markdown);
+  const document = computed(() => {
+    const markdown = preparedMarkdown();
+    if (!markdown.includes("$$")) return null;
+    const parsed = TextView.parse(markdown, STATIC_MARKDOWN_OPTIONS, MARKDOWN_PREVIEW_EXTENSIONS);
+    return {
+      ...parsed,
+      blocks: withDisplayFormulaIslands(parsed.blocks),
+      footnotes: parsed.footnotes?.map(note => ({ ...note, children: withDisplayFormulaIslands(note.children) })),
+    };
+  });
   return (
     <View
       accessibilityLabel={props.accessibilityLabel}
@@ -860,9 +1033,10 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
       style={{ alignSelf: "stretch", minWidth: 0 }}
     >
     <TextView
-      markdown={preparedMarkdown()}
+      markdown={document() ? null : preparedMarkdown()}
+      document={document()}
       selectable={true}
-      links={props.onLinkPress ? (props.links ?? "report") : (props.links ?? "report")}
+      links={props.links ?? "report"}
       options={STATIC_MARKDOWN_OPTIONS}
       extensions={MARKDOWN_PREVIEW_EXTENSIONS}
       styles={createMarkdownStyles({ compact: props.compact })}
@@ -870,6 +1044,9 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
       renderImage={image =>
         props.renderImage ? (
           props.renderImage(image)
+        ) : props.documentPath && props.imageWorkspace ? (
+          <MarkdownDocumentImage image={image} documentPath={props.documentPath}
+            workspace={props.imageWorkspace} workspaceRoot={props.workspaceRoot} maxWidth={columnWidth()} />
         ) : (
           <MarkdownImageView
             image={image}
@@ -892,8 +1069,9 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
       onLinkPress={props.onLinkPress ?? defaultPreviewLinkPress}
       renderCustom={node => {
         if (node.name === "mermaid") {
-          return <DiagramIsland kind="mermaid" source={node.text ?? ""} />;
+          return renderMarkdownDiagram(node);
         }
+        if (node.name === DISPLAY_FORMULA_NODE) return <DisplayMath tex={node.text ?? ""} />;
         if (node.name === "media") {
           return (
             <MarkdownMediaEmbed
@@ -937,6 +1115,9 @@ export interface MarkdownDocumentEditorProps {
   documentKey: string;
   /** The Markdown the editor shows; a change from outside (a reload) replaces the document. */
   text: string;
+  /** A one-based source line to reveal in the rendered document. */
+  revealLine?: { line: number } | null;
+  onRevealLine?: (target: { line: number }, revealed: boolean) => void;
   /** Every edit, as Markdown. */
   onChange: (markdown: string) => void;
   /** The document's name, for the AI prompt. */
@@ -950,29 +1131,62 @@ export interface MarkdownDocumentEditorProps {
   compact?: boolean;
   /** The reading column's width. */
   maxWidth?: number;
-  /** Inline AI (`editor_ai_stream`) on the device that owns the document. */
-  ai?: boolean;
+  /** The workspace owning the document and its relative image references. */
+  imageWorkspace?: MarkdownImageWorkspace;
+  /** Inline AI is scoped to the owning workspace and device. */
+  ai?: boolean | { documentKey: string; target: string | null };
   /** Workspace-aware image renderer (`read_file_content` base64 for local and remote workspaces). */
   renderImage?: (image: TextViewImage) => JSX.Element;
   /** Link opener for links clicked in the visual editor's link bubble. */
   onLinkPress?: (url: string) => void;
 }
 
-/** The sessions of the mounted editors, so a surface's own menu can ask AI about the selection. */
-const mountedSessions = new Map<string, RichEditorSession>();
+function imageAttributes(node: RichNodeViewProps) {
+  const attrs = node.node.attrs;
+  return { src: String(attrs.src ?? ""), alt: String(attrs.alt ?? ""), title: String(attrs.title ?? "") };
+}
+
+function ImageAttributesDialog(props: { node: RichNodeViewProps; onClose: () => void }) {
+  const initial = untracked(() => imageAttributes(props.node));
+  const src = signal(initial.src);
+  const alt = signal(initial.alt);
+  const title = signal(initial.title);
+  const canApply = () => Boolean(src().trim()) && (src() !== initial.src || alt() !== initial.alt || title() !== initial.title);
+  const apply = () => {
+    if (!canApply()) return;
+    if (props.node.getPos() != null) {
+      props.node.updateAttributes({ src: src().trim(), alt: alt(), title: title() || null });
+    }
+    props.onClose();
+  };
+  return <ModalDialog open title={tr("doc.editImage")} accessibilityLabel="doc-edit-image-dialog"
+    onClose={props.onClose} onSubmit={apply} size="md" footer={<>
+      <Button label={tr("common.cancel")} variant="secondary" onPress={props.onClose} />
+      <Button label={tr("common.apply")} variant="primary" disabled={!canApply()} onPress={apply} />
+    </>}>
+    <View style={{ gap: space.md }}>
+      <InputBox label={tr("doc.imageSource")} value={src()} onChange={src.set} accessibilityLabel="doc-image-source" />
+      <InputBox label={tr("doc.imageAlt")} value={alt()} onChange={alt.set} accessibilityLabel="doc-image-alt" />
+      <InputBox label={tr("doc.imageTitle")} value={title()} onChange={title.set} accessibilityLabel="doc-image-title" />
+    </View>
+  </ModalDialog>;
+}
+
+/** The mounted editors' actions, so the file menu can open AI at the caret. */
+const openMountedAi = new Map<string, () => void>();
 
 /** Opens the "Ask AI" field over the mounted editor's selection (or at its caret). */
 export function askAiInDocument(documentKey: string): void {
-  const session = mountedSessions.get(documentKey);
-  if (!session) return;
-  const { from, to } = selectionRange(session);
-  openInlineAiComposer(documentKey, from < to ? session.textBetween(from, to, "\n") : "");
+  openMountedAi.get(documentKey)?.();
 }
 
 function selectionRange(session: RichEditorSession): { from: number; to: number } {
-  const selection = session.selection as unknown as { anchor?: number; head?: number };
-  const anchor = Number(selection?.anchor ?? 0);
-  const head = Number(selection?.head ?? anchor);
+  const selection = session.selection;
+  if (selection.type === "all") {
+    return { from: 0, to: (session.doc.content ?? []).reduce((size, node) => size + richNodeSize(node), 0) };
+  }
+  const anchor = selection.anchor ?? 0;
+  const head = selection.head ?? anchor;
   return { from: Math.min(anchor, head), to: Math.max(anchor, head) };
 }
 
@@ -1187,10 +1401,128 @@ function BubbleFormatButton(props: {
   );
 }
 
+function richNodeSize(node: RichNodeJSON): number {
+  if (node.text !== undefined) return node.text.length;
+  if (node.type === "image" || node.type === "hardBreak" || node.type === "horizontalRule") return 1;
+  return 2 + (node.content ?? []).reduce((size, child) => size + richNodeSize(child), 0);
+}
+
+interface InlineAiAnchor {
+  original: string[];
+  all: boolean;
+  first: number;
+  last: number;
+  from: number;
+  to: number;
+}
+
+function captureInlineAiAnchor(session: RichEditorSession): InlineAiAnchor | null {
+  const nodes = session.doc.content ?? [];
+  const { from, to } = selectionRange(session);
+  let start = 0;
+  let first = -1;
+  let firstStart = 0;
+  for (let index = 0; index < nodes.length; index++) {
+    const end = start + richNodeSize(nodes[index]);
+    if (first === -1 && from < end) {
+      first = index;
+      firstStart = start;
+    }
+    if (first !== -1 && to <= end) {
+      return { original: nodes.map(node => JSON.stringify(node)), all: session.selection.type === "all", first, last: index,
+        from: from - firstStart, to: to - firstStart };
+    }
+    start = end;
+  }
+  return null;
+}
+
+/** NSH exposes no persistent block IDs. A changed snapshot must still contain
+ * the same target blocks, uniquely identified by their content or neighbours. */
+function resolveInlineAiAnchor(session: RichEditorSession, anchor: InlineAiAnchor) {
+  const nodes = session.doc.content ?? [];
+  const current = nodes.map(node => JSON.stringify(node));
+  let first = anchor.first;
+  if (current.length !== anchor.original.length || !current.every((node, index) => node === anchor.original[index])) {
+    if (anchor.all) return null;
+    const target = anchor.original.slice(anchor.first, anchor.last + 1);
+    const matchingBlocks = (blocks: string[]) => blocks.flatMap((node, index) => node === target[0] &&
+      target.every((block, relative) => blocks[index + relative] === block) ? [index] : []);
+    const candidates = matchingBlocks(current);
+    const anchored = candidates.length === 1 && matchingBlocks(anchor.original).length === 1 ? candidates : candidates.filter(index =>
+      current[index - 1] === anchor.original[anchor.first - 1] &&
+      current[index + target.length] === anchor.original[anchor.last + 1]);
+    if (anchored.length !== 1) return null;
+    first = anchored[0];
+  }
+  const start = nodes.slice(0, first).reduce((position, node) => position + richNodeSize(node), 0);
+  return { from: start + anchor.from, to: start + anchor.to, blockStart: start };
+}
+
+function atEmptyTopLevelParagraph(session: RichEditorSession): boolean {
+  const { from, to } = selectionRange(session);
+  if (from !== to) return false;
+  const parent = session.resolve(from) as { depth: number; parent: string; start: number; end: number };
+  return parent.depth === 1 && parent.parent === "paragraph" && parent.start === parent.end;
+}
+
+function richNodeText(node: RichNodeJSON): string {
+  return node.text ?? (node.content ?? []).map(richNodeText).join("");
+}
+
+/** Locate where the native parser stopped, using identical preceding nodes as anchors. */
+function endOfMarkdownPrefix(
+  document: RichNodeJSON, prefix: RichNodeJSON, from: number,
+): { from: number; to: number; caret: number } | null {
+  if (document.type !== prefix.type || JSON.stringify(document.attrs) !== JSON.stringify(prefix.attrs)) return null;
+  if (document.type === "paragraph" || document.type === "heading" || document.type === "codeBlock") {
+    const text = richNodeText(prefix);
+    if (!text || !richNodeText(document).startsWith(text)) return null;
+    const lineOffset = document.type === "codeBlock" ? text.replace(/\n$/, "").lastIndexOf("\n") + 1 : 0;
+    return { from, to: from + richNodeSize(document), caret: from + 1 + lineOffset };
+  }
+  const children = document.content ?? [];
+  const leading = prefix.content ?? [];
+  const last = leading.length - 1;
+  if (last < 0 || last >= children.length) return null;
+  let start = document.type === "doc" ? from : from + 1;
+  for (let index = 0; index < last; index++) {
+    if (JSON.stringify(children[index]) !== JSON.stringify(leading[index])) return null;
+    start += richNodeSize(children[index]);
+  }
+  return endOfMarkdownPrefix(children[last], leading[last], start);
+}
+
+function markdownLineRange(session: RichEditorSession, source: string, line: number) {
+  const lines = source.split(/\r\n?|\n/);
+  if (!Number.isInteger(line) || !lines[line - 1]?.trim()) return null;
+  // Parsing the exact prefix in the same schema handles adjacent blocks, nested
+  // lists and multiline code. If later lines reinterpret the prefix (for example
+  // a table delimiter), the source editor can still show the exact line.
+  let prefix: RichEditorSession | undefined;
+  try {
+    prefix = createMarkdownSession(lines.slice(0, line).join("\n"));
+    return endOfMarkdownPrefix(session.doc, prefix.doc, 0);
+  } catch {
+    return null;
+  } finally {
+    prefix?.dispose();
+  }
+}
+
+const FILE_SEARCH_HIGHLIGHT = "file-search-line";
+const FILE_SEARCH_HIGHLIGHT_MS = 3000;
+const INLINE_AI_CONTEXT_CHARS = 4500;
+const INLINE_AI_WIDTH = 416;
+const INLINE_AI_MAX_HEIGHT = 336;
+
 /** One editor over one document; remade when the document changes. */
 function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const owner = props.owner;
   const key = untracked(() => owner.documentKey);
+  const aiOwner = untracked(() => typeof owner.ai === "object" ? owner.ai
+    : owner.ai ? { documentKey: key, target: deviceContext() || null } : undefined);
+  const aiKey = aiOwner?.documentKey;
   /** The text the document was last set from: an edit that returns to it reads as that text. */
   let baseline = untracked(() => owner.text);
   let baselineSplit = splitFrontmatter(baseline);
@@ -1200,17 +1532,29 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const frontmatterYaml = signal(baselineSplit.yaml);
   const frontmatterExpanded = signal(false);
 
-  const resolvedRenderImage = untracked(() => owner.renderImage) ?? ((image: TextViewImage) => (
-    <MarkdownImageView
-      image={image}
-      documentPath={owner.documentPath ?? owner.documentKey}
-      workspaceRoot={owner.workspaceRoot}
-      containerWidth={() => Math.max(240, (owner.maxWidth ?? layout.conversationWidth) - space.x3l * 2)}
-    />
-  ));
-  const session = createMarkdownSession(baselineSplit.body, resolvedRenderImage);
+  const editingImage = signal<RichNodeViewProps | null>(null);
+  const width = signal(0);
+  const contentWidth = () => {
+    const outer = Math.min(width(), owner.maxWidth ?? width());
+    const padding = owner.compact ? space.lg : space.x3l;
+    return outer > 0 ? Math.max(1, outer - padding * 2) : 0;
+  };
+  const searchHighlight = new RichEditorPlugin(FILE_SEARCH_HIGHLIGHT);
+  const session = createMarkdownSession(baselineSplit.body, undefined, node => <View style={{ gap: space.xs, maxWidth: "100%" }}>
+    <If when={owner.imageWorkspace} else={owner.renderImage?.(imageAttributes(node)) ?? (
+      <MarkdownImageView image={imageAttributes(node)} documentPath={owner.documentPath ?? key}
+        workspaceRoot={owner.workspaceRoot} containerWidth={contentWidth} />
+    )}>
+      <MarkdownDocumentImage image={imageAttributes(node)} documentPath={owner.documentPath ?? key}
+        workspace={owner.imageWorkspace} workspaceRoot={owner.workspaceRoot} maxWidth={contentWidth()} />
+    </If>
+    <IconButton icon="edit" size="xs" tooltip={tr("doc.editImage")} accessibilityLabel="doc-edit-image"
+      onPress={() => editingImage.set(node)} />
+  </View>, [searchHighlight]);
   let normalizedInitialBody = normalizeMarkdown(session.getMarkdown());
   let quietRevision = session.revision;
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  const editorLaidOut = signal(false);
   const hasSelection = signal(false);
   const activeLinkHref = signal("");
   const activeBold = signal(false);
@@ -1218,12 +1562,87 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const activeStrike = signal(false);
   const activeCode = signal(false);
 
-  mountedSessions.set(key, session);
+  const canTriggerOnSpace = signal(false);
+  let mounted = true;
+  let aiAnchor: InlineAiAnchor | null = null;
+  let aiPositionFrame: number | undefined;
+  const aiPosition = signal<Point | null>(null);
+  const aiAnchorView = signal<ViewRef | null>(null);
+  const aiFallbackView = signal<ViewRef | null>(null);
+  const aiPanelHeight = signal(INLINE_AI_MAX_HEIGHT);
+  const placementError = signal<"doc.aiTargetChanged" | "doc.aiInsertFailed" | null>(null);
+  const aiOpen = () => aiKey && inlineAiComposer()?.documentKey === aiKey ? aiKey : null;
+
+  function measureAiPosition(): void {
+    if (!mounted || !aiAnchor) return;
+    const range = resolveInlineAiAnchor(session, aiAnchor);
+    const line = range ? session.coordsAtPos(range.from) as { x: number; y: number; height: number } | null : null;
+    const block = range ? session.nodeRect(range.blockStart) as { x: number; y: number; height: number } | null : null;
+    const vertical = line ?? block;
+    const next = vertical && { x: (block ?? vertical).x, y: vertical.y + vertical.height };
+    const last = aiPosition();
+    if (next?.x !== last?.x || next?.y !== last?.y) aiPosition.set(next);
+  }
+
+  function scheduleAiPosition(): void {
+    if (!mounted || !aiOpen() || aiPositionFrame !== undefined) return;
+    aiPositionFrame = requestAnimationFrame(() => {
+      aiPositionFrame = undefined;
+      if (aiOpen()) measureAiPosition();
+    });
+  }
+
+  function openAi(): void {
+    if (!aiKey || inlineAiComposer()?.documentKey === aiKey) return;
+    aiAnchor = captureInlineAiAnchor(session);
+    if (!aiAnchor) return;
+    const { from, to } = selectionRange(session);
+    const previous = inlineAi();
+    if (previous && previous.documentKey !== aiKey) void cancelInlineAi();
+    placementError.set(null);
+    aiPanelHeight.set(INLINE_AI_MAX_HEIGHT);
+    measureAiPosition();
+    openInlineAiComposer(aiKey, from < to ? session.textBetween(from, to, "\n") : "");
+    scheduleAiPosition();
+  }
+
+  function dismissAi(): void {
+    if (!mounted || !aiOpen()) return;
+    void cancelInlineAi();
+    closeInlineAiComposer();
+    if (!owner.compact) session.focus();
+  }
+
+  if (aiKey) {
+    openMountedAi.set(aiKey, openAi);
+    const syncTrigger = () => {
+      // NSH may already have queued a focus or revision callback before cleanup.
+      if (!mounted) return;
+      canTriggerOnSpace.set(session.isFocused && !session.composing && atEmptyTopLevelParagraph(session));
+    };
+    cleanup(session.on("revision", syncTrigger));
+    cleanup(session.on("focus", syncTrigger));
+    cleanup(session.on("blur", syncTrigger));
+    effect(() => {
+      if (!canTriggerOnSpace() || inlineAiComposer()) return;
+      cleanup(keymap.bind("space", () => {
+        if (!mounted || !session.isFocused || session.composing) return;
+        if (!inlineAiComposer() && atEmptyTopLevelParagraph(session)) openAi();
+        else session.run(insertText(" "));
+      }, { when: "always", forFocus: true, overFocused: true }));
+    });
+  }
   cleanup(() => {
-    if (mountedSessions.get(key) === session) mountedSessions.delete(key);
-    if (inlineAi()?.documentKey === key) void cancelInlineAi();
-    if (inlineAiComposer()?.documentKey === key) closeInlineAiComposer();
+    mounted = false;
+    if (aiPositionFrame !== undefined) cancelAnimationFrame(aiPositionFrame);
+    clearTimeout(highlightTimer);
+    if (aiKey && openMountedAi.get(aiKey) === openAi) {
+      openMountedAi.delete(aiKey);
+      if (inlineAi()?.documentKey === aiKey) void cancelInlineAi();
+      if (inlineAiComposer()?.documentKey === aiKey) closeInlineAiComposer();
+    }
     session.dispose();
+    searchHighlight.dispose();
   });
 
   const syncSelectionState = (empty: boolean) => {
@@ -1255,11 +1674,13 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
       baselineSplit = splitFrontmatter(text);
       normalizedBaselineBody = null;
       lastEmitted = text;
+      editingImage.set(null);
       frontmatterText.set(baselineSplit.frontmatter);
       frontmatterYaml.set(baselineSplit.yaml);
       session.setContent(baselineSplit.body, "markdown");
       normalizedInitialBody = normalizeMarkdown(session.getMarkdown());
       quietRevision = session.revision;
+      scheduleAiPosition();
     });
   });
 
@@ -1274,6 +1695,30 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
     if (bodyUnchanged && fmUnchanged) return baseline;
     return fm + (bodyUnchanged ? baselineSplit.body : serializedBody);
   };
+
+  effect(() => {
+    const target = owner.revealLine;
+    if (!target || !editorLaidOut()) return;
+    const frame = requestAnimationFrame(() => {
+      if (owner.revealLine !== target) return;
+      const range = markdownLineRange(session, splitFrontmatter(owner.text).body,
+        target.line - (splitFrontmatter(owner.text).frontmatter.match(/\n/g)?.length ?? 0));
+      if (range && !owner.compact) session.focus();
+      if (!range || !session.run(chain([setTextSelection(range.caret), scrollIntoView()]))) {
+        owner.onRevealLine?.(target, false);
+        return;
+      }
+      const color = palette().warningSoft.replace(/\s/g, "");
+      session.setDecorations(FILE_SEARCH_HIGHLIGHT, [{
+        kind: "node", from: range.from, to: range.to,
+        attrs: { class: `bg-[${color}]` },
+      }]);
+      clearTimeout(highlightTimer);
+      highlightTimer = setTimeout(() => session.setDecorations(FILE_SEARCH_HIGHLIGHT, []), FILE_SEARCH_HIGHLIGHT_MS);
+      owner.onRevealLine?.(target, true);
+    });
+    cleanup(() => cancelAnimationFrame(frame));
+  });
 
   const emit = (revision: number) => {
     if (revision <= quietRevision) return;
@@ -1314,33 +1759,53 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
     openDefaultMarkdownUrl(href);
   };
 
+  const askAtAnchor = (intent: InlineAiIntent, instruction: string) => {
+    if (!aiKey) return;
+    const range = aiAnchor && resolveInlineAiAnchor(session, aiAnchor);
+    if (!range) {
+      placementError.set("doc.aiTargetChanged");
+      return;
+    }
+    placementError.set(null);
+    void askInlineAi(aiKey, aiOwner?.target ?? null, {
+      intent, instruction, documentName: owner.documentName,
+      document: session.getMarkdown(),
+      selection: inlineAiComposer()?.selection ?? "",
+      before: session.textBetween(Math.max(0, range.from - INLINE_AI_CONTEXT_CHARS), range.from, "\n"),
+      after: session.textBetween(range.to, range.to + INLINE_AI_CONTEXT_CHARS, "\n"),
+    });
+  };
+
   const insertAnswer = () => {
     const answer = inlineAi();
-    if (!answer || answer.documentKey !== key || !answer.text.trim()) return;
-    session.insertContent(answer.text, "markdown");
+    if (!answer || answer.documentKey !== aiKey || answer.status !== "ready") return;
+    const anchor = aiAnchor;
+    const range = anchor && resolveInlineAiAnchor(session, anchor);
+    if (!anchor || !range) {
+      placementError.set("doc.aiTargetChanged");
+      return;
+    }
+    const markdown = inlineAiMarkdown(answer.text);
+    try {
+      const selectTarget = anchor.all ? selectAll() : setTextSelection(range.from, range.to);
+      if (!markdown || !session.run(chain([selectTarget, insertContent(markdown, "markdown"), scrollIntoView()]))) {
+        placementError.set("doc.aiInsertFailed");
+        return;
+      }
+    } catch {
+      placementError.set("doc.aiInsertFailed");
+      return;
+    }
     finishInlineAi();
     emit(session.revision);
+    if (!owner.compact) session.focus();
   };
 
   const showBubble = () => hasSelection() || Boolean(activeLinkHref());
 
   return (
-    <View style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "column" }}>
-      <If when={owner.ai && inlineAiComposer()?.documentKey === key}>
-        <InlineAiPanel
-          documentKey={key}
-          compact={Boolean(owner.compact)}
-          onAsk={instruction =>
-            void askInlineAi(key, {
-              instruction,
-              documentName: owner.documentName,
-              document: frontmatterText() + session.getMarkdown(),
-              selection: inlineAiComposer()?.selection ?? "",
-            })
-          }
-          onInsert={insertAnswer}
-        />
-      </If>
+    <View onLayout={event => width.set(event.bounds.size.width)} style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "column" }}>
+      <If when={editingImage()}>{node => <ImageAttributesDialog node={node()} onClose={() => editingImage.set(null)} />}</If>
       <If when={Boolean(frontmatterText())}>
         <View
           style={{
@@ -1435,11 +1900,22 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
       </If>
       <RichEditor
         editor={session}
+        onLayout={event => {
+          editorLaidOut.set(event.bounds.size.height > 0);
+          scheduleAiPosition();
+        }}
         accessibilityLabel={owner.accessibilityLabel}
         placeholder={owner.placeholder}
+        placeholders={aiKey && !owner.compact && !inlineAiComposer()
+          ? { paragraph: tr("doc.aiSpaceHint") } : undefined}
         styles={editorStyles(Boolean(owner.compact))}
         style={{ flex: 1, minHeight: 0, minWidth: 0, alignSelf: "center", width: "100%", maxWidth: owner.maxWidth }}
-        onChange={event => emit(event.change.revision)}
+        onChange={event => {
+          emit(event.change.revision);
+          scheduleAiPosition();
+        }}
+        onContentSizeChange={aiKey ? scheduleAiPosition : undefined}
+        onTableScroll={aiKey ? scheduleAiPosition : undefined}
         onSelectionChange={event => syncSelectionState(event.selection.empty)}
         bubbleMenu={
           showBubble() ? (
@@ -1500,7 +1976,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
                   onPress={openActiveLink}
                 />
               </If>
-              <If when={owner.ai && hasSelection()}>
+              <If when={aiKey && hasSelection() && !aiOpen()}>
                 <View style={{ width: 1, height: 14, backgroundColor: palette().borderSubtle, marginHorizontal: 2 }} />
                 <Button
                   label={tr("doc.askAi")}
@@ -1508,23 +1984,52 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
                   variant="ghost"
                   size="xs"
                   accessibilityLabel="doc-ask-ai-selection"
-                  onPress={() => askAiInDocument(key)}
+                  onPress={openAi}
                 />
               </If>
             </View>
           ) : undefined
         }
+        contentLayer={aiOpen() && aiPosition() ? (
+          <View ref={aiAnchorView.set}
+            style={{ position: "absolute", top: aiPosition()?.y, left: aiPosition()?.x, width: 1, height: 1, pointerEvents: "none" }} />
+        ) : undefined}
       />
+      <If when={aiOpen()}>
+        {activeKey => <>
+          <View ref={aiFallbackView.set} style={{
+            position: "absolute", top: space.lg, left: (width() - (contentWidth() || width())) / 2,
+            width: 1, height: 1, pointerEvents: "none",
+          }} />
+          <If when={aiAnchorView() ?? aiFallbackView()}>
+            <Overlay anchor={aiAnchorView() ?? aiFallbackView()} placement="bottom" align="start"
+              offset={space.sm} margin={space.sm} onCancel={dismissAi}
+              onPosition={event => aiPanelHeight.set(Math.min(INLINE_AI_MAX_HEIGHT, Math.max(100, event.available.height)))}>
+              <InlineAiPanel
+                documentKey={activeKey()}
+                width={Math.min(INLINE_AI_WIDTH, contentWidth() || INLINE_AI_WIDTH)}
+                maxHeight={aiPanelHeight()}
+                placementError={placementError()}
+                onAsk={askAtAnchor}
+                onInsert={insertAnswer}
+                onDismiss={dismissAi}
+              />
+            </Overlay>
+          </If>
+        </>}
+      </If>
     </View>
   );
 }
 
-/** The "Ask AI" field and the answer it streams, above the document. */
 function InlineAiPanel(props: {
   documentKey: string;
-  compact: boolean;
-  onAsk: (instruction: string) => void;
+  width: number;
+  maxHeight: number;
+  placementError: "doc.aiTargetChanged" | "doc.aiInsertFailed" | null;
+  onAsk: (intent: InlineAiIntent, instruction: string) => void;
   onInsert: () => void;
+  onDismiss: () => void;
 }) {
   const instruction = signal("");
   const answer = () => {
@@ -1532,155 +2037,155 @@ function InlineAiPanel(props: {
     return current && current.documentKey === props.documentKey ? current : null;
   };
   const replacing = () => Boolean(inlineAiComposer()?.selection.trim());
-  const dismiss = () => {
-    void cancelInlineAi();
-    closeInlineAiComposer();
-  };
-  cleanup(registerEscapeDismiss(dismiss));
-  const submitAsk = (raw?: string) => {
+  cleanup(registerEscapeDismiss(() => props.onDismiss()));
+  const submitAsk = (raw?: string, intent: InlineAiIntent = "ask") => {
     const query = (raw ?? instruction()).trim();
-    if (!query || answer()?.status === "streaming") return;
-    props.onAsk(query);
+    if ((intent === "ask" && !query) || answer()?.status === "streaming") return;
+    props.onAsk(intent, query);
   };
   return (
     <View
       accessibilityLabel="doc-ai-panel"
-      style={{
-        gap: space.sm,
-        paddingHorizontal: props.compact ? space.lg : space.xxl,
-        paddingVertical: space.md,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().canvas,
-      }}
+      style={{ ...menuSurfaceStyle(), width: props.width, maxHeight: props.maxHeight, flexDirection: "column" }}
     >
-      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-        <View style={{ flex: 1, minWidth: 160, flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Icon name="sparkles" size={14} color={palette().textSecondary} />
-          <InputBox
-            value={instruction()}
-            onChange={value => instruction.set(value)}
-            onSubmit={text => submitAsk(text)}
-            onKeyPress={event => {
-              if (event.key === "Escape") dismiss();
-            }}
-            placeholder={replacing() ? tr("doc.askAiRewritePlaceholder") : tr("doc.askAiPlaceholder")}
-            size="sm"
-            autoFocus={true}
-            accessibilityLabel="doc-ai-input"
-            style={{ flex: 1, minWidth: 0 }}
-          />
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-          <If
-            when={answer()?.status === "streaming"}
-            else={
-              <Button
-                label={tr("doc.askAiSend")}
-                variant="secondary"
-                size="sm"
-                disabled={!instruction().trim()}
-                accessibilityLabel="doc-ai-send"
-                onPress={() => submitAsk()}
-              />
-            }
-          >
-            <Button
-              label={tr("common.stop")}
-              variant="secondary"
+      <Scroll smoothWheel accessibilityLabel="doc-ai-body"
+        style={{ flexShrink: 1, minHeight: 0 }} contentStyle={{ gap: space.sm, padding: space.sm }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+          <View style={{ flex: 1, minWidth: 160, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <Icon name="sparkles" size={14} color={palette().textSecondary} />
+            <InputBox
+              value={instruction()}
+              onChange={value => instruction.set(value)}
+              onSubmit={text => submitAsk(text)}
+              onKeyPress={event => {
+                if (event.key === "Escape") props.onDismiss();
+              }}
+              placeholder={replacing() ? tr("doc.askAiRewritePlaceholder") : tr("doc.askAiPlaceholder")}
               size="sm"
-              loading={true}
-              accessibilityLabel="doc-ai-stop"
-              onPress={() => void cancelInlineAi()}
+              autoFocus={true}
+              accessibilityLabel="doc-ai-input"
+              style={{ flex: 1, minWidth: 0 }}
             />
-          </If>
-          <Button
-            label={tr("common.cancel")}
-            variant="ghost"
-            size="sm"
-            accessibilityLabel="doc-ai-cancel"
-            onPress={dismiss}
-          />
-        </View>
-      </View>
-      <If when={answer()}>
-        {state => (
-          <View style={{ gap: space.sm, minHeight: 0 }}>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
             <If
-              when={state().status !== "failed"}
+              when={answer()?.status === "streaming"}
               else={
-                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-                  <Text
-                    accessibilityLabel="doc-ai-error"
-                    style={{ ...textStyle("caption", { color: palette().danger }), flex: 1, minWidth: 0 }}
-                  >
-                    {tr("doc.aiFailed", { error: localizeHostError(state().error ?? "") })}
-                  </Text>
-                  <Button
-                    label={tr("common.tryAgain")}
-                    variant="ghost"
-                    size="xs"
-                    accessibilityLabel="doc-ai-retry"
-                    onPress={() => submitAsk(instruction() || state().instruction)}
-                  />
-                </View>
+                <Button
+                  label={tr("doc.askAiSend")}
+                  variant="secondary"
+                  size="sm"
+                  disabled={!instruction().trim()}
+                  accessibilityLabel="doc-ai-send"
+                  onPress={() => submitAsk()}
+                />
               }
             >
-              <Scroll
-                smoothWheel
-                style={{
-                  flexShrink: 1,
-                  minHeight: 0,
-                  maxHeight: 240,
-                  borderRadius: radii.md,
-                  backgroundColor: palette().surfaceTertiary,
-                }}
-                contentStyle={{ padding: space.md }}
-              >
-                <If
-                  when={state().text.trim()}
-                  else={
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                      <If when={state().status === "streaming"}>
-                        <Spinner size={12} color={palette().textMuted} />
-                      </If>
-                      <Text style={textStyle("caption")}>
-                        {state().status === "streaming" ? tr("doc.aiWorking") : tr("doc.aiEmpty")}
-                      </Text>
-                    </View>
-                  }
-                >
-                  {text => (
-                    <MarkdownPreview
-                      markdown={text()}
-                      compact={true}
-                      links="report"
-                      onLinkPress={defaultPreviewLinkPress}
-                      accessibilityLabel="doc-ai-answer"
-                    />
-                  )}
-                </If>
-              </Scroll>
-            </If>
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
               <Button
-                label={tr("doc.aiDiscard")}
-                variant="ghost"
-                size="xs"
-                accessibilityLabel="doc-ai-discard"
+                label={tr("common.stop")}
+                variant="secondary"
+                size="sm"
+                accessibilityLabel="doc-ai-stop"
                 onPress={() => void cancelInlineAi()}
               />
-              <Button
-                label={state().replacesSelection ? tr("doc.aiReplace") : tr("doc.aiInsert")}
-                variant="primary"
-                size="xs"
-                disabled={state().status !== "ready" || !state().text.trim()}
-                accessibilityLabel="doc-ai-insert"
-                onPress={props.onInsert}
-              />
-            </View>
+            </If>
+            <Button
+              label={tr("common.cancel")}
+              variant="ghost"
+              size="sm"
+              accessibilityLabel="doc-ai-cancel"
+              onPress={props.onDismiss}
+            />
           </View>
-        )}
+        </View>
+        <If when={!replacing()}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+            <Each of={[
+              { intent: "continue" as const, label: "doc.aiContinue" as const },
+              { intent: "summary" as const, label: "doc.aiSummary" as const },
+              { intent: "todo" as const, label: "doc.aiTodo" as const },
+            ]} key={action => action.intent}>
+              {action => <Button
+                label={tr(action().label)}
+                variant="secondary"
+                size="xs"
+                accessibilityLabel={`doc-ai-quick-${action().intent}`}
+                disabled={answer()?.status === "streaming"}
+                onPress={() => submitAsk("", action().intent)}
+              />}
+            </Each>
+          </View>
+        </If>
+        <If when={props.placementError}>
+          {error => <Text accessibilityLabel="doc-ai-placement-error"
+            style={textStyle("caption", { color: palette().danger })}>{tr(error())}</Text>}
+        </If>
+        <If when={answer()}>
+          {state => (
+            <View style={{ gap: space.sm, minHeight: 0 }}>
+              <If
+                when={state().status !== "failed"}
+                else={
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                    <Text
+                      accessibilityLabel="doc-ai-error"
+                      style={{ ...textStyle("caption", { color: palette().danger }), flex: 1, minWidth: 0 }}
+                    >
+                      {tr("doc.aiFailed", { error: localizeHostError(state().error ?? "") })}
+                    </Text>
+                    <Button
+                      label={tr("common.tryAgain")}
+                      variant="ghost"
+                      size="xs"
+                      accessibilityLabel="doc-ai-retry"
+                      onPress={() => submitAsk(instruction() || state().instruction, state().intent)}
+                    />
+                  </View>
+                }
+              >
+                <View style={{
+                  borderRadius: radii.md, backgroundColor: palette().surfaceTertiary, padding: space.md,
+                }}>
+                  <If
+                    when={inlineAiMarkdown(state().text)}
+                    else={
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                        <If when={state().status === "streaming"}>
+                          <Spinner size={12} color={palette().textMuted} />
+                        </If>
+                        <Text style={textStyle("caption")}>
+                          {state().status === "streaming" ? tr("doc.aiWorking") : tr("doc.aiEmpty")}
+                        </Text>
+                      </View>
+                    }
+                  >
+                    {text => (
+                      <MarkdownPreview
+                        markdown={text()}
+                        compact={true}
+                        links="report"
+                        onLinkPress={defaultPreviewLinkPress}
+                        accessibilityLabel="doc-ai-answer"
+                      />
+                    )}
+                  </If>
+                </View>
+              </If>
+            </View>
+          )}
+        </If>
+      </Scroll>
+      <If when={answer()}>
+        {state => <View style={{
+          flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap",
+          gap: space.sm, flexShrink: 0, padding: space.sm, borderTopWidth: 1, borderColor: palette().borderSubtle,
+        }}>
+          <Button label={tr("doc.aiDiscard")} variant="ghost" size="xs"
+            accessibilityLabel="doc-ai-discard" onPress={() => void cancelInlineAi()} />
+          <Button label={state().replacesSelection ? tr("doc.aiReplace") : tr("doc.aiInsert")} variant="primary" size="xs"
+            disabled={state().status !== "ready" || !inlineAiMarkdown(state().text) || Boolean(props.placementError)}
+            accessibilityLabel="doc-ai-insert" onPress={props.onInsert} />
+        </View>}
       </If>
     </View>
   );
@@ -1692,7 +2197,7 @@ function InlineAiPanel(props: {
  */
 export function MarkdownDocumentEditor(props: MarkdownDocumentEditorProps) {
   return (
-    <Each of={[props.documentKey]} key={key => key}>
+    <Each of={[typeof props.ai === "object" ? props.ai.documentKey : props.documentKey]} key={key => key}>
       {() => <VisualEditorBody owner={props} />}
     </Each>
   );

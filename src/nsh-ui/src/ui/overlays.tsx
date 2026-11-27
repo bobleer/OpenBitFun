@@ -20,6 +20,7 @@ import {
   type Align,
   type Bounds,
   type JSX,
+  type KeyEvent,
   type Placement,
   type Point,
   type StyleProp,
@@ -27,11 +28,12 @@ import {
   type ViewStyle,
 } from "nsh";
 import { Dialog, Input } from "nsh/base";
+import { designTokens } from "../generated/designTokens";
 import { tr } from "../i18n";
 import {
   compactLayout,
-  concentricRadius,
   controlHeight,
+  designControlColors,
   elevationShadow,
   fontMono,
   inputFontSans,
@@ -42,7 +44,7 @@ import {
   space,
   textLineHeight,
   textSize,
-  textTracking,
+  textStyle,
   touchSlop,
 } from "../theme";
 import { Icon, type IconName } from "./icons";
@@ -62,6 +64,9 @@ import { ModalFormContext, type ModalFormBinding } from "./modalForm";
 import { focusRingStyle } from "./primitives";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
+const dialog = designTokens.metrics.dialog;
+const menu = designTokens.metrics.menu;
+const select = designTokens.metrics.select;
 
 /** How long a first Escape over typed input waits for the second one. */
 const ESCAPE_CONFIRM_MS = 2500;
@@ -85,18 +90,18 @@ export function listRowTitleLineHeight(): number {
 
 /** Hover / keyboard-active fill that stays visible on any surface, popovers included. */
 export function listRowHoverBg(): string {
-  return palette().buttonSecondaryBg;
+  return designControlColors()?.quietActionHover ?? palette().buttonSecondaryBg;
 }
 
 /** The floating surface of menus, selects and pickers. */
 export function menuSurfaceStyle(): ViewStyle {
   return {
-    borderRadius: radii.lg,
+    borderRadius: menu.radius,
     borderCurve: "continuous",
     borderWidth: 1,
     borderColor: palette().border,
-    backgroundColor: palette().popoverBg,
-    boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+    backgroundColor: designControlColors()?.menuSurface ?? palette().popoverBg,
+    boxShadow: designControlColors()?.menuShadow ?? palette().shadowOverlay,
   };
 }
 
@@ -119,7 +124,7 @@ export interface ListRowContentProps {
 export function ListRowContent(props: ListRowContentProps) {
   const lineHeight = () => listRowTitleLineHeight();
   return (
-    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: menu.itemGap }}>
       <If when={Boolean(props.leading) || Boolean(props.icon)}>
         <View
           style={{
@@ -135,7 +140,7 @@ export function ListRowContent(props: ListRowContentProps) {
             else={
               <Icon
                 name={(props.icon ?? "dot") as IconName}
-                size={14}
+                size={menu.itemIconSize}
                 color={props.iconColor ?? palette().textMuted}
               />
             }
@@ -234,13 +239,6 @@ export function registerEscapeDismiss(onDismiss: () => void): () => void {
   };
 }
 
-function modalMaxWidth(size: ModalSize): number {
-  if (size === "sm") return 400;
-  if (size === "lg") return 540;
-  if (size === "xl") return 760;
-  return 440;
-}
-
 export interface ModalHeaderProps {
   title: string;
   subtitle?: string;
@@ -257,10 +255,10 @@ export function ModalHeader(props: ModalHeaderProps) {
         flexDirection: "row",
         alignItems: hasSubtitle() ? "flex-start" : "center",
         flexShrink: 0,
-        gap: space.sm,
-        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
-        paddingTop: compactLayout() ? space.lg : space.xl,
-        paddingBottom: space.xs,
+        gap: space.md,
+        paddingHorizontal: compactLayout() ? space.lg : dialog.headerPaddingInline,
+        paddingTop: compactLayout() ? space.lg : dialog.headerPaddingTop,
+        paddingBottom: compactLayout() ? space.md : dialog.headerPaddingBottom,
       }}
     >
       <If when={Boolean(props.leading)}>
@@ -269,26 +267,12 @@ export function ModalHeader(props: ModalHeaderProps) {
         </View>
       </If>
       <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-        <Text
-          style={{
-            color: palette().text,
-            fontSize: textSize(17),
-            fontWeight: "600",
-            letterSpacing: textTracking(17),
-            lineHeight: textLineHeight(17, 24 / 17),
-          }}
-        >
+        <Text style={textStyle("modalTitle")}>
           {props.title}
         </Text>
         <If when={props.subtitle ?? ""}>
           {subtitleText => (
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.42),
-              }}
-            >
+            <Text style={textStyle("caption")}>
               {subtitleText()}
             </Text>
           )}
@@ -331,7 +315,7 @@ export function ModalHeader(props: ModalHeaderProps) {
 export interface ModalBodyProps {
   children?: JSX.Element;
   style?: StyleProp<ViewStyle>;
-  hasFooter?: boolean;
+  hasHeader?: boolean;
 }
 
 export function ModalBody(props: ModalBodyProps) {
@@ -340,9 +324,9 @@ export function ModalBody(props: ModalBodyProps) {
       smoothWheel
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
       contentStyle={{
-        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
-        paddingTop: space.md,
-        paddingBottom: props.hasFooter === false ? (compactLayout() ? space.lg : space.xl) : space.sm,
+        paddingHorizontal: compactLayout() ? space.lg : dialog.contentPadding,
+        paddingTop: props.hasHeader ? 0 : compactLayout() ? space.lg : dialog.contentPadding,
+        paddingBottom: compactLayout() ? space.lg : dialog.contentPadding,
         gap: space.lg,
       }}
     >
@@ -365,9 +349,9 @@ export function ModalFooter(props: ModalFooterProps) {
         alignItems: "center",
         justifyContent: "flex-end",
         gap: space.sm,
-        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
-        paddingTop: space.lg,
-        paddingBottom: compactLayout() ? space.md + safeArea().bottom : space.xl,
+        paddingHorizontal: compactLayout() ? space.lg : dialog.footerPaddingInline,
+        paddingTop: dialog.footerPaddingTop,
+        paddingBottom: compactLayout() ? space.md + safeArea().bottom : dialog.footerPaddingBottom,
         backgroundColor: "transparent",
       }}
     >
@@ -417,18 +401,19 @@ function ModalCard(props: ModalDialogProps & { onEscapeKey: () => void; escapeAr
       style={[
         {
           width: "100%",
-          maxWidth: compactLayout() ? "100%" : modalMaxWidth(props.size ?? "md"),
-          maxHeight: "90%",
-          borderTopLeftRadius: radii.xl,
-          borderTopRightRadius: radii.xl,
-          borderBottomLeftRadius: compactLayout() ? 0 : radii.xl,
-          borderBottomRightRadius: compactLayout() ? 0 : radii.xl,
+          maxWidth: compactLayout() ? "100%" : dialog.width[props.size ?? "md"],
+          maxHeight: compactLayout() ? "90%" : "100%",
+          flexShrink: 1,
+          borderTopLeftRadius: dialog.surfaceRadius,
+          borderTopRightRadius: dialog.surfaceRadius,
+          borderBottomLeftRadius: compactLayout() ? 0 : dialog.surfaceRadius,
+          borderBottomRightRadius: compactLayout() ? 0 : dialog.surfaceRadius,
           borderCurve: "continuous",
           borderWidth: 1,
           borderBottomWidth: compactLayout() ? 0 : 1,
           borderColor: palette().borderSubtle,
-          backgroundColor: isLightAppearance() ? palette().surfaceElevated : palette().canvas,
-          boxShadow: `${elevationShadow(3)}, ${palette().innerHighlight}`,
+          backgroundColor: palette().surfaceElevated,
+          boxShadow: palette().shadowOverlay,
           overflow: "hidden",
           flexDirection: "column",
           paddingBottom: compactLayout() && !props.footer ? safeArea().bottom : 0,
@@ -459,7 +444,7 @@ function ModalCard(props: ModalDialogProps & { onEscapeKey: () => void; escapeAr
           />
         )}
       </If>
-      <ModalBody hasFooter={Boolean(props.footer)}>{props.children}</ModalBody>
+      <ModalBody hasHeader={Boolean(props.title)}>{props.children}</ModalBody>
       <If when={props.escapeArmed()}>
         <Text
           accessibilityLabel="modal-escape-again"
@@ -571,7 +556,7 @@ export function ModalDialog(props: ModalDialogProps) {
           top: 0,
           right: 0,
           bottom: 0,
-          padding: compactLayout() ? 0 : space.xl,
+          padding: compactLayout() ? 0 : dialog.viewportGutter,
           alignItems: compactLayout() ? "stretch" : "center",
           justifyContent: compactLayout() ? "flex-end" : "center",
           pointerEvents: "box-none",
@@ -588,7 +573,7 @@ export function ModalDialog(props: ModalDialogProps) {
             right: 0,
             bottom: 0,
             backgroundColor: palette().scrimBg,
-            backdropFilter: "blur(14px)",
+            backdropFilter: dialog.backdropBlur,
           }}
         />
         <ModalFormContext.Provider value={form}>
@@ -641,33 +626,100 @@ export interface DropdownMenuProps {
   onClose: () => void;
 }
 
-const MENU_OUTER_RADIUS = radii.lg;
-const MENU_PADDING = 5;
-const MENU_ITEM_RADIUS = concentricRadius(MENU_OUTER_RADIUS, MENU_PADDING);
-
 function MenuSurface(props: {
   items: ReadonlyArray<DropdownMenuItem>;
   placement: Placement;
   align: Align;
   minWidth: number;
   maxHeight: number;
+  confirmingId: string | null;
+  onConfirmingChange: (id: string | null) => void;
+  onDismiss: () => void;
   onClose: () => void;
 }) {
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
-  const confirmingId = signal<string | null>(null);
-  cleanup(registerEscapeDismiss(() => props.onClose()));
+  const confirmingId = () => props.confirmingId;
+  const enabledItems = () => props.items.filter(item => !item.header && !item.disabled && item.label);
+  const activeId = signal<string | null>(enabledItems()[0]?.id ?? null);
+  const activeDescendant = signal<ViewRef | null>(null);
+  const rowRefs = new Map<string, ViewRef>();
+  let menuRef: ViewRef | null = null;
+
+  const highlight = (id: string | null, reveal = false) => {
+    const node = id === null ? null : rowRefs.get(id) ?? null;
+    activeId.set(id);
+    activeDescendant.set(node);
+    if (reveal) node?.reveal({ vertical: "nearest", animated: false });
+  };
+  effect(() => {
+    const items = enabledItems();
+    untracked(() => {
+      if (!items.some(item => item.id === activeId())) highlight(items[0]?.id ?? null);
+    });
+  });
+
+  cleanup(registerEscapeDismiss(() => props.onDismiss()));
+
+  const activate = (item: DropdownMenuItem) => {
+    if (item.disabled) return;
+    highlight(item.id);
+    if (item.confirmDelete) {
+      props.onConfirmingChange(item.id);
+      return;
+    }
+    if (!item.keepOpenOnSelect) props.onClose();
+    item.onSelect?.();
+  };
+
+  const move = (step: 1 | -1) => {
+    const items = enabledItems();
+    if (!items.length) return;
+    const current = items.findIndex(item => item.id === activeId());
+    const index = current < 0 && step < 0 ? 0 : current;
+    highlight(items[(index + step + items.length) % items.length].id, true);
+  };
+  const pick = () => {
+    const item = enabledItems().find(item => item.id === activeId());
+    if (item) activate(item);
+  };
+  effect(() => {
+    if (confirmingId() !== null) return;
+    menuRef?.focus();
+    return keymap.bind({
+      up: () => move(-1),
+      down: () => move(1),
+      home: () => highlight(enabledItems()[0]?.id ?? null, true),
+      end: () => highlight(enabledItems().at(-1)?.id ?? null, true),
+      enter: pick,
+      space: pick,
+    }, { when: "always", forFocus: true });
+  });
+  const typeahead = ({ key, modifiers, defaultPrevented }: KeyEvent) => {
+    if (confirmingId() !== null || defaultPrevented || key.length !== 1 || !key.trim()
+      || modifiers.alt || modifiers.control || modifiers.platform) return;
+    const items = enabledItems();
+    const after = items.findIndex(item => item.id === activeId()) + 1;
+    const query = key.toLowerCase();
+    const next = [...items.slice(after), ...items.slice(0, after)]
+      .find(item => item.label.trimStart().toLowerCase().startsWith(query));
+    if (next) highlight(next.id, true);
+  };
+
   return (
     <View
       role="menu"
+      ref={node => { menuRef = node; node?.focus(); }}
+      focusable={true}
+      accessibilityActiveDescendant={activeDescendant()}
+      onKeyDown={typeahead}
       style={[
         {
           ...menuSurfaceStyle(),
           minWidth: props.minWidth,
           maxWidth: 340,
           maxHeight: props.maxHeight,
-          padding: MENU_PADDING,
+          padding: menu.padding,
           transformOrigin: popoverOrigin(props.placement, props.align),
-          gap: 2,
         },
         motion.style,
       ]}
@@ -677,20 +729,20 @@ function MenuSurface(props: {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          maxHeight: Math.max(96, props.maxHeight - MENU_PADDING * 2),
+          maxHeight: Math.max(96, props.maxHeight - menu.padding * 2),
         }}
         scrollbar={true}
       >
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: menu.rowGap }}>
           <Each of={props.items} key={item => item.id}>
             {item => (
-              <View style={{ gap: 2 }}>
+              <View style={{ gap: menu.rowGap }}>
                 <If when={Boolean(item().separator)}>
                   <View
                     style={{
                       height: 1,
-                      marginVertical: 4,
-                      marginHorizontal: 6,
+                      marginVertical: menu.sectionGap / 2,
+                      marginHorizontal: menu.itemPadding,
                       backgroundColor: palette().borderSubtle,
                     }}
                   />
@@ -698,9 +750,9 @@ function MenuSurface(props: {
                 <If when={Boolean(item().header) && Boolean(item().label)}>
                   <View
                     style={{
-                      paddingHorizontal: space.sm,
-                      paddingTop: space.sm,
-                      paddingBottom: space.xs,
+                      minHeight: menu.headingHeight,
+                      justifyContent: "center",
+                      paddingHorizontal: menu.headingPadding,
                       pointerEvents: "none",
                     }}
                   >
@@ -723,31 +775,33 @@ function MenuSurface(props: {
                     when={Boolean(item().confirmDelete && confirmingId() === item().id)}
                     else={
                       <View
+                        ref={node => {
+                          const id = item().id;
+                          if (node) rowRefs.set(id, node);
+                          else rowRefs.delete(id);
+                          if (id === activeId()) activeDescendant.set(node);
+                        }}
                         role="menuitem"
+                        focusable={false}
                         disabled={item().disabled}
                         accessibilityLabel={item().accessibilityLabel ?? item().label}
                         accessibilityState={{
                           disabled: Boolean(item().disabled),
                           selected: Boolean(item().active),
                         }}
-                        onPress={() => {
-                          if (item().disabled) return;
-                          if (item().confirmDelete) {
-                            confirmingId.set(item().id);
-                            return;
-                          }
-                          if (!item().keepOpenOnSelect) props.onClose();
-                          item().onSelect?.();
-                        }}
+                        onMouseEnter={() => { if (!item().disabled && confirmingId() === null) highlight(item().id); }}
+                        onPress={() => activate(item())}
                         style={{
-                          minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                          minHeight: compactLayout() ? layout.touchTarget : menu.itemHeight,
                           flexDirection: "row",
                           alignItems: "center",
-                          paddingHorizontal: space.sm,
-                          paddingVertical: 7,
-                          borderRadius: MENU_ITEM_RADIUS,
+                          paddingHorizontal: menu.itemPadding,
+                          paddingVertical: space.xs,
+                          borderRadius: menu.itemRadius,
                           borderCurve: "continuous",
-                          backgroundColor: "transparent",
+                          backgroundColor: confirmingId() === null && activeId() === item().id && !item().disabled
+                            ? listRowHoverBg()
+                            : "transparent",
                           cursor: item().disabled ? "not-allowed" : "pointer",
                           userSelect: "none",
                           ...pressTransition(MOTION_DURATION.fast),
@@ -827,15 +881,16 @@ function MenuSurface(props: {
                         gap: space.xs,
                         paddingHorizontal: space.xs,
                         paddingVertical: 3,
-                        borderRadius: MENU_ITEM_RADIUS,
+                        borderRadius: menu.itemRadius,
                         borderCurve: "continuous",
                         backgroundColor: palette().dangerSoft,
                       }}
                     >
                       <View
+                        ref={node => node?.focus()}
                         role="button"
                         accessibilityLabel={item().cancelAccessibilityLabel ?? `${item().id}-cancel`}
-                        onPress={() => confirmingId.set(null)}
+                        onPress={() => props.onConfirmingChange(null)}
                         style={{
                           flex: 1,
                           height: compactLayout() ? 32 : 24,
@@ -866,7 +921,6 @@ function MenuSurface(props: {
                         role="button"
                         accessibilityLabel={item().confirmAccessibilityLabel ?? `${item().id}-confirm`}
                         onPress={() => {
-                          confirmingId.set(null);
                           props.onClose();
                           item().onSelect?.();
                         }}
@@ -913,12 +967,37 @@ function MenuSurface(props: {
 export function DropdownMenu(props: DropdownMenuProps) {
   const effectivePlacement = signal<Placement | null>(null);
   const availableHeight = signal<number | null>(null);
+  const confirmingId = signal<string | null>(null);
+  let lastInlineDismiss = -Infinity;
+  const resetMenu = () => {
+    effectivePlacement.set(null);
+    availableHeight.set(null);
+    confirmingId.set(null);
+    lastInlineDismiss = -Infinity;
+  };
+  effect(() => { if (!props.open) resetMenu(); });
+  const closeMenu = (restoreFocus: boolean) => {
+    const anchor = props.anchor;
+    props.onClose();
+    resetMenu();
+    if (restoreFocus && anchor && "focus" in anchor) anchor.focus();
+  };
+  const dismiss = () => {
+    // A single Escape can reach both the keymap and the platform overlay.
+    const now = Date.now();
+    if (confirmingId() !== null) {
+      lastInlineDismiss = now;
+      confirmingId.set(null);
+    } else if (now - lastInlineDismiss > ESCAPE_SAME_PRESS_MS) {
+      closeMenu(true);
+    }
+  };
 
   const resolvedPlacement = (): Placement =>
     effectivePlacement() ?? props.placement ?? "bottom";
 
   const resolvedMaxHeight = (): number => {
-    const requested = props.maxHeight ?? 440;
+    const requested = props.maxHeight ?? menu.maxHeight;
     const avail = availableHeight();
     if (avail && avail > 0) return Math.max(120, Math.min(requested, Math.floor(avail - 4)));
     return requested;
@@ -936,28 +1015,19 @@ export function DropdownMenu(props: DropdownMenuProps) {
           effectivePlacement.set(pos.placement);
           availableHeight.set(pos.available.height);
         }}
-        onPressOutside={() => {
-          effectivePlacement.set(null);
-          availableHeight.set(null);
-          props.onClose();
-        }}
-        onCancel={() => {
-          effectivePlacement.set(null);
-          availableHeight.set(null);
-          props.onClose();
-        }}
+        onPressOutside={() => closeMenu(false)}
+        onCancel={dismiss}
       >
         <MenuSurface
           items={props.items}
           placement={resolvedPlacement()}
           align={props.align ?? "start"}
-          minWidth={props.minWidth ?? 200}
+          minWidth={props.minWidth ?? menu.width}
           maxHeight={resolvedMaxHeight()}
-          onClose={() => {
-            effectivePlacement.set(null);
-            availableHeight.set(null);
-            props.onClose();
-          }}
+          confirmingId={confirmingId()}
+          onConfirmingChange={id => confirmingId.set(id)}
+          onDismiss={dismiss}
+          onClose={() => closeMenu(true)}
         />
       </Overlay>
     </If>
@@ -972,47 +1042,8 @@ export interface ContextMenuOverlayProps {
 }
 
 export function ContextMenuOverlay(props: ContextMenuOverlayProps) {
-  const effectivePlacement = signal<Placement>("bottom");
-  const availableHeight = signal<number | null>(null);
-
-  const resolvedMaxHeight = (): number => {
-    const avail = availableHeight();
-    if (avail && avail > 0) return Math.max(120, Math.min(400, Math.floor(avail - 4)));
-    return 400;
-  };
-
-  const closeMenu = () => {
-    effectivePlacement.set("bottom");
-    availableHeight.set(null);
-    props.onClose();
-  };
-
-  return (
-    <If when={props.open && Boolean(props.position)}>
-      <Overlay
-        anchor={props.position ?? null}
-        placement="bottom"
-        align="start"
-        offset={2}
-        margin={8}
-        onPosition={pos => {
-          effectivePlacement.set(pos.placement);
-          availableHeight.set(pos.available.height);
-        }}
-        onPressOutside={closeMenu}
-        onCancel={closeMenu}
-      >
-        <MenuSurface
-          items={props.items}
-          placement={effectivePlacement()}
-          align="start"
-          minWidth={190}
-          maxHeight={resolvedMaxHeight()}
-          onClose={closeMenu}
-        />
-      </Overlay>
-    </If>
-  );
+  return <DropdownMenu open={props.open && props.position !== null} anchor={props.position} items={props.items}
+    minWidth={190} maxHeight={400} offset={2} onClose={props.onClose} />;
 }
 
 export interface SelectDropdownOption<T extends string = string> {
@@ -1040,6 +1071,8 @@ export interface SelectDropdownProps<T extends string = string> {
   size?: SelectDropdownSize;
   disabled?: boolean;
   accessibilityLabel?: string;
+  accessibilityDescription?: string;
+  testID?: string;
   minWidth?: number;
   maxWidth?: number;
   /** Stretch trigger horizontally to fill its parent container (e.g. a `ConfigRow` rail). */
@@ -1049,10 +1082,6 @@ export interface SelectDropdownProps<T extends string = string> {
   style?: StyleProp<ViewStyle>;
   onChange: (value: T) => void;
 }
-
-const SELECT_OUTER_RADIUS = radii.lg;
-const SELECT_PADDING = 5;
-const SELECT_INNER_RADIUS = concentricRadius(SELECT_OUTER_RADIUS, SELECT_PADDING);
 
 function SelectPopoverSurface<T extends string>(props: {
   options: ReadonlyArray<SelectDropdownOption<T>>;
@@ -1068,72 +1097,70 @@ function SelectPopoverSurface<T extends string>(props: {
   onQueryChange: (q: string) => void;
   onSelect: (value: T) => void;
   onClose: () => void;
+  listRef: (node: ViewRef | null) => void;
+  onActiveOption: (node: ViewRef | null) => void;
 }) {
   cleanup(registerEscapeDismiss(() => props.onClose()));
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
 
-  // Keyboard: Up / Down move a highlight (it starts on the current value and
-  // follows the pointer), Return in the filter picks it.
+  const enabledOptions = () => props.options.filter(option => !option.disabled);
+  const startValue = (options: readonly SelectDropdownOption<T>[]) =>
+    options.find(option => option.value === props.value)?.value ?? options[0]?.value ?? null;
+  const highlighted = signal<T | null>(startValue(enabledOptions()));
+  const activeOption = signal<ViewRef | null>(null);
   const rowRefs = new Map<string, ViewRef>();
-  const enabledIndex = (from: number, step: 1 | -1): number => {
-    const list = props.options;
-    for (let i = 0; i < list.length; i += 1) {
-      const index = (from + step * i + list.length * 2) % list.length;
-      if (!list[index]?.disabled) return index;
-    }
-    return -1;
+  const highlight = (value: T | null, reveal = false) => {
+    highlighted.set(value);
+    const node = value === null ? null : rowRefs.get(value) ?? null;
+    activeOption.set(node);
+    props.onActiveOption(node);
+    if (reveal) node?.reveal({ vertical: "nearest", animated: false });
   };
-  const initialIndex = (): number => {
-    const current = props.options.findIndex(opt => opt.value === props.value && !opt.disabled);
-    return current >= 0 ? current : enabledIndex(0, 1);
-  };
-  const highlighted = signal(initialIndex());
   let lastQuery = props.query;
   effect(() => {
     const query = props.query;
-    props.options.length;
+    const options = enabledOptions();
     untracked(() => {
       // A new filter starts at its first match; the list it opened with keeps the current value.
       if (query !== lastQuery) {
         lastQuery = query;
-        highlighted.set(enabledIndex(0, 1));
-      } else if (highlighted() >= props.options.length) {
-        highlighted.set(initialIndex());
+        highlight(options[0]?.value ?? null);
+      } else if (!options.some(option => option.value === highlighted())) {
+        highlight(startValue(options));
       }
     });
   });
+
   const moveHighlight = (step: 1 | -1) => {
-    if (props.options.length === 0) return;
-    const next = enabledIndex(highlighted() < 0 ? (step === 1 ? 0 : props.options.length - 1) : highlighted() + step, step);
-    if (next < 0) return;
-    highlighted.set(next);
-    const option = props.options[next];
-    const node = option ? rowRefs.get(option.value) : undefined;
-    try {
-      node?.reveal({ vertical: "nearest", animated: false });
-    } catch {
-      // The row may be gone if the options changed under the key press.
-    }
+    const options = enabledOptions();
+    if (!options.length) return;
+    const current = options.findIndex(option => option.value === highlighted());
+    const from = current < 0 && step < 0 ? 0 : current;
+    const next = options[(from + step + options.length) % options.length];
+    highlight(next.value, true);
   };
   const pickHighlighted = () => {
-    const option = props.options[highlighted()] ?? props.options.find(opt => !opt.disabled);
-    if (option && !option.disabled) props.onSelect(option.value);
+    const options = enabledOptions();
+    const option = options.find(candidate => candidate.value === highlighted()) ?? options[0];
+    if (option) props.onSelect(option.value);
   };
   try {
-    // "always": the filter field has the focus while the list is open.
     cleanup(keymap.bind({ down: () => moveHighlight(1), up: () => moveHighlight(-1) }, { when: "always" }));
-  } catch {
-    // A platform without these keys keeps the pointer and the filter.
-  }
-  if (!props.searchable) {
-    // With a filter, its own Return picks (once); without one, Return picks here,
-    // ahead of the trigger or the dialog field that still has the focus.
-    try {
-      cleanup(keymap.bind("enter", () => pickHighlighted(), { forFocus: true, when: "always" }));
-    } catch {
-      // As above.
+    if (props.searchable) {
+      // Re-anchor tab navigation before the portalled input is removed.
+      cleanup(keymap.bind({ tab: props.onClose, "shift+tab": props.onClose }, { when: "always", passThrough: true }));
+    } else {
+      cleanup(keymap.bind({
+        home: () => highlight(enabledOptions()[0]?.value ?? null, true),
+        end: () => highlight(enabledOptions().at(-1)?.value ?? null, true),
+        enter: pickHighlighted,
+        space: pickHighlighted,
+      }, { forFocus: true, when: "always" }));
     }
+  } catch {
+    // Touch targets still offer the pointer and the filter.
   }
+
   const listMaxHeight = () =>
     Math.max(96, props.maxHeight - (props.searchable ? 56 : 12));
 
@@ -1145,7 +1172,7 @@ function SelectPopoverSurface<T extends string>(props: {
           minWidth: props.minWidth,
           maxWidth: Math.max(340, props.minWidth),
           maxHeight: props.maxHeight,
-          padding: SELECT_PADDING,
+          padding: menu.padding,
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 6,
         },
@@ -1164,7 +1191,7 @@ function SelectPopoverSurface<T extends string>(props: {
             gap: space.chip,
             paddingHorizontal: space.sm,
             paddingVertical: 0,
-            borderRadius: SELECT_INNER_RADIUS,
+            borderRadius: select.radius,
             borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().border,
@@ -1178,9 +1205,11 @@ function SelectPopoverSurface<T extends string>(props: {
         >
           <Icon name="search" size={13} color={palette().textElevatedMuted} />
           <Input
-            autoFocus
+            ref={node => node?.focus()}
             value={props.query}
             placeholder={props.searchPlaceholder ?? `${tr("common.filter")}…`}
+            accessibilityLabel={props.searchPlaceholder ?? tr("common.filter")}
+            accessibilityActiveDescendant={activeOption()}
             style={{
               flex: 1,
               minWidth: 0,
@@ -1201,14 +1230,16 @@ function SelectPopoverSurface<T extends string>(props: {
         </View>
       </If>
       <Scroll
+        ref={props.listRef}
+        role="listbox"
         smoothWheel
         style={{ flexShrink: 1, minHeight: 0, maxHeight: listMaxHeight() }}
         scrollbar={true}
       >
-        <View style={{ gap: space.hair }}>
+        <View style={{ gap: menu.rowGap }}>
           <Each of={props.options} key={opt => opt.value}>
-            {(opt, index) => (
-              <View style={{ gap: space.hair }}>
+            {opt => (
+              <View style={{ gap: menu.rowGap }}>
                 <If when={Boolean(opt().separator)}>
                   <View
                     style={{
@@ -1223,11 +1254,16 @@ function SelectPopoverSurface<T extends string>(props: {
                   ref={el => {
                     if (el) rowRefs.set(opt().value, el);
                     else rowRefs.delete(opt().value);
+                    if (opt().value === highlighted()) {
+                      activeOption.set(el);
+                      props.onActiveOption(el);
+                    }
                   }}
                   onMouseEnter={() => {
-                    if (!opt().disabled) highlighted.set(index());
+                    if (!opt().disabled) highlight(opt().value);
                   }}
                   role="option"
+                  focusable={false}
                   disabled={opt().disabled}
                   accessibilityLabel={opt().accessibilityLabel ?? opt().label}
                   accessibilityState={{
@@ -1239,14 +1275,14 @@ function SelectPopoverSurface<T extends string>(props: {
                     props.onSelect(opt().value);
                   }}
                   style={{
-                    minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                    minHeight: compactLayout() ? layout.touchTarget : menu.itemHeight,
                     flexDirection: "row",
                     alignItems: "center",
-                    paddingHorizontal: space.sm,
-                    paddingVertical: 7,
-                    borderRadius: SELECT_INNER_RADIUS,
+                    paddingHorizontal: menu.itemPadding,
+                    paddingVertical: space.xs,
+                    borderRadius: menu.itemRadius,
                     borderCurve: "continuous",
-                    backgroundColor: highlighted() === index() ? listRowHoverBg() : "transparent",
+                    backgroundColor: highlighted() === opt().value ? listRowHoverBg() : "transparent",
                     cursor: opt().disabled ? "not-allowed" : "pointer",
                     userSelect: "none",
                     ...pressTransition(MOTION_DURATION.fast),
@@ -1300,15 +1336,18 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
   const open = signal(false);
   const query = signal("");
   const anchorRef = signal<ViewRef | null>(null);
+  const listRef = signal<ViewRef | null>(null);
+  const activeOption = signal<ViewRef | null>(null);
   const effectivePlacement = signal<Placement | null>(null);
   const availableHeight = signal<number | null>(null);
   // A full-width field opens a menu exactly as wide as itself.
   const triggerWidth = signal(0);
+  const ghost = () => props.variant === "ghost";
+  const colors = designControlColors;
+  const placeholderColor = () => colors()?.fieldPlaceholder ?? palette().textElevatedMuted;
+  const selectedOption = () => props.options.find(opt => opt.value === props.value);
 
-  const selectedLabel = () => {
-    const match = props.options.find(opt => opt.value === props.value);
-    return match ? match.label : props.placeholder ?? tr("common.selectEllipsis");
-  };
+  const selectedLabel = () => selectedOption()?.label ?? props.placeholder ?? tr("common.selectEllipsis");
 
   const visibleOptions = () => {
     const needle = query().trim().toLowerCase();
@@ -1320,11 +1359,41 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
     );
   };
 
-  const closeMenu = () => {
+  const closeMenu = (restoreFocus: boolean) => {
+    if (!open()) return;
     open.set(false);
     query.set("");
     effectivePlacement.set(null);
     availableHeight.set(null);
+    listRef.set(null);
+    activeOption.set(null);
+    if (restoreFocus) anchorRef()?.focus();
+  };
+
+  effect(() => {
+    if (props.disabled) untracked(() => closeMenu(false));
+  });
+
+  const onTriggerKey = ({ key, modifiers, defaultPrevented }: KeyEvent) => {
+    if (props.disabled || open() || modifiers.alt || modifiers.control || modifiers.platform) return;
+    if (key === "ArrowDown" || key === "ArrowUp") {
+      open.set(true);
+      return;
+    }
+    const edge = key === "Home" || key === "End";
+    const printable = !defaultPrevented && key.length === 1 && key.trim();
+    if (!edge && !printable) return;
+    const options = props.options.filter(option => !option.disabled);
+    let match: SelectDropdownOption<T> | undefined;
+    if (edge) {
+      match = key === "Home" ? options[0] : options.at(-1);
+    } else {
+      const next = options.findIndex(option => option.value === props.value) + 1;
+      const prefix = key.toLowerCase();
+      match = [...options.slice(next), ...options.slice(0, next)]
+        .find(option => option.label.trimStart().toLowerCase().startsWith(prefix));
+    }
+    if (match && match.value !== props.value) props.onChange(match.value);
   };
 
   const resolvedMinWidth = (): number | undefined => {
@@ -1342,6 +1411,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
 
   return (
     <View
+      onFocusOut={() => { if (!props.searchable) closeMenu(false); }}
       style={[
         {
           flex: props.fullWidth ? 1 : undefined,
@@ -1356,100 +1426,71 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
       <View
         ref={el => anchorRef.set(el)}
         role="combobox"
+        testID={props.testID}
         onLayout={event => {
           const w = Math.floor(event.bounds.size.width);
           if (w > 0 && Math.abs(w - triggerWidth()) > 1) triggerWidth.set(w);
         }}
         disabled={props.disabled}
+        focusable={!props.disabled}
+        captureKeys={props.disabled || open() ? "none" : ["up", "down", "home", "end"]}
+        onKeyDown={onTriggerKey}
         hitSlop={touchSlop(controlHeight[props.size ?? "md"])}
         accessibilityLabel={props.accessibilityLabel}
+        accessibilityDescription={props.accessibilityDescription}
+        accessibilityControls={listRef()}
+        accessibilityActiveDescendant={props.searchable ? null : activeOption()}
         accessibilityState={{
           expanded: open(),
           disabled: Boolean(props.disabled),
         }}
         onPress={() => {
           if (props.disabled) return;
-          if (open()) closeMenu();
-          else open.set(true);
+          if (open()) closeMenu(true);
+          else {
+            if (!props.searchable) anchorRef()?.focus();
+            open.set(true);
+          }
         }}
         style={{
           boxSizing: "border-box",
           height: controlHeight[props.size ?? "md"],
           minWidth: 0,
           maxWidth: "100%",
-          paddingHorizontal: (props.variant ?? "default") === "ghost" ? space.sm : space.md,
+          paddingHorizontal: ghost() ? space.sm : select.padding,
           paddingVertical: 0,
-          borderRadius: (props.size ?? "md") === "sm" ? radii.sm : radii.md,
+          borderRadius: select.radius,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor:
-            (props.variant ?? "default") === "ghost"
-              ? open()
-                ? palette().border
-                : "transparent"
-              : open()
-                ? palette().borderFocus
-                : isLightAppearance()
-                  ? palette().border
-                  : "transparent",
-          backgroundColor:
-            (props.variant ?? "default") === "ghost"
-              ? open()
-                ? palette().surfaceSubtle
-                : "transparent"
-              : isLightAppearance()
-                ? palette().canvasSubtle
-                : palette().surfaceSubtle,
-          boxShadow:
-            (props.variant ?? "default") === "ghost"
-              ? undefined
-              : open()
-                ? `0 0 0 2px ${palette().accentSoft}`
-                : undefined,
+          borderColor: ghost() ? open() ? palette().border : "transparent"
+            : open() ? colors()?.fieldBorderHover ?? palette().borderFocus
+            : colors()?.fieldBorder ?? (isLightAppearance() ? palette().border : "transparent"),
+          backgroundColor: ghost() ? open() ? palette().surfaceSubtle : "transparent"
+            : colors() ? palette().inputBg : isLightAppearance() ? palette().canvasSubtle : palette().surfaceSubtle,
+          boxShadow: !ghost() && !colors() && open() ? `0 0 0 2px ${palette().accentSoft}` : undefined,
           flexDirection: "row",
           alignItems: "center",
-          gap: (props.variant ?? "default") === "ghost" ? space.xs : space.sm,
+          gap: ghost() ? space.xs : select.gap,
           cursor: props.disabled ? "not-allowed" : "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={{
-          borderColor:
-            (props.variant ?? "default") === "ghost"
-              ? open()
-                ? palette().border
-                : "transparent"
-              : props.disabled
-                ? isLightAppearance()
-                  ? palette().border
-                  : palette().borderSubtle
-                : isLightAppearance()
-                  ? palette().borderStrong
-                  : palette().border,
-          backgroundColor:
-            props.disabled
-              ? (props.variant ?? "default") === "ghost"
-                ? "transparent"
-                : palette().buttonSecondaryBg
-              : (props.variant ?? "default") === "ghost"
-                ? palette().surfaceSubtle
-                : palette().buttonSecondaryHover,
+        hoverStyle={props.disabled ? undefined : {
+          borderColor: ghost() ? open() ? palette().border : "transparent"
+            : colors()?.fieldBorderHover ?? (isLightAppearance() ? palette().borderStrong : palette().border),
+          backgroundColor: ghost() ? palette().surfaceSubtle : colors()?.fieldBackgroundHover ?? palette().buttonSecondaryHover,
         }}
         activeStyle={tactileActiveStyle(0.98)}
         focusVisibleStyle={focusRingStyle()}
-        disabledStyle={{ opacity: 0.48 }}
+        disabledStyle={{ opacity: colors()?.disabledOpacity ?? 0.48 }}
       >
         <Text
           style={{
-            flex: (props.variant ?? "default") === "ghost" ? undefined : 1,
+            ...textStyle("label", { color: props.disabled ? colors()?.contentDisabled ?? palette().textMuted
+              : selectedOption() ? palette().text : placeholderColor() }),
+            flex: ghost() ? undefined : 1,
             flexShrink: 1,
             minWidth: 0,
-            color: props.options.some(opt => opt.value === props.value)
-              ? palette().text
-              : palette().textElevatedMuted,
-            fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
-            lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.15),
-            fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
@@ -1458,8 +1499,8 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
         </Text>
         <Icon
           name={open() ? "chevron-up" : "chevron-down"}
-          size={(props.size ?? "md") === "sm" ? 12 : 13}
-          color={palette().textElevatedMuted}
+          size={select.indicator}
+          color={placeholderColor()}
         />
       </View>
 
@@ -1474,8 +1515,8 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
             effectivePlacement.set(pos.placement);
             availableHeight.set(pos.available.height);
           }}
-          onPressOutside={closeMenu}
-          onCancel={closeMenu}
+          onPressOutside={() => closeMenu(false)}
+          onCancel={() => closeMenu(true)}
         >
           <SelectPopoverSurface
             options={visibleOptions()}
@@ -1492,12 +1533,14 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
             }
             maxHeight={resolvedMaxHeight()}
             query={query()}
+            listRef={listRef.set}
+            onActiveOption={activeOption.set}
             onQueryChange={q => query.set(q)}
             onSelect={val => {
-              closeMenu();
-              props.onChange(val);
+              closeMenu(true);
+              if (!props.disabled) props.onChange(val);
             }}
-            onClose={closeMenu}
+            onClose={() => closeMenu(true)}
           />
         </Overlay>
       </If>
@@ -1733,11 +1776,12 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           boxShadow: elevationShadow(2),
           width: compactLayout() ? "100%" : undefined,
           maxWidth: compactLayout() ? "100%" : 380,
+          pointerEvents: "box-none",
         },
         motion.style,
       ]}
     >
-      <View style={{ flexShrink: 0 }}>
+      <View style={{ flexShrink: 0, pointerEvents: "none" }}>
         <Icon
           name={toastToneTokens(props.entry.tone).icon}
           size={15}
@@ -1754,6 +1798,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           lineHeight: textLineHeight(13, 1.4),
           numberOfLines: 3,
           textOverflow: "ellipsis",
+          pointerEvents: "none",
         }}
       >
         {props.entry.message}

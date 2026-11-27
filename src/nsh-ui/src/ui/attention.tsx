@@ -28,13 +28,16 @@ import {
   type PromptAnswer,
 } from "../attentionStore";
 import { fleetDeviceById } from "../fleetStore";
+import { invokeCommand } from "../bridge";
 import type { FleetPrompt } from "../fleetTypes";
 import { tr } from "../i18n";
+import { readQuestions, type QuestionAnswers, type QuestionDraft, type QuestionView } from "../questionDraft";
 import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { DeviceBadge, StateMark, deviceException, markState, type DeviceException, type MarkState } from "./fleet";
 import { Icon } from "./icons";
 import { MOTION_DURATION, MOTION_EASE_STANDARD, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
-import { Button, EmptyStateCard, SkeletonBlock, TextField, focusRingStyle } from "./primitives";
+import { AskUser } from "./AskUser";
+import { Button, EmptyStateCard, SkeletonBlock, focusRingStyle } from "./primitives";
 
 export { ANSWERED_HOLD_MS };
 
@@ -395,83 +398,29 @@ export function permissionRequestText(prompt: FleetPrompt): { request: string; c
   return { request: tool ? tr("prompt.wantsAccess", { tool }) : prompt.title, command };
 }
 
-interface QuestionOption {
-  label: string;
-  description: string;
-}
-
-interface QuestionItem {
-  question: string;
-  header: string;
-  multiSelect: boolean;
-  options: QuestionOption[];
-}
-
-/** The questions a question prompt carries (`{questions: [...]}`, the Runtime's own shape). */
-export function readQuestionPayload(payload: unknown): QuestionItem[] {
-  const record = asRecord(payload);
-  const list = Array.isArray(record.questions) ? record.questions : Array.isArray(payload) ? (payload as unknown[]) : [];
-  return list.flatMap((candidate): QuestionItem[] => {
-    const item = asRecord(candidate);
-    if (typeof item.question !== "string" && typeof item.header !== "string") return [];
-    const options = Array.isArray(item.options) ? item.options : [];
-    return [
-      {
-        question: typeof item.question === "string" ? item.question : "",
-        header: typeof item.header === "string" ? item.header : "",
-        multiSelect: item.multiSelect === true,
-        options: options.flatMap((option): QuestionOption[] => {
-          const entry = asRecord(option);
-          return typeof entry.label === "string"
-            ? [{ label: entry.label, description: typeof entry.description === "string" ? entry.description : "" }]
-            : [];
-        }),
-      },
-    ];
-  });
-}
-
-/** A 32 option row: radius 8, 1 px `border`, 13 (spec §3 AttentionItem). */
-function OptionChip(props: { label: string; selected: boolean; disabled?: boolean; onPress: () => void; testID?: string }) {
+function AttentionQuestion(props: {
+  prompt: FleetPrompt;
+  questions: QuestionView[];
+  busy: boolean;
+  submitting: boolean;
+  onSubmit: (answers: QuestionAnswers) => void;
+}) {
+  const draft = signal<QuestionDraft>({});
+  let started = false;
   return (
-    <View
-      role="button"
-      testID={props.testID}
-      accessibilityLabel={props.label}
-      accessibilityState={{ selected: props.selected, disabled: Boolean(props.disabled) }}
-      disabled={Boolean(props.disabled)}
-      onPress={() => {
-        if (!props.disabled) props.onPress();
+    <AskUser id={props.prompt.promptId} questions={props.questions} draft={draft()}
+      busy={props.busy} submitting={props.submitting}
+      onSubmit={props.onSubmit}
+      onChange={update => {
+        if (props.busy) return;
+        draft.update(update);
+        const { answerRoute, deviceId, sessionId, promptId } = props.prompt;
+        if (started || !sessionId || (answerRoute && answerRoute !== "runtime")) return;
+        started = true;
+        void invokeCommand("start_user_question_interaction", { sessionId, toolId: promptId },
+          deviceId ? { target: deviceId } : undefined).catch(() => { started = false; });
       }}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.xs,
-        height: compactLayout() ? layout.touchTarget : controlHeight.md,
-        minWidth: compactLayout() ? layout.touchTarget : undefined,
-        justifyContent: "center",
-        paddingHorizontal: space.md,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: props.selected ? palette().borderStrong : palette().border,
-        backgroundColor: props.selected ? palette().buttonSecondaryBg : "transparent",
-        cursor: props.disabled ? "not-allowed" : "pointer",
-        userSelect: "none",
-        ...pressTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: palette().buttonSecondaryBg }}
-      activeStyle={tactileActiveStyle(0.98)}
-      focusVisibleStyle={focusRingStyle()}
-      disabledStyle={{ opacity: 0.4 }}
-    >
-      <Text style={{ ...textStyle("label", { color: palette().text }), fontWeight: props.selected ? "500" : "400", numberOfLines: 1 }}>
-        {props.label}
-      </Text>
-      <If when={props.selected}>
-        <Icon name="check" size={12} color={palette().accent} />
-      </If>
-    </View>
+    />
   );
 }
 
@@ -515,19 +464,16 @@ function defaultDevice(prompt: FleetPrompt): AttentionDevice | null {
 
 /**
  * One prompt, answerable in place. Permission: [Allow once] primary, Always
- * allow secondary, Deny ghost, spacer, "Open ›". Question: one option row per
- * option (a single-choice single question answers on tap), then "Type an
- * answer" with Send. The answer goes to the device that asked.
+ * allow secondary, Deny ghost, spacer, "Open ›". Questions use the same
+ * AskUser form as the session composer. The answer goes to the device that asked.
  */
 export function PromptAttention(props: PromptAttentionProps) {
-  const draft = signal<Record<string, string | string[]>>({});
-  const typed = signal("");
   const status = () => promptStatus(props.prompt);
   const phase = () => status()?.phase ?? null;
   const busy = () => phase() === "answering";
   const device = () => (props.device === undefined ? defaultDevice(props.prompt) : props.device);
   const isQuestion = () => props.prompt.kind === "question";
-  const questions = () => (isQuestion() ? readQuestionPayload(props.prompt.payload) : []);
+  const questions = () => (isQuestion() ? readQuestions(props.prompt.payload) : []);
   const permission = () => permissionRequestText(props.prompt);
   const alwaysContext = () => (isQuestion() ? "" : permissionAlwaysContext(props.prompt));
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -549,40 +495,9 @@ export function PromptAttention(props: PromptAttentionProps) {
     void answerPrompt(props.prompt, answer, props.send).then(ok => finish(answer, ok));
   };
 
-  const sendAnswers = (answers: Record<string, string | string[]>) => {
+  const sendAnswers = (answers: QuestionAnswers) => {
     const answer: PromptAnswer = { kind: "question", answers };
     void answerPrompt(props.prompt, answer, props.send).then(ok => finish(answer, ok));
-  };
-
-  const single = () => questions().length === 1 && !questions()[0]!.multiSelect;
-
-  const pick = (index: number, label: string) => {
-    if (busy()) return;
-    const item = questions()[index];
-    if (!item) return;
-    if (single()) {
-      sendAnswers({ "0": label });
-      return;
-    }
-    const key = String(index);
-    draft.update(current => {
-      if (!item.multiSelect) return { ...current, [key]: label };
-      const held = Array.isArray(current[key]) ? (current[key] as string[]) : [];
-      return { ...current, [key]: held.includes(label) ? held.filter(value => value !== label) : [...held, label] };
-    });
-  };
-
-  const isPicked = (index: number, label: string) => {
-    const value = draft()[String(index)];
-    return Array.isArray(value) ? value.includes(label) : value === label;
-  };
-
-  const submitTyped = () => {
-    const text = typed().trim();
-    const answers: Record<string, string | string[]> = { ...draft() };
-    if (text) answers[String(Math.max(0, questions().length - 1))] = text;
-    if (Object.keys(answers).length === 0) return;
-    sendAnswers(answers);
   };
 
   const notice = () => {
@@ -602,12 +517,13 @@ export function PromptAttention(props: PromptAttentionProps) {
 
   const requestText = () => {
     if (!isQuestion()) return permission().request;
+    if (!unanswerable() && phase() !== "answered") return "";
     const first = questions()[0];
     return first ? first.question || first.header : props.prompt.title;
   };
 
   const unanswerable = () =>
-    props.prompt.answerable === false
+    props.prompt.answerable === false || (isQuestion() && questions().length === 0)
       ? tr("inbox.cantAnswer", { reason: props.prompt.unanswerableReason || tr("error.unsupported") })
       : "";
 
@@ -697,59 +613,10 @@ export function PromptAttention(props: PromptAttentionProps) {
             </>
           }
         >
-          <>
-            {/* Row 3 flows inline: the options, then "Type an answer" with Send; it wraps on a narrow column. */}
-            <Each of={questions()} key={(_item, index) => String(index)}>
-              {(item, index) => (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    gap: space.sm,
-                    flexBasis: questions().length > 1 ? "100%" : undefined,
-                  }}
-                >
-                  <If when={questions().length > 1 ? item().question || item().header : ""}>
-                    {text => <Text style={{ ...textStyle("body"), flexBasis: "100%" }}>{text()}</Text>}
-                  </If>
-                  <Each of={item().options} key={option => option.label}>
-                    {option => (
-                      <OptionChip
-                        label={option().label}
-                        selected={isPicked(index(), option().label)}
-                        disabled={busy()}
-                        testID={`prompt-option-${props.prompt.promptId}-${index()}-${option().label}`}
-                        onPress={() => pick(index(), option().label)}
-                      />
-                    )}
-                  </Each>
-                </View>
-              )}
-            </Each>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexGrow: 1, flexBasis: 240, maxWidth: 420, minWidth: 0 }}>
-              <TextField
-                value={typed()}
-                placeholder={tr("inbox.typeAnswer")}
-                size="md"
-                disabled={busy()}
-                accessibilityLabel={`prompt-answer-${props.prompt.promptId}`}
-                style={{ flex: 1, minWidth: 0 }}
-                onChange={value => typed.set(value)}
-                onSubmit={() => submitTyped()}
-              />
-              <Button
-                label={tr("common.send")}
-                variant="secondary"
-                size="md"
-                accessibilityLabel={`prompt-send-${props.prompt.promptId}`}
-                loading={busy()}
-                disabled={busy() || (!typed().trim() && Object.keys(draft()).length === 0)}
-                style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
-                onPress={() => submitTyped()}
-              />
-            </View>
-          </>
+          <Each of={[props.prompt]} key={prompt => JSON.stringify([prompt.deviceId, prompt.sessionId, prompt.promptId, prompt.revision])}>
+            {prompt => <AttentionQuestion prompt={prompt()} questions={questions()}
+              busy={busy() || phase() === "held"} submitting={busy()} onSubmit={sendAnswers} />}
+          </Each>
         </If>
       }
     />

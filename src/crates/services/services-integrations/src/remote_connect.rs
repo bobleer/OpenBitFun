@@ -80,10 +80,11 @@ use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 pub use transcript_view::{
     build_transcript_view, chat_messages_from_transcript, session_transcript_view,
-    session_transcript_view_before, SessionTranscriptView, TranscriptImage, TranscriptItemView,
-    TranscriptPromptSuggestion, TranscriptTokenUsage, TranscriptToolView, TranscriptTurnFileChange,
-    TranscriptTurnRecovery, TranscriptTurnView, TranscriptUserMessage,
-    TRANSCRIPT_TOOL_DETAIL_SUMMARY,
+    session_transcript_view_before, SessionTranscriptView, TranscriptFigureBindingRefresh,
+    TranscriptFigureBindingRefreshRequest, TranscriptFigureSourceRequest, TranscriptImage,
+    TranscriptItemView, TranscriptPromptSuggestion, TranscriptPublishedFigure,
+    TranscriptTokenUsage, TranscriptToolView, TranscriptTurnFileChange, TranscriptTurnRecovery,
+    TranscriptTurnView, TranscriptUserMessage, TRANSCRIPT_TOOL_DETAIL_SUMMARY,
 };
 
 fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -2543,6 +2544,7 @@ pub struct RemoteChatHistoryTurn {
     pub kind: Option<String>,
     pub user_message_id: String,
     pub user_display_content: String,
+    pub user_composer_presentation: Option<serde_json::Value>,
     pub user_timestamp_ms: u64,
     /// Mobile thumbnails, when the caller re-encoded attachments.
     pub user_images: Vec<ChatImageAttachment>,

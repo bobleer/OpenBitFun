@@ -8,7 +8,7 @@
 // `Authorization: Bearer <owner token>`, which the global WebSocket cannot
 // send, so a minimal RFC 6455 client lives below.
 //
-// Usage: node tests/e2e/native/smoke.mjs [--profile debug|release-fast|release]
+// Usage: node tests/e2e/native/smoke.mjs [--profile debug|desktop-dev|release-fast|release]
 //          [--packaged] [--app <path>] [--nsh-app-dir <dir>] [--keep-profile]
 //          [--timeout <ms>]
 
@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const PROFILES = ['debug', 'release-fast', 'release'];
+const PROFILES = ['debug', 'desktop-dev', 'release-fast', 'release'];
 const USAGE = `Usage: node tests/e2e/native/smoke.mjs [options]
 
 Options:
@@ -632,6 +632,15 @@ async function main() {
       const list = await session.call('list_sessions', { request: { workspacePath: dirs.workspace } });
       assert(Array.isArray(list), `sessions is an array (got ${summarize(list)})`);
       return `${list.length} sessions`;
+    });
+
+    await step('terminal integration uses the active profile', async () => {
+      const shells = await session.call('terminal_get_shells');
+      assert(Array.isArray(shells) && shells.length > 0, 'the backend reports available shells');
+      const script = path.join(dirs.user, 'temp', 'scripts', process.platform === 'win32' ? 'powershell.ps1' : 'bash.sh');
+      assert(fs.statSync(script, { throwIfNoEntry: false })?.isFile(), 'shell integration script is stored inside the temporary profile');
+      assert(isInside(real(script), tmp), 'the script resolves inside the temporary profile');
+      return path.relative(tmp, script);
     });
 
     if (launch.packaged) {

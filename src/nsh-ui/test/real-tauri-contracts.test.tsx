@@ -402,7 +402,7 @@ test("real Rust snake_case ToolAwaitingUserInput renders live prompt and submits
     },
   });
 
-  await app.waitFor("Deploy target: Which environment should I deploy to?");
+  await app.waitFor("Which environment should I deploy to?");
   await app.press("Staging");
   await app.press("Send answer");
 
@@ -603,13 +603,15 @@ test("markdown TextView repaints from Dark to Light + 16px after unmounting Sess
   await app.press("appearance-follow-system");
   await app.waitFor("appearance-swatch-openbitfun-light");
   await app.press("appearance-swatch-openbitfun-light");
-  await app.press("font-level-large");
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-large");
   // Back to the session the way the new shell reaches it (All sessions › Recent).
   await openSession(app, "NSH skeleton");
 
   await app.waitFor("Rendered with a virtualized list.");
   const lightReplyStyle = app.spanStyle("Rendered with a virtualized list.");
-  expect(lightReplyStyle.color).toBe(`${getAppearancePreset("openbitfun-light").palette.text}ff`);
+  // NSH reports the shared rgba(0, 0, 0, 0.80) text token as eight-digit hex.
+  expect(lightReplyStyle.color).toBe("#000000cc");
   expect(lightReplyStyle.color).not.toBe(darkReplyStyle.color);
   expect(lightReplyStyle.fontSize).toBeGreaterThan(darkReplyStyle.fontSize ?? 0);
 });

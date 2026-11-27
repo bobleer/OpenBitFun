@@ -1,11 +1,16 @@
 // Shared live tool projection for foreground, background and ephemeral sessions.
 
+import type { ToolCallView } from "./format";
+import { appendPlanParameters, isPlanWritingTool } from "./planToolArtifact";
+import { effectiveToolInvocation, reviewProgressTool } from "./toolPresentation";
+
 export interface LiveToolItem {
   toolId: string;
   toolName: string;
   effectiveToolName?: string;
-  status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled";
+  status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled" | "rejected";
   input?: unknown;
+  planParameters?: string;
   detail: string;
   progressMessage?: string;
   error?: string;
@@ -24,6 +29,30 @@ export interface LiveToolItem {
   textOffset?: number;
 }
 
+export function liveToolToCallView(tool: LiveToolItem): ToolCallView {
+  return {
+    id: tool.toolId,
+    name: tool.effectiveToolName || tool.toolName,
+    detail: tool.progressMessage || tool.detail,
+    ...(tool.input !== undefined ? { input: tool.input } : {}),
+    ...(tool.planParameters ? { planParameters: tool.planParameters } : {}),
+    status: tool.status,
+    ...(tool.error ? { error: tool.error } : {}),
+    ...(tool.result !== undefined ? { result: tool.result } : {}),
+    ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
+    ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
+    ...(tool.genuiStream
+      ? {
+          genuiStream: {
+            source: tool.genuiStream.source,
+            format: tool.genuiStream.format,
+            ...(tool.genuiStream.title ? { title: tool.genuiStream.title } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 export interface LiveRoundMeta {
   roundId: string;
   roundIndex: number;
@@ -32,6 +61,7 @@ export interface LiveRoundMeta {
   reasoningKind?: "reasoning" | "summary";
   thinkingEnded?: boolean;
   tools: LiveToolItem[];
+  reviewTools?: ReadonlyMap<string, ToolCallView>;
   completed: boolean;
   durationMs?: number;
 }
@@ -78,10 +108,12 @@ export function applyToolEvent<T extends LiveRoundMeta>(
           textOffset,
         };
 
+  const identity = effectiveToolInvocation(toolName, rawToolEvent.params);
+  const target = effectiveToolName ?? (identity.name !== toolName ? identity.name : existing.effectiveToolName);
   let next: LiveToolItem = {
     ...existing,
-    ...(toolName ? { toolName: effectiveToolName || toolName } : {}),
-    ...(effectiveToolName ? { effectiveToolName } : {}),
+    ...(target || toolName ? { toolName: target || toolName } : {}),
+    ...(target ? { effectiveToolName: target } : {}),
   };
 
   switch (eventType) {
@@ -92,10 +124,15 @@ export function applyToolEvent<T extends LiveRoundMeta>(
         typeof rawToolEvent.params === "string" && rawToolEvent.params
           ? summarizeLiveInput(rawToolEvent.params)
           : next.detail;
+      const planParameters = eventType === "ParamsPartial" && typeof rawToolEvent.params === "string"
+        && isPlanWritingTool(next.toolName) && existing.status === "running" && existing.input === undefined
+        ? appendPlanParameters(existing.planParameters ?? "", rawToolEvent.params)
+        : existing.planParameters;
       if (
         existingIdx >= 0 &&
         nextStatus === existing.status &&
         nextDetail === existing.detail &&
+        planParameters === existing.planParameters &&
         next.toolName === existing.toolName &&
         next.effectiveToolName === existing.effectiveToolName
       ) {
@@ -105,6 +142,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
         ...next,
         status: nextStatus,
         detail: nextDetail,
+        planParameters,
       };
       break;
     }
@@ -138,8 +176,9 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "running",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
+        planParameters: undefined,
+        ...(identity.input !== undefined
+          ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
           : {}),
       };
       break;
@@ -156,8 +195,9 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "confirmation",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
+        planParameters: undefined,
+        ...(identity.input !== undefined
+          ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
           : {}),
       };
       break;
@@ -168,7 +208,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
     case "Cancelled":
       next = {
         ...next,
-        status: "cancelled",
+        status: eventType === "Rejected" ? "rejected" : "cancelled",
         ...(typeof rawToolEvent.reason === "string" ? { error: rawToolEvent.reason } : {}),
       };
       break;
@@ -206,5 +246,14 @@ export function applyToolEvent<T extends LiveRoundMeta>(
     existingIdx >= 0
       ? round.tools.map((item, idx) => (idx === existingIdx ? next : item))
       : [...round.tools, next];
-  return { ...round, tools };
+  const wasReviewTool = round.reviewTools?.has(key) ?? false;
+  const name = next.effectiveToolName || next.toolName;
+  const sameInvocation = existingIdx >= 0 && next.input === existing.input &&
+    name === (existing.effectiveToolName || existing.toolName);
+  const isReviewTool = sameInvocation ? wasReviewTool : reviewProgressTool(name, next.input) !== null;
+  if (!isReviewTool && !wasReviewTool) return { ...round, tools };
+  const reviewTools = new Map(round.reviewTools);
+  if (isReviewTool) reviewTools.set(key, liveToolToCallView(next));
+  else reviewTools.delete(key);
+  return { ...round, tools, reviewTools: reviewTools.size ? reviewTools : undefined };
 }

@@ -1,5 +1,5 @@
 {
   "extends": "./.nsh/tsconfig.json",
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": [".nsh/out/**", "node_modules/**"]
+  "exclude": [".nsh/out/**", "node_modules/**", "assets/figure-renderer/**"]
 }

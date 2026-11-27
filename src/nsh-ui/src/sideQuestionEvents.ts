@@ -52,7 +52,7 @@ export function reduceSideQuestionRounds(
         ...(typeof payload.durationMs === "number" ? { durationMs: payload.durationMs } : {}) };
       break;
     case "agentic://model-round-attempt-superseded":
-      next = { ...round, text: "", thinking: "", tools: [], attemptId: undefined, thinkingEnded: undefined };
+      next = { ...round, text: "", thinking: "", tools: [], reviewTools: undefined, attemptId: undefined, thinkingEnded: undefined };
       break;
     case "agentic://tool-event": {
       const tool = payload.toolEvent ?? payload.tool_event;

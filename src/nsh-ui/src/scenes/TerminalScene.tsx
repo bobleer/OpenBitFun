@@ -1,10 +1,12 @@
 import { ToolPaneHeader } from "../ui/toolPane";
-import { cleanup, computed, effect, pixelRatio, Scroll, signal, Text, View, type Point, type ViewRef } from "nsh";
+import { cleanup, computed, effect, pixelRatio, Scroll, signal, Text, untracked, View, type Point, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { activeWorkspaceId, activeWorkspaceRoot, deviceContext } from "../state";
+import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, deviceContext } from "../state";
+import { settingsValues } from "../settingsStore";
+import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import {
   activeTerminalTab,
   applyTerminalTitle,
@@ -13,10 +15,12 @@ import {
   clearTerminalView,
   closeTerminalTab,
   ensureTerminal,
+  findConfiguredTerminalShell,
   getTerminalScrollback,
   renameTerminalTab,
   renamingTerminal,
   visibleTerminalTabs,
+  loadTerminalPreferences,
   loadTerminalShells,
   openProfile,
   openTerminal,
@@ -28,8 +32,8 @@ import {
   shellTypeOf,
   terminalId,
   terminalMessage,
+  terminalPreferences,
   terminalStatus,
-  terminalTabs,
 } from "../terminalStore";
 import {
   closeProfileDraft,
@@ -48,6 +52,7 @@ import {
   concentricRadius,
   controlHeight,
   fontMono,
+  isLightAppearance,
   layout,
   palette,
   radii,
@@ -85,14 +90,16 @@ import {
   type InlineBannerTone,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
-import { createSceneWidth, ToolbarDivider, WORKBENCH_TOUCH_MIN } from "../ui/workbenchLayout";
+import { createSceneWidth, WORKBENCH_TOUCH_MIN } from "../ui/workbenchLayout";
+import { ToolbarSeparator } from "../ui/Toolbar";
+import { createLightTerminalOutput } from "../ui/terminalLightColors";
 
 /**
  * Mounted `<Terminal>` widget refs across full-screen and compact AuxPane
  * instances. Fan-out writing + replay-on-mount prevents a remounted or AuxPane
  * terminal from appearing blank when a shell session is already active.
  */
-const mountedTerminals = new Set<TerminalRef>();
+const mountedTerminals = new Set<{ write(data: string): void; reset(): void }>();
 
 function writeToMountedTerminals(data: string): void {
   for (const ref of mountedTerminals) {
@@ -350,15 +357,18 @@ function TabChip(props: {
 const renameDraft = signal("");
 
 function shellOptions(): SelectDropdownOption<string>[] {
+  const remote = isRemoteWorkspace(activeWorkspace());
+  const saved = remote ? undefined : findConfiguredTerminalShell(terminalPreferences()?.defaultShell ?? "");
+  const defaultName = remote ? tr("terminal.sshDefaultShell") : saved?.name || saved?.type;
   return [
     {
       value: "__default__",
-      label: tr("terminal.defaultShellLabel"),
-      description: tr("terminal.hostDefaultShell"),
+      label: defaultName ? tr("terminal.shellLabel", { name: defaultName }) : tr("terminal.defaultShellLabel"),
+      description: remote ? undefined : tr("terminal.hostDefaultShell"),
       icon: "terminal",
       accessibilityLabel: "shell-option-default",
     },
-    ...shellChoices().map(shell => ({
+    ...(remote ? [] : shellChoices()).map(shell => ({
       value: shell.key,
       label: tr("terminal.shellLabel", { name: shell.name || shell.path || shell.type }),
       description: shell.path || shell.type,
@@ -427,6 +437,83 @@ function quickProfileOptions(): SelectDropdownOption<string>[] {
   }));
 }
 
+function TerminalViewport(props: { scrollback: number }) {
+  const fontSize = () => terminalPreferences()?.fontSize ?? textSize(13);
+  const cursorStyle = () => {
+    const accent = palette().accent;
+    const common = { backgroundColor: accent, opacity: 0.72 };
+    switch (terminalPreferences()?.cursor) {
+      case "bar": return { ...common, width: space.hair };
+      case "underline": return { opacity: common.opacity, borderBottomWidth: space.hair, borderBottomColor: accent };
+      default: return { ...common, borderRadius: radii.xs };
+    }
+  };
+  let bound: TerminalRef | undefined;
+  let attachFrame: number | undefined;
+  let projectOutput: ReturnType<typeof createLightTerminalOutput> | undefined;
+  let light = isLightAppearance();
+  const renderer = {
+    write(data: string) {
+      const output = projectOutput ? projectOutput(data) : data;
+      if (output) bound?.write(output);
+    },
+    reset() {
+      projectOutput = light ? createLightTerminalOutput() : undefined;
+      bound?.reset();
+    },
+  };
+  function replayScrollback() {
+    const active = visibleTerminalTabs().find(tab => tab.id === terminalId());
+    if (active) renderer.write(getTerminalScrollback(active.id, active.deviceId));
+  }
+  effect(() => {
+    const nextLight = isLightAppearance();
+    if (nextLight === light) return;
+    light = nextLight;
+    // Recolor existing history from the original bytes without restarting the shell.
+    if (mountedTerminals.has(renderer)) untracked(() => {
+      renderer.reset();
+      replayScrollback();
+    });
+  });
+  cleanup(() => {
+    if (attachFrame !== undefined) cancelAnimationFrame(attachFrame);
+    mountedTerminals.delete(renderer);
+  });
+
+  return (
+    <Terminal
+      ref={ref => {
+        if (!ref || bound === ref) return;
+        if (attachFrame !== undefined) cancelAnimationFrame(attachFrame);
+        mountedTerminals.delete(renderer);
+        bound = ref;
+        // Refs can arrive before the native component has been mounted. Replay
+        // the current buffer once the renderer exists, then receive live output.
+        attachFrame = requestAnimationFrame(() => {
+          attachFrame = undefined;
+          projectOutput = light ? createLightTerminalOutput() : undefined;
+          replayScrollback();
+          mountedTerminals.add(renderer);
+        });
+      }}
+      style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+      fontFamily={terminalPreferences()?.fontFamily ?? fontMono()}
+      fontSize={fontSize()}
+      lineHeight={Math.round(fontSize() * (18 / 13))}
+      cursorStyle={cursorStyle()}
+      accessibilityLabel="terminal-viewport"
+      scrollback={props.scrollback}
+      onData={event => sendTerminalInput(event.data)}
+      onResize={event => sendTerminalResize(event.cols, event.rows)}
+      onTitleChange={event => {
+        const id = terminalId();
+        if (id) applyTerminalTitle(id, event.title);
+      }}
+    />
+  );
+}
+
 export function TerminalScene(props: { compact?: boolean } = {}) {
   attachTerminalWriter(writeToMountedTerminals, resetMountedTerminals);
   // NSH measures each rendered row in whole device pixels. Use that same
@@ -441,38 +528,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
   const compactMenuAnchor = signal<ViewRef | null>(null);
   const runProfileOpen = signal(false);
   const runProfileAnchor = signal<ViewRef | null>(null);
-
-  let localTerminalRef: TerminalRef | undefined;
-  const bindTerminalRef = (el: TerminalRef | null | undefined) => {
-    if (!el) {
-      if (localTerminalRef) {
-        mountedTerminals.delete(localTerminalRef);
-        localTerminalRef = undefined;
-      }
-      return;
-    }
-    if (localTerminalRef === el) return;
-    if (localTerminalRef) mountedTerminals.delete(localTerminalRef);
-    localTerminalRef = el;
-    mountedTerminals.add(el);
-    // Replay the active session's scrollback immediately when mounting a fresh
-    // Terminal view (e.g. AuxPane or returning to Terminal while a shell runs).
-    const activeId = terminalId();
-    if (!activeId) return;
-    const active = terminalTabs().find(tab => tab.id === activeId);
-    const buffered = getTerminalScrollback(activeId, active?.deviceId);
-    if (buffered) {
-      el.reset();
-      el.write(buffered);
-    }
-  };
-
-  cleanup(() => {
-    if (localTerminalRef) {
-      mountedTerminals.delete(localTerminalRef);
-      localTerminalRef = undefined;
-    }
-  });
+  const terminalScrollback = () => terminalPreferences()?.scrollback ?? 10_000;
 
   const scopeDevice = () => fleetDeviceById(deviceContext());
   const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
@@ -481,7 +537,19 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
   // The host resolves a terminal through its workspace, and the workspace list
   // arrives after this scene mounts: create the shell when the workspace is known
   // rather than once with nothing to attach it to.
-  void loadTerminalShells();
+  const savedTerminalSettings = () => Object.entries(settingsValues()).filter(([path]) => path.startsWith("terminal."));
+  let previousSettingKey = "";
+  effect(() => {
+    const key = JSON.stringify([deviceContext(), savedTerminalSettings()]);
+    if (key === previousSettingKey) return;
+    const force = previousSettingKey !== "";
+    previousSettingKey = key;
+    void loadTerminalPreferences(force);
+  });
+  effect(() => {
+    deviceContext();
+    if (!isRemoteWorkspace(activeWorkspace())) void loadTerminalShells();
+  });
   void loadTerminalProfiles();
   effect(() => {
     const workspaceId = activeWorkspaceId();
@@ -500,7 +568,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
   const toggleProfileModal = () =>
     profileDraft()
       ? closeProfileDraft()
-      : openProfileDraft(selectedShellId() ?? "", shellTypeOf(selectedShellId()));
+      : openProfileDraft(selectedShellHere() ?? "", shellTypeOf(selectedShellHere()));
   const openQuickProfile = (id: string) => {
     const match = profilesFor(activeWorkspaceRoot()).find(p => p.id === id);
     if (match) void openProfile(activeWorkspaceId(), activeWorkspaceRoot(), match);
@@ -521,25 +589,22 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     return tr("terminal.statusExited");
   };
 
+  const selectedShellHere = () => {
+    const id = selectedShellId();
+    return !isRemoteWorkspace(activeWorkspace()) && shellChoices().some(shell => shell.key === id) ? id : null;
+  };
   const compactMenuItems = (): DropdownMenuItem[] => {
-    const currentShell = selectedShellId();
+    const currentShell = selectedShellHere();
     const profiles = profilesFor(activeWorkspaceRoot());
-    const items: DropdownMenuItem[] = [
-      {
-        id: "shell-default",
-        label: tr("terminal.defaultShellLabel"),
-        icon: currentShell === null ? "check" : "terminal",
-        accessibilityLabel: "shell-option-default",
-        onSelect: () => chooseShell(null),
-      },
-      ...shellChoices().map(shell => ({
-        id: `shell-${shell.key}`,
-        label: tr("terminal.shellLabel", { name: shell.name || shell.path || shell.type }),
-        icon: (currentShell === shell.key ? "check" : "terminal") as "check" | "terminal",
-        accessibilityLabel: `shell-option-${shell.key}`,
-        onSelect: () => chooseShell(shell.key),
-      })),
-    ];
+    const items: DropdownMenuItem[] = shellOptions().map(option => ({
+      id: `shell-${option.value}`,
+      label: option.label,
+      hint: option.description,
+      icon: (currentShell ?? "__default__") === option.value ? "check" : "terminal",
+      accessibilityLabel: option.accessibilityLabel,
+      disabled: isRemoteWorkspace(activeWorkspace()),
+      onSelect: () => chooseShell(option.value === "__default__" ? null : option.value),
+    }));
 
     if (profiles.length > 0) {
       items.push({ id: "sep-profiles-quick", label: "", separator: true });
@@ -685,7 +750,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               accessibilityLabel="profiles-toggle"
               onPress={toggleProfileModal}
             />
-            <ToolbarDivider />
+            <ToolbarSeparator />
             <NewTerminalButton disabled={deviceOffline()} onCreate={startNewShell} />
           </View>
         </View>
@@ -1023,28 +1088,11 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           padding: space.sm,
         }}
       >
-        <Terminal
-          ref={bindTerminalRef}
-          style={{ flex: 1, minHeight: 0, minWidth: 0 }}
-          fontFamily={fontMono()}
-          fontSize={textSize(13)}
-          lineHeight={rowHeight()}
-          cursorStyle={{
-            backgroundColor: palette().accent,
-            opacity: 0.72,
-            borderRadius: radii.xs,
-          }}
-          accessibilityLabel="terminal-viewport"
-          scrollback={10000}
-          onData={event => sendTerminalInput(event.data)}
-          onResize={event => sendTerminalResize(event.cols, event.rows)}
-          // The shell's own title, which the host also reports as `TitleChanged`;
-          // this is the one a program sets through the terminal itself.
-          onTitleChange={event => {
-            const id = terminalId();
-            if (id) applyTerminalTitle(id, event.title);
-          }}
-        />
+        {/* NSH reads the line limit when it creates the renderer. A limit
+            change replays this tab into a fresh renderer over the same PTY. */}
+        <Each of={[terminalScrollback()]} key={limit => limit}>
+          {limit => <TerminalViewport scrollback={limit()} />}
+        </Each>
         <If when={visibleTerminalTabs().length === 0}>
           <View
             style={{

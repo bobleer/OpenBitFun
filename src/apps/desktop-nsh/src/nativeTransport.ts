@@ -16,6 +16,8 @@ import trayMark from "../assets/tray-mark.svg";
 interface OptionalBackendMembers {
   pickDirectory?: (optionsJson: string) => Promise<string>;
   pickFileDialog?: (optionsJson: string) => Promise<string>;
+  saveTextFile?: (optionsJson: string) => Promise<boolean>;
+  saveBinaryFile?: (optionsJson: string) => Promise<boolean>;
 }
 
 const optional = Backend as unknown as OptionalBackendMembers;
@@ -24,6 +26,12 @@ installBackendConnection(createJsonWireConnection(Backend, { kind: "native" }));
 
 const shell = createNshDesktopShell({
   trayIcon: trayMark,
+  saveTextFile: typeof optional.saveTextFile === "function"
+    ? async options => await optional.saveTextFile!(JSON.stringify(options)) ? "saved" : "cancelled"
+    : undefined,
+  saveBinaryFile: typeof optional.saveBinaryFile === "function"
+    ? async options => await optional.saveBinaryFile!(JSON.stringify(options)) ? "saved" : "cancelled"
+    : undefined,
   pickDirectory:
     typeof optional.pickDirectory === "function"
       ? async options => {

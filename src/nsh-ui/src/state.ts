@@ -2,16 +2,19 @@
 // the loaders below; a change re-runs only the bindings that read that signal.
 
 import { batch, computed, effect, signal, Storage, untracked } from "nsh";
+import { reconcilePlanBuildTurns } from "./planBuildStore";
+import { onAccountSettingsApplied } from "./accountSyncStore";
 import {
   buildAttachmentContexts,
-  clearAttachments,
-  composeMessageWithFileAttachments,
-  fileAttachments,
-  imageAttachments,
+  composerMessage,
+  attachmentNotice,
   type FileAttachment,
   type ImageAttachment,
 } from "./attachmentStore";
+import { forgetComposerDraft, primaryComposerDraft, stageComposerChange } from "./composerDraftStore";
+import { messageWithSessionReferences, type SessionReferenceCandidate, type SessionReferenceDraft } from "./sessionReferences";
 import {
+  backendConnection,
   entryDeviceId,
   fleetActive,
   invokeCommand,
@@ -73,6 +76,7 @@ import {
   type SubmitUserMessageResult,
   updateSessionMode,
   updateWorkspaceInfo,
+  type ExternalCommandSubmission,
   type SessionSummary,
   type SessionTranscriptView,
   type RunningTurnSnapshot,
@@ -81,6 +85,15 @@ import {
 } from "./api";
 import { compactLayout } from "./theme";
 import { noteTranscriptSource } from "./toolDetailStore";
+import {
+  activeSessionId, activeSessionDevice, activeSessionKey,
+  secondarySessionId, secondarySessionDevice, secondarySessionKey, splitPaneOpen,
+} from "./sessionIdentity";
+
+export {
+  activeSessionId, activeSessionDevice, activeSessionKey,
+  secondarySessionId, secondarySessionDevice, secondarySessionKey, splitPaneOpen,
+} from "./sessionIdentity";
 
 /**
  * Routes. `openbitfun` (the conversation), `inbox`, `sessions` (one session),
@@ -137,6 +150,19 @@ export const navIndex = signal(0);
 export const canGoBack = computed(() => navIndex() > 0);
 export const canGoForward = computed(() => navIndex() < navHistory().length - 1);
 
+let settingsExitGuard: ((proceed: () => void) => boolean) | null = null;
+
+export function registerSettingsExitGuard(guard: (proceed: () => void) => boolean): () => void {
+  settingsExitGuard = guard;
+  return () => { if (settingsExitGuard === guard) settingsExitGuard = null; };
+}
+
+function requestSceneChange(target: SceneId, proceed: () => void): boolean {
+  if (activeScene() === "settings" && target !== "settings" && settingsExitGuard) return settingsExitGuard(proceed);
+  proceed();
+  return true;
+}
+
 /** Open scene tabs shown in `SceneBar`. */
 export const openSceneTabs = signal<SceneId[]>([landingScene()]);
 
@@ -152,10 +178,14 @@ export function closeSceneTab(scene: SceneId): void {
   if (currentTabs.length <= 1) return;
   const idx = currentTabs.indexOf(scene);
   const remaining = currentTabs.filter(tab => tab !== scene);
-  openSceneTabs.set(remaining);
   if (activeScene() === scene) {
     const nextScene = remaining[Math.max(0, idx - 1)] ?? remaining[0] ?? "sessions";
-    navigateScene(nextScene);
+    requestSceneChange(nextScene, () => {
+      openSceneTabs.set(remaining);
+      commitSceneNavigation(nextScene);
+    });
+  } else {
+    openSceneTabs.set(remaining);
   }
 }
 
@@ -227,6 +257,10 @@ export function showDevice(deviceId: string): void {
 }
 
 export function navigateScene(requested: SceneId): void {
+  requestSceneChange(requested, () => commitSceneNavigation(requested));
+}
+
+function commitSceneNavigation(requested: SceneId): void {
   const scene = resolveSceneAlias(requested);
   batch(() => {
     openSceneTab(scene);
@@ -250,40 +284,38 @@ export function resetNavigation(scene: SceneId): void {
   });
 }
 
-export function goBackScene(): void {
+export function goBackScene(): boolean {
   const idx = navIndex();
-  if (idx <= 0) return;
-  const nextIdx = idx - 1;
-  const target = navHistory()[nextIdx];
-  if (!target) return;
-  batch(() => {
-    navIndex.set(nextIdx);
-    openSceneTab(target);
-  });
+  return idx > 0 && requestHistoryScene(idx - 1);
 }
 
-export function goForwardScene(): void {
-  const history = navHistory();
+export function goForwardScene(): boolean {
   const idx = navIndex();
-  if (idx >= history.length - 1) return;
-  const nextIdx = idx + 1;
-  const target = history[nextIdx];
-  if (!target) return;
-  batch(() => {
-    navIndex.set(nextIdx);
+  return idx < navHistory().length - 1 && requestHistoryScene(idx + 1);
+}
+
+function requestHistoryScene(index: number): boolean {
+  const target = navHistory()[index];
+  if (!target) return false;
+  return requestSceneChange(target, () => batch(() => {
+    navIndex.set(index);
     openSceneTab(target);
-  });
+  }));
 }
 
 /** Right/left/bottom auxiliary workbench pane state (`WorkbenchLayout` / `AuxPane`). */
 export const AUX_MIN_WIDTH = 300;
 export const AUX_MAX_WIDTH = 1200;
+export const AUX_DEFAULT_WIDTH = 460;
 export const AUX_MIN_HEIGHT = 180;
 export const AUX_MAX_HEIGHT = 760;
 export const AUX_DEFAULT_HEIGHT = 320;
 export const auxPaneOpen = signal(false);
 export const auxPaneTab = signal<AuxPaneTab>("files");
-export const auxPaneWidth = signal(460);
+export const auxPaneWidth = signal(AUX_DEFAULT_WIDTH);
+export type AuxPaneDisplayMode = "split" | "overlay";
+export const auxPaneDisplayMode = signal<AuxPaneDisplayMode>("split");
+export const auxPaneOverlayWidth = signal(AUX_DEFAULT_WIDTH);
 export const auxPaneHeight = signal(AUX_DEFAULT_HEIGHT);
 export const auxPaneMaximized = signal(false);
 export const auxPaneSide = signal<AuxPaneSide>("right");
@@ -292,6 +324,11 @@ export const auxSelectedFilePath = signal<string | null>(null);
 export function setAuxPaneWidth(width: number): void {
   const clamped = Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, Math.round(width)));
   auxPaneWidth.set(clamped);
+}
+
+export function setAuxPaneOverlayWidth(width: number): void {
+  if (!Number.isFinite(width)) return;
+  auxPaneOverlayWidth.set(Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, Math.round(width))));
 }
 
 export function setAuxPaneHeight(height: number): void {
@@ -353,7 +390,7 @@ export function setNavWidth(width: number): void {
 export const SESSION_SPLIT_MIN_RATIO = 0.28;
 export const SESSION_SPLIT_MAX_RATIO = 0.72;
 export const SESSION_SPLIT_DEFAULT_RATIO = 0.5;
-export const splitPaneOpen = signal(false);
+export const SESSION_PANE_MIN_WIDTH = 260;
 export const focusedPane = signal<0 | 1>(0);
 export const sessionSplitRatio = signal(SESSION_SPLIT_DEFAULT_RATIO);
 
@@ -375,11 +412,18 @@ export function focusPane(pane: 0 | 1): void {
  * so an older or newer build's document never resets the others.
  */
 export const SHELL_LAYOUT_STORAGE_KEY = "openbitfun.nsh.shell-layout.v1";
+const PANE_DISPLAY_MODE_KEY = "openbitfun:sessionPaneDisplayMode";
+const PANE_OVERLAY_WIDTH_KEY = "openbitfun:sessionOverlayWidth";
 let shellLayoutLoaded = false;
 
 export async function loadShellLayout(): Promise<void> {
   try {
-    const raw = await Storage.getItem(SHELL_LAYOUT_STORAGE_KEY);
+    const [raw, mode, overlayWidth] = await Promise.all(
+      [SHELL_LAYOUT_STORAGE_KEY, PANE_DISPLAY_MODE_KEY, PANE_OVERLAY_WIDTH_KEY]
+        .map(key => Storage.getItem(key).catch(() => null)),
+    );
+    if (mode === "split" || mode === "overlay") auxPaneDisplayMode.set(mode);
+    if (overlayWidth && Number(overlayWidth) > 0) setAuxPaneOverlayWidth(Number(overlayWidth));
     if (raw) {
       const doc = JSON.parse(raw) as Record<string, unknown>;
       if (typeof doc.drawerOpen === "boolean") drawerOpen.set(doc.drawerOpen);
@@ -417,10 +461,15 @@ export async function loadShellLayout(): Promise<void> {
 /** How long the layout must hold still before it is written (a drag changes it every frame). */
 export const SHELL_LAYOUT_PERSIST_DELAY_MS = 200;
 /** The layout waiting to be written, or `null` when the stored one is current. */
-let pendingShellLayout: Record<string, unknown> | null = null;
+let pendingShellLayout: {
+  geometry: Record<string, unknown>;
+  displayMode: AuxPaneDisplayMode;
+  overlayWidth: number;
+} | null = null;
 let shellLayoutTimer: number | undefined;
 /** The text last handed to storage, so an unchanged layout is not written again. */
-let writtenShellLayout: string | null = null;
+const writtenShellLayout = new Map<string, string>();
+let shellLayoutWrites = Promise.resolve();
 
 /**
  * Notes the current layout and writes it once it has held still for
@@ -428,7 +477,7 @@ let writtenShellLayout: string | null = null;
  * every field it stores. `flushShellLayout` writes a pending layout at once.
  */
 export function persistShellLayout(): void {
-  const doc = {
+  const geometry = {
     drawerOpen: drawerOpen(),
     navWidth: navWidth(),
     auxPaneWidth: auxPaneWidth(),
@@ -438,9 +487,11 @@ export function persistShellLayout(): void {
     sessionGrouping: sessionGrouping(),
     collapsedWorkspaces: collapsedWorkspaces(),
   };
+  const displayMode = auxPaneDisplayMode();
+  const overlayWidth = auxPaneOverlayWidth();
   // Never write before the stored document was read, or launch defaults win.
   if (!shellLayoutLoaded) return;
-  pendingShellLayout = doc;
+  pendingShellLayout = { geometry, displayMode, overlayWidth };
   if (shellLayoutTimer !== undefined) clearTimeout(shellLayoutTimer);
   shellLayoutTimer = setTimeout(() => void flushShellLayout(), SHELL_LAYOUT_PERSIST_DELAY_MS);
 }
@@ -456,14 +507,24 @@ export function flushShellLayout(): Promise<void> {
   }
   const doc = pendingShellLayout;
   pendingShellLayout = null;
-  if (!doc) return Promise.resolve();
-  const text = JSON.stringify(doc);
-  if (text === writtenShellLayout) return Promise.resolve();
-  writtenShellLayout = text;
-  return Storage.setItem(SHELL_LAYOUT_STORAGE_KEY, text).catch(() => {
-    // A failed write is retried with the next change; forget it so that change is not skipped.
-    if (writtenShellLayout === text) writtenShellLayout = null;
+  if (!doc) return shellLayoutWrites;
+  const values = [
+    [SHELL_LAYOUT_STORAGE_KEY, JSON.stringify(doc.geometry)],
+    [PANE_DISPLAY_MODE_KEY, doc.displayMode],
+    [PANE_OVERLAY_WIDTH_KEY, String(doc.overlayWidth)],
+  ];
+  shellLayoutWrites = shellLayoutWrites.then(async () => {
+    await Promise.all(values.map(async ([key, text]) => {
+      if (writtenShellLayout.get(key) === text) return;
+      try {
+        await Storage.setItem(key, text);
+        writtenShellLayout.set(key, text);
+      } catch {
+        // The next layout edit retries any value storage refused.
+      }
+    }));
   });
+  return shellLayoutWrites;
 }
 
 export const workspaces = signal<WorkspaceRecord[]>([]);
@@ -490,6 +551,23 @@ export const deviceContext = computed<string>(() => {
 export const activeDeviceId = deviceContext;
 setFleetDeviceContextReader(() => deviceContext() || null);
 export const sessions = signal<SessionSummary[]>([]);
+// Review children are opened by a direct host response. The workspace catalogue
+// can omit internal sessions, so an open Review retains its own display facts.
+const reviewSessionHeaders = signal<Record<string, SessionSummary>>({});
+
+export function rememberReviewSession(header: SessionSummary): void {
+  const key = `${header.deviceId ?? ""}/${header.sessionId}`;
+  reviewSessionHeaders.update(current => {
+    const retained = Object.entries(current).filter(([id]) => id !== key).slice(-15);
+    return Object.fromEntries([...retained, [key, header]]);
+  });
+}
+
+export function sessionSummaryOnDevice(sessionId: string | null, deviceId: string): SessionSummary | null {
+  if (!sessionId) return null;
+  return sessions().find(row => row.sessionId === sessionId && (!fleetActive() || (row.deviceId ?? deviceContext()) === deviceId))
+    ?? reviewSessionHeaders()[`${deviceId}/${sessionId}`] ?? null;
+}
 /** O(1) lookup of the listed rows by session id (the first row of an id wins, as `find` would). */
 const sessionRowsById = computed<Map<string, SessionSummary>>(() => {
   const index = new Map<string, SessionSummary>();
@@ -499,12 +577,6 @@ const sessionRowsById = computed<Map<string, SessionSummary>>(() => {
   return index;
 });
 export const sessionTotal = signal(0);
-export const activeSessionId = signal<string | null>(null);
-/** The device of the open session (`""` without the fleet layer). */
-export const activeSessionDevice = signal<string>("");
-/** Secondary split pane session identity (Pane 1). Cleared immediately when split closes. */
-export const secondarySessionId = signal<string | null>(null);
-export const secondarySessionDevice = signal<string>("");
 export const secondaryWorkspaceId = signal<string | null>(null);
 
 /** The key of a session anywhere on the account: `"<deviceId>/<sessionId>"`. */
@@ -535,19 +607,6 @@ export function deviceOfSession(sessionId: string | null | undefined): string {
   if (sessionId && sessionId === secondarySessionId() && secondarySessionDevice()) return secondarySessionDevice();
   return (sessionId ? fleetSessionOwner(sessionId) : null) ?? deviceContext();
 }
-
-/** The open session's key, or `null`. */
-export const activeSessionKey = computed<string | null>(() => {
-  const sessionId = activeSessionId();
-  return sessionId ? `${activeSessionDevice()}/${sessionId}` : null;
-});
-
-/** The secondary split pane session's key, or `null`. */
-export const secondarySessionKey = computed<string | null>(() => {
-  if (!splitPaneOpen()) return null;
-  const sessionId = secondarySessionId();
-  return sessionId ? `${secondarySessionDevice()}/${sessionId}` : null;
-});
 
 function setActiveSession(sessionId: string | null, deviceId?: string): void {
   activeSessionDevice.set(sessionId ? (deviceId ?? deviceOfSession(sessionId)) : "");
@@ -583,7 +642,7 @@ export const activeWorkspace = computed(
 export const activeWorkspaceRoot = computed(() => activeWorkspace()?.rootPath ?? "");
 
 export const activeSession = computed(
-  () => sessions().find(item => item.sessionId === activeSessionId()) ?? null,
+  () => sessionSummaryOnDevice(activeSessionId(), activeSessionDevice()),
 );
 
 function reportError(error: unknown): void {
@@ -741,7 +800,7 @@ export function notifySecondaryRunningTurn(
 
 export interface SecondaryPaneBridge {
   loadTurns: (sessionId: string, options?: { silent?: boolean }) => Promise<TranscriptTurnView[] | null>;
-  clearIfMatches: (predicate: { sessionId?: string; workspaceId?: string }) => void;
+  clearIfMatches: (predicate: { sessionId?: string; workspaceId?: string; deviceId?: string }) => void;
   getTurns: () => TranscriptTurnView[];
   getPendingTurn: () => PendingTurnState | null;
   setPendingTurn: (sessionId: string, userText: string, turnId?: string, images?: ImageAttachment[]) => void;
@@ -807,21 +866,22 @@ export function upsertSessionFromEvent(summary: SessionSummary): void {
 }
 
 /** Removes a session reported by `agentic://session-deleted`. */
-export function removeSessionFromEvent(sessionId: string): void {
+export function removeSessionFromEvent(sessionId: string, device: string): void {
   if (!sessionId) return;
   const existed = sessions().some(item => item.sessionId === sessionId);
   if (existed) {
     sessions.update(current => current.filter(item => item.sessionId !== sessionId));
     sessionTotal.update(total => Math.max(0, total - 1));
   }
-  forgetRecentTails(sessionKey(sessionId));
-  if (activeSessionId() === sessionId) {
+  const key = sessionKey(sessionId, device);
+  forgetRecentTails(key);
+  if (activeSessionKey() === key) {
     setActiveSession(null);
     sessionTurns.set([]);
     clearPendingTurn(sessionId);
     clearStreamedText();
   }
-  secondaryPaneBridge?.clearIfMatches({ sessionId });
+  secondaryPaneBridge?.clearIfMatches({ sessionId, deviceId: device });
 }
 
 let activeStepCount = 0;
@@ -1199,10 +1259,7 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
       earlierLoadSeq += 1;
       earlierLoadInFlight = false;
       notifySessionSwitch("leave", previous, previousKey);
-      if (previousKey) {
-        composerText.set("");
-        clearAttachments();
-      }
+      attachmentNotice.set("");
       const tail = swapRecentTail(previousKey, key);
       transcriptCursor = null;
       transcriptHasEarlier.set(false);
@@ -1518,6 +1575,7 @@ export async function loadTurns(
             ? view.turns
             : [];
       noteTranscriptSource(view.turns, { sessionId, workspaceId, deviceId: activeSessionDevice() });
+      reconcilePlanBuildTurns(key, view.turns);
       transcriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         transcriptNotice.set("");
@@ -1691,7 +1749,7 @@ export function runningTurnOf(sessionId: string, deviceId?: string): string | nu
   return runningTurns()[sessionKey(sessionId, deviceId ?? deviceOfSession(sessionId))] ?? null;
 }
 /** The composer's current text. */
-export const composerText = signal<string>("");
+export const composerText = primaryComposerDraft.text;
 
 /** Why the composer could not send mid-turn on this host, or empty. */
 export const sendNotice = signal("");
@@ -1717,75 +1775,105 @@ export async function sendTurn(
     attachments?: ImageAttachment[];
     /** Explicit file attachments; when omitted, composer `fileAttachments()` are used. */
     files?: FileAttachment[];
+    references?: SessionReferenceCandidate[];
+    externalCommand?: ExternalCommandSubmission;
+    /** A feature can reserve the turn ID before sending to correlate its host events. */
+    turnId?: string;
     onQueued?: (info: {
       sessionId: string;
       turnId: string;
       content: string;
       attachmentCount: number;
       attachments: ImageAttachment[];
+      referenceDraft?: SessionReferenceDraft;
     }) => void;
   },
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = activeSessionId();
-  const rawBody = text.trim();
+  const origin = activeSessionKey();
+  const device = activeSessionDevice();
+  const route = fleetActive() && device ? { target: device } : undefined;
+  const target = primaryComposerDraft.capture();
+  const draft = target.read();
   const usesExplicitAttachments = options?.attachments !== undefined;
   const usesExplicitFiles = options?.files !== undefined;
-  const outgoingImages = usesExplicitAttachments ? [...(options?.attachments ?? [])] : [...imageAttachments()];
-  const outgoingFiles = usesExplicitFiles ? [...(options?.files ?? [])] : [...fileAttachments()];
-  const body = composeMessageWithFileAttachments(rawBody, outgoingFiles);
-  if (!sessionId || (!body && outgoingImages.length === 0)) return null;
+  const outgoingImages = options?.attachments ?? draft.images;
+  const outgoingFiles = options?.files ?? draft.files;
+  const external = options?.externalCommand;
+  const fromComposer = draft.text === (external?.invocation ?? text) && !usesExplicitAttachments && !usesExplicitFiles && options?.references === undefined;
+  if (external && !fromComposer) return null;
+  const references = options?.references ?? (fromComposer ? draft.references : []);
+  const { message, displayBody } = composerMessage(text, outgoingFiles, references, external?.invocation);
+  if (!sessionId || !origin || (!message.text && outgoingImages.length === 0)) return null;
   // The row says which workspace owns the session. A session open in a tab whose
   // workspace is no longer listed is sent without one, so the host restores it
   // from its own binding instead of the workspace this window shows now.
-  const row = sessions().find(item => item.sessionId === sessionId);
+  const row = sessionSummaryOnDevice(sessionId, device);
   const workspaceId = row ? row.workspaceId || activeWorkspaceId() || undefined : undefined;
-  const savedDraft = composerText();
-  const fromComposer = savedDraft === text && options?.attachments === undefined && options?.files === undefined;
+  const fallbackWorkspaceId = workspaceId ?? activeWorkspaceId() ?? "";
+  const agentType = agentTypeOf(sessionId, device);
   const attachments = buildAttachmentContexts(outgoingImages);
   const running = Boolean(runningTurnId());
-  const restoreDraft = () => {
-    batch(() => {
-      if (fromComposer && !composerText().trim()) {
-        composerText.set(savedDraft);
-      }
-      if (!usesExplicitAttachments && outgoingImages.length > 0 && imageAttachments().length === 0) {
-        imageAttachments.set(outgoingImages);
-      }
-      if (!usesExplicitFiles && outgoingFiles.length > 0 && fileAttachments().length === 0) {
-        fileAttachments.set(outgoingFiles);
-      }
-    });
-  };
-  // Optimistic frame-0 clear: the composer clears immediately on submit instead
-  // of lagging behind the host RPC round-trip; on error or legacy refusal the
-  // draft is restored cleanly if the user has not started typing something new.
+  if (external?.execution && (running || pendingTurnState())) {
+    sendNotice.set(tr("chat.externalSlash.freshBusy"));
+    return null;
+  }
+  if (external?.execution && (outgoingFiles.length || outgoingImages.length || references.length)) {
+    sendNotice.set(tr("chat.externalSlash.freshContext"));
+    return null;
+  }
+  let restoreDraft = () => {};
+  // Clear the text and attachments as one revision, even if the view switches
+  // panes before the runtime accepts or refuses it.
   batch(() => {
     turnError.set("");
     sendNotice.set("");
     clearPromptSuggestion(sessionId, activeSessionDevice());
-    if (fromComposer) composerText.set("");
-    if (!usesExplicitAttachments) clearAttachments();
+    restoreDraft = stageComposerChange(target, {
+      ...(fromComposer ? { text: "", references: [] } : {}),
+      ...(!usesExplicitAttachments && draft.images.length ? { images: [] } : {}),
+      ...(!usesExplicitFiles && draft.files.length ? { files: [] } : {}),
+    });
+    if (!usesExplicitAttachments) attachmentNotice.set("");
     if (!running) {
       // Optimistic: the pending bubble (with its images) stays across TTFT until
       // persisted turns settle (no flash back to the empty Welcome Studio on send).
       clearStreamedText();
-      setPendingTurn(sessionId, body, undefined, outgoingImages);
+      setPendingTurn(sessionId, message.displayText, undefined, outgoingImages);
     }
   });
   let outcome: SubmitUserMessageResult["outcome"] | null = null;
   await runStep(async () => {
     try {
+      if (external?.execution) {
+        const result = await startDialogTurn({
+          sessionId,
+          userInput: message.text,
+          originalUserInput: message.displayText,
+          agentType,
+          ...(workspaceId ? { workspaceId } : {}),
+          execution: external.execution,
+        }, route);
+        if (!result.success) throw new Error(result.message);
+        outcome = "started";
+        return;
+      }
       const result = await submitUserMessage({
         sessionId,
         ...(workspaceId ? { workspaceId } : {}),
-        text: body,
-        agentType: agentTypeOf(sessionId),
+        text: message.text,
+        ...(options?.turnId ? { turnId: options.turnId } : {}),
+        ...(external || message.userMessageMetadata ? { displayText: message.displayText } : {}),
+        ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
+        agentType,
         ...(attachments.length ? { attachments } : {}),
-        ...(running && sendDuringTurn ? { sendDuringTurn } : {}),
-      });
+        // The host materializes session transcripts at the start of a turn.
+        ...(references.length ? { sendDuringTurn: "queue" } : sendDuringTurn ? { sendDuringTurn } : {}),
+      }, route);
       outcome = result.outcome;
+      if (!target.isVisible()) return;
       if (result.outcome === "started") {
-        bindPendingTurnId(sessionId, result.turnId, body, outgoingImages);
+        bindPendingTurnId(sessionId, result.turnId, message.displayText, outgoingImages);
       } else {
         // Steered into the running turn or waiting in the host queue: either way
         // no new turn starts from this message now.
@@ -1794,28 +1882,35 @@ export async function sendTurn(
           options?.onQueued?.({
             sessionId,
             turnId: result.turnId,
-            content: body,
+            content: message.displayText,
             attachmentCount: attachments.length,
             attachments: outgoingImages,
+            ...(message.userMessageMetadata ? { referenceDraft: { text: displayBody, references } } : {}),
           });
         }
         if (result.outcome === "steered") await loadTurns(sessionId);
       }
     } catch (error) {
-      if (isMissingCommand(error, "submit_user_message")) {
+      if (!external?.execution && isMissingCommand(error, "submit_user_message")) {
         outcome = await sendWithLegacyHost(
           sessionId,
-          workspaceId ?? activeWorkspaceId() ?? "",
-          body,
+          fallbackWorkspaceId,
+          message,
           attachments,
           running,
           restoreDraft,
+          target.isVisible,
+          agentType,
+          route,
+          options?.turnId,
         );
         return;
       }
-      if (!running) clearPendingTurn(sessionId);
       restoreDraft();
-      turnError.set(error instanceof Error ? error.message : String(error));
+      if (target.isVisible()) {
+        if (!running) clearPendingTurn(sessionId, origin);
+        turnError.set(error instanceof Error ? error.message : String(error));
+      }
     }
   });
   return outcome;
@@ -1829,29 +1924,39 @@ export async function sendTurn(
 async function sendWithLegacyHost(
   sessionId: string,
   workspaceId: string,
-  body: string,
+  message: ReturnType<typeof messageWithSessionReferences>,
   attachments: ReturnType<typeof buildAttachmentContexts>,
   running: boolean,
   restoreDraft: () => void,
+  isVisible: () => boolean,
+  agentType: string,
+  route?: { target: string },
+  turnId?: string,
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   if (running) {
     restoreDraft();
-    sendNotice.set(tr("chat.send.hostUpdateRequired"));
+    if (isVisible()) sendNotice.set(tr("chat.send.hostUpdateRequired"));
     return null;
   }
   try {
-    await startDialogTurn({
+    const result = await startDialogTurn({
       sessionId,
-      userInput: body,
-      agentType: agentTypeOf(sessionId),
+      userInput: message.text,
+      ...(turnId ? { turnId } : {}),
+      ...(message.displayText !== message.text ? { originalUserInput: message.displayText } : {}),
+      ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
+      agentType,
       workspaceId,
       ...(attachments.length ? { imageContexts: attachments } : {}),
-    });
+    }, route);
+    if (!result.success) throw new Error(result.message);
     return "started";
   } catch (error) {
-    clearPendingTurn(sessionId);
     restoreDraft();
-    turnError.set(error instanceof Error ? error.message : String(error));
+    if (isVisible()) {
+      clearPendingTurn(sessionId);
+      turnError.set(error instanceof Error ? error.message : String(error));
+    }
     return null;
   }
 }
@@ -1915,13 +2020,15 @@ export const sessionAgentTypes = signal<Record<string, string>>({});
  * recorded for it, else the one the composer is on. Reading the host's own record
  * is what keeps a session created on the desktop on the agent it ran as there.
  */
-export function agentTypeOf(sessionId: string | null): string {
+export function agentTypeOf(sessionId: string | null, deviceId?: string): string {
   if (!sessionId) return chosenAgentType();
-  const bound = sessionAgentTypes()[sessionKey(sessionId)];
+  const device = deviceId ?? deviceOfSession(sessionId);
+  const bound = sessionAgentTypes()[sessionKey(sessionId, device)];
   if (bound) return bound;
+  const fleetRow = fleetSessionRow(device, sessionId);
+  if (deviceId && fleetRow?.agentType?.trim()) return fleetRow.agentType.trim();
   const stored = sessionRowsById().get(sessionId)?.agentType;
   if (stored && stored.trim()) return stored.trim();
-  const fleetRow = fleetSessionRow(deviceOfSession(sessionId), sessionId);
   if (fleetRow?.agentType && fleetRow.agentType.trim()) return fleetRow.agentType.trim();
   if (sessionId !== activeSessionId()) return DEFAULT_AGENT_TYPE;
   return chosenAgentType();
@@ -2040,27 +2147,29 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
 export async function deleteSessionRow(sessionId: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
+  const device = activeWorkspaceKey()?.deviceId ?? "";
+  const key = sessionKey(sessionId, device);
+  const connection = backendConnection();
   await runStep(async () => {
     await deletePersistedSession(sessionId, workspaceId);
+    forgetComposerDraft(key, connection);
     sessions.update(current => current.filter(item => item.sessionId !== sessionId));
     // The header counts the whole catalog, so a deleted row lowers it here rather
     // than waiting for a reload the user did not ask for.
     sessionTotal.update(total => Math.max(0, total - 1));
-    const key = sessionKey(sessionId);
-    const device = activeSessionDevice();
     clearQuestionsForSession(sessionId, device);
     clearPermissionsForSession(sessionId, device);
     clearPromptSuggestion(sessionId, device);
     clearPendingTurn(sessionId, key);
     forgetRecentTails(key);
-    if (activeSessionId() === sessionId) {
+    if (activeSessionKey() === key) {
       cancelPendingTranscriptBackfill();
       transcriptCursor = null;
       transcriptHasEarlier.set(false);
       setActiveSession(null);
       sessionTurns.set([]);
     }
-    secondaryPaneBridge?.clearIfMatches({ sessionId });
+    secondaryPaneBridge?.clearIfMatches({ sessionId, deviceId: device });
   });
 }
 
@@ -2333,8 +2442,10 @@ let localeSyncSubscribed = false;
 export async function initAppLocale(): Promise<AppLocale> {
   if (!localeSyncSubscribed) {
     localeSyncSubscribed = true;
-    listenEvent<unknown>("account://settings-applied", () => {
-      void loadAppLocale({ forceHost: true });
+    onAccountSettingsApplied(keys => {
+      if (keys.length === 0 || keys.includes("app") || keys.includes("app.language")) {
+        void loadAppLocale({ forceHost: true });
+      }
     });
   }
   return loadAppLocale();

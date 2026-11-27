@@ -24,12 +24,15 @@ use crate::agentic::deep_review_policy::{
 };
 use crate::agentic::events::{DeepReviewQueueStatus, ErrorCategory};
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
-use openbitfun_agent_runtime::deep_review::task_execution as runtime_task_execution;
 pub(crate) use openbitfun_agent_runtime::deep_review::task_execution::{
     attach_deep_review_cache, deep_review_incremental_cache_hit_for_task,
     deep_review_incremental_cache_hit_result, deep_review_launch_batch_for_task,
     ensure_deep_review_retry_coverage, prompt_with_deep_review_retry_scope,
     DeepReviewProviderCapacityRetryDecision, DeepReviewProviderCapacityRetryRuntime,
+};
+use openbitfun_agent_runtime::deep_review::{
+    publish_deep_review_reviewer_wait, task_execution as runtime_task_execution,
+    track_deep_review_reviewer_wait,
 };
 pub(crate) use openbitfun_agent_runtime::deep_review::{
     DeepReviewLaunchBatchInfo, DeepReviewQueueWaitSkipReason,
@@ -208,8 +211,14 @@ pub(crate) async fn emit_queue_state(
     queue_elapsed_ms: u64,
     max_queue_wait_seconds: u64,
 ) {
+    let waiting = matches!(
+        status,
+        DeepReviewQueueStatus::QueuedForCapacity | DeepReviewQueueStatus::PausedByUser
+    );
+    let controls_available =
+        publish_deep_review_reviewer_wait(session_id, dialog_turn_id, tool_id, waiting);
     if let Some(coordinator) = get_global_coordinator() {
-        let queue_state = runtime_task_execution::deep_review_queue_state(
+        let mut queue_state = runtime_task_execution::deep_review_queue_state(
             runtime_task_execution::DeepReviewQueueStateInput {
                 tool_id,
                 subagent_type,
@@ -223,6 +232,7 @@ pub(crate) async fn emit_queue_state(
                 max_queue_wait_seconds,
             },
         );
+        queue_state.controls_available = controls_available;
         coordinator
             .emit_deep_review_queue_state_changed(session_id, dialog_turn_id, queue_state)
             .await;
@@ -240,6 +250,8 @@ pub(crate) async fn wait_for_provider_capacity_retry(
     max_wait_seconds: u64,
     is_optional_reviewer: bool,
 ) -> DeepReviewProviderQueueWaitOutcome {
+    let _wait =
+        track_deep_review_reviewer_wait(session_id, dialog_turn_id, tool_id, is_optional_reviewer);
     let max_wait = Duration::from_secs(max_wait_seconds);
     let optional_reviewer_count = is_optional_reviewer.then_some(1);
     let initial_active_reviewers = deep_review_active_reviewer_count(dialog_turn_id);
@@ -260,6 +272,9 @@ pub(crate) async fn wait_for_provider_capacity_retry(
             dialog_turn_id,
             conc_policy.max_parallel_instances,
         );
+        // Once this admission check begins, only the controls it consumes can
+        // affect it. The next waiting event opens control again if it blocks.
+        publish_deep_review_reviewer_wait(session_id, dialog_turn_id, tool_id, false);
         let control_snapshot = deep_review_queue_control_snapshot(dialog_turn_id, tool_id);
         let queue_step = queue_runtime.step(
             runtime_task_execution::DeepReviewProviderCapacityQueueRuntimeInput {
@@ -412,6 +427,8 @@ pub(crate) async fn wait_for_reviewer_admission(
     is_optional_reviewer: bool,
     launch_batch_info: Option<&DeepReviewLaunchBatchInfo>,
 ) -> OpenBitFunResult<DeepReviewQueueWaitOutcome> {
+    let _wait =
+        track_deep_review_reviewer_wait(session_id, dialog_turn_id, tool_id, is_optional_reviewer);
     let decision = runtime_task_execution::local_reviewer_capacity_queue_decision();
     let local_capacity_reason = decision
         .reason
@@ -433,6 +450,7 @@ pub(crate) async fn wait_for_reviewer_admission(
             dialog_turn_id,
             conc_policy.max_parallel_instances,
         );
+        publish_deep_review_reviewer_wait(session_id, dialog_turn_id, tool_id, false);
         let control_snapshot = deep_review_queue_control_snapshot(dialog_turn_id, tool_id);
         let queue_step = queue_runtime.begin_step(
             runtime_task_execution::DeepReviewReviewerAdmissionQueueRuntimeInput {
@@ -609,5 +627,69 @@ pub(crate) async fn wait_for_reviewer_admission(
                 sleep(next_sleep).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod queue_control_tests {
+    use super::*;
+    use openbitfun_agent_runtime::deep_review::{
+        control_live_deep_review_reviewer_wait, DeepReviewQueueControlAction,
+    };
+
+    #[tokio::test]
+    async fn a_published_wait_can_be_skipped_by_its_owner_and_expires_after_completion() {
+        let session = "published-optional-review-session";
+        let turn = "published-optional-review-turn";
+        let tool = "published-optional-review-tool";
+        let _occupied = try_begin_deep_review_active_reviewer(turn, 1).expect("reviewer capacity");
+        let review = tokio::spawn(async move {
+            let policy = DeepReviewConcurrencyPolicy {
+                max_parallel_instances: 1,
+                max_queue_wait_seconds: 30,
+                ..Default::default()
+            };
+            wait_for_reviewer_admission(session, turn, tool, "ReviewCustom", &policy, true, None)
+                .await
+                .expect("review queue outcome")
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                assert!(!control_live_deep_review_reviewer_wait(
+                    "unrelated-review",
+                    turn,
+                    tool,
+                    DeepReviewQueueControlAction::Cancel,
+                ));
+                if control_live_deep_review_reviewer_wait(
+                    session,
+                    turn,
+                    tool,
+                    DeepReviewQueueControlAction::SkipOptional,
+                ) {
+                    break;
+                }
+                sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the runtime published the wait");
+        let outcome = tokio::time::timeout(Duration::from_secs(2), review)
+            .await
+            .expect("the waiter observed the control")
+            .expect("review waiter task");
+        assert!(matches!(
+            outcome,
+            DeepReviewQueueWaitOutcome::Skipped {
+                skip_reason: DeepReviewQueueWaitSkipReason::OptionalSkipped,
+                ..
+            }
+        ));
+        assert!(!control_live_deep_review_reviewer_wait(
+            session,
+            turn,
+            tool,
+            DeepReviewQueueControlAction::Pause,
+        ));
     }
 }

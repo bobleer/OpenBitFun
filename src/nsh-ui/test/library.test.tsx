@@ -4,6 +4,7 @@
 // under that (no page title, KPI rows or feature-list subtitle of its own).
 
 import { expect, open, test } from "nsh/test";
+import { designTokens } from "../src/generated/designTokens";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -79,9 +80,9 @@ test("the Library header draws the title, the scope chip, five tabs and the tab'
     expect([tab, app.shows(`text:${tab}`)]).toEqual([tab, true]);
   }
   expect(app.shows("text:Personal assistants with their own memory and voice.")).toBe(true);
-  // The title is the page title role: 22 / 600.
-  expect(Number(app.spanStyle("Library").fontSize)).toBe(22);
-  expect(String(app.spanStyle("Library").fontWeight)).toBe("600");
+  // The title uses the same page-title role as the design system.
+  expect(Number(app.spanStyle("Library").fontSize)).toBe(designTokens.typography.pageTitle.size);
+  expect(String(app.spanStyle("Library").fontWeight)).toBe(designTokens.typography.pageTitle.weight);
 
   await app.press("library-tab-agents");
   await app.waitFor("Agents your sessions can use, and the helpers they call.");
@@ -144,6 +145,60 @@ test("without the fleet layer the chip names this device and opens no menu", asy
   // A label, not a control: nothing to press, no other device named.
   expect(app.shows("label:library-scope-chip")).toBe(true);
   expect(app.shows("text:linux-box")).toBe(false);
+});
+
+test("Skill Groups reads and saves through the selected runtime and rejects unknown config versions", async () => {
+  const groupPath = "app.user_skill_groups";
+  const documents: Record<string, unknown> = {
+    "dev-a": { version: 1, groups: [{ id: "local", name: "Local skills", skillKeys: [] }] },
+  };
+  const writes: Array<{ target: string; value: unknown }> = [];
+  const host = fleetObpHost(createBackend(), {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: fleetNavigator(),
+  });
+  const send = host.handlers["openbitfun.obpSend"];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const request = frame.params?.args?.request;
+    if (frame.params?.command !== "fleet_call" || request?.args?.request?.path !== groupPath) return send(data);
+    const reply = (body: object) => [JSON.stringify({ jsonrpc: "2.0", id: frame.id, ...body })];
+    if (request.command === "get_config") {
+      return Object.hasOwn(documents, request.target)
+        ? reply({ result: documents[request.target] })
+        : reply({ error: { code: -32000, message: `Config path '${groupPath}' not found` } });
+    }
+    expect(request.command).toBe("set_config");
+    const value = request.args.request.value;
+    writes.push({ target: request.target, value });
+    documents[request.target] = value;
+    return reply({ result: null });
+  };
+  const app = await open(HARNESS, { ...DESKTOP, host: { handlers: host.handlers } });
+  const switchDevice = async (id: string) => {
+    await app.press("library-scope-chip");
+    await app.press(`library-scope-${id}`);
+  };
+  await app.press("library-tab-skills");
+  await app.press("skills-tab-groups");
+  await app.waitFor("Local skills");
+  await switchDevice("dev-b");
+  await app.waitFor("No skill groups yet.");
+  expect(app.shows("Local skills")).toBe(false);
+  await app.press("skill-group-create");
+  await app.type("skill-group-editor-name", "Remote skills");
+  await app.press("skill-group-editor-save");
+  await app.waitFor("Remote skills");
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ target: "dev-b", value: { version: 1 } });
+
+  await switchDevice("dev-a");
+  await app.waitFor("Local skills");
+  expect(app.shows("Remote skills")).toBe(false);
+  documents["dev-b"] = { version: 2, groups: [] };
+  await switchDevice("dev-b");
+  await app.waitFor("These groups use a newer format. Update OpenBitFun to edit them.");
+  expect(app.enabled("skill-group-create")).toBe(false);
+  expect(writes).toHaveLength(1);
 });
 
 test("an empty tab uses the boxless empty state with the Library's words and one action", async () => {

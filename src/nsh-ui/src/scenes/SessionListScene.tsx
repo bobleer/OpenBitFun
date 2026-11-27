@@ -8,6 +8,7 @@ import { openGlobalSearch } from "../globalSearchStore";
 import { tr } from "../i18n";
 import { layout, palette, radii, space, textStyle } from "../theme";
 import { DeviceSidebarTree } from "../ui/deviceSidebar";
+import { SpaceShortcuts } from "../ui/SpaceShortcuts";
 import { Icon } from "../ui/icons";
 import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { focusRingStyle } from "../ui/primitives";
@@ -57,6 +58,7 @@ export function SessionListScene(): JSX.Element {
       }}
     >
       <SearchEntry />
+      <SpaceShortcuts />
       <DeviceSidebarTree />
     </Scroll>
   );

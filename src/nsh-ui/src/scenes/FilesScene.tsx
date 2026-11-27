@@ -6,6 +6,7 @@ import {
   effect,
   keymap,
   openUrl,
+  Overlay,
   untracked,
   Scroll,
   signal,
@@ -22,11 +23,13 @@ import {
   Tree,
   type EditorRef,
   type EditorSearchResult,
+  type EditorSelection,
   type TreeEntry,
   type TreeItem,
 } from "nsh/base";
 import { basename, extensionOf, formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
+import { codeSnippetLabel, codeSnippetPromptToken, createCodeSnippetContext } from "../codeSnippetReference";
 import { isDesktopLocalShell, isRemotePeerContext } from "../shared/deviceScope";
 import {
   basenameOfPath,
@@ -37,12 +40,16 @@ import {
   resolveWorkspaceMarkdownLink,
 } from "../shared/workspaceUtils";
 import {
+  activeFileEditorOptions,
+  activeFileEditorConfig,
   beginEditFile,
   cancelCloseTab,
   cancelDelete,
   cancelEdit,
   cancelEditFile,
+  cancelEncodingSave,
   cancelSaveConflict,
+  canReopenWithEncoding,
   changedOnDisk,
   changedPaths,
   closeOtherTabs,
@@ -50,6 +57,7 @@ import {
   commitEdit,
   confirmingCloseTab,
   confirmingDelete,
+  confirmingEncodingSave,
   dirChildren,
   dirnameOf,
   editingContent,
@@ -75,10 +83,11 @@ import {
   type OpenFile,
   pasteFromClipboard,
   pdfPreviewSupported,
-  pathSep,
   pendingEdit,
   refreshDirectory,
+  refreshFileEditorConfig,
   reloadFromDisk,
+  reopenWithEncoding,
   removeSelected,
   requestCloseTab,
   requestDelete,
@@ -95,28 +104,42 @@ import {
   type SearchHit,
   saveConflict,
   saveEditedFile,
+  saveOpenPdfReviews,
   searchMode,
   searchQuery,
   searchResults,
   selectedPath,
+  setActiveFileEditorOptions,
+  type FileEditorOptions,
   setEditingContent,
   setExpanded,
   startCreate,
   startRename,
 } from "../fileStore";
+import { editorFileEncodings, type EditorFileEncoding } from "../editorFileEncoding";
 import { fleetDeviceById } from "../fleetStore";
 import {
+  activeSession,
+  activeSessionDevice,
   activeWorkspace,
   activeWorkspaceId,
   activeWorkspaceRoot,
   auxSelectedFilePath,
   composerText,
   deviceContext,
+  focusedPane,
   navigateScene,
+  secondarySessionDevice,
+  secondarySessionId,
+  secondaryWorkspaceId,
+  splitPaneOpen,
 } from "../state";
+import { secondaryComposerText } from "../splitSessionStore";
+import { settingsValues } from "../settingsStore";
 import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { mentionToken } from "../mentionStore";
 import { openTerminal } from "../terminalStore";
+import type { MarkdownImageWorkspace } from "../ui/markdownDocumentImage";
 import {
   compactLayout,
   elevationShadow,
@@ -139,10 +162,12 @@ import {
 } from "../ui/markdown";
 import {
   askAiInDocument,
+  copyDocumentMarkdown,
   documentWebViewsAvailable,
   hasRichPreviewBlocks,
   MarkdownDocumentEditor,
   MarkdownPreview,
+  type MarkdownDocumentMode,
   visualEditBlock,
   visualEditBlockMessage,
   VisualEditNotice,
@@ -155,8 +180,18 @@ import {
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
-import { ImageViewerSurface, type ImageZoomState } from "../ui/ImageLightbox";
-import { ContextMenuOverlay, DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { createImageViewState, ImageViewerSurface } from "../ui/ImageLightbox";
+import { PdfReviewWorkspace } from "../ui/PdfReviewWorkspace";
+import { LatexDocumentLayout } from "../ui/LatexDocumentLayout";
+import { LatexSourceTools } from "../ui/LatexSourceTools";
+import { rendererAssets } from "../documentRenderers";
+import { defaultEditorIndentation, editorLanguages, resolveEditorLanguage } from "../ui/editorLanguages";
+import { guessEditorIndentation } from "../ui/editorIndentation";
+import { ContextMenuOverlay, DropdownMenu, menuSurfaceStyle, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { TabGroup } from "../ui/TabGroup";
+import { buildOpenPlan, currentPlanBuild, planBuildBlocked } from "../planBuildActions";
+import { isPlanDocument, readPlanDocument } from "../planDocument";
+import { PlanDocument } from "../ui/PlanDocument";
 import {
   Button,
   EmptyStateCard,
@@ -211,6 +246,18 @@ const previewPaneWidth = signal(900);
 /** HTML files showing their rendered preview instead of the source. */
 const htmlPreviewPaths = signal<Record<string, true>>({});
 
+const openPlan = computed(() => {
+  const file = openFile();
+  return file?.kind === "markdown" && !file.large && isPlanDocument(file.path)
+    ? readPlanDocument(editingContent() ?? file.content)
+    : null;
+});
+
+function fileVisualBlock(path: string, text: string) {
+  const plan = isPlanDocument(path) ? readPlanDocument(text) : null;
+  return plan?.kind === "invalid" ? "fidelity" : visualEditBlock(plan?.body ?? text);
+}
+
 function canSplitMarkdown(narrow: boolean): boolean {
   return !narrow && previewPaneWidth() >= MARKDOWN_SPLIT_MIN_WIDTH;
 }
@@ -220,9 +267,12 @@ const markdownBlock = computed(() => {
   markdownCheckVersion();
   const file = openFile();
   if (!file || file.kind !== "markdown" || file.large) return null;
-  return visualEditBlock(untracked(() => editingContent()) ?? file.content);
+  return fileVisualBlock(file.path, untracked(() => editingContent()) ?? file.content);
 });
 
+function markdownSourceKey(path: string): string {
+  return JSON.stringify([deviceContext(), activeWorkspaceId(), path]);
+}
 /** Whether the open Markdown file contains Mermaid diagrams or display math (`$$...$$`) islands. */
 const markdownRichBlocks = computed(() => {
   markdownCheckVersion();
@@ -234,7 +284,7 @@ const markdownRichBlocks = computed(() => {
 const markdownTab = computed<MarkdownTab>(() => {
   const file = openFile();
   if (!file || file.kind !== "markdown") return "preview";
-  return markdownTabByPath()[file.path] ?? "preview";
+  return markdownTabByPath()[markdownSourceKey(file.path)] ?? "preview";
 });
 
 /**
@@ -251,33 +301,33 @@ const markdownMode = computed<MarkdownMode | null>(() => {
   if (tab === "source") return "source";
   if (tab === "split") return previewPaneWidth() >= MARKDOWN_SPLIT_MIN_WIDTH ? "split" : "source";
   if (file.large || editingContent() === null) return "preview";
-  if (markdownBlock() !== null) return "preview";
-  if (markdownRichBlocks() && !markdownForceVisualPaths()[file.path]) return "preview";
+  if (markdownBlock() !== null || (openPlan()?.kind === "plan" && !markdownForceVisualPaths()[markdownSourceKey(file.path)])) return "preview";
+  if (markdownRichBlocks() && !markdownForceVisualPaths()[markdownSourceKey(file.path)]) return "preview";
   return "visual";
 });
 
 function setMarkdownForceVisual(path: string, force: boolean): void {
+  const key = markdownSourceKey(path);
   markdownForceVisualPaths.update(current => {
     const next = { ...current };
-    if (force) next[path] = true;
-    else delete next[path];
+    if (force) next[key] = true;
+    else delete next[key];
     return next;
   });
 }
 
 function setMarkdownTab(path: string, tab: MarkdownTab): void {
-  if (tab === "preview") {
-    setMarkdownForceVisual(path, false);
-    markdownCheckVersion.update(v => v + 1);
-  }
+  const key = markdownSourceKey(path);
+  if (tab === "preview") setMarkdownForceVisual(path, false);
+  markdownCheckVersion.update(v => v + 1);
   markdownTabByPath.update(current => {
     if (tab === "preview") {
-      if (!(path in current)) return current;
+      if (!(key in current)) return current;
       const next = { ...current };
-      delete next[path];
+      delete next[key];
       return next;
     }
-    return { ...current, [path]: tab };
+    return { ...current, [key]: tab };
   });
 }
 
@@ -294,21 +344,32 @@ function enterMarkdownSplit(path: string): void {
 function enterMarkdownVisual(path: string): void {
   const file = openFile();
   if (!file || file.path !== path) return;
-  const block = visualEditBlock(editingContent() ?? file.content);
+  const block = fileVisualBlock(path, editingContent() ?? file.content);
   if (block) {
     pushToast(visualEditBlockMessage(block));
     return;
   }
   if (editingContent() === null) beginEditFile();
+  const key = markdownSourceKey(path);
   setMarkdownForceVisual(path, true);
   markdownCheckVersion.update(v => v + 1);
   markdownTabByPath.update(current => {
-    if (!(path in current)) return current;
+    if (!(key in current)) return current;
     const next = { ...current };
-    delete next[path];
+    delete next[key];
     return next;
   });
 }
+function selectMarkdownMode(mode: MarkdownDocumentMode): void {
+  const file = openFile();
+  if (file?.kind !== "markdown") return;
+  if (mode === "source") enterMarkdownSource(file.path);
+  else if (mode === "visual") {
+    if (markdownBlock() || file.large) enterMarkdownSource(file.path);
+    else enterMarkdownVisual(file.path);
+  } else setMarkdownTab(file.path, "preview");
+}
+
 
 function isHtmlFile(path: string): boolean {
   const ext = extensionOf(path);
@@ -369,7 +430,7 @@ function docMenuItems(narrow: boolean): DropdownMenuItem[] {
       label: tr("doc.askAi"),
       icon: "sparkles",
       accessibilityLabel: "doc-ask-ai",
-      onSelect: () => askAiInDocument(file.path),
+      onSelect: () => askAiInDocument(editorSelectionKey(file.path)),
     });
     if (canSplitMarkdown(narrow)) {
       items.push({
@@ -441,7 +502,7 @@ const CODE_EXTENSIONS = new Set([
   "json", "jsonc", "jsonl", "toml", "yaml", "yml", "xml", "html", "htm",
   "css", "scss", "sass", "less", "graphql", "gql", "proto", "lua", "zig",
   "dart", "vue", "svelte", "nix", "tf", "hcl", "ex", "exs", "erl", "hs",
-  "scala", "groovy", "gradle", "ini", "conf", "cfg",
+  "scala", "groovy", "gradle", "ini", "conf", "cfg", "tex",
 ]);
 
 const TEXT_EXTENSIONS = new Set(["md", "mdx", "markdown", "txt", "log", "csv", "rst"]);
@@ -941,32 +1002,12 @@ function PendingEditBar() {
   );
 }
 
-/**
- * Search mode switcher (`Names` / `Contents`) on its own dedicated row below
- * the Explorer search input, so `file-search` keeps the full explorer width
- * and labels stay readable at whole-pixel `caption` (`12px`) contrast.
- */
 function InlineSearchModeToggle() {
-  const modes: ReadonlyArray<{
-    value: "name" | "content";
-    label: () => string;
-    a11y: string;
-  }> = [
-    { value: "name", label: () => tr("files.searchNames"), a11y: "search-mode-name" },
-    { value: "content", label: () => tr("files.searchContents"), a11y: "search-mode-content" },
-  ];
-
-  return (
-    <SegmentedTabs
-      size={compactLayout() ? "md" : "xs"}
-      value={searchMode()}
-      options={modes.map(item => ({ value: item.value, label: item.label(), accessibilityLabel: item.a11y }))}
-      onChange={value => {
-        searchMode.set(value);
-        void runFileSearch();
-      }}
-    />
-  );
+  return <TabGroup size="sm" value={searchMode()}
+    items={[
+      { value: "name", label: tr("files.searchNames"), testID: "search-mode-name" },
+      { value: "content", label: tr("files.searchContents"), testID: "search-mode-content" },
+    ]} onChange={mode => { searchMode.set(mode); void runFileSearch(); }} />;
 }
 
 /**
@@ -1168,13 +1209,8 @@ const searchGroups = computed<SearchGroup[]>(() => {
   return [...groups.entries()].map(([path, hits]) => ({ path, hits }));
 });
 
-function openSearchHit(hit: SearchHit): void {
-  pendingRevealLine.set(hit.line === undefined ? null : { path: hit.path, line: hit.line });
-  void revealPath(hit.path);
-}
-
 /** One match line: the text before it, the match highlighted, the text after it. */
-function SearchMatchRow(props: { hit: SearchHit }) {
+function SearchMatchRow(props: { hit: SearchHit; onOpen: () => void }) {
   const style = () => ({
     ...textStyle("mono"),
   });
@@ -1182,7 +1218,7 @@ function SearchMatchRow(props: { hit: SearchHit }) {
     <View
       role="button"
       accessibilityLabel={`search-hit-${props.hit.name}:${props.hit.line ?? 0}`}
-      onPress={() => openSearchHit(props.hit)}
+      onPress={props.onOpen}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -1226,7 +1262,16 @@ function SearchMatchRow(props: { hit: SearchHit }) {
   );
 }
 
-function SearchResults(props: { compact?: boolean }) {
+function SearchResults(props: { compact?: boolean; onOpenDetail: () => void }) {
+  async function openHit(hit: SearchHit): Promise<void> {
+    pendingRevealLine.set(null);
+    const scope = editorSelectionKey("");
+    const path = await revealPath(hit.path);
+    if (!path || scope !== editorSelectionKey("")) return;
+    props.onOpenDetail();
+    if (hit.line !== undefined) pendingRevealLine.set({ key: editorSelectionKey(path), line: hit.line });
+  }
+
   return (
     <View
       style={{
@@ -1286,7 +1331,7 @@ function SearchResults(props: { compact?: boolean }) {
                 <View
                   role="button"
                   tooltip={<TooltipBubble text={relativeDisplayPath(group().path, activeWorkspaceRoot())} />}
-                  onPress={() => openSearchHit(group().hits[0])}
+                  onPress={() => void openHit(group().hits[0])}
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
@@ -1346,7 +1391,7 @@ function SearchResults(props: { compact?: boolean }) {
                     .map((hit, idx) => ({ hit, key: `${hit.path}:${hit.line}:${idx}` }))}
                   key={entry => entry.key}
                 >
-                  {entry => <SearchMatchRow hit={entry().hit} />}
+                  {entry => <SearchMatchRow hit={entry().hit} onOpen={() => void openHit(entry().hit)} />}
                 </Each>
               </View>
             )}
@@ -1782,7 +1827,7 @@ function FileTree(props: {
         <ChangedFiles compact={props.compact} />
       </If>
       <If when={searchResults().length > 0}>
-        <SearchResults compact={props.compact} />
+        <SearchResults compact={props.compact} onOpenDetail={props.onOpenDetail} />
       </If>
       <If when={Boolean(searchQuery().trim()) && !searchRunning() && searchResults().length === 0}>
         <View
@@ -2157,7 +2202,85 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
 }
 
 const editorRef = signal<EditorRef | null>(null);
+const editorFocused = signal(false);
 const editorCursor = signal<{ line: number; column: number; selectedLines: number } | null>(null);
+const editorSelection = signal<{ key: string; range: EditorSelection } | null>(null);
+
+function editorSelectionKey(path: string): string {
+  return JSON.stringify([deviceContext(), activeWorkspaceId(), path]);
+}
+
+const editorDocumentKey = computed(() => editorSelectionKey(openFile()?.path ?? ""));
+
+const detectedEditorLanguage = computed(() => {
+  const file = openFile();
+  if (file?.kind === "code") return inferCodeLanguage(file.path) ?? file.language;
+  return file?.kind === "markdown" ? "markdown" : "text";
+});
+
+const sourceEditorLanguage = computed(() => activeFileEditorOptions()?.language ?? detectedEditorLanguage());
+const latexPreviewOnly = () => activeFileEditorOptions()?.latex?.mode === "preview";
+
+const sourceEditorIndentation = computed(() => {
+  const override = activeFileEditorOptions()?.indentation;
+  if (override) return override;
+  const policy = activeFileEditorConfig()?.indentation;
+  if (!policy) return null;
+  // Draft keystrokes must not change the mode under the caret. Reloading the
+  // file replaces the disk snapshot and recomputes the detected indentation.
+  const file = openFile();
+  return policy.detect && file ? guessEditorIndentation(file.content, policy.fallback) : policy.fallback;
+});
+
+const savedEditorSettings = computed(() =>
+  JSON.stringify(Object.entries(settingsValues()).filter(([path]) => path.startsWith("editor."))),
+);
+const sourceFontSize = () => activeFileEditorConfig()?.fontSize ?? textSize(13);
+
+function editorLanguageLabel(id: string): string {
+  const language = resolveEditorLanguage(id) ?? id;
+  return language === "Plain Text" ? tr("files.plainTextLanguage") : language;
+}
+
+function afterEditorOverlayCloses(action: (editor: EditorRef) => void): void {
+  const editor = editorRef();
+  const key = editorDocumentKey();
+  if (!editor) return;
+  // The overlay must leave the native window before focus moves to the
+  // editor's own text input.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (editor === editorRef() && key === editorDocumentKey()) action(editor);
+  }));
+}
+
+function addSelectedCodeToChat(): void {
+  const file = openFile();
+  const selection = editorSelection();
+  const workspaceId = activeWorkspaceId();
+  if (!file || !selection || selection.key !== editorSelectionKey(file.path) || !workspaceId) return;
+  const targetIsSplit = splitPaneOpen() && focusedPane() === 1;
+  const targetWorkspace = targetIsSplit ? secondaryWorkspaceId() : activeSession()?.workspaceId ?? workspaceId;
+  const targetDevice = targetIsSplit ? secondarySessionDevice() : activeSessionDevice();
+  if ((targetIsSplit && !secondarySessionId()) || targetWorkspace !== workspaceId ||
+    (fleetActive() && targetDevice && targetDevice !== deviceContext())) {
+    pushToast(tr("files.snippetDifferentWorkspace"), "warning");
+    return;
+  }
+  const snippet = createCodeSnippetContext(file.path, basenameOfPath(file.path, isRemoteWorkspace()) || file.name,
+    inferCodeLanguage(file.path) ?? file.language,
+    editingContent() ?? file.content, selection.range);
+  if (!snippet) return;
+  const target = targetIsSplit ? secondaryComposerText : composerText;
+  target.update(text => `${text}${text && !/\s$/.test(text) ? " " : ""}${codeSnippetPromptToken(snippet)} `);
+  navigateScene("sessions");
+  pushToast(tr("files.addedToChat", { name: codeSnippetLabel(snippet) }), "success");
+}
+
+function hasCodeSelection(): boolean {
+  const selection = editorSelection();
+  const path = openFile()?.path;
+  return Boolean(editorRef() && path && selection?.key === editorSelectionKey(path));
+}
 const findOpen = signal(false);
 const findQuery = signal("");
 const findCase = signal(false);
@@ -2165,10 +2288,15 @@ const findWord = signal(false);
 const findRegex = signal(false);
 const findResult = signal<EditorSearchResult | null>(null);
 /** A line the editor should reveal once the file it belongs to is on screen. */
-const pendingRevealLine = signal<{ path: string; line: number } | null>(null);
+const pendingRevealLine = signal<{ key: string; line: number } | null>(null);
+const activeRevealLine = computed(() => {
+  const target = pendingRevealLine();
+  const path = openFile()?.path;
+  return target && path && selectedPath() === path && target.key === editorDocumentKey() ? target : null;
+});
 
 function openFind(): void {
-  if (!hasSourceEditor()) return;
+  if (!editorRef() || latexPreviewOnly()) return;
   findOpen.set(true);
 }
 
@@ -2288,8 +2416,167 @@ function lineEndingOf(text: string): "LF" | "CRLF" {
   return text.includes("\r\n") ? "CRLF" : "LF";
 }
 
+function EditorLocationControl(props: { compact?: boolean }) {
+  const anchor = signal<ViewRef | null>(null);
+  const opened = signal(false);
+  const query = signal("");
+  const invalid = signal(false);
+  const cursor = () => editorCursor() ?? { line: 1, column: 1, selectedLines: 0 };
+  const close = () => opened.set(false);
+
+  function open() {
+    if (!editorRef()) return;
+    const { line, column } = cursor();
+    query.set(`${line}:${column}`);
+    invalid.set(false);
+    opened.set(true);
+  }
+
+  function returnToEditor(afterDismiss?: (editor: EditorRef) => void) {
+    close();
+    afterEditorOverlayCloses(editor => {
+      if (opened()) return;
+      afterDismiss?.(editor);
+      editor.focus();
+    });
+  }
+
+  function jump() {
+    const editor = editorRef();
+    const file = openFile();
+    if (!editor || !file) return;
+    const match = /^(\d+)(?:\s*:\s*(\d+))?$/.exec(query().trim());
+    const lineNumber = Number(match?.[1]);
+    const columnNumber = Number(match?.[2] ?? 1);
+    if (!Number.isSafeInteger(lineNumber) || lineNumber < 1 ||
+        !Number.isSafeInteger(columnNumber) || columnNumber < 1) {
+      invalid.set(true);
+      return;
+    }
+    const lines = (editingContent() ?? file.content).split(/\r?\n/);
+    const line = Math.min(lineNumber, lines.length) - 1;
+    const column = Math.min(columnNumber - 1, lines[line].length);
+    const position = { line, column };
+    returnToEditor(target => {
+      target.setSelections([{ anchor: position, head: position }]);
+      target.revealPosition(position, true);
+    });
+  }
+
+  effect(() => {
+    editorDocumentKey();
+    editorRef();
+    close();
+  });
+  effect(() => {
+    if (editorFocused()) cleanup(keymap.bind("mod+g", open, { when: "always", overFocused: true }));
+  });
+
+  return <>
+    <View ref={node => anchor.set(node)} style={{ flexShrink: 0 }}>
+      <Button label={cursor().selectedLines > 1
+        ? tr("files.cursorWithLines", { line: cursor().line, column: cursor().column, lines: cursor().selectedLines })
+        : tr("files.cursor", { line: cursor().line, column: cursor().column })}
+        size={props.compact ? "sm" : "xs"} variant="ghost" tooltip={tr("files.goToLine")}
+        accessibilityLabel="file-go-to-line" onPress={open} />
+    </View>
+    <If when={opened()}>
+      <Overlay anchor={anchor()} placement="top" align="end" offset={space.xs} margin={space.sm}
+        onPressOutside={close} onCancel={() => returnToEditor()}>
+        <View style={{ ...menuSurfaceStyle(), width: 248, maxWidth: "90%", padding: space.sm, gap: space.sm }}>
+          <InputBox label={tr("files.goToLine")} hint={tr("files.goToLineHint")}
+            accessibilityLabel="file-go-to-line-input" size="sm" autoFocus={true}
+            inputRef={input => queueMicrotask(() => input.setSelection(0, query().length))}
+            value={query()} error={invalid() ? tr("files.goToLineInvalid") : undefined}
+            onChange={value => { query.set(value); invalid.set(false); }} onSubmit={jump} />
+          <View style={{ alignItems: "flex-end" }}>
+            <Button label={tr("common.go")} size="sm" variant="primary"
+              accessibilityLabel="file-go-to-line-confirm" onPress={jump} />
+          </View>
+        </View>
+      </Overlay>
+    </If>
+  </>;
+}
+
+function EditorStatusMenu(props: {
+  label: string; title: string; id: string; compact?: boolean; items: DropdownMenuItem[]; disabled?: boolean;
+}) {
+  const anchor = signal<ViewRef | null>(null);
+  const open = signal(false);
+  return <View ref={node => anchor.set(node)} style={{ flexShrink: 0 }}>
+    <Button label={props.label} tooltip={props.title} accessibilityLabel={props.id} disabled={props.disabled}
+      size={props.compact ? "sm" : "xs"} variant="ghost" onPress={() => open.set(!open())} />
+    <DropdownMenu open={open()} anchor={anchor()} placement="top" align="end" minWidth={196}
+      maxHeight={320} items={props.items} onClose={() => open.set(false)} />
+  </View>;
+}
+
+function EditorEncodingMenu(props: { compact?: boolean }) {
+  const current = (): EditorFileEncoding => openFile()?.byteIdentity?.encoding ??
+    (openFile()?.content.startsWith("\ufeff") ? "utf8-bom" : "utf8");
+  return <EditorStatusMenu compact={props.compact} id="file-encoding-menu" label={editorFileEncodings[current()]}
+    title={tr(hasUnsavedEdit() ? "files.encodingPendingEdit" : "files.reopenWithEncoding")}
+    disabled={hasUnsavedEdit() || fileSaving()}
+    items={(Object.keys(editorFileEncodings) as EditorFileEncoding[]).map(encoding => ({
+      id: encoding, label: editorFileEncodings[encoding], accessibilityLabel: `file-encoding-${encoding}`,
+      active: encoding === current(),
+      onSelect: () => void reopenWithEncoding(encoding).then(reopened => {
+        if (reopened) afterEditorOverlayCloses(editor => editor.focus());
+      }),
+    }))} />;
+}
+
+function EditorStatusModes(props: { compact?: boolean }) {
+  const language = () => resolveEditorLanguage(sourceEditorLanguage()) ?? sourceEditorLanguage();
+  const indentation = () => sourceEditorIndentation() ?? defaultEditorIndentation(language());
+  const indentLabel = (size: number, tabs: boolean) =>
+    tr(tabs ? "files.indentTabs" : "files.indentSpaces", { count: formatCount(size) });
+  const setIndentation = (indentation?: FileEditorOptions["indentation"]) => {
+    setActiveFileEditorOptions({ indentation });
+    afterEditorOverlayCloses(editor => editor.focus());
+  };
+  const indentationItems = (): DropdownMenuItem[] => [
+    {
+      id: "automatic", label: tr("files.useEditorIndentationSettings"),
+      hint: activeFileEditorConfig()?.indentation.detect ? tr("settings.field.editorDetectIndentation") : undefined,
+      accessibilityLabel: "file-indent-automatic", active: !activeFileEditorOptions()?.indentation,
+      onSelect: () => setIndentation(),
+    },
+    ...[false, true].flatMap(hardTabs => Array.from({ length: 8 }, (_, index) => {
+      const tabSize = index + 1;
+      const current = activeFileEditorOptions()?.indentation;
+      const id = `${hardTabs ? "tabs" : "spaces"}-${tabSize}`;
+      return {
+        id, label: indentLabel(tabSize, hardTabs), accessibilityLabel: `file-indent-${id}`,
+        separator: tabSize === 1, active: current?.tabSize === tabSize && current?.hardTabs === hardTabs,
+        onSelect: () => setIndentation({ tabSize, hardTabs }),
+      };
+    })),
+  ];
+  const languageItems = (): DropdownMenuItem[] => [
+    {
+      id: "automatic", label: tr("files.detectEditorLanguage"), hint: editorLanguageLabel(detectedEditorLanguage()),
+      accessibilityLabel: "file-language-automatic", active: !activeFileEditorOptions()?.language,
+      onSelect: () => setActiveFileEditorOptions({ language: undefined }),
+    },
+    ...editorLanguages.map(name => ({
+      id: name, label: editorLanguageLabel(name), icon: name === "Plain Text" ? "file-text" as const : "file-code" as const,
+      accessibilityLabel: `file-language-${name}`, separator: name === "Plain Text",
+      active: activeFileEditorOptions()?.language === name,
+      onSelect: () => setActiveFileEditorOptions({ language: name }),
+    })),
+  ];
+  return <>
+    <EditorStatusMenu compact={props.compact} id="file-indent-menu" title={tr("files.editorIndentation")}
+      label={indentLabel(indentation().tabSize, indentation().hardTabs)} items={indentationItems()} />
+    <EditorStatusMenu compact={props.compact} id="file-language-menu" title={tr("files.editorLanguageMode")}
+      label={editorLanguageLabel(language())} items={languageItems()} />
+  </>;
+}
+
 /** Line and column, selection, language, line ending and encoding, as an editor's status bar shows them. */
-function EditorStatusBar() {
+function EditorStatusBar(props: { compact?: boolean }) {
   const item = (text: string) => (
     <Text
       style={{
@@ -2304,10 +2591,12 @@ function EditorStatusBar() {
   return (
     <View
       style={{
-        height: 24,
+        minHeight: props.compact ? WORKBENCH_TOUCH_MIN : 24,
         flexDirection: "row",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: space.md,
+        justifyContent: "flex-end",
+        gap: space.xs,
         paddingHorizontal: space.md,
         borderTopWidth: 1,
         borderColor: palette().borderSubtle,
@@ -2329,30 +2618,34 @@ function EditorStatusBar() {
         </View>
       </If>
       <View style={{ flex: 1 }} />
-      <If when={hasSourceEditor() ? editorCursor() : null}>
-        {cursor =>
-          item(
-            cursor().selectedLines > 1
-              ? tr("files.cursorWithLines", { line: cursor().line, column: cursor().column, lines: cursor().selectedLines })
-              : tr("files.cursor", { line: cursor().line, column: cursor().column }),
-          )
-        }
+      <If when={hasCodeSelection()}>
+        <Button label={tr("files.addToChat")} variant="ghost" size="xs" leadingIcon="chat"
+          accessibilityLabel="file-add-selection-to-chat" onPress={addSelectedCodeToChat} />
       </If>
-      <If when={openFile() && isEditableKind(openFile()!.kind)}>
-        {item(lineEndingOf(openFile()?.content ?? ""))}
-        {item("UTF-8")}
+      <If when={editorRef()}><EditorLocationControl compact={props.compact} /></If>
+      <If when={editorRef()}>
+        <Each of={[editorDocumentKey()]} key={key => key}>{() => <EditorStatusModes compact={props.compact} />}</Each>
       </If>
-      {item(
-        openFile()?.kind === "diff"
-          ? tr("files.diffTab")
-          : inferCodeLanguage(openFile()?.path ?? "") || openFile()?.language || openFile()?.kind || "",
-      )}
+      <If when={canReopenWithEncoding()}>
+        <Each of={[editorDocumentKey()]} key={key => key}>{() => <EditorEncodingMenu compact={props.compact} />}</Each>
+      </If>
+      <If when={!props.compact}>
+        <If when={openFile() && isEditableKind(openFile()!.kind)}>
+          {item(lineEndingOf(openFile()?.content ?? ""))}
+        </If>
+        <If when={!editorRef()}>
+          {item(openFile()?.kind === "diff" ? tr("files.diffTab")
+            : inferCodeLanguage(openFile()?.path ?? "") || openFile()?.language || openFile()?.kind || "")}
+        </If>
+      </If>
     </View>
   );
 }
 
-/** The image viewer's zoom: fitted to the pane, or a factor of the natural size. */
-const imageZoom = signal<ImageZoomState>("fit");
+function fileImageWorkspace(): MarkdownImageWorkspace | undefined {
+  const workspaceId = activeWorkspaceId();
+  return workspaceId ? { workspaceId, deviceId: deviceContext(), remote: isRemoteWorkspace() } : undefined;
+}
 
 /** A link in a Markdown preview: web/mailto links open outside, workspace/file:// links open here. */
 function openMarkdownLink(url: string, documentPath: string): void {
@@ -2414,7 +2707,17 @@ function FileAttentionBars(props: { compact?: boolean }) {
           </View>
         )}
       </If>
-      <If when={saveConflict()}>
+      <If when={confirmingEncodingSave() === openFile()?.path ? confirmingEncodingSave() : null}>
+        {path => <AttentionBar tone="warning" icon="warning" message={tr("files.encodingConvertConfirm")}
+          actions={[
+            { label: tr("files.saveAsUtf8"), a11y: "file-encoding-save-utf8", variant: "primary",
+              onPress: () => confirmingCloseTab() === path()
+                ? void saveAndCloseTab(path(), { convertEncoding: true })
+                : void saveEditedFile({ convertEncoding: true }) },
+            { label: tr("common.cancel"), a11y: "file-encoding-save-cancel", variant: "ghost", onPress: cancelEncodingSave },
+          ]} />}
+      </If>
+      <If when={saveConflict() === openFile()?.path ? saveConflict() : null}>
         {path => (
           <AttentionBar
             tone="danger"
@@ -2542,6 +2845,7 @@ function ReadOnlyPreviewBar(props: { file: OpenFile; compact?: boolean }) {
   const splitAvailable = () => !props.file.large && canSplitMarkdown(Boolean(props.compact));
   const reason = () => {
     if (props.file.large) return tr("files.largeFileMode");
+    if (openPlan()?.kind === "plan") return "";
     const block = markdownBlock();
     if (block === "unavailable") return tr("doc.visualUnavailable");
     if (block === "fidelity") return tr("doc.readOnlyHtmlHint");
@@ -2573,6 +2877,7 @@ function ReadOnlyPreviewBar(props: { file: OpenFile; compact?: boolean }) {
       >
         {reason()}
       </Text>
+      <If when={openPlan()?.kind === "plan"} else={
       <If
         when={splitAvailable()}
         else={
@@ -2594,73 +2899,121 @@ function ReadOnlyPreviewBar(props: { file: OpenFile; compact?: boolean }) {
           leadingIcon="panel-right"
           onPress={() => enterMarkdownSplit(props.file.path)}
         />
+      </If>}>
+        <Button label={tr("doc.editVisually")} accessibilityLabel="file-edit" variant="ghost" size="xs"
+          leadingIcon="edit" onPress={() => enterMarkdownVisual(props.file.path)} />
       </If>
-    </View>
-  );
-}
-
-function SourceEditorPane(props: { file: OpenFile; compact?: boolean; showNotice?: boolean }) {
-  return (
-    <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-      <If when={props.showNotice ? markdownBlock() : null}>
-        {block => <VisualEditNotice block={block()} />}
-      </If>
-      <If when={findOpen() && !props.compact}>
-        <EditorFindBar />
-      </If>
-      <Editor
-        ref={ref => editorRef.set(ref)}
-        value={editingContent() ?? props.file.content}
-        language={
-          props.file.kind === "code"
-            ? (inferCodeLanguage(props.file.path) ?? props.file.language)
-            : props.file.kind === "markdown"
-              ? "markdown"
-              : "text"
-        }
-        readOnly={editingContent() === null}
-        lineNumbers={true}
-        folding={true}
-        indentGuides={true}
-        activeLine={editingContent() !== null}
-        highlighting={!props.file.large}
-        fontFamily={fontMono()}
-        fontSize={textSize(13)}
-        lineHeight={textLineHeight(13, 1.55)}
-        softWrap={props.file.kind !== "code"}
-        styles={createEditorStyles()}
-        search={
-          findOpen() && findQuery()
-            ? {
-                query: findQuery(),
-                caseSensitive: findCase(),
-                wholeWord: findWord(),
-                regex: findRegex(),
-              }
-            : null
-        }
-        accessibilityLabel="file-editor"
-        style={{ flex: 1, minHeight: 0, minWidth: 0 }}
-        onChange={event => {
-          if (editingContent() !== null) setEditingContent(event.value);
-        }}
-        onSelectionChange={event => {
-          const primary = event.selections[event.selections.length - 1];
-          if (!primary) return;
-          const sameLine = primary.anchor.line === primary.head.line;
-          editorCursor.set({
-            line: primary.head.line + 1,
-            column: primary.head.column + 1,
-            selectedLines: sameLine ? 0 : Math.abs(primary.head.line - primary.anchor.line) + 1,
-          });
-        }}
-        onSearchChange={event => findResult.set(event.result)}
-      />
     </View>
   );
 }
 
 function PreviewBody(props: { compact?: boolean }) {
+  const contextPosition = signal<Point | null>(null);
+  const editorMenuItems = (): DropdownMenuItem[] => [
+    { id: "copy", label: tr("common.copy"), icon: "copy", disabled: !hasCodeSelection(),
+      onSelect: () => editorRef()?.run("copy") },
+    ...(editingContent() !== null ? [
+      { id: "cut", label: tr("files.cutSelection"), disabled: !hasCodeSelection(), onSelect: () => editorRef()?.run("cut") },
+      { id: "paste", label: tr("common.paste"), onSelect: () => editorRef()?.run("paste") },
+    ] : []),
+    { id: "select-all", label: tr("files.selectAll"), accessibilityLabel: "file-editor-select-all",
+      onSelect: () => editorRef()?.run("selectAll") },
+    ...(hasCodeSelection() ? [{ id: "add-to-chat", label: tr("files.addToChat"), icon: "chat" as const,
+      accessibilityLabel: "file-menu-add-selection-to-chat", onSelect: addSelectedCodeToChat }] : []),
+  ];
+  effect(() => {
+    editorDocumentKey();
+    editorSelection.set(null);
+    editorCursor.set(null);
+    contextPosition.set(null);
+  });
+  cleanup(() => editorSelection.set(null));
+  function SourceEditorPane(props: { file: OpenFile; compact?: boolean; showNotice?: boolean }) {
+    const renderSource = () =>   <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+    <If when={props.file.kind === "code" && extensionOf(props.file.path) === "tex"}>
+      <LatexSourceTools source={editingContent() ?? props.file.content} editor={editorRef()}
+        focused={editorFocused() && !latexPreviewOnly()} editable={editingContent() !== null && !latexPreviewOnly()}
+        afterMenu={afterEditorOverlayCloses} />
+    </If>
+    <If when={props.showNotice ? markdownBlock() : null}>
+      {block => <VisualEditNotice block={block()} />}
+    </If>
+    <If when={findOpen() && !props.compact}>
+      <EditorFindBar />
+    </If>
+    <Editor
+      ref={ref => {
+        editorSelection.set(null);
+        editorRef.set(ref);
+        if (!ref) editorFocused.set(false);
+      }}
+      onFocus={() => editorFocused.set(true)}
+      onBlur={() => editorFocused.set(false)}
+      value={editingContent() ?? props.file.content}
+      language={sourceEditorLanguage()}
+      tabSize={sourceEditorIndentation()?.tabSize ?? null}
+      hardTabs={sourceEditorIndentation()?.hardTabs ?? null}
+      readOnly={editingContent() === null}
+      lineNumbers={activeFileEditorConfig()?.lineNumbers ?? true}
+      folding={true}
+      indentGuides={true}
+      activeLine={editingContent() !== null && (activeFileEditorConfig()?.activeLine ?? true)}
+      highlighting={!props.file.large}
+      fontFamily={activeFileEditorConfig()?.fontFamily ?? fontMono()}
+      fontSize={sourceFontSize()}
+      lineHeight={Math.round(sourceFontSize() * (activeFileEditorConfig()?.lineHeightRatio ?? 1.55))}
+      softWrap={activeFileEditorConfig()?.softWrap ?? (props.file.kind !== "code")}
+      showWhitespaces={activeFileEditorConfig()?.showWhitespaces ?? false}
+      scrollBeyondLastLine={activeFileEditorConfig()?.scrollBeyondLastLine ?? false}
+      styles={createEditorStyles()}
+      search={
+        findOpen() && findQuery()
+          ? {
+              query: findQuery(),
+              caseSensitive: findCase(),
+              wholeWord: findWord(),
+              regex: findRegex(),
+            }
+          : null
+      }
+      accessibilityLabel="file-editor"
+      style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+      onChange={event => {
+        if (editingContent() !== null) setEditingContent(event.value);
+      }}
+      onSelectionChange={event => {
+        const primary = event.selections[event.selections.length - 1];
+        const selected = primary && (primary.anchor.line !== primary.head.line || primary.anchor.column !== primary.head.column);
+        editorSelection.set(selected ? { key: editorSelectionKey(props.file.path), range: primary } : null);
+        if (!primary) return;
+        const sameLine = primary.anchor.line === primary.head.line;
+        editorCursor.set({
+          line: primary.head.line + 1,
+          column: primary.head.column + 1,
+          selectedLines: sameLine ? 0 : Math.abs(primary.head.line - primary.anchor.line) + 1,
+        });
+      }}
+      onContextMenu={event => contextPosition.set({ x: event.x, y: event.y })}
+      onSearchChange={event => findResult.set(event.result)}
+    />
+    <ContextMenuOverlay open={contextPosition() !== null}
+      position={contextPosition() ?? { x: 0, y: 0 }} items={editorMenuItems()}
+      onClose={() => contextPosition.set(null)} />
+  </View>;
+    return <If when={props.file.kind === "code" && extensionOf(props.file.path) === "tex"} else={renderSource()}>
+      <Each of={[editorDocumentKey()]} key={key => key}>{() =>
+        <LatexDocumentLayout path={props.file.path} renderSource={renderSource} />
+      }</Each>
+    </If>;
+  }
+
+  const renderMarkdown = (markdown: string, path: string, overview = false) => (
+    <MarkdownPreview accessibilityLabel={overview ? "plan-overview" : "file-markdown-preview"}
+      markdown={markdown} compact={props.compact}
+      documentPath={path}
+      onOpenWorkspacePath={target => void revealPath(target)}
+      onLinkPress={event => openMarkdownLink(event.url, path)} />
+  );
   return (
     <If
       when={openFile()}
@@ -2756,14 +3109,20 @@ function PreviewBody(props: { compact?: boolean }) {
             <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
               <View style={{ padding: props.compact ? space.lg : space.x3l, alignItems: "center" }}>
                 <View style={{ width: "100%", maxWidth: layout.conversationWidth }}>
-                  <MarkdownPreview
-                    accessibilityLabel="file-markdown-preview"
-                    markdown={editingContent() ?? file().content}
-                    documentPath={file().path}
-                    compact={props.compact}
-                    onOpenWorkspacePath={target => void revealPath(target)}
-                    onLinkPress={event => openMarkdownLink(event.url, file().path)}
-                  />
+                  <If when={openPlan()} else={renderMarkdown(editingContent() ?? file().content, file().path)}>
+                    {plan => <Each of={[file().path]} key={path => path}>
+                      {path => <PlanDocument plan={plan()} fileName={file().name}
+                        disabled={fileSaving() || Boolean(changedOnDisk()[path()])}
+                        buildStatus={currentPlanBuild(path())} buildBlocked={planBuildBlocked(path())}
+                        onBuild={() => void buildOpenPlan(path())}
+                        onChange={markdown => {
+                          if (openFile()?.path !== path()) return;
+                          beginEditFile();
+                          setEditingContent(markdown);
+                        }}
+                        renderMarkdown={(markdown, overview) => renderMarkdown(markdown, path(), overview)} />}
+                    </Each>}
+                  </If>
                 </View>
               </View>
             </Scroll>
@@ -2773,13 +3132,23 @@ function PreviewBody(props: { compact?: boolean }) {
               documentKey={file().path}
               documentPath={file().path}
               documentName={file().name}
-              text={editingContent() ?? file().content}
-              onChange={setEditingContent}
+              text={openPlan()?.body ?? editingContent() ?? file().content}
+              revealLine={activeRevealLine()}
+              onRevealLine={(target, revealed) => {
+                if (activeRevealLine() !== target) return;
+                if (revealed) pendingRevealLine.set(null);
+                else selectMarkdownMode("source");
+              }}
+              onChange={markdown => {
+                const plan = openPlan();
+                setEditingContent(plan?.kind === "plan" ? plan.withBody(markdown) : markdown);
+              }}
               accessibilityLabel="file-editor"
               placeholder={tr("doc.placeholder")}
               compact={props.compact}
               maxWidth={layout.conversationWidth}
-              ai={true}
+              imageWorkspace={fileImageWorkspace()}
+              ai={{ documentKey: editorDocumentKey(), target: deviceContext() || null }}
               onLinkPress={url => openMarkdownLink(url, file().path)}
             />
           </If>
@@ -2852,8 +3221,11 @@ function PreviewBody(props: { compact?: boolean }) {
                 </View>
               }
             >
-              {encoded => (
-                <WebView
+              {encoded => rendererAssets()?.pdfScript
+                ? <Each of={[`${editorDocumentKey()}::${file().previewRevision ?? 0}`]} key={key => key}>{() =>
+                  <PdfReviewWorkspace path={file().path} name={file().name} base64={encoded()} blockInput={splitDragging()} />
+                }</Each>
+                : <WebView
                   accessibilityLabel="file-pdf-view"
                   html={pdfDocumentHtml(encoded(), palette().canvas)}
                   javaScriptEnabled={false}
@@ -2864,29 +3236,14 @@ function PreviewBody(props: { compact?: boolean }) {
                       current && current.path === file().path ? { ...current, content: "" } : current,
                     )
                   }
-                />
-              )}
+                />}
             </If>
-          </If>
-          <If when={file().kind === "text" && editingContent() === null}>
-            <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
-              <View style={{ padding: props.compact ? space.md : space.xl }}>
-                <Text
-                  style={{
-                    ...textStyle("monoBlock", { color: palette().text }),
-                    userSelect: "text",
-                  }}
-                >
-                  {file().content}
-                </Text>
-              </View>
-            </Scroll>
           </If>
           <If
             when={
               (file().kind === "code" && !htmlPreviewing()) ||
               markdownMode() === "source" ||
-              (editingContent() !== null && file().kind === "text")
+              file().kind === "text"
             }
           >
             <SourceEditorPane file={file()} compact={props.compact} showNotice={markdownMode() === "source"} />
@@ -2899,21 +3256,26 @@ function PreviewBody(props: { compact?: boolean }) {
                 minWidth: 0,
               }}
             >
-              <ImageViewerSurface
-                src={() => file().content}
-                imageAccessibilityLabel={() => file().name}
-                zoom={imageZoom}
-                onZoomChange={next => imageZoom.set(next)}
-                padding={props.compact ? space.md : space.xl}
-                onError={message =>
-                  fileNotice.set(
-                    tr("files.cannotShowImage", {
-                      name: file().name,
-                      error: localizeHostError(message),
-                    }),
-                  )
-                }
-              />
+              <Each of={[editorDocumentKey()]} key={key => key}>
+                {() => {
+                  const view = createImageViewState();
+                  return <ImageViewerSurface
+                  src={() => file().content}
+                  imageAccessibilityLabel={() => file().name}
+                  fileName={file().name}
+                  view={view}
+                  padding={props.compact ? space.md : space.xl}
+                  onError={message =>
+                    fileNotice.set(
+                      tr("files.cannotShowImage", {
+                        name: file().name,
+                        error: localizeHostError(message),
+                      }),
+                    )
+                  }
+                  />;
+                }}
+              </Each>
             </View>
           </If>
           <If when={file().kind === "video"}>
@@ -2955,26 +3317,31 @@ function DocumentModeTabs(props: { narrow?: boolean }) {
       {file => (
         <>
           <If when={file().kind === "markdown"}>
-            <SegmentedTabs
-              size="sm"
-              options={[
-                { value: "preview", label: tr("files.preview"), accessibilityLabel: "file-preview" },
-                ...(canSplitMarkdown(Boolean(props.narrow))
-                  ? [{ value: "split", label: tr("doc.split"), accessibilityLabel: "file-split" }]
-                  : []),
-                {
-                  value: "source",
-                  label: file().large && editingContent() === null ? tr("files.editAnyway") : tr("doc.source"),
-                  accessibilityLabel: "file-source",
-                },
-              ]}
-              value={markdownMode() === "split" ? "split" : markdownMode() === "source" ? "source" : "preview"}
-              onChange={value => {
-                if (value === "split") enterMarkdownSplit(file().path);
-                else if (value === "source") enterMarkdownSource(file().path);
-                else setMarkdownTab(file().path, "preview");
-              }}
-            />
+            <View style={{ flexDirection: "row", gap: space.xs, alignItems: "center" }}>
+              <SegmentedTabs
+                size="sm"
+                options={[
+                  { value: "preview", label: tr("files.preview"), accessibilityLabel: "file-preview" },
+                  ...(canSplitMarkdown(Boolean(props.narrow))
+                    ? [{ value: "split", label: tr("doc.split"), accessibilityLabel: "file-split" }]
+                    : []),
+                  {
+                    value: "source",
+                    label: file().large && editingContent() === null ? tr("files.editAnyway") : tr("doc.source"),
+                    accessibilityLabel: "file-source",
+                  },
+                ]}
+                value={markdownMode() === "split" ? "split" : markdownMode() === "source" ? "source" : "preview"}
+                onChange={value => {
+                  if (value === "split") enterMarkdownSplit(file().path);
+                  else if (value === "source") enterMarkdownSource(file().path);
+                  else setMarkdownTab(file().path, "preview");
+                }}
+              />
+              <IconButton icon="copy" size="sm" tooltip={tr("doc.copyMarkdown")}
+                accessibilityLabel="file-copy-markdown"
+                onPress={() => void copyDocumentMarkdown(editingContent() ?? file().content)} />
+            </View>
           </If>
           <If when={file().kind === "code" && isHtmlFile(file().path) && documentWebViewsAvailable() === true}>
             <SegmentedTabs
@@ -3071,7 +3438,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
         <If when={openFile()}>
           {file => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingLeft: space.xs, flexShrink: 0 }}>
-                <If when={!narrow() && hasSourceEditor()}>
+                <If when={!narrow() && hasSourceEditor() && !latexPreviewOnly()}>
                   <IconButton
                     icon="search"
                     size="sm"
@@ -3330,7 +3697,8 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
                   >
                     {file().kind === "diff"
                       ? tr("files.diffTab")
-                      : inferCodeLanguage(file().path) || file().language || file().kind}
+                      : editorRef() ? editorLanguageLabel(sourceEditorLanguage())
+                        : inferCodeLanguage(file().path) || file().language || file().kind}
                   </Text>
                 }
               >
@@ -3343,8 +3711,9 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
 
       <FileAttentionBars compact={narrow()} />
       <PreviewBody compact={narrow()} />
-      <If when={openFile() && !narrow()}>
-        <EditorStatusBar />
+      <If when={openFile() && openFile()?.kind !== "image" && openFile()?.kind !== "pdf" && !latexPreviewOnly() &&
+        (!narrow() || editorRef() || canReopenWithEncoding())}>
+        <EditorStatusBar compact={narrow()} />
       </If>
     </View>
   );
@@ -3359,9 +3728,15 @@ export function FilesScene(props: { compact?: boolean } = {}) {
   const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
   const deviceLabel = () => scopeDevice()?.name || tr("device.thisDevice");
 
+  effect(() => {
+    deviceContext();
+    savedEditorSettings();
+    void refreshFileEditorConfig();
+  });
+
   // Drop per-file Markdown tab/override entries once their tabs close.
   effect(() => {
-    const open = new Set(openFilePaths());
+    const open = new Set(openFilePaths().map(markdownSourceKey));
     untracked(() => {
       markdownTabByPath.update(current => {
         const keys = Object.keys(current);
@@ -3409,6 +3784,7 @@ export function FilesScene(props: { compact?: boolean } = {}) {
 
   const unbindSave = keymap.bind("mod+s", () => {
     if (hasUnsavedEdit()) void saveEditedFile();
+    void saveOpenPdfReviews();
   });
   const unbindFind = !props.compact ? keymap.bind("mod+f", () => openFind()) : null;
   cleanup(() => {
@@ -3416,24 +3792,51 @@ export function FilesScene(props: { compact?: boolean } = {}) {
     unbindFind?.();
   });
 
-  // Each image opens fitted to the pane.
-  effect(() => {
-    void openFile()?.path;
-    untracked(() => {
-      imageZoom.set("fit");
-    });
-  });
-
-  // A search hit carries its line: reveal it once that file's editor is up.
+  // Search starts at the rendered document, then reveals in the editor that
+  // can address the hit (Markdown plan metadata lives in the original source).
   effect(() => {
     const target = pendingRevealLine();
+    if (!target) return;
     const file = openFile();
+    if (!activeRevealLine() || !file ||
+        (file.kind !== "markdown" && file.kind !== "code" && file.kind !== "text")) {
+      pendingRevealLine.set(null);
+      return;
+    }
+    const mode = markdownMode();
+    if (file.kind === "markdown") {
+      if (mode !== "source" && isPlanDocument(file.path)) {
+        untracked(() => selectMarkdownMode("source"));
+        return;
+      }
+      if (mode === "preview") {
+        untracked(() => selectMarkdownMode(
+          file.large ? "source" : "visual",
+        ));
+        return;
+      }
+      if (mode === "visual") return;
+    }
+    if (htmlPreviewing()) {
+      untracked(() => setHtmlPreview(file.path, false));
+      return;
+    }
+    const latex = activeFileEditorOptions()?.latex;
+    if (latex?.mode === "preview") {
+      untracked(() => setActiveFileEditorOptions({ latex: { ...latex, mode: "split" } }));
+      return;
+    }
     const ref = editorRef();
-    if (!target || !ref || file?.path !== target.path) return;
-    const line = Math.max(0, target.line - 1);
-    pendingRevealLine.set(null);
-    ref.setSelections([{ anchor: { line, column: 0 }, head: { line, column: 0 } }]);
-    ref.scrollToLine(line);
+    if (!ref) return;
+    // The source widget may reuse a ref while its value changes between tabs.
+    const frame = requestAnimationFrame(() => {
+      if (activeRevealLine() !== target || editorRef() !== ref) return;
+      const position = { line: Math.max(0, target.line - 1), column: 0 };
+      ref.setSelections([{ anchor: position, head: position }]);
+      ref.revealPosition(position, true);
+      pendingRevealLine.set(null);
+    });
+    cleanup(() => cancelAnimationFrame(frame));
   });
 
   effect(() => {

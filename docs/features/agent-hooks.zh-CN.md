@@ -88,12 +88,16 @@ Codex 的 `[features] hooks = false` 在 OpenBitFun 没有对应项，请使用
 OpenBitFun 可以把 Claude Code 或 Codex 中兼容的 `type: "command"` Hook 保存为一份
 经审阅的本地快照。这是一次显式复制，不是实时挂载其他产品的配置：
 
-1. 打开**设置 → Agent Hooks**，或在 TUI 中运行 `/hooks`；脚本化查看可使用
-   `openbitfun hooks list`。
+1. 在 NSH 中打开**设置 → 从其他工具导入**，选择 Claude Code 或 Codex。
+   TUI 可运行 `/hooks`，命令行可运行 `openbitfun hooks list`。
 2. 选择来源，并审阅每条实际命令、Windows 覆盖命令、超时、复制或外部依赖、
    跳过项以及计划指纹。
 3. 确认这份确切计划。若来源在审阅后发生变化，OpenBitFun 不会写入，而是返回一份
    刷新后的计划，要求再次确认。
+
+NSH 的**审阅批量导入**会逐项显示所选来源的命令方案和结果。方案发生变化时，
+请重新审阅、勾选并确认。通过**审阅批量移除**可一起确认移除所选托管副本。
+如果移除期间有其他客户端更改导入状态，请按刷新后的列表重新审阅剩余副本。
 
 用户来源复制到 OpenBitFun 的用户托管数据；项目来源复制到 OpenBitFun 项目运行区内按工作区
 隔离的数据。来源 `.claude/hooks` 或 `.codex/hooks` 目录下可安全解析的相对脚本依赖

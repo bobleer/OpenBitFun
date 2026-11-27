@@ -18,6 +18,8 @@ export interface NshDesktopShellDeps {
    * native host supplies one; without it the picker is refused with a reason.
    */
   pickDirectory?: (options: { title: string; defaultPath?: string }) => Promise<string | null>;
+  saveTextFile?: NonNullable<WindowShell["textFileExport"]>["run"];
+  saveBinaryFile?: NonNullable<WindowShell["binaryFileExport"]>["run"];
   /**
    * Native OS open/save file dialog returning host filesystem path(s) for
    * standalone desktop MiniApp windows.
@@ -224,6 +226,8 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       if (!deps.pickFileDialog) throw new Error("unsupported_in_native_host: pickFileDialog");
       return deps.pickFileDialog(options);
     },
+    textFileExport: deps.saveTextFile && { kind: "save", run: deps.saveTextFile },
+    binaryFileExport: deps.saveBinaryFile && { kind: "save", run: deps.saveBinaryFile },
     async appVersion() {
       return null;
     },
