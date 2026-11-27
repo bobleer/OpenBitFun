@@ -4,7 +4,7 @@ use crate::host::HostHandle;
 use crate::host::State;
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -53,12 +53,14 @@ impl TerminalState {
         if !*initialized {
             let mut config = TerminalConfig::default();
 
-            // Set scripts directory to app data dir: {config_dir}/openbitfun/temp/scripts
-            let scripts_dir = Self::get_scripts_dir();
-            config.shell_integration.scripts_dir = Some(scripts_dir);
-
             match try_get_path_manager_arc() {
                 Ok(path_manager) => {
+                    // The shell resolves its startup script from its workspace cwd.
+                    let scripts_dir = std::path::absolute(path_manager.temp_dir().join("scripts"))
+                        .map_err(|error| {
+                            format!("Failed to resolve terminal script directory: {error}")
+                        })?;
+                    config.shell_integration.scripts_dir = Some(scripts_dir);
                     config.transcript.root_dir =
                         Some(path_manager.user_data_dir().join("terminals"));
                 }
@@ -90,16 +92,6 @@ impl TerminalState {
         }
 
         TerminalApi::from_singleton().map_err(|e| format!("Terminal API not initialized: {}", e))
-    }
-
-    /// Get the scripts directory path for shell integration
-    /// Uses the same path structure as PathManager
-    fn get_scripts_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(openbitfun_core_types::product_identity::data_namespace())
-            .join("temp")
-            .join("scripts")
     }
 }
 
