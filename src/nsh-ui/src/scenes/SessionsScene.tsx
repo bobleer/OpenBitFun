@@ -6101,10 +6101,48 @@ function SlashCommandsUnavailable(props: { placement: Placement; dismiss: () => 
   );
 }
 
+function SlashCommandRow(props: {
+  selected: () => boolean;
+  accessibilityLabel: string;
+  onPress: () => void;
+  children: JSX.Element;
+}) {
+  let rowRef: ViewRef | null = null;
+  let laidOut = false;
+  const revealSelected = () => {
+    if (props.selected() && laidOut) rowRef?.reveal({ vertical: "nearest", animated: false });
+  };
+  effect(revealSelected);
+  return (
+    <View
+      ref={el => { rowRef = el; }}
+      onLayout={() => {
+        laidOut = true;
+        revealSelected();
+      }}
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{ selected: props.selected() }}
+      onPress={props.onPress}
+      style={popoverRowStyle(props.selected())}
+      hoverStyle={popoverRowHoverStyle()}
+      activeStyle={popoverRowActiveStyle()}
+      focusVisibleStyle={focusRingStyle(-1)}
+    >
+      {props.children}
+    </View>
+  );
+}
+
 function SlashCommandSurface(props: { placement: Placement; slash: ComposerSlash }) {
   const slash = props.slash;
   const prefix = slash.pane.index === 1 ? "secondary-" : "";
   const motion = usePopoverMotion(() => props.placement, "start", () => slash.pane.draft.set(""));
+  // Hardware arrow keys are not delivered by Input.onKeyPress on every NSH target.
+  cleanup(keymap.bind({
+    down: () => slash.handleKey("ArrowDown"),
+    up: () => slash.handleKey("ArrowUp"),
+  }, { when: "always" }));
   return (
     <View
       style={[
@@ -6116,7 +6154,7 @@ function SlashCommandSurface(props: { placement: Placement; slash: ComposerSlash
         motion.style,
       ]}
     >
-      <Scroll smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+      <Scroll testID={`${prefix}slash-command-list`} smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <Each of={slash.sections()} key={section => section.label}>
             {section => (
@@ -6127,13 +6165,12 @@ function SlashCommandSurface(props: { placement: Placement; slash: ComposerSlash
                   {(row, index) => {
                     const content = () => slashPickerRowContent(row());
                     return (
-                      <View role="button" accessibilityLabel={prefix + content().id}
-                        onPress={() => slash.select(row())}
-                        style={popoverRowStyle(section().offset + index() === slash.selectedIndex())}
-                        hoverStyle={popoverRowHoverStyle()} activeStyle={popoverRowActiveStyle()} focusVisibleStyle={focusRingStyle(-1)}>
+                      <SlashCommandRow accessibilityLabel={prefix + content().id}
+                        selected={() => section().offset + index() === slash.selectedIndex()}
+                        onPress={() => slash.select(row())}>
                         <ListRowContent icon={content().icon} iconColor={palette().textSecondary}
                           title={content().title} titleWeight="500" subtitle={content().subtitle} />
-                      </View>
+                      </SlashCommandRow>
                     );
                   }}
                 </Each>

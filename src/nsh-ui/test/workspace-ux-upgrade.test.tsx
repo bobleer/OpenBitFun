@@ -254,6 +254,57 @@ test("transcript and composer images open click-to-preview Image Lightbox while 
   await app.waitFor("image-lightbox-dialog", { state: "gone" });
 });
 
+test("slash keyboard navigation keeps commands and skills visible across scroll boundaries and wrapping", async () => {
+  const backend = createBackend();
+  const skills = Array.from({ length: 6 }, (_, idx) => `test-skill-${idx}`);
+  withCommands(backend, {
+    get_mode_skill_configs: () => skills.map(name => ({ key: name, name, description: `Run ${name}`, enabled: true })),
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/");
+  await app.waitFor("slash-skill-test-skill-5");
+  const rows = [
+    ...["compact", "init", "reload", "model", "goal", "btw", "review", "usage"].map(id => `slash-command-${id}`),
+    ...skills.map(name => `slash-skill-${name}`),
+  ];
+  const expectVisible = (selector: string) => {
+    expect(app.accessibility(selector)?.selected).toBe(true);
+    const viewport = app.layout("id:slash-command-list")!;
+    const row = app.layout(selector)!;
+    expect(row.y).toBeGreaterThanOrEqual(viewport.y - 1);
+    expect(row.y + row.height).toBeLessThanOrEqual(viewport.y + viewport.height + 1);
+  };
+  expectVisible(rows[0]);
+  for (const row of rows.slice(1)) {
+    await app.keyboard.press("down");
+    expectVisible(row);
+  }
+  await app.keyboard.press("down");
+  expectVisible(rows[0]);
+  await app.keyboard.press("up");
+  expectVisible(rows[rows.length - 1]);
+  for (const row of rows.slice(0, -1).reverse()) {
+    await app.keyboard.press("up");
+    expectVisible(row);
+  }
+  expect(app.value("composer")).toBe("/");
+  // Filtering resets the highlight and scrolling; Return inserts the visible skill.
+  await app.keyboard.press("up");
+  await app.clear("composer");
+  await app.type("composer", "/test-skill");
+  await app.waitFor("slash-skill-test-skill-0");
+  expectVisible("slash-skill-test-skill-0");
+  for (const skill of skills.slice(1)) {
+    await app.keyboard.press("down");
+    expectVisible(`slash-skill-${skill}`);
+  }
+  await app.submit("composer");
+  await app.waitFor("composer-prompt-reference-skill-test-skill-5");
+  await app.waitFor("id:slash-command-list", { state: "gone" });
+  expect(backend.actions()).not.toContain("submit_user_message");
+});
+
 test("slash menu includes /goal, /btw, /review, /usage and searchable Skills inserting [$SkillName]", async () => {
   const backend = createBackend();
   const sent = withCommands(backend, {
