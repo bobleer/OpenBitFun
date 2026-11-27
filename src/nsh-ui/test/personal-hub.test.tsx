@@ -158,6 +158,10 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
   await app.waitUntil(() => recorded.filter(c => c.action === "account_github_poll").length >= 1);
   await app.press("home-github-poll");
   await app.waitFor("text:octocat");
+  // Close the success toast before using the account entry underneath it.
+  await app.waitFor("label:Signed in as octocat");
+  await app.press("label:Signed in as octocat >> role:button");
+  await app.waitFor("label:Signed in as octocat", { state: "gone" });
 
   // Sign out lives in the account menu and returns to the signed-out row.
   await app.press("label:account-row");
