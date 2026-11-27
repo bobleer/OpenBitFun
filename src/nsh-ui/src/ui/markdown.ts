@@ -325,7 +325,11 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       maxWidth: "100%",
       cursor: "pointer",
     },
+    math: {
+      color: p.text,
+    },
     mathBlock: {
+      color: p.text,
       borderRadius: 10,
       borderCurve: "continuous",
       borderWidth: 1,
@@ -408,7 +412,7 @@ const customMarkdownStylesCache = new Map<string, StyleCacheSlot<TextViewStyles>
 
 /**
  * Memoized reactive `TextViewStyles` tuned for chat reading ergonomics:
- * `15px` prose matching `typeScale.prose` and `UserBubble`, distinct H1–H6 scale,
+ * The prose size matches `typeScale.prose` and `UserBubble`, distinct H1–H6 scale,
  * container-gap rhythm (zero double spacing inside lists and quotes), hairline
  * `surfaceTertiary` code blocks/tables, and native system font inheritance.
  */
@@ -418,7 +422,7 @@ export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewSt
   const fontFamily = fontMono();
   const cjk = cjkTypography();
 
-  // Zero-allocation hot paths for default (15px prose) and compact (13px) styles.
+  // Zero-allocation hot paths for default and compact styles.
   if (!options || (!options.compact && options.baseFontSize === undefined)) {
     if (
       defaultMarkdownCache &&

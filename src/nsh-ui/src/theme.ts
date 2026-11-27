@@ -21,7 +21,10 @@ import {
   type Theme,
 } from "nsh";
 import { Scrollbar } from "nsh/base";
+import { designTokens } from "./generated/designTokens";
 import { currentLocale } from "./i18n";
+
+const typography = designTokens.typography;
 
 export type AppearanceId =
   | "openbitfun-dark"
@@ -852,9 +855,12 @@ export interface AppearancePreset {
   palette: Palette;
 }
 
+const defaultDarkPalette: Palette = { ...openbitfunDarkPalette, ...designTokens.dark.palette };
+const defaultLightPalette: Palette = { ...openbitfunLightPalette, ...designTokens.light.palette };
+
 export const APPEARANCE_PRESETS: ReadonlyArray<AppearancePreset> = [
-  { id: "openbitfun-dark", label: "Dark", isLight: false, palette: openbitfunDarkPalette },
-  { id: "openbitfun-light", label: "Light", isLight: true, palette: openbitfunLightPalette },
+  { id: "openbitfun-dark", label: "Dark", isLight: false, palette: defaultDarkPalette },
+  { id: "openbitfun-light", label: "Light", isLight: true, palette: defaultLightPalette },
   { id: "openbitfun-monochrome", label: "Monochrome", isLight: true, palette: openbitfunMonochromePalette },
   { id: "openbitfun-slate", label: "Slate", isLight: false, palette: openbitfunSlatePalette },
   { id: "openbitfun-midnight", label: "Midnight", isLight: false, palette: openbitfunMidnightPalette },
@@ -864,17 +870,7 @@ export const APPEARANCE_PRESETS: ReadonlyArray<AppearancePreset> = [
   { id: "openbitfun-tokyo-night", label: "Tokyo Night", isLight: false, palette: openbitfunTokyoNightPalette },
 ];
 
-const PRESET_MAP: Record<AppearanceId, AppearancePreset> = {
-  "openbitfun-dark": APPEARANCE_PRESETS[0],
-  "openbitfun-light": APPEARANCE_PRESETS[1],
-  "openbitfun-monochrome": APPEARANCE_PRESETS[2],
-  "openbitfun-slate": APPEARANCE_PRESETS[3],
-  "openbitfun-midnight": APPEARANCE_PRESETS[4],
-  "openbitfun-china-style": APPEARANCE_PRESETS[5],
-  "openbitfun-china-night": APPEARANCE_PRESETS[6],
-  "openbitfun-cyber": APPEARANCE_PRESETS[7],
-  "openbitfun-tokyo-night": APPEARANCE_PRESETS[8],
-};
+const PRESET_MAP = Object.fromEntries(APPEARANCE_PRESETS.map(preset => [preset.id, preset])) as Record<AppearanceId, AppearancePreset>;
 
 export function isAppearanceId(value: unknown): value is AppearanceId {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(PRESET_MAP, value);
@@ -980,12 +976,14 @@ export const resolvedAppearanceId = computed<AppearanceId>(() => {
   return resolvedScheme() === "light" ? "openbitfun-light" : "openbitfun-dark";
 });
 
-export const palette = computed(() => {
-  const chosenId = appearanceId();
-  if (chosenId && PRESET_MAP[chosenId]) {
-    return PRESET_MAP[chosenId].palette;
-  }
-  return resolvedScheme() === "light" ? openbitfunLightPalette : openbitfunDarkPalette;
+export const palette = computed(() => PRESET_MAP[resolvedAppearanceId()].palette);
+
+/** Component recipes for the shared light and dark appearances. */
+export const designControlColors = computed(() => {
+  const id = resolvedAppearanceId();
+  return id === "openbitfun-light" || id === "openbitfun-dark"
+    ? designTokens[resolvedScheme()].controls
+    : undefined;
 });
 
 /**
@@ -1029,7 +1027,7 @@ export function surfaceWorkingColor(surface: SurfacePlane = SurfaceContext(), p:
 
 /** Focus-ring color that stays high-contrast on both canvas and dark chrome planes. */
 export function surfaceFocusColor(surface: SurfacePlane = SurfaceContext(), p: Palette = palette()): string {
-  return surface === "chrome" ? p.chromeAccent : p.borderFocus;
+  return surface === "chrome" && isSplitChromePalette(p) ? p.chromeAccent : p.borderFocus;
 }
 
 function paletteToCssVars(p: Palette): Record<string, string | number> {
@@ -1082,15 +1080,15 @@ export function syncGlobalNativeTheme(family = fontSans()): void {
   const nativeTheme: Theme = {
     cssVars: {
       theme: {
-        radius: "0.5rem",
+        radius: `${designTokens.metrics.radius.md / 16}rem`,
         "font-sans": family,
         "font-mono": fontMono(),
       },
       light: paletteToCssVars(
-        activePreset ? activePreset.palette : openbitfunLightPalette,
+        activePreset ? activePreset.palette : defaultLightPalette,
       ),
       dark: paletteToCssVars(
-        activePreset ? activePreset.palette : openbitfunDarkPalette,
+        activePreset ? activePreset.palette : defaultDarkPalette,
       ),
     },
   };
@@ -1175,29 +1173,18 @@ export const spacing = {
 } as const;
 
 /**
- * The spacing scale (visual spec §2.2): 2, 4, 8, 12, 16, 20, 24, 32, 40, 48,
- * 64. Off-scale values (3, 5, 7, 9, 10, 14, 18, 22) are retired; `chip` (6)
- * survives only as the inset inside chips and code wells.
+ * The shared spacing scale plus the NSH hairline gap and compact chip inset.
  */
 export const space = {
   hair: 2,
-  xs: 4,
   chip: 6,
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 20,
-  xxl: 24,
-  x3l: 32,
-  x4l: 40,
-  x5l: 48,
-  x6l: 64,
+  ...designTokens.metrics.space,
 } as const;
 
 export type SpaceStep = keyof typeof space;
 
 /** The scale as numbers, for tests and for snapping a measured value. */
-export const SPACE_SCALE: ReadonlyArray<number> = [2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64];
+export const SPACE_SCALE: ReadonlyArray<number> = [space.hair, ...Object.values(designTokens.metrics.space)];
 
 /** Shell, width and rhythm constants of visual spec §2.2. */
 export const layout = {
@@ -1214,7 +1201,7 @@ export const layout = {
   /** 720–959: the sidebar is an overlay drawer this wide. */
   navDrawerWidth: 264,
   canvasInset: 8,
-  canvasRadius: 12,
+  canvasRadius: designTokens.metrics.radius.scene,
   inspectorWidth: 420,
   inspectorMinWidth: 360,
   inspectorMaxWidth: 640,
@@ -1229,7 +1216,7 @@ export const layout = {
   phoneGutter: 16,
   touchTarget: 44,
   /** The conversation and session column default (`contentWidth()`). */
-  conversationWidth: 760,
+  conversationWidth: designTokens.metrics.flowChat.transcriptWidth,
   pageWidth: 720,
   settingsWidth: 680,
   signInWidth: 360,
@@ -1248,12 +1235,7 @@ export const layout = {
  * Unified interactive control height scale locking buttons, inputs, selects,
  * icon buttons, and segmented controls onto one toolbar baseline.
  */
-export const controlHeight = {
-  xs: 24,
-  sm: 28,
-  md: 32,
-  lg: 40,
-} as const;
+export const controlHeight = designTokens.metrics.controlHeight;
 
 export type ControlSize = keyof typeof controlHeight;
 
@@ -1262,21 +1244,12 @@ export type ControlSize = keyof typeof controlHeight;
  * `concentricRadius(outer, inset)`; no raw `borderRadius` numbers.
  * - `xs` 4: inline code, key caps, diff word marks, focus inset
  * - `sm` 6: chips, badges, small (24) buttons, code wells inside cards
- * - `md` 8: buttons, inputs, menu items, row hover and selection
- * - `lg` 12: cards, inset groups, menus, popovers, toasts, the canvas
+ * - `md` 8: inputs, menu items, row hover and selection
+ * - `lg` 12: cards, inset groups, menus, popovers and toasts
  * - `xl` 16: the composer, modals, phone sheets (top corners)
  * - `pill`: status dots, avatars, segmented track and thumb, toggles, counts
  */
-export const radii = {
-  xs: 4,
-  sm: 6,
-  md: 8,
-  lg: 12,
-  xl: 16,
-  pill: 999,
-  /** @deprecated Retired (was 20). Reads as the canvas radius; use `layout.canvasRadius` or `radii.lg`. */
-  surface: 12,
-} as const;
+export const radii = { ...designTokens.metrics.radius, surface: layout.canvasRadius } as const;
 
 /** Computes an optically concentric inner border radius for nested rounded surfaces. */
 export function concentricRadius(outer: number, inset: number): number {
@@ -1381,7 +1354,7 @@ export const NEVER_ANIMATE: ReadonlyArray<string> = [
  * scales the whole type ramp from it, so a scene here asks `textSize` for the
  * size it would draw at 14 and the preference moves all of them together.
  */
-export const BASE_FONT_SIZE = 14;
+export const BASE_FONT_SIZE: number = typography.body.size;
 
 /** What the user's `font` config resolves to, in px (12–20). */
 export const uiFontBasePx = signal(BASE_FONT_SIZE);
@@ -1407,49 +1380,23 @@ export const cjkTypography = computed(() => {
   return locale === "zh-CN" || locale === "zh-TW";
 });
 
-/**
- * The type scale in whole pixels at the 14 px baseline (visual spec §2.1).
- * Weights are 400, 500 and 600 only.
- */
+/** The design-system type scale at the default body size. */
 export const typeScale = {
-  /** 28/600/34: one hero per screen. */
-  display: 28,
-  /** 22/600/28: page titles. */
-  pageTitle: 22,
-  /** 17/600/24: modal titles. */
-  modalTitle: 17,
-  /** 16/600/22: session and conversation titles in their header. */
-  sectionTitle: 16,
-  /** 15/400/24: transcript prose, the user bubble, composer text. */
-  prose: 15,
-  /** 14/400/20: rows, settings labels, card titles (500). */
-  body: 14,
-  /** 13/500/18: sidebar rows, buttons, section headers (600), secondary lines (400). */
-  label: 13,
-  /** 12/400/16: meta (device badge, age, branch, descriptions). */
-  caption: 12,
-  /** 11/600/14: counts in badges and key caps only, never sentences. */
-  micro: 11,
-  /** @deprecated Was 13.5; card titles are `body` at weight 500. */
-  cardTitle: 14,
-  /** @deprecated Was 12.5; controls are `label`. */
-  control: 13,
-  /** @deprecated Was 11.5; meta is `caption`. */
-  meta: 12,
+  welcome: typography.welcome.size,
+  display: typography.display.size,
+  pageTitle: typography.pageTitle.size,
+  modalTitle: typography.modalTitle.size,
+  sectionTitle: typography.sectionTitle.size,
+  prose: typography.prose.size,
+  body: typography.body.size,
+  label: typography.label.size,
+  caption: typography.caption.size,
+  micro: typography.micro.size,
+  cardTitle: typography.cardTitle.size,
+  /** @deprecated Use `label`. */
+  control: typography.label.size,
+  meta: typography.meta.size,
 } as const;
-
-/** Whole-pixel line heights of each size of the scale (Latin; CJK prose and body use 1.7). */
-const LINE_HEIGHTS: Readonly<Record<number, number>> = {
-  28: 34,
-  22: 28,
-  17: 24,
-  16: 22,
-  15: 24,
-  14: 20,
-  13: 18,
-  12: 16,
-  11: 14,
-};
 
 /** The leading ratio of CJK prose and body copy. */
 export const CJK_LINE_HEIGHT_RATIO = 1.7;
@@ -1466,18 +1413,11 @@ export function textSize(base: number): number {
 
 /**
  * Scaled line height derived from `textSize(base)`, rounded to whole pixels.
- * In Chinese, multi-line prose and body copy (15 and 14 at a ratio of 1.4 or
- * more) take the CJK leading of 1.7 (15 → 26, 14 → 24).
+ * In Chinese, multi-line prose and body copy take the CJK leading of 1.7.
  */
 export function textLineHeight(base: number, ratio = 1.45): number {
   const cjkCopy = (base === typeScale.prose || base === typeScale.body) && ratio >= 1.4 && cjkTypography();
   return Math.round(textSize(base) * (cjkCopy ? Math.max(ratio, CJK_LINE_HEIGHT_RATIO) : ratio));
-}
-
-/** The line height a scale size takes in its role (`LINE_HEIGHTS`), scaled; other sizes use 1.45. */
-function roleLineHeight(base: number, line?: number): number {
-  const fixed = line ?? LINE_HEIGHTS[base];
-  return textLineHeight(base, fixed ? fixed / base : 1.45);
 }
 
 /**
@@ -1496,18 +1436,19 @@ export function textTracking(base: number, uppercase = false): number {
 }
 
 export type TextRole =
+  | "welcome"
   | "display"
   | "pageTitle"
   | "modalTitle"
   | "sectionTitle"
   | "prose"
   | "body"
+  | "smallBody"
   | "label"
   | "caption"
   | "micro"
   | "mono"
   | "monoBlock"
-  /** @deprecated Use `body` at weight 500. */
   | "cardTitle"
   /** @deprecated Use `caption`. */
   | "meta";
@@ -1519,35 +1460,33 @@ export interface TextStyleOptions {
 }
 
 interface RoleSpec {
-  size: number;
-  weight: "400" | "500" | "600";
   color: (p: Palette) => string;
   mono?: boolean;
   /** Tabular figures even when `tabular` is not asked for. */
   tabular?: boolean;
-  /** A line height other than the size's own (`LINE_HEIGHTS`). */
-  line?: number;
 }
 
 const ROLE_SPECS: Readonly<Record<TextRole, RoleSpec>> = {
-  display: { size: typeScale.display, weight: "600", color: p => p.text },
-  pageTitle: { size: typeScale.pageTitle, weight: "600", color: p => p.text },
-  modalTitle: { size: typeScale.modalTitle, weight: "600", color: p => p.text },
-  sectionTitle: { size: typeScale.sectionTitle, weight: "600", color: p => p.text },
-  prose: { size: typeScale.prose, weight: "400", color: p => p.text },
-  body: { size: typeScale.body, weight: "400", color: p => p.text },
-  label: { size: typeScale.label, weight: "500", color: p => p.text },
-  caption: { size: typeScale.caption, weight: "400", color: p => p.textMuted },
-  micro: { size: typeScale.micro, weight: "600", color: p => p.textMuted, tabular: true },
-  mono: { size: 12, weight: "400", color: p => p.textSecondary, mono: true, tabular: true },
-  monoBlock: { size: 13, weight: "400", color: p => p.text, mono: true, tabular: true, line: 20 },
-  cardTitle: { size: typeScale.body, weight: "500", color: p => p.text },
-  meta: { size: typeScale.caption, weight: "400", color: p => p.textMuted, tabular: true },
+  welcome: { color: p => p.text },
+  display: { color: p => p.text },
+  pageTitle: { color: p => p.text },
+  modalTitle: { color: p => p.text },
+  sectionTitle: { color: p => p.text },
+  prose: { color: p => p.text },
+  body: { color: p => p.text },
+  smallBody: { color: p => p.text },
+  label: { color: p => p.text },
+  caption: { color: p => p.textMuted },
+  micro: { color: p => p.textMuted, tabular: true },
+  mono: { color: p => p.textSecondary, mono: true, tabular: true },
+  monoBlock: { color: p => p.text, mono: true, tabular: true },
+  cardTitle: { color: p => p.text },
+  meta: { color: p => p.textMuted, tabular: true },
 };
 
 /** The size (at the 14 px baseline) a role draws at. */
 export function roleSize(role: TextRole): number {
-  return ROLE_SPECS[role].size;
+  return typography[role].size;
 }
 
 /**
@@ -1557,20 +1496,26 @@ export function roleSize(role: TextRole): number {
  */
 export function textStyle(role: TextRole, opts?: TextStyleOptions): TextStyle {
   const spec = ROLE_SPECS[role];
+  const token = typography[role];
+  const fontSize = textSize(token.size);
   const uppercase = Boolean(opts?.uppercase);
   const tabular = opts?.tabular || spec.tabular ? (["tabular-nums"] as TextStyle["fontVariant"]) : undefined;
   const style: TextStyle = {
     color: opts?.color ?? spec.color(palette()),
-    fontSize: textSize(spec.size),
-    fontWeight: spec.weight,
-    lineHeight: roleLineHeight(spec.size, spec.line),
+    fontSize,
+    fontWeight: token.weight,
+    lineHeight: textLineHeight(token.size,
+      role === "smallBody" && cjkTypography() ? Math.max(token.lineHeight, CJK_LINE_HEIGHT_RATIO) : token.lineHeight,
+    ),
     fontVariant: tabular,
   };
   if (spec.mono) {
     style.fontFamily = fontMono();
   } else {
     style.fontFamily = fontSans();
-    style.letterSpacing = textTracking(spec.size, uppercase);
+    style.letterSpacing = uppercase
+      ? textTracking(token.size, true)
+      : cjkTypography() ? 0 : Math.round(fontSize * token.tracking * 100) / 100;
   }
   if (uppercase) style.textTransform = "uppercase";
   return style;
