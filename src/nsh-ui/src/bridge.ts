@@ -29,7 +29,9 @@ import { fleetRouteFor } from "./peerRouting";
 import { createTextChunkCoalescer, TEXT_CHUNK_EVENT, type TextChunkCoalescer } from "./textChunkCoalescer";
 import {
   createHostPageShell,
+  type BinaryFileExport,
   type ShellActions,
+  type TextFileExport,
   type WindowChromeSink,
   type WindowShell,
 } from "./windowShell";
@@ -603,6 +605,14 @@ export function isWindowFocused(): Promise<boolean> {
  */
 export function pickLocalDirectory(options: { title: string; defaultPath?: string }): Promise<string | null> {
   return shell.pickDirectory(options);
+}
+
+export function localTextFileExport(): TextFileExport | undefined {
+  return shell.textFileExport;
+}
+
+export function localBinaryFileExport(): BinaryFileExport | undefined {
+  return shell.binaryFileExport;
 }
 
 /** This window's own build version (never a peer's); `null` when nothing reports one. */

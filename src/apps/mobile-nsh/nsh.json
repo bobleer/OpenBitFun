@@ -9,6 +9,11 @@
     "clipboard": true,
     "notifications": true,
     "picker": true,
+    "share": true,
+    "fs": {
+      "read": ["${dataDir}/markdown-exports", "${dataDir}/image-exports", "${dataDir}/pdf-exports"],
+      "write": ["${dataDir}/markdown-exports", "${dataDir}/image-exports", "${dataDir}/pdf-exports"]
+    },
     "statusBar": true,
     "network": {
       "http": [

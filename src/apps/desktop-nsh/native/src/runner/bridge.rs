@@ -118,6 +118,14 @@ impl BackendBridge for NativeBridge {
     fn pick_file_dialog(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
         Some(crate::folder_picker::pick_file_dialog(options_json))
     }
+
+    fn save_text_file(&self, options_json: String) -> Option<BoxFuture<Result<bool, String>>> {
+        Some(crate::folder_picker::save_text_file(options_json))
+    }
+
+    fn save_binary_file(&self, options_json: String) -> Option<BoxFuture<Result<bool, String>>> {
+        Some(crate::folder_picker::save_binary_file(options_json))
+    }
 }
 
 /// Starts the backend; attaches the bridge (or reports the fatal error)

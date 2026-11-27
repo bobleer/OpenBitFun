@@ -7,7 +7,11 @@
 //! (`zenity` / `kdialog` on a background thread, falling back to a clear
 //! unsupported error when neither is available).
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use openbitfun_nsh_native::BoxFuture;
+use std::io::Write;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -38,6 +42,108 @@ impl FileDialogOptions {
     fn is_save(&self) -> bool {
         self.mode.as_deref() == Some("save")
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveTextFileOptions {
+    title: String,
+    file_name: String,
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveBinaryFileOptions {
+    title: String,
+    file_name: String,
+    base64: String,
+}
+
+pub(crate) fn save_text_file(options_json: String) -> BoxFuture<Result<bool, String>> {
+    Box::pin(async move {
+        let request: SaveTextFileOptions = serde_json::from_str(&options_json)
+            .map_err(|error| format!("Invalid Save dialog options: {error}"))?;
+        save_file(request.title, request.file_name, request.text.into_bytes()).await
+    })
+}
+
+pub(crate) fn save_binary_file(options_json: String) -> BoxFuture<Result<bool, String>> {
+    Box::pin(async move {
+        let request: SaveBinaryFileOptions = serde_json::from_str(&options_json)
+            .map_err(|error| format!("Invalid Save dialog options: {error}"))?;
+        const MAX_BYTES: usize = 32 * 1024 * 1024;
+        if request.base64.len() > MAX_BYTES.div_ceil(3) * 4 {
+            return Err("The file exceeds the 32 MiB export limit".into());
+        }
+        let bytes = STANDARD
+            .decode(request.base64)
+            .map_err(|error| format!("Invalid file data: {error}"))?;
+        if bytes.is_empty() || bytes.len() > MAX_BYTES {
+            return Err("File data is empty or exceeds the 32 MiB export limit".into());
+        }
+        save_file(request.title, request.file_name, bytes).await
+    })
+}
+
+async fn save_file(title: String, file_name: String, bytes: Vec<u8>) -> Result<bool, String> {
+    if file_name.trim().is_empty()
+        || matches!(file_name.as_str(), "." | "..")
+        || file_name.contains(['/', '\\', ':', '\0'])
+    {
+        return Err("Save dialog requires a file name".into());
+    }
+    let selection = pick_file_dialog_platform(FileDialogOptions {
+        mode: Some("save".into()),
+        title: Some(title),
+        default_path: Some(file_name),
+        ..FileDialogOptions::default()
+    })
+    .await?;
+    let Some(path) = serde_json::from_str::<Option<String>>(&selection)
+        .map_err(|error| format!("Invalid Save dialog result: {error}"))?
+    else {
+        return Ok(false);
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("openbitfun-save-file".into())
+        .spawn(move || {
+            let _ = sender.send(write_selected_document(Path::new(&path), &bytes));
+        })
+        .map_err(|error| format!("Failed to start document writer: {error}"))?;
+    receiver
+        .await
+        .map_err(|_| "Document writer closed without an answer".to_string())?
+        .map(|()| true)
+        .map_err(|error| format!("Failed to save the document: {error}"))
+}
+
+fn write_selected_document(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid selected path",
+        ));
+    }
+    // Write beside the chosen file and replace it only after the new bytes are complete.
+    let temporary = path.with_file_name(format!(
+        ".openbitfun-export-{}-{}.tmp",
+        std::process::id(),
+        NEXT_EXPORT.fetch_add(1, Ordering::Relaxed),
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// Shows the native folder picker without blocking the runtime or JS event

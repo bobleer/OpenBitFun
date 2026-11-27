@@ -44,6 +44,33 @@
   // `prepareBundleRealm`). A dot-file, so no manifest can list it.
   const REALM_PAGE = ".obf-realm.html";
   const REALM_HTML = '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>';
+  // The only page that can run a self-contained figure. It is opaque even if
+  // a caller opens it directly. The figure arrives in a fragment, outside HTTP.
+  const FIGURE_PAGE = ".obf-figure.html";
+  const FIGURE_CSP =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src data:; " +
+    "img-src data: blob:; connect-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts";
+  const FIGURE_HTML = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">
+    <style>html,body,iframe{width:100%;height:100%;margin:0;border:0}iframe{display:block}</style>
+    <iframe sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+    <script>
+      const frame = document.querySelector('iframe');
+      let latest;
+      const forward = () => { if (latest) frame.contentWindow?.postMessage(latest, '*'); };
+      frame.addEventListener('load', forward);
+      addEventListener('message', event => {
+        if (event.source !== parent || typeof event.data !== 'string' || event.data.length > 1048576) return;
+        try {
+          if (JSON.parse(event.data)?.type !== 'openbitfun.figure.bindings.v1') return;
+          latest = event.data;
+          forward();
+        } catch {}
+      });
+      const source = location.hash.slice(1);
+      if (source.length <= 1500000 && /^[A-Za-z0-9+/]+={0,2}$/.test(source)) {
+        frame.src = 'data:text/html;base64,' + source;
+      }
+    </script>`;
   const BOOT_KEY = "obf.ui.boot";
 
   // The CSP nginx sends for `/`; a worker's own responses carry no
@@ -435,6 +462,15 @@
       }
       if (parsed.path === REALM_PAGE) {
         return new Response(REALM_HTML, { status: 200, headers: headersFor(REALM_PAGE) });
+      }
+      if (parsed.path === FIGURE_PAGE) {
+        return new Response(FIGURE_HTML, { headers: {
+          ...headersFor(FIGURE_PAGE),
+          "Content-Security-Policy": FIGURE_CSP,
+          "Cache-Control": "no-store",
+          "X-OpenBitFun-Figure-Preview": "1",
+          "X-OpenBitFun-Figure-Bindings": "1",
+        } });
       }
       const path = parsed.path === "" ? record.manifest.entry : parsed.path;
       const file = path === null ? null : record.manifest.files.find(entry => entry.path === path);

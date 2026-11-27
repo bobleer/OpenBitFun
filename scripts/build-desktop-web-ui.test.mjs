@@ -24,7 +24,7 @@ function makeFixtureRepo() {
   return dir;
 }
 
-test('source fingerprint changes on UI source edits and ignores test files', () => {
+test('source fingerprint tracks UI, atlas and locale changes and ignores test files', () => {
   const repo = makeFixtureRepo();
   try {
     const first = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
@@ -38,9 +38,28 @@ test('source fingerprint changes on UI source edits and ignores test files', () 
     const afterUiEdit = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
     assert.notEqual(afterUiEdit, first);
 
+    const atlasDir = path.join(repo, 'src', 'shared', 'visualize');
+    mkdirSync(atlasDir, { recursive: true });
+    const projection = path.join(atlasDir, 'regionalProjection.js');
+    writeFileSync(projection, 'export const projection = 1;\n');
+    const withAtlas = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
+    assert.notEqual(withAtlas, afterUiEdit);
+    writeFileSync(projection, 'export const projection = 2;\n');
+    const afterAtlasEdit = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
+    assert.notEqual(afterAtlasEdit, withAtlas);
+
+    const contractDir = path.join(repo, 'src', 'shared', 'i18n', 'contract');
+    mkdirSync(contractDir, { recursive: true });
+    const contract = path.join(contractDir, 'locales.json');
+    writeFileSync(contract, '{"version":1}');
+    const withContract = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
+    writeFileSync(contract, '{"version":2}');
+    const afterContractEdit = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.1' });
+    assert.notEqual(afterContractEdit, withContract);
+
     // Changing NSH toolchain version invalidates the web bundle.
     const afterNshBump = computeDesktopWebSourceFingerprint({ rootDir: repo, nshVersion: '0.6.2' });
-    assert.notEqual(afterNshBump, afterUiEdit);
+    assert.notEqual(afterNshBump, afterContractEdit);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -99,9 +118,8 @@ test('swapBundleDirectory replaces the previous bundle atomically without leavin
 });
 
 test('desktop-nsh:build keeps the web UI bundle in lockstep with the native bundle', () => {
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-  const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  const buildScript = readFileSync(path.join(repoRoot, 'scripts', 'desktop-nsh-build.mjs'), 'utf8');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const buildScript = readFileSync(new URL('./desktop-nsh-build.mjs', import.meta.url), 'utf8');
   assert.match(pkg.scripts['desktop-nsh:web'], /build-desktop-web-ui\.mjs/);
   assert.match(pkg.scripts['desktop-nsh:build'], /desktop-nsh-build\.mjs/);
   assert.match(pkg.scripts['desktop-nsh:build:dev'], /desktop-nsh-build\.mjs.*--profile desktop-dev/);

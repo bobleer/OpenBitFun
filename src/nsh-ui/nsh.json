@@ -9,7 +9,9 @@
     ],
     "network": {
       "hosts": [
-        "super.openbitfun.com"
+        "super.openbitfun.com",
+      "tiles.versatiles.org",
+      "photon.komoot.io"
       ],
       "http": [
         {

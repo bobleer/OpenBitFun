@@ -9,12 +9,30 @@ release packages.
 OpenBitFun uses Apache ECharts 6.0.0 and zrender 6.0.0 for inline charts.
 ECharts is distributed under the Apache License 2.0 and includes portions of
 d3.js under the BSD 3-Clause license. zrender uses the BSD 3-Clause license.
-The frontend includes the upstream notices and license texts in
-`third-party/visualize-NOTICES.txt`.
+The NSH figure renderer embeds the upstream license and notice texts in its
+generated script, together with the MIT licenses for Zod, parse5, React, React DOM,
+and Scheduler. The React runtime is included in the isolated figure renderer asset.
 
 ## D3 geographic projections
 
-The offline map renderer includes d3-geo 3.1.0 and 3.1.1, and d3-array 3.2.4. Their copyright and license notices are included in `third-party/visualize-NOTICES.txt`.
+The offline map renderer includes d3-geo 3.1.1, d3-array, InternMap and TopoJSON
+Client 3.1.0. NSH packages their copyright and license texts with the regional
+atlas as `figure-atlas/NOTICES.txt`. The atlas uses the bundled Natural Earth data.
+Street-map snapshots decode vector tiles with `@mapbox/vector-tile`,
+`@mapbox/point-geometry` and `pbf`. Their licenses ship in the same asset, and
+the street-map view includes OpenStreetMap and VersaTiles attribution.
+
+## Mozilla PDF.js
+
+OpenBitFun's NSH PDF reader uses `pdfjs-dist` 5.4.624 from
+[Mozilla PDF.js](https://github.com/mozilla/pdf.js/tree/v5.4.624), licensed under
+Apache-2.0. The generated reader script includes the license notices from that
+distribution for the engine, Adobe character maps, standard font data, and
+image decoders.
+
+The same script uses pdf-lib 1.17.1 (MIT) to preserve interactive PDF
+annotations and review data. Its license and the notices for bundled
+standard-fonts, UPNG, pako, and tslib are included in the generated script.
 
 ## Fira Code
 

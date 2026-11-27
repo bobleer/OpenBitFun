@@ -9,7 +9,11 @@
 // directory. Without a registration (tests, `nsh run` of `App.tsx`) diagrams
 // and formulas show as their source.
 //
-// This module imports nothing, so an entry can load it first.
+// This module has no runtime imports, so an entry can load it first.
+import type { ImageAsset } from "nsh";
+import type { RegionalAtlasLayer } from "../../shared/visualize/regionalProjection";
+
+export type FigureAtlasAssets = Record<RegionalAtlasLayer | "stylesheet" | "notices", string>;
 
 export interface DocumentRendererAssets {
   /** `mermaid.min.js`. */
@@ -18,6 +22,18 @@ export interface DocumentRendererAssets {
   katexScript: string;
   /** `katex.css` with its fonts inlined. */
   katexStyle: string;
+  /** Browser-only script that reads the island's data under the host's CSP. */
+  browserBootstrap?: string;
+  /** The PDF.js engine, local worker and PDF reader, compiled into one script. */
+  pdfScript?: string;
+  /** ECharts and the declarative figure viewer, compiled as one script. */
+  figureScript?: string;
+  /** Trusted CORS image reader, used outside the figure preview. */
+  figureImageLoader?: string;
+  /** Local map layers and the FlowChat map stylesheet. */
+  figureAtlas?: FigureAtlasAssets;
+  /** Screenshots shipped with built-in Spaces. */
+  spaceShowcases?: Readonly<Record<string, ImageAsset>>;
 }
 
 let registered: DocumentRendererAssets | null = null;
