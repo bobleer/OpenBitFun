@@ -33,7 +33,6 @@ import {
 } from "../backgroundCommandsStore";
 import { listenEvent } from "../bridge";
 import {
-  askSideQuestion,
   openSideQuestion,
   sideQuestionOpen,
   subscribeSideQuestionEvents,
@@ -69,11 +68,9 @@ import {
 import {
   closeMcpPromptForm,
   fetchMcpPromptText,
-  loadMcpPrompts,
   mcpPromptBusy,
   mcpPromptError,
   mcpPromptForm,
-  mcpPromptsFor,
   mcpPromptValues,
   openMcpPromptForm,
   type McpPromptEntry,
@@ -87,7 +84,6 @@ import {
 } from "../state";
 import {
   compactLayout,
-  controlHeight,
   fontMono,
   layout,
   palette,
@@ -100,9 +96,7 @@ import {
 import { BrandSpinner, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import {
   DropdownMenu,
-  ListRowContent,
   ModalDialog,
-  listRowHoverBg,
   pushToast,
   type DropdownMenuItem,
 } from "./overlays";
@@ -135,9 +129,10 @@ export function useSessionExtras(): void {
     void loadBackgroundCommands({ sessionId: target.sessionId, deviceId: target.deviceId });
   });
   effect(() => {
-    if (!activeSessionId()) return;
-    void loadMcpPrompts(activeSessionDevice());
+    const target = mcpPromptTarget();
+    if (target && !target.current()) closeTargetMcpPrompt();
   });
+  cleanup(closeTargetMcpPrompt);
   extrasMountCount += 1;
   if (extrasMountCount === 1) {
     // Background commands start and end with the agent's tool calls.
@@ -173,10 +168,9 @@ export function useSessionExtras(): void {
 // ── Goal ──────────────────────────────────────────────────────────────────────
 
 const goalDialog = signal<"set" | "edit" | null>(null);
+const goalDialogTarget = signal<GoalTarget | null>(null);
 const goalDraft = signal("");
 const goalError = signal("");
-const goalMenuOpen = signal(false);
-const goalMenuAnchor = signal<ViewRef | null>(null);
 
 const GOAL_STATUS_KEYS: Record<string, MessageKey> = {
   active: "goal.status.active",
@@ -192,16 +186,17 @@ function goalStatusWord(goal: SessionGoal): string {
   return key ? tr(key) : goal.status;
 }
 
-export function openGoalDialog(): void {
-  const target = goalTarget();
-  const goal = target ? goalOf(target) : null;
+export function openGoalDialog(target = goalTarget()): void {
+  if (!target) return;
+  const goal = goalOf(target);
+  goalDialogTarget.set(target);
   goalDraft.set(goal?.objective ?? "");
   goalError.set("");
   goalDialog.set(goal ? "edit" : "set");
 }
 
 async function submitGoal(): Promise<void> {
-  const target = goalTarget();
+  const target = goalDialogTarget();
   const text = goalDraft().trim();
   if (!target || !text) return;
   try {
@@ -230,7 +225,7 @@ function goalMenuItems(goal: SessionGoal, target: GoalTarget): DropdownMenuItem[
       label: tr("goal.edit"),
       icon: "edit",
       accessibilityLabel: "goal-menu-edit",
-      onSelect: () => openGoalDialog(),
+      onSelect: () => openGoalDialog(target),
     },
   ];
   if (!done) {
@@ -264,9 +259,15 @@ function goalMenuItems(goal: SessionGoal, target: GoalTarget): DropdownMenuItem[
 }
 
 /** One quiet line under the session header while the session has a goal. */
-export function GoalStrip(): JSX.Element {
+export function GoalStrip(props: { target?: () => GoalTarget | null; prefix?: string } = {}): JSX.Element {
+  const goalMenuOpen = signal(false);
+  const goalMenuAnchor = signal<ViewRef | null>(null);
+  effect(() => {
+    const target = props.target?.();
+    if (target) void loadSessionGoal(target);
+  });
   const current = computed(() => {
-    const target = goalTarget();
+    const target = props.target ? props.target() : goalTarget();
     if (!target) return null;
     const goal = goalOf(target);
     return goal ? { goal, target } : null;
@@ -275,7 +276,7 @@ export function GoalStrip(): JSX.Element {
     <If when={current()}>
       {entry => (
         <View
-          accessibilityLabel="session-goal-strip"
+          accessibilityLabel={(props.prefix ?? "") + "session-goal-strip"}
           style={{
             flexDirection: "row",
             alignItems: "center",
@@ -306,7 +307,7 @@ export function GoalStrip(): JSX.Element {
               icon="more"
               size="xs"
               tooltip={tr("goal.actions")}
-              accessibilityLabel="session-goal-menu"
+              accessibilityLabel={(props.prefix ?? "") + "session-goal-menu"}
               style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => goalMenuOpen.set(!goalMenuOpen())}
             />
@@ -600,85 +601,44 @@ function BackgroundCommandsDialog(): JSX.Element {
 
 // ── MCP prompts ───────────────────────────────────────────────────────────────
 
-/** The MCP prompts a typed `/token` lists. */
-export const mcpPromptMatches = computed(() => (activeSessionId() ? mcpPromptsFor(composerText()) : []));
+interface McpPromptTarget {
+  deviceId: string;
+  current: () => boolean;
+  insert: (text: string) => void;
+}
+
+const mcpPromptTarget = signal<McpPromptTarget | null>(null);
+
+function closeTargetMcpPrompt(): void {
+  mcpPromptTarget.set(null);
+  closeMcpPromptForm();
+}
 
 async function usePrompt(entry: McpPromptEntry, values: Record<string, string> = {}): Promise<void> {
+  const target = mcpPromptTarget();
+  if (!target?.current() || mcpPromptBusy()) return;
+  const current = () => mcpPromptTarget() === target && target.current();
   mcpPromptBusy.set(true);
   try {
-    const text = await fetchMcpPromptText(entry, activeSessionDevice(), values);
-    composerText.set(text);
-    closeMcpPromptForm();
+    const text = await fetchMcpPromptText(entry, target.deviceId, values);
+    if (!current()) return;
+    closeTargetMcpPrompt();
+    target.insert(text);
   } catch (error) {
+    if (!current()) return;
     if (mcpPromptForm()) mcpPromptError.set(errorText(error));
     else pushToast(errorText(error), "error");
   } finally {
-    mcpPromptBusy.set(false);
+    if (mcpPromptTarget() === target) mcpPromptBusy.set(false);
   }
 }
 
 /** Picks a prompt: one with arguments opens its form, one without fills the composer. */
-export function chooseMcpPrompt(entry: McpPromptEntry): void {
+export function chooseMcpPrompt(entry: McpPromptEntry, target: McpPromptTarget): void {
+  closeTargetMcpPrompt();
+  mcpPromptTarget.set(target);
   if (entry.arguments.length > 0) openMcpPromptForm(entry);
-  else {
-    composerText.set("");
-    void usePrompt(entry);
-  }
-}
-
-/** The prompt rows under the session commands in the `/` list. */
-export function McpPromptRows(): JSX.Element {
-  return (
-    <If when={mcpPromptMatches().length > 0}>
-      <View style={{ gap: space.hair }}>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            fontWeight: "500",
-            lineHeight: textLineHeight(12, 1.3),
-            paddingHorizontal: space.sm,
-            paddingTop: space.sm,
-            paddingBottom: space.xs,
-          }}
-        >
-          {tr("mcpPrompts.title")}
-        </Text>
-        <Each of={mcpPromptMatches()} key={entry => `${entry.serverId}/${entry.name}`}>
-          {entry => (
-            <View
-              role="button"
-              accessibilityLabel={`mcp-prompt-${entry().serverId}-${entry().name}`}
-              onPress={() => chooseMcpPrompt(entry())}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
-                paddingHorizontal: space.sm,
-                paddingVertical: 7,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                cursor: "pointer",
-                userSelect: "none",
-                ...pressTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{ backgroundColor: listRowHoverBg() }}
-              activeStyle={tactileActiveStyle(0.985, { backgroundColor: palette().buttonSecondaryHover })}
-              focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
-            >
-              <ListRowContent
-                icon="plug"
-                iconColor={palette().textSecondary}
-                title={entry().title ?? entry().name}
-                titleWeight="500"
-                subtitle={entry().description ?? entry().serverName}
-              />
-            </View>
-          )}
-        </Each>
-      </View>
-    </If>
-  );
+  else void usePrompt(entry);
 }
 
 function McpPromptDialog(): JSX.Element {
@@ -692,14 +652,14 @@ function McpPromptDialog(): JSX.Element {
       subtitle={entry() ? tr("mcpPrompts.from", { server: entry()?.serverName ?? "" }) : undefined}
       size="md"
       accessibilityLabel="mcp-prompt-dialog"
-      onClose={() => closeMcpPromptForm()}
+      onClose={closeTargetMcpPrompt}
       onSubmit={() => {
         const current = entry();
         if (current && !missing() && !mcpPromptBusy()) void usePrompt(current, mcpPromptValues());
       }}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => closeMcpPromptForm()} />
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={closeTargetMcpPrompt} />
           <Button
             label={tr("mcpPrompts.insert")}
             variant="primary"
@@ -870,15 +830,14 @@ export function SessionExtrasDialogs(): JSX.Element {
  * `/goal <objective>` and `/btw <question>` typed in the composer; the host's
  * own session commands come first, so these run only when it offers neither.
  */
-export function runExtrasCommand(text: string): boolean {
+export function runExtrasCommand(text: string, target: (GoalTarget & { workspacePath?: string | null }) | null = goalTarget()): boolean {
   const match = /^\/(goal|btw)(?:\s+([\s\S]+))?$/i.exec(text.trim());
-  const target = goalTarget();
   if (!match || !target) return false;
   const cmd = match[1]!.toLowerCase();
   const body = (match[2] ?? "").trim();
   if (cmd === "goal") {
     if (!body || /^edit$/i.test(body)) {
-      openGoalDialog();
+      openGoalDialog(target);
     } else if (/^clear$/i.test(body)) {
       void clearSessionGoal(target).catch(error => pushToast(errorText(error), "error"));
     } else if (/^pause$/i.test(body)) {
@@ -890,19 +849,7 @@ export function runExtrasCommand(text: string): boolean {
     }
     return true;
   }
-  if (!body) {
-    openSideQuestion();
-  } else {
-    openSideQuestion();
-    void askSideQuestion(
-      {
-        sessionId: target.sessionId,
-        deviceId: target.deviceId,
-        workspaceId: target.workspaceId,
-        workspacePath: activeWorkspaceRoot() || null,
-      },
-      body,
-    );
-  }
+  const parent = { ...target, workspacePath: target.workspacePath ?? (activeWorkspaceRoot() || null) };
+  openSideQuestion(parent, body);
   return true;
 }

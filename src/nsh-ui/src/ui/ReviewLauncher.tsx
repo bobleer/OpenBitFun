@@ -28,6 +28,7 @@ import {
 import { activeWorkspace } from "../state";
 import { compactLayout, fontMono, inputFontSans, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
+import { ChoiceIndicator } from "./ChoiceIndicator";
 import { MOTION_DURATION, Spinner, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { ModalDialog } from "./overlays";
 import { Button, SegmentedTabs, focusRingStyle } from "./primitives";
@@ -39,6 +40,12 @@ const STATUS_MARK: Record<string, string> = {
   renamed: "R",
   copied: "C",
 };
+
+const REVIEW_VISIBLE_FILE_ROWS = 4;
+
+function reviewFileRowHeight(): number {
+  return compactLayout() ? layout.touchTarget : space.x3l + space.xs;
+}
 
 function SectionHeader(props: { text: string; trailing?: JSX.Element }) {
   return (
@@ -71,7 +78,7 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
         flexDirection: "row",
         alignItems: "center",
         gap: space.sm,
-        minHeight: compactLayout() ? layout.touchTarget : space.x3l + space.xs,
+        minHeight: reviewFileRowHeight(),
         paddingHorizontal: space.lg,
         borderTopWidth: props.first() ? 0 : 1,
         borderColor: palette().borderSubtle,
@@ -83,11 +90,7 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
       activeStyle={tactileActiveStyle(0.985)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <Icon
-        name={included() ? "check-circle" : "circle-dot"}
-        size={14}
-        color={included() ? palette().text : palette().textMuted}
-      />
+      <ChoiceIndicator kind="checkbox" checked={included()} />
       <Text
         style={{
           width: space.lg,
@@ -123,6 +126,22 @@ function scopeSummary(): string {
   const files = tr(selected === 1 ? "review.fileOne" : "review.fileOther", { count: formatCount(selected) });
   if (!preview || preview.status === "refused" || typeof preview.changedLineCount !== "number") return files;
   return tr("review.scopeWithLines", { files, lines: formatCount(preview.changedLineCount) });
+}
+
+function intentHint(): string {
+  if (reviewIntent() === "strict") return tr("review.intentStrictHint");
+  const preview = reviewPreview();
+  if (!reviewPreviewLoading() && preview?.mode === "managed") {
+    if (typeof preview.deferredFileCount === "number" && preview.deferredFileCount > 0 &&
+        typeof preview.plannedFileCount === "number") {
+      return tr("review.intentManagedLimitedHint", {
+        planned: formatCount(preview.plannedFileCount),
+        deferred: formatCount(preview.deferredFileCount),
+      });
+    }
+    return tr("review.intentManagedHint");
+  }
+  return tr("review.intentStandardHint");
 }
 
 export function ReviewLauncherDialog() {
@@ -168,7 +187,7 @@ export function ReviewLauncherDialog() {
             lineHeight: textLineHeight(13, 1.5),
           }}
         >
-          {reviewIntent() === "strict" ? tr("review.intentStrictHint") : tr("review.intentStandardHint")}
+          {intentHint()}
         </Text>
       </View>
 
@@ -231,7 +250,11 @@ export function ReviewLauncherDialog() {
               overflow: "hidden",
             }}
           >
-            <Scroll smoothWheel style={{ maxHeight: 216, minHeight: 0 }} scrollbar={true}>
+            <Scroll
+              smoothWheel
+              style={{ maxHeight: reviewFileRowHeight() * REVIEW_VISIBLE_FILE_ROWS, minHeight: 0 }}
+              scrollbar={true}
+            >
               <Each of={reviewAllFiles()} key={file => file.path}>
                 {(file, index) => <FileRow file={file} first={() => index() === 0} />}
               </Each>

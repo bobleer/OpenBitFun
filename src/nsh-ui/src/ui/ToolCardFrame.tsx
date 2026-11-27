@@ -23,6 +23,7 @@ export function ToolCardFrame(props: {
   muted: boolean;
   confirmation: boolean;
   hint?: string;
+  headerMinHeight?: number;
   onToggle: () => void;
   leading: JSX.Element;
   summary: (engaged: () => boolean) => JSX.Element;
@@ -64,7 +65,8 @@ export function ToolCardFrame(props: {
           onBlur={() => focused.set(false)}
           style={{
             flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center",
-            gap: prominent() ? space.sm : metrics.iconGap, minHeight: toolCardHeaderHeight(prominent()),
+            gap: prominent() ? space.sm : metrics.iconGap,
+            minHeight: Math.max(toolCardHeaderHeight(prominent()), props.headerMinHeight ?? 0),
             paddingLeft: prominent() ? metrics.prominentPaddingInline : 0,
             paddingVertical: prominent() ? metrics.prominentPaddingBlock : 0,
             borderRadius: prominent() ? metrics.prominentRadius : radii.sm,

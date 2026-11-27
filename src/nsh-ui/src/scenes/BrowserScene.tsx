@@ -92,6 +92,8 @@ import {
   activeSessionId,
   activeWorkspaceKey,
   auxPaneHeight,
+  auxPaneDisplayMode,
+  auxPaneOverlayWidth,
   auxPaneMaximized,
   auxPaneSide,
   auxPaneWidth,
@@ -519,6 +521,8 @@ function NativeBody(props: { compact: boolean }) {
     drawerOpen();
     navWidth();
     auxPaneWidth();
+    auxPaneDisplayMode();
+    auxPaneOverlayWidth();
     auxPaneHeight();
     auxPaneSide();
     auxPaneMaximized();

@@ -31,7 +31,11 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   // Rename opens a dialog with the current name and saves through the session's own catalogue.
   await app.hover("id:sidebar-session-session-2 >> nth=0");
   await app.press("sidebar-session-actions-session-2");
-  await app.press("session-menu-rename-session-2");
+  await app.waitFor("session-menu-rename-session-2");
+  await app.keyboard.press("end");
+  await app.keyboard.press("down");
+  await app.keyboard.press("down");
+  await app.keyboard.press("enter");
   await app.waitFor("session-rename-input");
   await app.clear("session-rename-input");
   await app.type("session-rename-input", "Terminal port");
@@ -62,11 +66,14 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   // Delete asks in-place inside the menu ("Cancel | Confirm"); Cancel sends nothing and no modal opens.
   await app.hover("id:sidebar-session-session-2 >> nth=0");
   await app.press("sidebar-session-actions-session-2");
-  await app.press("session-menu-delete-session-2");
+  await app.waitFor("session-menu-delete-session-2");
+  await app.keyboard.press("end");
+  await app.keyboard.press("enter");
   await app.waitFor("session-delete-confirm");
   expect(app.shows("session-delete-modal")).toBe(false);
-  await app.press("session-delete-cancel");
+  await app.keyboard.press("escape");
   await app.waitFor("session-delete-confirm", { state: "gone" });
+  await app.waitFor("session-menu-delete-session-2");
   expect(callsOf(backend, "delete_persisted_session")).toHaveLength(0);
   await app.press("session-menu-delete-session-2");
   await app.waitFor("session-delete-confirm");

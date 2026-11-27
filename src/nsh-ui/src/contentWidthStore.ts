@@ -1,12 +1,11 @@
 // The content width preference: how wide the conversation column grows.
 //
-// The desktop keeps this one in the page's local storage rather than the config,
-// because it describes the controller's own window and never travels to a peer.
-// This surface stores it under the same key, so a host that maps `Storage` onto
-// the page's local storage shows one width in both frontends rather than two.
+// Both frontends use the same local storage key. The controller's entry also
+// keeps the width in account settings when the host supports it.
 
 import { Storage, signal } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getEntryConfig, setEntryConfig } from "./api";
+import { backendConnection } from "./bridge";
 
 /**
  * The host keeps the width as `appearance.content_width` too, which account
@@ -27,6 +26,10 @@ export const CONTENT_WIDTH_STORAGE_KEY = "openbitfun:appearance:flowChatWidth";
 export const contentWidth = signal(DEFAULT_CONTENT_WIDTH);
 /** Set when the stored value could not be read or written. */
 export const contentWidthNotice = signal("");
+let localWrites = Promise.resolve();
+let hostWrites = Promise.resolve();
+let widthRevision = 0;
+let latestRead = 0;
 
 function clampWidth(value: number): number {
   return Math.max(MIN_CONTENT_WIDTH, Math.round(value));
@@ -38,13 +41,15 @@ function clampWidth(value: number): number {
  * stepper can no longer reach.
  */
 export async function loadContentWidth(): Promise<void> {
+  const revision = widthRevision;
   try {
     const raw = await Storage.getItem(CONTENT_WIDTH_STORAGE_KEY);
+    if (revision !== widthRevision) return;
     if (!raw || !raw.trim()) return;
     const saved = Number(raw);
     if (Number.isFinite(saved) && saved >= MIN_CONTENT_WIDTH) contentWidth.set(clampWidth(saved));
   } catch {
-    contentWidthNotice.set("The saved content width could not be read; this run uses the default.");
+    if (revision === widthRevision) contentWidthNotice.set("The saved content width could not be read.");
   }
 }
 
@@ -54,16 +59,23 @@ export async function loadContentWidth(): Promise<void> {
  * once it is not the default (the first read after an upgrade).
  */
 export async function syncContentWidthFromHost(): Promise<void> {
+  const read = ++latestRead;
+  const revision = widthRevision;
+  const connection = backendConnection();
+  const current = () => read === latestRead && revision === widthRevision && backendConnection() === connection;
+  await hostWrites;
+  if (!current()) return;
   let stored: unknown;
   try {
-    stored = await getConfig(HOST_WIDTH_PATH, true);
+    stored = await getEntryConfig(HOST_WIDTH_PATH);
   } catch {
     return;
   }
+  if (!current()) return;
   if (typeof stored === "number" && Number.isFinite(stored) && stored >= MIN_CONTENT_WIDTH) {
     applyWidth(clampWidth(stored), false);
   } else if (stored == null && contentWidth() !== DEFAULT_CONTENT_WIDTH) {
-    void setConfig(HOST_WIDTH_PATH, contentWidth()).catch(() => {});
+    persistWidth(contentWidth(), true);
   }
 }
 
@@ -75,22 +87,24 @@ export function setContentWidth(width: number): void {
 
 function applyWidth(next: number, toHost: boolean): void {
   if (next === contentWidth()) return;
+  widthRevision += 1;
   contentWidth.set(next);
-  if (toHost) {
-    void setConfig(HOST_WIDTH_PATH, next).catch(() => {
-      // An older or unreachable host keeps the width in this surface only.
-    });
-  }
   contentWidthNotice.set("");
-  void Storage.setItem(CONTENT_WIDTH_STORAGE_KEY, String(next)).catch(() => {
-    // A store that refuses the write still shows the width for this run.
-    contentWidthNotice.set("The content width was not saved; this run keeps it in memory.");
-  });
+  persistWidth(next, toHost);
 }
 
-/** One step of the stepper. */
-export function adjustContentWidth(delta: number): void {
-  setContentWidth(contentWidth() + delta);
+function persistWidth(next: number, toHost: boolean): void {
+  const revision = widthRevision;
+  const connection = backendConnection();
+  localWrites = localWrites.then(() => Storage.setItem(CONTENT_WIDTH_STORAGE_KEY, String(next))).catch(() => {
+    if (revision === widthRevision) contentWidthNotice.set("The content width could not be saved locally.");
+  });
+  if (!toHost) return;
+  hostWrites = hostWrites.then(async () => {
+    if (backendConnection() === connection) await setEntryConfig(HOST_WIDTH_PATH, next);
+  }).catch(() => {
+    // An older or unreachable host keeps the width in this surface.
+  });
 }
 
 export function resetContentWidth(): void {

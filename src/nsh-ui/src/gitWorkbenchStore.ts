@@ -13,7 +13,7 @@ import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
 export type GitRepoState = "idle" | "probing" | "trust_required" | "not_a_repository" | "trusted" | "error";
-export type GitTab = "working" | "branches" | "history" | "worktrees";
+export type GitTab = "working" | "branches" | "history" | "worktrees" | "pull-requests";
 
 export interface GitTrustReport {
   state: string;

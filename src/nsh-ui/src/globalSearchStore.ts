@@ -15,12 +15,12 @@
 import { basename } from "./format";
 import { searchWorkspaceFiles, type WorkspaceRecord } from "./api";
 import { invokeCommand } from "./bridge";
+import type { ControlDestination } from "./controlPresenter";
 import { tr } from "./i18n";
 import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeWorkspace,
   activeWorkspaceId,
-  createSessionInWorkspace,
   isSessionArchived,
   loadSessions,
   navigateScene,
@@ -34,11 +34,11 @@ import {
   type SceneId,
 } from "./state";
 import { openFileAt } from "./fileStore";
-import { signal } from "nsh";
-import { superAgentUi } from "./productGates"; // wave23-E
+import { computed, signal } from "nsh";
 
 export type SearchItemKind =
   | "command"
+  | "capability"
   | "session"
   | "message"
   | "file"
@@ -58,32 +58,26 @@ export interface SearchItem {
   workspaceId?: string;
   /** The turn a message hit was found in. */
   turnId?: string;
+  /** Settings hits can reveal a destination inside their page. */
+  settingsAnchor?: string;
+  /** Capability hits use the same destination vocabulary as product control. */
+  controlDestination?: ControlDestination;
 }
 
-/** The scenes a `>` command can reach, in the sidebar's own order. */
-const COMMAND_SCENES: ReadonlyArray<SceneId> = [
-  // wave23-E: the Super Agent command shows only while that gate is on (`productGates.ts`).
-  ...(superAgentUi() ? (["openbitfun"] as const) : []),
-  "all-sessions",
-  "assistants",
-  "agents",
-  "skills",
-  "routines",
-  "files",
-  "git",
-  "terminal",
-  "spaces",
-  "devices",
-  "settings",
-];
-
-const NEW_SESSION_COMMAND = "command:new-session";
+export type SearchScope = "all" | "actions" | "content";
 
 export const searchOpen = signal(false);
 export const searchQuery = signal("");
 export const searchBusy = signal(false);
 export const searchItems = signal<SearchItem[]>([]);
 export const searchNotice = signal("");
+const searchScope = signal<SearchScope>("all");
+export const searchActionPrefix = computed(() => searchQuery().trimStart().startsWith(">"));
+export const effectiveSearchScope = computed(() => searchActionPrefix() ? "actions" : searchScope());
+export const searchText = computed(() => {
+  const query = searchQuery().trim();
+  return query.startsWith(">") ? query.slice(1).trim() : query;
+});
 
 /**
  * The turn a message hit pointed at, for the session scene to scroll to once the
@@ -95,69 +89,6 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 // A late answer from an older query must not overwrite a newer one, so every run
 // takes a ticket and only the newest may write.
 let runTicket = 0;
-
-function commandLabel(scene: SceneId): { label: string; detail: string } {
-  switch (scene) {
-    case "home":
-    case "openbitfun":
-      return { label: tr("search.cmdOpenBitFun"), detail: tr("search.cmdOpenBitFunDetail") };
-    case "all-sessions":
-    case "sessions":
-      return { label: tr("search.cmdSessions"), detail: tr("search.cmdSessionsDetail") };
-    case "assistants":
-      return { label: tr("search.cmdAssistants"), detail: tr("search.cmdAssistantsDetail") };
-    case "agents":
-      return { label: tr("search.cmdAgents"), detail: tr("search.cmdAgentsDetail") };
-    case "skills":
-      return { label: tr("search.cmdSkills"), detail: tr("search.cmdSkillsDetail") };
-    case "routines":
-      return { label: tr("search.cmdRoutines"), detail: tr("search.cmdRoutinesDetail") };
-    case "files":
-      return { label: tr("search.cmdFiles"), detail: tr("search.cmdFilesDetail") };
-    case "git":
-      return { label: tr("search.cmdGit"), detail: tr("search.cmdGitDetail") };
-    case "terminal":
-      return { label: tr("search.cmdTerminal"), detail: tr("search.cmdTerminalDetail") };
-    case "spaces":
-      return { label: tr("search.cmdSpaces"), detail: tr("search.cmdSpacesDetail") };
-    case "devices":
-      return { label: tr("search.cmdDevices"), detail: tr("search.cmdDevicesDetail") };
-    default:
-      return { label: tr("search.cmdSettings"), detail: tr("search.cmdSettingsDetail") };
-  }
-}
-
-function commandItems(query: string): SearchItem[] {
-  const needle = query.trim().toLowerCase();
-  const scenes = COMMAND_SCENES.map(scene => ({ scene, ...commandLabel(scene) }))
-    .filter(
-      entry => !needle || entry.label.toLowerCase().includes(needle) || entry.scene.includes(needle),
-    )
-    .map(entry => ({
-      id: `command:${entry.scene}`,
-      kind: "command" as const,
-      label: entry.label,
-      detail: entry.detail,
-      target: entry.scene,
-    }));
-  const createLabel = tr("search.cmdNewSession");
-  const create =
-    !needle ||
-    createLabel.toLowerCase().includes(needle) ||
-    "new session".includes(needle) ||
-    "create".includes(needle)
-      ? [
-          {
-            id: NEW_SESSION_COMMAND,
-            kind: "command" as const,
-            label: createLabel,
-            detail: tr("search.cmdNewSessionDetail"),
-            target: "",
-          },
-        ]
-      : [];
-  return [...create, ...scenes];
-}
 
 function sessionNameItems(query: string): SearchItem[] {
   const needle = query.trim().toLowerCase();
@@ -186,11 +117,11 @@ function isAssistant(ws: WorkspaceRecord): boolean {
   return (ws.workspaceKind ?? "").toLowerCase().includes("assistant");
 }
 
-function workspaceItems(query: string): SearchItem[] {
+export function searchWorkspaceItems(query: string): SearchItem[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return [];
   const opened = workspaces().map(ws => ({ ws, recent: false }));
-  const recent = recentWorkspaces().map(ws => ({ ws, recent: true }));
+  const openedIds = new Set(opened.map(({ ws }) => ws.id));
+  const recent = recentWorkspaces().filter(ws => !openedIds.has(ws.id)).map(ws => ({ ws, recent: true }));
   return [...opened, ...recent]
     .filter(({ ws }) => {
       const name = workspaceName(ws).toLowerCase();
@@ -267,22 +198,8 @@ async function fileItems(query: string): Promise<SearchItem[]> {
  * so once under the list instead of failing the whole search: the other groups
  * are still answers the user can act on.
  */
-export async function runGlobalSearch(query: string): Promise<void> {
+async function runGlobalSearch(text: string): Promise<void> {
   const ticket = ++runTicket;
-  const text = query.trim();
-  if (!text) {
-    searchItems.set([]);
-    searchNotice.set("");
-    searchBusy.set(false);
-    return;
-  }
-  if (text.startsWith(">")) {
-    // A command query never leaves this surface, so it answers at once.
-    searchItems.set(commandItems(text.slice(1)));
-    searchNotice.set("");
-    searchBusy.set(false);
-    return;
-  }
   searchBusy.set(true);
   const failures: string[] = [];
   const settle = async <T>(run: () => Promise<T[]>): Promise<T[]> => {
@@ -303,7 +220,6 @@ export async function runGlobalSearch(query: string): Promise<void> {
     ...sessionNameItems(text),
     ...messages,
     ...files,
-    ...workspaceItems(text),
   ]);
   const notices: string[] = [];
   if (remote) notices.push(tr("search.remoteFilesUnsupported"));
@@ -312,27 +228,38 @@ export async function runGlobalSearch(query: string): Promise<void> {
   searchBusy.set(false);
 }
 
-export function setSearchQuery(text: string): void {
-  searchQuery.set(text);
+export function refreshGlobalSearch(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
-  // Typing is a stream, so the search waits for a pause instead of spending one
-  // host round trip per keystroke.
+  debounceTimer = null;
+  // Invalidate on input, including while the next query is still debouncing.
+  runTicket += 1;
+  const text = searchText();
+  const willSearch = effectiveSearchScope() !== "actions" && text.length >= 2;
+  searchItems.set([]);
+  searchNotice.set("");
+  searchBusy.set(willSearch);
+  if (!willSearch) return;
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
-    void runGlobalSearch(searchQuery());
+    void runGlobalSearch(text);
   }, 220);
 }
 
+export function setSearchQuery(text: string): void {
+  searchQuery.set(text);
+  refreshGlobalSearch();
+}
+
+export function setSearchScope(scope: SearchScope): void {
+  if (searchActionPrefix() || scope === searchScope()) return;
+  searchScope.set(scope);
+  refreshGlobalSearch();
+}
+
 export function openGlobalSearch(seed = ""): void {
+  searchScope.set("all");
+  setSearchQuery(seed);
   searchOpen.set(true);
-  searchQuery.set(seed);
-  searchItems.set([]);
-  searchNotice.set("");
-  // A `>` command list is what an empty field is useful for.
-  searchItems.set(commandItems(seed));
-  // A character that opened the panel from the sidebar field is a query already,
-  // so it is searched instead of being dropped.
-  if (seed !== "") setSearchQuery(seed);
 }
 
 export function closeGlobalSearch(): void {
@@ -350,11 +277,6 @@ export function closeGlobalSearch(): void {
 export async function runSearchItem(item: SearchItem): Promise<void> {
   closeGlobalSearch();
   if (item.kind === "command") {
-    if (item.id === NEW_SESSION_COMMAND) {
-      await createSessionInWorkspace(tr("nav.newSession"));
-      navigateScene("sessions");
-      return;
-    }
     navigateScene(item.target as SceneId);
     return;
   }

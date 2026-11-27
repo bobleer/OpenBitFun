@@ -33,6 +33,16 @@ import {
 } from "nsh";
 import type { RunningTurnSnapshot } from "./api";
 import { backendConnection, listenEvent, windowShellId } from "./bridge";
+import { forgetComposerDraft } from "./composerDraftStore";
+import { recordPlanBuildTurn } from "./planBuildStore";
+import { appendPlanParameters, isPlanWritingTool } from "./planToolArtifact";
+import {
+  applyReviewQueueSample,
+  clearReviewQueue,
+  clearReviewQueueOrigins,
+  removeReviewWait,
+  type ReviewQueueSample,
+} from "./reviewQueueStore";
 import {
   hasPendingSteeringForSession,
   loadQueueForSession,
@@ -43,6 +53,7 @@ import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import { clearPermissionsForSession } from "./permissionStore";
 import { clearPromptSuggestion, setPromptSuggestion } from "./promptSuggestionStore";
 import { clearQuestionsForSession, dropQuestionByToolId } from "./userQuestionStore";
+import { effectiveToolInvocation } from "./toolPresentation";
 import {
   activeSessionDevice,
   activeSessionId,
@@ -81,8 +92,9 @@ export interface LiveToolItem {
   toolId: string;
   toolName: string;
   effectiveToolName?: string;
-  status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled";
+  status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled" | "rejected";
   input?: unknown;
+  planParameters?: string;
   detail: string;
   progressMessage?: string;
   error?: string;
@@ -974,6 +986,7 @@ interface TurnEventPayload {
   reason?: string;
   message?: string;
   error?: string;
+  success?: boolean;
 }
 
 interface ModelRoundEventPayload {
@@ -1565,6 +1578,7 @@ function endTurn(payload: TurnEventPayload | null): void {
   const key = keyOf(sessionId);
   const eventTurnId = turnOf(payload);
   if (!matchesSessionActiveTurn(sessionId, eventTurnId, key)) return;
+  clearReviewQueue(key, eventTurnId ?? undefined);
   turnStarts.delete(key);
   runningTurns.update(current => {
     if (!(key in current)) return current;
@@ -1644,8 +1658,10 @@ export function settleLiveTurnFromView(sessionId: string): void {
   if ((live.deviceId ?? "") !== activeSessionDevice()) return;
   const matched = sessionTurns().find(turn => turn.turnId === live.turnId);
   if (!matched?.settled) return;
-  settlingTurns.delete(keyOf(sessionId, activeSessionDevice()));
+  const key = keyOf(sessionId, activeSessionDevice());
+  settlingTurns.delete(key);
   batch(() => {
+    clearReviewQueue(key, live.turnId ?? undefined);
     if (runningTurnId() === live.turnId) runningTurnId.set(null);
     clearAllRoundStreams();
     liveTurn.set(null);
@@ -1714,6 +1730,7 @@ export function settleSecondaryLiveTurnFromView(sessionId: string): void {
   const key = keyOf(sessionId, secondarySessionDevice());
   settlingTurns.delete(key);
   batch(() => {
+    clearReviewQueue(key, live.turnId ?? undefined);
     clearSecondaryRoundStreams();
     secondaryLiveTurn.set(null);
     bridge.clearPendingTurn(sessionId, key);
@@ -1750,10 +1767,12 @@ function applyToolEvent(
           textOffset,
         };
 
+  const identity = effectiveToolInvocation(toolName, rawToolEvent.params);
+  const target = effectiveToolName ?? (identity.name !== toolName ? identity.name : existing.effectiveToolName);
   let next: LiveToolItem = {
     ...existing,
-    ...(toolName ? { toolName: effectiveToolName || toolName } : {}),
-    ...(effectiveToolName ? { effectiveToolName } : {}),
+    ...(target || toolName ? { toolName: target || toolName } : {}),
+    ...(target ? { effectiveToolName: target } : {}),
   };
 
   switch (eventType) {
@@ -1764,10 +1783,15 @@ function applyToolEvent(
         typeof rawToolEvent.params === "string" && rawToolEvent.params
           ? summarizeLiveInput(rawToolEvent.params)
           : next.detail;
+      const planParameters = eventType === "ParamsPartial" && typeof rawToolEvent.params === "string"
+        && isPlanWritingTool(next.toolName) && existing.status === "running" && existing.input === undefined
+        ? appendPlanParameters(existing.planParameters ?? "", rawToolEvent.params)
+        : existing.planParameters;
       if (
         existingIdx >= 0 &&
         nextStatus === existing.status &&
         nextDetail === existing.detail &&
+        planParameters === existing.planParameters &&
         next.toolName === existing.toolName &&
         next.effectiveToolName === existing.effectiveToolName
       ) {
@@ -1777,6 +1801,7 @@ function applyToolEvent(
         ...next,
         status: nextStatus,
         detail: nextDetail,
+        planParameters,
       };
       break;
     }
@@ -1810,8 +1835,9 @@ function applyToolEvent(
       next = {
         ...next,
         status: "running",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
+        planParameters: undefined,
+        ...(identity.input !== undefined
+          ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
           : {}),
       };
       break;
@@ -1828,8 +1854,9 @@ function applyToolEvent(
       next = {
         ...next,
         status: "confirmation",
-        ...(rawToolEvent.params !== undefined
-          ? { input: rawToolEvent.params, detail: summarizeLiveInput(rawToolEvent.params) }
+        planParameters: undefined,
+        ...(identity.input !== undefined
+          ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
           : {}),
       };
       break;
@@ -1840,7 +1867,7 @@ function applyToolEvent(
     case "Cancelled":
       next = {
         ...next,
-        status: "cancelled",
+        status: eventType === "Rejected" ? "rejected" : "cancelled",
         ...(typeof rawToolEvent.reason === "string" ? { error: rawToolEvent.reason } : {}),
       };
       break;
@@ -2001,6 +2028,7 @@ export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnaps
     batch(() => {
       clearAllRoundStreams();
       liveTurn.set(null);
+      clearReviewQueue(keyOf(sessionId));
     });
     parkedTurns.delete(keyOf(sessionId));
     for (const event of snapshot.events ?? []) {
@@ -2042,6 +2070,7 @@ export function hydrateSecondaryRunningTurn(
     batch(() => {
       clearSecondaryRoundStreams();
       secondaryLiveTurn.set(null);
+      clearReviewQueue(keyOf(sessionId));
     });
     parkedTurns.delete(keyOf(sessionId));
     for (const event of snapshot.events ?? []) {
@@ -2070,7 +2099,10 @@ export function subscribeAgentEvents(): void {
   onSessionSwitch((phase, sessionId, key) => {
     if (phase === "leave") parkActiveTurn(sessionId, key);
     else if (phase === "enter") restoreParkedTurn(sessionId, key);
-    else resetParkedTurns();
+    else {
+      clearReviewQueueOrigins(null);
+      resetParkedTurns();
+    }
   });
 
   onSecondarySessionSwitch((phase, sessionId, key) => {
@@ -2442,12 +2474,29 @@ export function subscribeAgentEvents(): void {
     });
   });
 
+  onAgentEvent<{ sessionId?: string; turnId?: string; queueState?: ReviewQueueSample }>(
+    "agentic://deep-review-queue-state-changed", payload => {
+      const sessionId = sessionOf(payload);
+      const turnId = turnOf(payload);
+      if (!sessionId || !turnId || !payload?.queueState || activeTurnIdOf(sessionId) !== turnId) return;
+      applyReviewQueueSample(keyOf(sessionId), eventOrigin, turnId, payload.queueState);
+    },
+  );
+
   onAgentEvent<ToolEventEnvelope>("agentic://tool-event", payload => {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
-    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+    const reviewTurn = turnOf(payload);
+    if (isStaleTurnStreamEvent(rawSession, reviewTurn)) return;
+    const reviewTool = (payload.toolEvent ?? payload.tool_event) as Record<string, unknown> | undefined;
+    const reviewToolId = reviewTool?.tool_id ?? reviewTool?.toolId;
+    const reviewToolEvent = String(reviewTool?.event_type ?? reviewTool?.eventType ?? "").toLowerCase();
+    if (reviewTurn && typeof reviewToolId === "string"
+      && /^(completed|failed|error|cancelled|canceled|rejected|timed_?out)$/.test(reviewToolEvent)) {
+      removeReviewWait(keyOf(rawSession), reviewTurn, reviewToolId);
+    }
     if (isSecondary(rawSession)) {
       const rawTool = payload.toolEvent ?? payload.tool_event;
       if (!rawTool || typeof rawTool !== "object") return;
@@ -2541,6 +2590,7 @@ export function subscribeAgentEvents(): void {
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
+    if (sessionId && running) recordPlanBuildTurn(keyOf(sessionId), running, "building");
     if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
     const queueSession = sessionId || activeSessionId() || "";
     let dequeuedImages: ReturnType<typeof markQueuedTurnStarted> = [];
@@ -2559,6 +2609,7 @@ export function subscribeAgentEvents(): void {
     const key = keyOf(sessionId);
     if (sessionId) turnStarts.set(key, Date.now());
     if (sessionId) {
+      clearReviewQueue(key);
       runningTurns.update(current => {
         const next = { ...current };
         if (running) next[key] = running;
@@ -2632,6 +2683,9 @@ export function subscribeAgentEvents(): void {
     const sessionId = rawSession || activeSessionId() || "";
     const eventTurnId = turnOf(payload);
     const drainQueue = kind !== "interrupted";
+    if (rawSession && eventTurnId) {
+      recordPlanBuildTurn(keyOf(rawSession), eventTurnId, kind === "completed" && payload?.success !== false ? "built" : "failed");
+    }
 
     if (sessionId && !matchesSessionActiveTurn(sessionId, eventTurnId)) {
       // Non-active turn (e.g. cancelled queued message): never touch the active turn!
@@ -2809,8 +2863,12 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<TurnEventPayload>("agentic://session-deleted", payload => {
     const sessionId = sessionOf(payload);
-    if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
+    if (sessionId) {
+      clearPromptSuggestion(sessionId, eventOrigin);
+      forgetComposerDraft(sessionKey(sessionId, eventOrigin));
+      clearReviewQueue(keyOf(sessionId));
+    }
     if (!sessionId || eventOrigin !== deviceContext()) return;
-    removeSessionFromEvent(sessionId);
+    removeSessionFromEvent(sessionId, eventOrigin);
   });
 }

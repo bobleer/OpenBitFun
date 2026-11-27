@@ -1,9 +1,7 @@
 // Independent state and operations for the secondary split session pane (Pane 1).
 //
-// Memory discipline: Pane 1 retains transcript turns, draft text, attachments,
-// and live streaming state ONLY while split view is open. Switching Pane 1 to
-// another session or closing split view immediately releases the previous
-// session's turns and attachments so zero background transcript caches linger.
+// Pane 1 releases its loaded transcript and streaming state on close or switch.
+// Drafts are shared with the primary composer and follow their session.
 
 import { batch, computed, signal } from "nsh";
 import {
@@ -11,6 +9,8 @@ import {
   createSession,
   interruptDialogTurn,
   startDialogTurn,
+  submitUserMessage,
+  type ExternalCommandSubmission,
   type SessionTranscriptView,
   type SubmitUserMessageResult,
   type TranscriptTurnView,
@@ -18,25 +18,29 @@ import {
 } from "./api";
 import {
   buildAttachmentContexts,
-  composeMessageWithFileAttachments,
+  composerMessage,
   type FileAttachment,
   type ImageAttachment,
 } from "./attachmentStore";
 import { fleetActive, invokeCommand } from "./bridge";
-import { closeSideQuestion, sideQuestionOpen } from "./btwStore";
+import { secondaryComposerDraft, stageComposerChange } from "./composerDraftStore";
+import { requestSideQuestionClose, sideQuestionOpen } from "./btwStore";
 import { fleetDeviceById, fleetSessionRow, fleetWorkspaceByKey } from "./fleetStore";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
 import { noteTranscriptSource } from "./toolDetailStore";
+import { reconcilePlanBuildTurns } from "./planBuildStore";
 import { clearPermissionsForSession } from "./permissionStore";
 import { clearPromptSuggestion, hydratePromptSuggestionFromTranscript } from "./promptSuggestionStore";
 import { markSessionSeen } from "./sessionStatusStore";
+import { mergeSessionReferences, sessionReferenceKey, type SessionReferenceCandidate } from "./sessionReferences";
 import { ensureRemoteConnected } from "./sshRemoteStore";
 import {
   activeSessionDevice,
   activeSessionId,
   activeSessionKey,
   activeWorkspaceId,
+  activeWorkspaceKey,
   activeWorkspaceRoot,
   agentTypeOf,
   chosenAgentType,
@@ -64,6 +68,7 @@ import {
   selectSession,
   sessionKey,
   sessionLastActivityMs,
+  sessionSummaryOnDevice,
   sessions,
   shouldAutoBackfillTurns,
   splitPaneOpen,
@@ -79,9 +84,10 @@ export const secondaryTranscriptNotice = signal("");
 export const secondaryTurnError = signal("");
 export const secondarySendNotice = signal("");
 export const secondaryPendingTurnState = signal<PendingTurnState | null>(null);
-export const secondaryComposerText = signal("");
-export const secondaryImageAttachments = signal<ImageAttachment[]>([]);
-export const secondaryFileAttachments = signal<FileAttachment[]>([]);
+export const secondaryComposerText = secondaryComposerDraft.text;
+export const secondaryImageAttachments = secondaryComposerDraft.images;
+export const secondaryFileAttachments = secondaryComposerDraft.files;
+export const secondarySessionReferences = secondaryComposerDraft.references;
 const secondaryTranscriptHasEarlier = signal(false);
 
 let secondaryTranscriptCursor: { sessionKey: string; cursor: string } | null = null;
@@ -118,16 +124,12 @@ export const secondaryRunningTurnId = computed<string | null>(() => {
 });
 
 export const secondarySessionSummary = computed(() => {
-  const id = secondarySessionId();
-  if (!id) return null;
-  return sessions().find(item => item.sessionId === id) ?? null;
+  return sessionSummaryOnDevice(secondarySessionId(), secondarySessionDevice());
 });
 
 export const secondaryWorkspaceRecord = computed<WorkspaceRecord | null>(() => {
   const wsId = secondaryWorkspaceId();
   if (!wsId) return null;
-  const local = workspaces().find(item => item.id === wsId);
-  if (local) return local;
   if (fleetActive()) {
     const dev = secondarySessionDevice() || deviceContext();
     const row = fleetWorkspaceByKey({ deviceId: dev, workspaceId: wsId });
@@ -142,8 +144,10 @@ export const secondaryWorkspaceRecord = computed<WorkspaceRecord | null>(() => {
         ...(row.connectionName ? { connectionName: row.connectionName } : {}),
       };
     }
+    const current = activeWorkspaceKey();
+    if (current?.deviceId !== dev || current.workspaceId !== wsId) return null;
   }
-  return null;
+  return workspaces().find(item => item.id === wsId) ?? null;
 });
 
 export const secondaryWorkspaceName = computed<string>(() => {
@@ -173,10 +177,6 @@ export const secondaryHasEarlierTurns = computed<boolean>(
   () => Boolean(secondarySessionId()) && secondaryTranscriptHasEarlier(),
 );
 
-export function addSecondaryImageAttachment(item: ImageAttachment): void {
-  secondaryImageAttachments.update(current => [...current, item]);
-}
-
 export function removeSecondaryImageAttachment(id: string): void {
   secondaryImageAttachments.update(current => current.filter(item => item.id !== id));
 }
@@ -192,9 +192,12 @@ export function removeSecondaryFileAttachment(id: string): void {
   secondaryFileAttachments.update(current => current.filter(item => item.id !== id));
 }
 
-export function clearSecondaryAttachments(): void {
-  secondaryImageAttachments.set([]);
-  secondaryFileAttachments.set([]);
+export function addSecondarySessionReference(reference: SessionReferenceCandidate): void {
+  secondarySessionReferences.update(current => mergeSessionReferences(current, [reference]));
+}
+
+export function removeSecondarySessionReference(key: string): void {
+  secondarySessionReferences.update(current => current.filter(reference => sessionReferenceKey(reference) !== key));
 }
 
 function matchesSecondaryPending(pending: PendingTurnState, sessionId: string, key?: string): boolean {
@@ -294,8 +297,6 @@ function resetSecondaryRuntimeState(): void {
   secondaryTurnError.set("");
   secondarySendNotice.set("");
   secondaryPendingTurnState.set(null);
-  secondaryComposerText.set("");
-  clearSecondaryAttachments();
 }
 
 /** Picks the best default second session when opening split view without a target. */
@@ -348,6 +349,10 @@ export function selectSecondarySession(
     focusPane(0);
     return;
   }
+  if (sideQuestionOpen()) {
+    requestSideQuestionClose(() => selectSecondarySession(sessionId, deviceId, workspaceId), "replace");
+    return;
+  }
 
   const prevId = secondarySessionId();
   const prevKey = secondarySessionKey();
@@ -360,7 +365,6 @@ export function selectSecondarySession(
     activeWorkspaceId() ||
     null;
 
-  if (sideQuestionOpen()) closeSideQuestion();
   batch(() => {
     splitPaneOpen.set(true);
     focusedPane.set(1);
@@ -381,7 +385,7 @@ export function selectSecondarySession(
   const secondaryWs = secondaryWorkspaceRecord();
   if (secondaryWs) void ensureRemoteConnected(secondaryWs);
   void loadSecondaryTurns(sessionId, { silent: true });
-  void loadQuestionMailbox(sessionId);
+  void loadQuestionMailbox(sessionId, device);
 }
 
 /**
@@ -410,7 +414,10 @@ export function openSplitPane(target?: {
     selectSecondarySession(candidate.sessionId, candidate.deviceId, candidate.workspaceId);
     return;
   }
-  if (sideQuestionOpen()) closeSideQuestion();
+  if (sideQuestionOpen()) {
+    requestSideQuestionClose(() => openSplitPane(target), "replace");
+    return;
+  }
   batch(() => {
     splitPaneOpen.set(true);
     focusedPane.set(1);
@@ -464,9 +471,9 @@ export function swapSplitPanes(): void {
     notifySecondarySessionSwitch("leave", sId, secondarySessionKey());
     secondarySessionId.set(null);
     resetSecondaryRuntimeState();
+    selectSession(sId, sDev, sWs || undefined);
+    selectSecondarySession(pId, pDev, pWs);
   });
-  selectSession(sId, sDev, sWs || undefined);
-  selectSecondarySession(pId, pDev, pWs);
 }
 
 /** Clears Pane 1's session (falling back to the split picker) if it was deleted/archived. */
@@ -645,6 +652,7 @@ export async function loadSecondaryTurns(
             ? view.turns
             : [];
       noteTranscriptSource(view.turns, { sessionId, workspaceId, deviceId: device });
+      reconcilePlanBuildTurns(key, view.turns);
       secondaryTranscriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         secondaryTranscriptNotice.set("");
@@ -685,95 +693,128 @@ export async function loadSecondaryEarlierTurns(): Promise<void> {
 export async function sendSecondaryTurn(
   text: string,
   sendDuringTurn?: "immediate" | "queue",
+  options?: { attachments?: ImageAttachment[]; references?: SessionReferenceCandidate[]; turnId?: string; externalCommand?: ExternalCommandSubmission },
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = secondarySessionId();
-  if (!sessionId) return null;
-  const rawBody = text.trim();
-  const outgoingImages = [...secondaryImageAttachments()];
-  const outgoingFiles = [...secondaryFileAttachments()];
-  const body = composeMessageWithFileAttachments(rawBody, outgoingFiles);
-  if (!body && outgoingImages.length === 0) return null;
+  const origin = secondarySessionKey();
+  if (!sessionId || !origin) return null;
+  const target = secondaryComposerDraft.capture();
+  const draft = target.read();
+  const retry = options?.attachments !== undefined || options?.references !== undefined;
+  const external = options?.externalCommand;
+  const outgoingImages = options?.attachments ?? draft.images;
+  const outgoingFiles = retry ? [] : draft.files;
+  const fromComposer = !retry && draft.text === (external?.invocation ?? text);
+  if (external && !fromComposer) return null;
+  const references = options?.references ?? (fromComposer ? draft.references : []);
+  const { message } = composerMessage(text, outgoingFiles, references, external?.invocation);
+  if (!message.text && outgoingImages.length === 0) return null;
 
   const device = secondarySessionDevice();
-  const workspaceId = secondaryWorkspaceId() || activeWorkspaceId() || undefined;
-  const savedDraft = secondaryComposerText();
-  const fromComposer = savedDraft === text;
-  const attachments = buildAttachmentContexts(outgoingImages);
+  const agentType = agentTypeOf(sessionId, device);
+  const route = secondaryRouteOptions(device);
+  const workspaceId = secondaryWorkspaceId() || undefined;
+  const attachments = buildAttachmentContexts(outgoingImages, { deviceId: device, workspace: secondaryWorkspaceRecord() });
   const running = Boolean(secondaryRunningTurnId());
+  if (external?.execution && (running || secondaryPendingTurnState())) {
+    secondarySendNotice.set(tr("chat.externalSlash.freshBusy"));
+    return null;
+  }
+  if (external?.execution && (outgoingImages.length || outgoingFiles.length || references.length)) {
+    secondarySendNotice.set(tr("chat.externalSlash.freshContext"));
+    return null;
+  }
 
-  const restoreDraft = () => {
-    batch(() => {
-      if (fromComposer && !secondaryComposerText().trim()) {
-        secondaryComposerText.set(savedDraft);
-      }
-      if (outgoingImages.length > 0 && secondaryImageAttachments().length === 0) {
-        secondaryImageAttachments.set(outgoingImages);
-      }
-      if (outgoingFiles.length > 0 && secondaryFileAttachments().length === 0) {
-        secondaryFileAttachments.set(outgoingFiles);
-      }
-    });
-  };
-
+  let restoreDraft = () => {};
   batch(() => {
     secondaryTurnError.set("");
     secondarySendNotice.set("");
     clearPromptSuggestion(sessionId, device);
-    if (fromComposer) secondaryComposerText.set("");
-    clearSecondaryAttachments();
+    restoreDraft = stageComposerChange(target, {
+      ...(fromComposer ? { text: "", references: [] } : {}),
+      ...(!retry && draft.images.length ? { images: [] } : {}),
+      ...(!retry && draft.files.length ? { files: [] } : {}),
+    });
     if (!running) {
-      setSecondaryPendingTurn(sessionId, body, undefined, outgoingImages);
+      setSecondaryPendingTurn(sessionId, message.displayText, undefined, outgoingImages);
     }
   });
 
   let outcome: SubmitUserMessageResult["outcome"] | null = null;
   await runStep(async () => {
     try {
-      const result = await invokeCommand<SubmitUserMessageResult>(
-        "submit_user_message",
+      if (external?.execution) {
+        const result = await startDialogTurn({
+          sessionId,
+          userInput: message.text,
+          originalUserInput: message.displayText,
+          agentType,
+          ...(workspaceId ? { workspaceId } : {}),
+          execution: external.execution,
+        }, route);
+        if (!result.success) throw new Error(result.message);
+        outcome = "started";
+        return;
+      }
+      const result = await submitUserMessage(
         {
           sessionId,
           ...(workspaceId ? { workspaceId } : {}),
-          text: body,
-          agentType: agentTypeOf(sessionId),
+          text: message.text,
+          ...(options?.turnId ? { turnId: options.turnId } : {}),
+          ...(external || message.userMessageMetadata ? { displayText: message.displayText } : {}),
+          ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
+          agentType,
           ...(attachments.length ? { attachments } : {}),
-          ...(running && sendDuringTurn ? { sendDuringTurn } : {}),
+          ...(references.length ? { sendDuringTurn: "queue" } : sendDuringTurn ? { sendDuringTurn } : {}),
         },
-        secondaryRouteOptions(device),
+        route,
       );
       outcome = result.outcome;
+      if (!target.isVisible()) return;
       if (result.outcome === "started") {
-        bindSecondaryPendingTurnId(sessionId, result.turnId, body, outgoingImages);
+        bindSecondaryPendingTurnId(sessionId, result.turnId, message.displayText, outgoingImages);
       } else {
         if (!running) clearSecondaryPendingTurn(sessionId);
+        if (result.outcome === "queued" && references.length && secondarySessionKey() === origin) {
+          secondarySendNotice.set(tr("sessions.sessionReferenceQueues"));
+        }
         if (result.outcome === "steered") await loadSecondaryTurns(sessionId, { silent: true });
       }
     } catch (error) {
-      if (isCommandUnavailable(error, "submit_user_message")) {
+      if (!external?.execution && isCommandUnavailable(error, "submit_user_message")) {
         if (running) {
           restoreDraft();
-          secondarySendNotice.set(tr("chat.send.hostUpdateRequired"));
+          if (target.isVisible()) secondarySendNotice.set(tr("chat.send.hostUpdateRequired"));
           return;
         }
         try {
-          await startDialogTurn({
+          const result = await startDialogTurn({
             sessionId,
-            userInput: body,
-            agentType: agentTypeOf(sessionId),
+            userInput: message.text,
+            ...(options?.turnId ? { turnId: options.turnId } : {}),
+            ...(message.displayText !== message.text ? { originalUserInput: message.displayText } : {}),
+            ...(message.userMessageMetadata ? { userMessageMetadata: message.userMessageMetadata } : {}),
+            agentType,
             workspaceId: workspaceId ?? "",
             ...(attachments.length ? { imageContexts: attachments } : {}),
-          });
+          }, route);
+          if (!result.success) throw new Error(result.message);
           outcome = "started";
         } catch (legacyError) {
-          clearSecondaryPendingTurn(sessionId);
           restoreDraft();
-          secondaryTurnError.set(legacyError instanceof Error ? legacyError.message : String(legacyError));
+          if (target.isVisible()) {
+            clearSecondaryPendingTurn(sessionId, origin);
+            secondaryTurnError.set(legacyError instanceof Error ? legacyError.message : String(legacyError));
+          }
         }
         return;
       }
-      if (!running) clearSecondaryPendingTurn(sessionId);
       restoreDraft();
-      secondaryTurnError.set(error instanceof Error ? error.message : String(error));
+      if (target.isVisible()) {
+        if (!running) clearSecondaryPendingTurn(sessionId, origin);
+        secondaryTurnError.set(error instanceof Error ? error.message : String(error));
+      }
     }
   });
   return outcome;
@@ -850,6 +891,7 @@ registerSecondaryPaneBridge({
   loadTurns: loadSecondaryTurns,
   clearIfMatches: predicate => {
     if (!splitPaneOpen()) return;
+    if (predicate.deviceId !== undefined && secondarySessionDevice() !== predicate.deviceId) return;
     if (predicate.sessionId && secondarySessionId() === predicate.sessionId) {
       clearSecondarySession();
     } else if (predicate.workspaceId && secondaryWorkspaceId() === predicate.workspaceId) {

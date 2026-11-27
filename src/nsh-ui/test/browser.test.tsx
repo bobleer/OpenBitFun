@@ -640,6 +640,34 @@ test("medium-width inspector sheet keeps the embedded browser page visible above
   await app.waitUntil(() => !app.shows("aux-pane-sheet"));
 });
 
+test("the saved session panel overlay keeps the native browser viewport visible", async () => {
+  const wire = browserBackendHost();
+  const app = await open("./fixtures/browserApp.tsx", {
+    width: 1440,
+    height: 900,
+    platform: "macos",
+    storage: {
+      "openbitfun:sessionPaneDisplayMode": "overlay",
+      "openbitfun.nsh.shell-layout.v1": JSON.stringify({ auxPaneSide: "left" }),
+    },
+    host: { handlers: wire.handlers },
+  });
+  await openSession(app, "NSH skeleton");
+  await app.press("session-tool-browser");
+  await app.waitFor("id:session-panel-overlay-pane");
+  expect(app.shows("aux-pane-sheet-scrim")).toBe(false);
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  const create = wire.invokes.find(call => call.command === "browser_webview_create")?.args.request as { label: string };
+  await pump(app, wire);
+  await app.waitFor(`browser-page-${create.label}`);
+
+  await app.drag("aux-overlay-split-handle-left", { x: 90 });
+  await app.waitUntil(() => Number(app.storage()["openbitfun:sessionOverlayWidth"]) > 500);
+  expect(app.shows(`browser-page-${create.label}`)).toBe(true);
+  await app.press("aux-close");
+  await app.waitFor("id:session-panel-overlay-pane", { state: "gone" });
+});
+
 test("docked right-side browser at default 1200px width drags wider and narrower without flipping to a sheet", async () => {
   const wire = browserBackendHost();
   const app = await open("./fixtures/browserApp.tsx", {

@@ -20,6 +20,7 @@ import {
   activeWorkspaceId,
   closeWorkspace,
   insertWorkspaceRecord,
+  deviceContext,
   loadSessions,
   loadWorkspaces,
   navigateScene,
@@ -52,6 +53,7 @@ export interface AssistantWorkspaceView {
 }
 
 export const assistants = signal<AssistantWorkspaceView[]>([]);
+export const assistantCatalogDevice = signal<string | null>(null);
 export const primaryAssistantId = signal<string | null>(null);
 export const selectedAssistantId = signal<string | null>(null);
 export const assistantsLoading = signal(false);
@@ -181,6 +183,7 @@ function ensureAssistantInWorkspaces(assistant: AssistantWorkspaceView): void {
 
 export async function loadAssistants(preferredSelectId?: string): Promise<void> {
   const ticket = ++listTicket;
+  const device = deviceContext();
   assistantsLoading.set(true);
   assistantsError.set("");
 
@@ -190,7 +193,7 @@ export async function loadAssistants(preferredSelectId?: string): Promise<void> 
       invokeCommand<Record<string, unknown> | null>("get_primary_assistant_workspace", {}),
     ]);
 
-    if (ticket !== listTicket) return;
+    if (ticket !== listTicket || device !== deviceContext()) return;
 
     if (listRes.status === "rejected") {
       assistants.set([]);
@@ -238,6 +241,7 @@ export async function loadAssistants(preferredSelectId?: string): Promise<void> 
       null;
 
     selectedAssistantId.set(nextSelected);
+    assistantCatalogDevice.set(device);
   } finally {
     if (ticket === listTicket) {
       assistantsLoading.set(false);
@@ -267,10 +271,6 @@ export function selectPersonaFile(fileName: PersonaFileName): void {
   confirmingPersonaReset.set(false);
   personaError.set("");
   personaNotice.set("");
-}
-
-export function togglePersonaPreview(): void {
-  personaPreview.update(value => !value);
 }
 
 export function setPersonaDraftText(text: string): void {
@@ -801,15 +801,17 @@ export function closePersonaEditor(): void {
 /** Reads the assistant workspace's own sessions, newest first, as the desktop's page lists them. */
 export async function loadAssistantSessions(assistant: AssistantWorkspaceView): Promise<void> {
   const ticket = ++sessionsTicket;
+  const device = deviceContext();
   assistantSessionsState.set("loading");
+  assistantSessions.set([]);
   assistantSessionsError.set("");
   try {
     const page = await listSessions(assistant.id, 30);
-    if (ticket !== sessionsTicket) return;
+    if (ticket !== sessionsTicket || device !== deviceContext()) return;
     assistantSessions.set(page.sessions ?? []);
     assistantSessionsState.set("ready");
   } catch (error) {
-    if (ticket !== sessionsTicket) return;
+    if (ticket !== sessionsTicket || device !== deviceContext()) return;
     assistantSessions.set([]);
     assistantSessionsError.set(errorMessage(error));
     assistantSessionsState.set("error");

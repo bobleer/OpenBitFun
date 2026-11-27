@@ -347,7 +347,7 @@ test("a backend-served page drives the backend over OBP and never the page host'
       },
     }),
   ]);
-  await app.waitFor("Deploy: Ship it now?");
+  await app.waitFor("Ship it now?");
   expect(host.pageHostCalls).toEqual([]);
 });
 

@@ -189,3 +189,122 @@ test("account://settings-applied reloads keybindings and ignores events from rem
   await app.waitUntil(() => countKeybindingReads() > beforeReads);
   expect(host.calls.length).toBeGreaterThan(0);
 });
+
+test("language sync uses the fleet entry while Settings displays another device", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [], devices: [
+        fleetDeviceRow("dev-a", "Entry", [{ workspaceId: "ws-a", name: "Entry project", rootPath: "/entry", sessions: [] }], { isClientDevice: true }),
+        fleetDeviceRow("dev-b", "Peer", [{ workspaceId: "ws-b", name: "Peer project", rootPath: "/peer", sessions: [] }]),
+      ],
+    },
+  });
+  let entryLanguage = "en-US";
+  const send = host.handlers["openbitfun.obpSend"];
+  host.handlers["openbitfun.obpSend"] = data => {
+    const reply = send!(data);
+    const frame = JSON.parse((data as { frame: string }).frame);
+    const command = frame.params?.command;
+    const request = frame.params?.args?.request;
+    const respond = (answer: Record<string, unknown>) => [JSON.stringify({ jsonrpc: "2.0", id: frame.id, ...answer })];
+    if (command === "i18n_get_current_language") {
+      return respond({ error: { code: -32601, message: "Older host without an i18n getter" } });
+    }
+    if (command === "fleet_call" && request?.command === "get_config" && request.args?.request?.path === "app.language") {
+      const language = request.target === "dev-a" ? entryLanguage : "zh-CN";
+      return respond({ result: language });
+    }
+    return reply;
+  };
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("Settings");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-general");
+  await app.waitFor("Interface language");
+
+  const publish = (origin: string, seq: number, key: string) => app.host.send("openbitfun.obpFrames", [
+    JSON.stringify({ jsonrpc: "2.0", method: "event", params: {
+      seq, origin, originInstance: `${origin}-1`, event: "account://settings-applied", payload: { keys: [key] },
+    } }),
+  ]);
+  const reads = () => host.calls.filter(call => call.command === "i18n_get_current_language");
+  const getConfigCalls = host.fleetCalls.filter(call => call.command === "get_config");
+  expect(getConfigCalls.some(call => call.target === "dev-b")).toBe(true);
+  const before = reads().length;
+  expect(before).toBeGreaterThan(0);
+  entryLanguage = "zh-TW";
+  await publish("dev-b", 1, "app.language");
+  await publish("dev-a", 1, "app.keybindings");
+  expect(reads()).toHaveLength(before);
+  expect(app.shows("Interface language")).toBe(true);
+
+  await publish("dev-a", 2, "app.language");
+  await app.waitFor("介面語言");
+  expect(reads()).toHaveLength(before + 1);
+  expect(host.fleetCalls.filter(call => call.command === "get_config"
+    && (call.args.request as { path?: string })?.path === "app.language").at(-1)).toMatchObject({ target: "dev-a" });
+
+  await app.press("id:app-language-select");
+  await app.press("label:app-language-zh-CN");
+  await app.waitFor("界面语言");
+  await app.waitUntil(() => host.calls.some(call => call.command === "i18n_set_language"));
+  expect(host.calls.filter(call => call.command === "i18n_set_language")).toEqual([
+    { command: "i18n_set_language", args: { request: { language: "zh-CN" } } },
+  ]);
+  expect(host.fleetCalls.some(call => call.command === "i18n_set_language")).toBe(false);
+});
+
+test("appearance preferences follow the fleet entry while editing another device", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [], devices: [
+        fleetDeviceRow("dev-a", "Entry", [], { isClientDevice: true }),
+        fleetDeviceRow("dev-b", "Peer", []),
+      ],
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("Settings");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-appearance");
+  await app.waitFor("id:font-level-select");
+
+  await app.press("id:font-level-select");
+  await app.press("label:font-level-large");
+  await app.press("label:content-width-increase");
+  await app.press("appearance-follow-system");
+
+  const preferencePaths = ["font", "appearance.content_width", "appearance.selection"];
+  const saved = () => host.fleetCalls.filter(call => call.command === "set_config"
+    && preferencePaths.includes(String((call.args.request as { path?: string })?.path)));
+  await app.waitUntil(() => saved().length >= 3);
+  expect(saved().map(call => [call.target, (call.args.request as { path?: string }).path]).sort()).toEqual(
+    preferencePaths.map(path => ["dev-a", path]).sort(),
+  );
+
+  await backend.handlers["openbitfun.invoke"]({
+    action: "set_config", request: { path: "font", value: { uiSize: { level: "custom", customPx: 19 } } },
+  });
+  await backend.handlers["openbitfun.invoke"]({
+    action: "set_config", request: { path: "appearance.content_width", value: 880 },
+  });
+  const count = host.fleetCalls.length;
+  await app.host.send("openbitfun.obpFrames", [
+    JSON.stringify({ jsonrpc: "2.0", method: "event", params: {
+      seq: 1, origin: "dev-a", originInstance: "dev-a-1",
+      event: "account://settings-applied", payload: { keys: ["font", "appearance.content_width"] },
+    } }),
+  ]);
+  await app.waitUntil(() => app.value("id:font-size") === "19" && app.value("id:content-width") === "880");
+  const refreshed = host.fleetCalls.slice(count).filter(call => call.command === "get_config"
+    && preferencePaths.includes(String((call.args.request as { path?: string })?.path)));
+  expect(refreshed.some(call => (call.args.request as { path?: string }).path === "font")).toBe(true);
+  expect(refreshed.some(call => (call.args.request as { path?: string }).path === "appearance.content_width")).toBe(true);
+  expect(refreshed.every(call => call.target === "dev-a")).toBe(true);
+});

@@ -21,11 +21,13 @@ import { tr } from "../i18n";
 import { sendTurn } from "../state";
 import { compactLayout, controlHeight, fontMono, inputFontSans, layout, palette, radii, space as themeSpace, textLineHeight, textSize, typeScale } from "../theme";
 import { Icon, type IconName } from "../ui/icons";
+import { ChoiceIndicator } from "../ui/ChoiceIndicator";
 import { LUCIDE_PATHS } from "../ui/lucideIcons";
 import { createMarkdownStyles } from "../ui/markdown";
+import { DisplayMath } from "../ui/markdownEditor";
 import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { SelectDropdown } from "../ui/overlays";
-import { Button, IconButton, SegmentedTabs, focusRingStyle } from "../ui/primitives";
+import { Button, IconButton, SegmentedTabs, focusRingStyle, type ButtonVariant } from "../ui/primitives";
 import type { ToolRunState } from "../ui/toolCards";
 import { genuiDocumentOf, type GenUIDocument } from "./genuiSource";
 import {
@@ -43,7 +45,7 @@ import {
 
 // --- Per-card state ------------------------------------------------------------
 
-/** What the user changed in each card (`$name` → value), by card id. */
+/** What the user changed in each card (`$name` → value), scoped by session, turn and tool. */
 const cardStates = new Map<string, Signal<Record<string, unknown>>>();
 /** The last action failure of each card, shown under it. */
 const cardNotices = new Map<string, Signal<string>>();
@@ -73,7 +75,6 @@ export function resetGenUIState(): void {
 }
 
 interface GenContext {
-  cardId: string;
   set(name: string, value: unknown): void;
   run(action: GenAction | null, fallbackMessage?: string): void;
   /** Whether presses and edits act (false while the source still streams in). */
@@ -87,8 +88,20 @@ interface GenContext {
  * placeholder while its first statements stream, or nothing for a failed
  * candidate (the model repairs it in a later call, as on the desktop).
  */
-export function GenUIToolItem(props: { call: ToolCallView; cardId: string; status: ToolRunState; fallback: JSX.Element }) {
+export function GenUIToolItem(props: {
+  call: ToolCallView;
+  cardId: string;
+  status: ToolRunState;
+  sessionKey: string | null;
+  turnId: string;
+  onSubmit: (sessionKey: string, message: string) => Promise<boolean>;
+  fallback: JSX.Element;
+}) {
   const doc = computed(() => genuiDocumentOf(props.call, props.status === "running"));
+  const identities = computed(() => [{
+    sessionKey: props.sessionKey,
+    key: JSON.stringify([props.sessionKey, props.turnId, props.call.id || props.cardId]),
+  }]);
   return (
     <If
       when={doc()}
@@ -100,7 +113,17 @@ export function GenUIToolItem(props: { call: ToolCallView; cardId: string; statu
     >
       {current => (
         <If when={current().kind === "openui-lang"} else={<GenUIHtmlDocument doc={current()} />}>
-          <GenUIApplication doc={current()} cardId={props.cardId} />
+          <Each of={identities()} key={identity => identity.key}>
+            {identity => {
+              const origin = identity().sessionKey;
+              return <GenUIApplication
+                doc={current()}
+                cardId={props.cardId}
+                stateKey={identity().key}
+                submit={text => origin ? props.onSubmit(origin, text) : Promise.resolve(false)}
+              />;
+            }}
+          </Each>
         </If>
       )}
     </If>
@@ -129,9 +152,14 @@ function GenUIPlaceholder() {
   );
 }
 
-function GenUIApplication(props: { doc: GenUIDocument; cardId: string }) {
-  const state = cardState(props.cardId);
-  const notice = cardNotice(props.cardId);
+function GenUIApplication(props: {
+  doc: GenUIDocument;
+  cardId: string;
+  stateKey: string;
+  submit: (message: string) => Promise<boolean>;
+}) {
+  const state = cardState(props.stateKey);
+  const notice = cardNotice(props.stateKey);
   const program = computed<ParsedProgram>(() => parseOpenUi(props.doc.content));
   const evaluator = computed(() => new Evaluator(program(), { ...props.doc.values, ...state() }));
   const evaluation = computed(() => evaluator().evaluateRoot());
@@ -140,7 +168,6 @@ function GenUIApplication(props: { doc: GenUIDocument; cardId: string }) {
     return root ? [root] : [];
   });
   const ctx: GenContext = {
-    cardId: props.cardId,
     interactive: () => !props.doc.streaming,
     set(name, value) {
       state.update(current => ({ ...current, [name]: value }));
@@ -176,9 +203,9 @@ function GenUIApplication(props: { doc: GenUIDocument; cardId: string }) {
           case "toAssistant": {
             const context =
               step.context === undefined || step.context === null ? "" : `\n\n${tr("genui.contextLabel")} ${display(step.context)}`;
-            void sendTurn(`${step.message}${context}`).then(outcome => {
-              if (outcome === null) notice.set(tr("genui.sendFailed"));
-            });
+            void props.submit(`${step.message}${context}`).then(accepted => {
+              if (!accepted) notice.set(tr("genui.sendFailed"));
+            }, () => notice.set(tr("genui.sendFailed")));
             break;
           }
         }
@@ -378,6 +405,12 @@ function InlineText(props: { text: string; inline?: boolean; size?: number; colo
 
 // --- Components --------------------------------------------------------------------------
 
+function genUIButtonVariant(variant: unknown, color: unknown): ButtonVariant {
+  if (color === "danger") return "danger";
+  if (variant === "outline" || variant === "ghost") return variant;
+  return variant === "soft" ? "secondary" : "primary";
+}
+
 /** One element. Its component never changes under one key, so the branch is chosen once. */
 function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
   const component = props.node.component;
@@ -571,18 +604,26 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
       );
     case "Code":
       return <GenCode node={props.node} />;
-    case "Math":
+    case "Math": {
+      const tex = () => display(p().tex);
       return (
-        <Text style={{ color: palette().text, fontFamily: fontMono(), fontSize: textSize(13), lineHeight: textLineHeight(13, 1.5), userSelect: "text" }}>
-          {display(p().tex)}
-        </Text>
+        <View accessibilityLabel="genui-math" style={{ minWidth: 0 }}>
+          <If when={truthy(p().inline)} else={<DisplayMath tex={tex()} />}>
+            <TextView
+              document={{ blocks: [{ type: "paragraph", content: [{ type: "math", tex: tex() }] }] }}
+              selectable
+              styles={createMarkdownStyles({ compact: true })}
+            />
+          </If>
+        </View>
       );
+    }
     case "Button":
       return (
         <View style={{ alignSelf: truthy(p().block) ? "stretch" : "flex-start" }}>
           <Button
             label={display(p().label)}
-            variant={p().color === "danger" ? "danger" : p().variant === "solid" || p().color === "primary" ? "primary" : p().variant === "ghost" ? "ghost" : "secondary"}
+            variant={genUIButtonVariant(p().variant, p().color)}
             size={p().size === "lg" ? "md" : "sm"}
             fullWidth={truthy(p().block)}
             leadingIcon={iconNameOf(p().icon) ?? undefined}
@@ -602,7 +643,10 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
           disabled={!ctx.interactive()}
           accessibilityLabel={`genui-icon-${display(p().label) || display(p().icon)}`}
           style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-          onPress={() => ctx.run(isGenAction(p().action) ? (p().action as GenAction) : null, display(p().label))}
+          onPress={() => {
+            const action = p().action;
+            if (isGenAction(action)) ctx.run(action);
+          }}
         />
       );
     case "Pressable":
@@ -1032,7 +1076,7 @@ function GenChoice(props: { node: GenElement; ctx: GenContext }) {
               <View
                 role="radio"
                 accessibilityLabel={`genui-option-${option().value}`}
-                accessibilityState={{ selected: current() === option().value }}
+                accessibilityState={{ selected: current() === option().value, checked: current() === option().value }}
                 onPress={() => choose(option().value)}
                 style={{
                   flexDirection: "row",
@@ -1053,15 +1097,7 @@ function GenChoice(props: { node: GenElement; ctx: GenContext }) {
                 activeStyle={tactileActiveStyle(0.985)}
                 focusVisibleStyle={focusRingStyle()}
               >
-                <View
-                  style={{
-                    width: themeSpace.lg,
-                    height: themeSpace.lg,
-                    borderRadius: radii.pill,
-                    borderWidth: current() === option().value ? 5 : 1.5,
-                    borderColor: current() === option().value ? palette().accent : palette().borderStrong,
-                  }}
-                />
+                <ChoiceIndicator kind="radio" checked={current() === option().value} />
                 <View style={{ flex: 1, minWidth: 0, gap: themeSpace.hair }}>
                   <Text style={{ color: palette().text, fontSize: textSize(14), lineHeight: textLineHeight(14, 1.4) }}>{option().label}</Text>
                   <If when={option().description ?? ""}>
@@ -1152,23 +1188,7 @@ function GenCheckbox(props: { node: GenElement; ctx: GenContext }) {
       activeStyle={tactileActiveStyle(0.98)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <View
-        style={{
-          width: themeSpace.lg,
-          height: themeSpace.lg,
-          borderRadius: radii.xs,
-          borderWidth: checked() ? 0 : 1.5,
-          borderColor: palette().borderStrong,
-          backgroundColor: checked() ? palette().accent : "transparent",
-          alignItems: "center",
-          justifyContent: "center",
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-      >
-        <If when={checked()}>
-          <Icon name="check" size={12} color={palette().actionSolidFg} />
-        </If>
-      </View>
+      <ChoiceIndicator kind="checkbox" checked={checked()} />
       <Text
         style={{
           color: checked() && truthy(props.node.props.lineThrough) ? palette().textMuted : palette().text,

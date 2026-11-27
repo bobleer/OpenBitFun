@@ -125,7 +125,7 @@ test("prompts from three devices are answered in place, each on the device that 
   expect(app.shows("id:inbox-item-dev-a/perm-1 >> text:Wants to run")).toBe(true);
   expect(app.shows("id:inbox-item-dev-a/perm-1 >> text:pnpm e2e")).toBe(true);
   expect(app.shows("id:inbox-item-dev-b/tool-q1 >> text:Which branch should I start from?")).toBe(true);
-  expect(app.shows("id:inbox-item-dev-b/tool-q1 >> text:Type an answer")).toBe(true);
+  expect(app.shows("id:inbox-item-dev-b/tool-q1 >> label:Other")).toBe(true);
 
   // A permission goes to mac-mini's runtime.
   await app.press("id:inbox-item-dev-a/perm-1 >> label:allow-once-perm-1");
@@ -135,8 +135,10 @@ test("prompts from three devices are answered in place, each on the device that 
   expect(permission?.args).toEqual({ request: { requestId: "perm-1", reply: "once" } });
   await app.waitFor("id:inbox-item-dev-a/perm-1 >> text:Answered on mac-mini");
 
-  // Tapping an option of a single question answers it on linux-box.
+  // Selecting a single answer prepares the draft. Confirming sends it to linux-box.
   await app.press("id:inbox-item-dev-b/tool-q1 >> label:release/1.2");
+  expect(host.fleetCalls.some(call => call.command === "submit_user_answers")).toBe(false);
+  await app.press("id:inbox-item-dev-b/tool-q1 >> id:question-send-tool-q1");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "submit_user_answers"));
   const question = host.fleetCalls.find(call => call.command === "submit_user_answers");
   expect(question?.target).toBe("dev-b");
@@ -190,6 +192,8 @@ test("a Detached Dispatch job's question is answered through its job's question 
   const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitFor("id:inbox-item-dev-c/tool-dq >> text:Which database?");
   await app.press("id:inbox-item-dev-c/tool-dq >> label:postgres");
+  expect(host.fleetCalls.some(call => call.command === "dispatch_target_answer")).toBe(false);
+  await app.press("id:inbox-item-dev-c/tool-dq >> id:question-send-tool-dq");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "dispatch_target_answer"));
   const answer = host.fleetCalls.find(call => call.command === "dispatch_target_answer");
   expect(answer?.target).toBe("dev-c");

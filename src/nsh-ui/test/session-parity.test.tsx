@@ -137,6 +137,84 @@ test("a side question streams its child session's answer and can be stopped", as
   await app.waitFor("Stopped.");
 });
 
+test("closing a side conversation keeps the draft on cancel or refusal and persists the confirmed opt-out", async () => {
+  const skipKey = "openbitfun:preferences:skip-btw-close-confirmation:v1";
+  const backend = createBackend();
+  let refuseStop = true;
+  const sent = withCommands(backend, {
+    btw_ask_stream: () => ({ ok: true }),
+    btw_cancel: () => {
+      if (refuseStop) throw new Error("Runtime is offline");
+      return null;
+    },
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/btw What is still running?");
+  await app.press("Send");
+  await app.waitFor("id:side-question-pane");
+  await app.waitUntil(() => (sent.btw_ask_stream ?? []).length === 1);
+  await app.type("side-question-input", "Follow-up draft");
+
+  const dialog = "side-question-close-dialog";
+  await app.press("side-question-close");
+  await app.waitFor(dialog);
+  await app.press("id:side-question-skip-close");
+  await app.press("side-question-close-cancel");
+  await app.waitFor(dialog, { state: "gone" });
+  expect(app.value("side-question-input")).toBe("Follow-up draft");
+  expect(sent.btw_cancel).toBeUndefined();
+  expect(app.storage()[skipKey]).toBeUndefined();
+
+  await app.press("side-question-close");
+  await app.press("id:side-question-skip-close");
+  await app.press("side-question-close-confirm");
+  await app.waitFor("Could not stop the side conversation: Runtime is offline");
+  expect(app.shows(dialog)).toBe(true);
+  expect(app.storage()[skipKey]).toBeUndefined();
+  refuseStop = false;
+  await app.press("side-question-close-confirm");
+  await app.waitFor("id:side-question-pane", { state: "gone" });
+  await app.waitUntil(() => app.storage()[skipKey] === "true");
+  const cancel = { requestId: sent.btw_ask_stream![0]!.requestId };
+  expect(sent.btw_cancel).toEqual([cancel, cancel]);
+
+  await app.type("composer", "/btw");
+  await app.press("Send");
+  await app.waitFor("id:side-question-pane");
+  expect(app.value("side-question-input")).toBe("");
+  await app.press("side-question-close");
+  await app.waitFor("id:side-question-pane", { state: "gone" });
+  expect(app.shows(dialog)).toBe(false);
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-input");
+  await app.press("id:btw-confirm-close-setting");
+  await app.waitUntil(() => app.storage()[skipKey] === undefined);
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/btw");
+  await app.press("Send");
+  await app.press("side-question-close");
+  await app.waitFor(dialog);
+});
+
+test("compact side conversation honors the saved close preference", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", {
+    width: 390, height: 844, platform: "ios",
+    storage: { "openbitfun:preferences:skip-btw-close-confirmation:v1": "true" },
+    host: { handlers: backend.handlers },
+  });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "/btw");
+  await app.press("Send");
+  await app.waitFor("side-question-compact-sheet");
+  await app.type("side-question-input", "Temporary draft");
+  await app.press("modal-close");
+  await app.waitFor("side-question-compact-sheet", { state: "gone" });
+  expect(app.shows("side-question-close-dialog")).toBe(false);
+});
+
 test("background commands show their output, take input and can be interrupted", async () => {
   const backend = createBackend();
   const running = {
@@ -187,6 +265,62 @@ test("background commands show their output, take input and can be interrupted",
   await app.press("background-output-interrupt");
   await app.waitUntil(() => (sent.control_background_command ?? []).length === 1);
   expect(sent.control_background_command?.[0]).toEqual({ execSessionId: 7, action: "interrupt", remote: false });
+});
+
+test("a side question launched from the split keeps that parent across follow-ups", async () => {
+  const backend = createBackend();
+  const sent = withCommands(backend, { btw_ask_stream: () => ({ ok: true }) });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+  await app.type("composer", "Primary draft");
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("Port the terminal.");
+  await app.type("secondary-composer", "/btw Inspect the terminal");
+  await app.submit("secondary-composer");
+  await app.waitFor("id:side-question-pane");
+  await app.waitUntil(() => sent.btw_ask_stream?.length === 1);
+  const original = sent.btw_ask_stream?.[0];
+  expect(original).toMatchObject({ sessionId: "session-2", workspaceId: "workspace-1", question: "Inspect the terminal" });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-completed", payload: { sessionId: original?.childSessionId },
+  });
+  await app.type("side-question-input", "Follow up");
+  await app.press("side-question-ask");
+  await app.waitUntil(() => sent.btw_ask_stream?.length === 2);
+  expect(sent.btw_ask_stream?.[1]).toMatchObject({
+    sessionId: "session-2", childSessionId: original?.childSessionId, question: "Follow up",
+  });
+  expect(app.value("composer")).toBe("Primary draft");
+});
+
+test("an MCP prompt form fills the composer it was opened from", async () => {
+  const backend = createBackend();
+  const sent = withCommands(backend, {
+    list_mcp_prompts: request => request.serverId === "fs-server" ? [{
+      name: "explain", description: "Explain a file",
+      arguments: [{ name: "path", required: true }],
+    }] : [],
+    get_mcp_prompt: request => ({
+      messages: [{ role: "user", content: { type: "text", text: "Explain " + String((request.arguments as Record<string, string>).path) } }],
+    }),
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+  await app.type("composer", "Main draft");
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("Port the terminal.");
+  await app.type("secondary-composer", "/explain");
+  await app.press("secondary-mcp-prompt-fs-server-explain");
+  await app.waitFor("mcp-prompt-dialog");
+  await app.type("mcp-prompt-arg-path", "src/lib.rs");
+  await app.press("mcp-prompt-insert");
+  await app.waitUntil(() => app.value("secondary-composer") === "Explain src/lib.rs");
+  expect(sent.get_mcp_prompt?.[0]).toMatchObject({ serverId: "fs-server", promptName: "explain", arguments: { path: "src/lib.rs" } });
+  expect(app.value("composer")).toBe("Main draft");
 });
 
 test("MCP prompts of the device's running servers are offered under `/` and fill the composer", async () => {

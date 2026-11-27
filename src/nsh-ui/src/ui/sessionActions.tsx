@@ -13,7 +13,8 @@
 
 import { Clipboard, signal, Text, View, type JSX } from "nsh";
 import { revealInExplorer } from "../api";
-import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand } from "../bridge";
+import { forgetComposerDraft } from "../composerDraftStore";
 import { controllerPort } from "../controller/controllerPort";
 import { fleetDeviceById, refreshFleetNavigator } from "../fleetStore";
 import { localizeHostError, tr } from "../i18n";
@@ -24,6 +25,7 @@ import {
   deleteSessionRow,
   navigateScene,
   renameSession,
+  sessionKey,
   sessions,
 } from "../state";
 import { openSplitPane } from "../splitSessionStore";
@@ -124,6 +126,7 @@ export async function renameSessionTarget(target: SessionActionTarget, name: str
 }
 
 export async function deleteSessionTarget(target: SessionActionTarget): Promise<void> {
+  const connection = backendConnection();
   try {
     if (inOpenCatalogue(target)) {
       await deleteSessionRow(target.sessionId);
@@ -133,6 +136,7 @@ export async function deleteSessionTarget(target: SessionActionTarget): Promise<
         { session_id: target.sessionId, workspace_id: target.workspaceId },
         routeOptions(target),
       );
+      forgetComposerDraft(sessionKey(target.sessionId, target.deviceId), connection);
       afterRemoteChange();
     }
   } catch (error) {

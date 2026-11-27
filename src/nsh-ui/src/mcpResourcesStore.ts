@@ -1,5 +1,5 @@
 import { signal } from "nsh";
-import { invokeCommand } from "./bridge";
+import { fleetDeviceContext, invokeCommand, type InvokeCommandOptions } from "./bridge";
 import { runStep } from "./state";
 
 /**
@@ -34,6 +34,8 @@ export const mcpResourceQuery = signal("");
 export const mcpResourceSelected = signal<McpResourceSelection | null>(null);
 export const mcpResourceContent = signal<string>("");
 export const mcpResourceContentBusy = signal(false);
+let listRequest = 0;
+let contentRequest = 0;
 
 function readRows(raw: unknown): McpResourceRow[] {
   if (!Array.isArray(raw)) return [];
@@ -51,6 +53,14 @@ function readRows(raw: unknown): McpResourceRow[] {
     .filter(row => row.uri !== "");
 }
 
+export async function listMcpResourceRows(serverId: string, refresh: boolean, route: InvokeCommandOptions): Promise<McpResourceRow[]> {
+  return readRows(await invokeCommand<unknown>("list_mcp_resources", { serverId, refresh }, route));
+}
+
+export function readMcpResource(serverId: string, resourceUri: string, route: InvokeCommandOptions) {
+  return invokeCommand<{ contents?: unknown }>("read_mcp_resource", { serverId, resourceUri }, route);
+}
+
 /** The rows a query narrows to, matched the way the desktop's browser matches. */
 export function mcpResourceVisibleRows(): McpResourceRow[] {
   const rows = mcpResourcesRows();
@@ -65,17 +75,14 @@ export function mcpResourceVisibleRows(): McpResourceRow[] {
 }
 
 export async function openMcpResources(serverId: string): Promise<void> {
+  closeMcpResources();
   mcpResourcesServer.set(serverId);
-  mcpResourcesRows.set([]);
-  mcpResourcesLoaded.set(false);
-  mcpResourcesNotice.set("");
-  mcpResourceQuery.set("");
-  mcpResourceSelected.set(null);
-  mcpResourceContent.set("");
   await loadMcpResources();
 }
 
 export function closeMcpResources(): void {
+  listRequest += 1;
+  contentRequest += 1;
   mcpResourcesServer.set(null);
   mcpResourcesRows.set([]);
   mcpResourcesLoaded.set(false);
@@ -83,6 +90,8 @@ export function closeMcpResources(): void {
   mcpResourceQuery.set("");
   mcpResourceSelected.set(null);
   mcpResourceContent.set("");
+  mcpResourcesBusy.set(false);
+  mcpResourceContentBusy.set(false);
 }
 
 export function setMcpResourceQuery(text: string): void {
@@ -96,25 +105,28 @@ export function setMcpResourceQuery(text: string): void {
 export async function loadMcpResources(): Promise<void> {
   const serverId = mcpResourcesServer();
   if (!serverId) return;
+  const target = fleetDeviceContext();
+  const request = ++listRequest;
+  const current = () => listRequest === request && fleetDeviceContext() === target;
+  const refresh = mcpResourcesLoaded();
   mcpResourcesBusy.set(true);
   try {
     await runStep(async () => {
       try {
-        const raw = await invokeCommand<unknown>("list_mcp_resources", {
-          serverId,
-          refresh: mcpResourcesLoaded(),
-        });
-        mcpResourcesRows.set(readRows(raw));
+        const rows = await listMcpResourceRows(serverId, refresh, { target });
+        if (!current()) return;
+        mcpResourcesRows.set(rows);
         mcpResourcesLoaded.set(true);
         mcpResourcesNotice.set("");
       } catch (error) {
+        if (!current()) return;
         mcpResourcesRows.set([]);
         mcpResourcesLoaded.set(true);
         mcpResourcesNotice.set(error instanceof Error ? error.message : String(error));
       }
     });
   } finally {
-    mcpResourcesBusy.set(false);
+    if (current()) mcpResourcesBusy.set(false);
   }
 }
 
@@ -126,23 +138,23 @@ export async function loadMcpResources(): Promise<void> {
 export async function openMcpResource(row: McpResourceRow): Promise<void> {
   const serverId = mcpResourcesServer();
   if (!serverId) return;
+  const target = fleetDeviceContext();
+  const request = ++contentRequest;
+  const current = () => contentRequest === request && fleetDeviceContext() === target;
   mcpResourceSelected.set({ uri: row.uri, name: row.title ?? row.name, ...(row.mimeType ? { mimeType: row.mimeType } : {}) });
   mcpResourceContent.set("");
   mcpResourceContentBusy.set(true);
   try {
     await runStep(async () => {
       try {
-        const answer = await invokeCommand<{ contents?: unknown }>("read_mcp_resource", {
-          serverId,
-          resourceUri: row.uri,
-        });
-        mcpResourceContent.set(renderContents(answer?.contents));
+        const answer = await readMcpResource(serverId, row.uri, { target });
+        if (current()) mcpResourceContent.set(renderContents(answer?.contents));
       } catch (error) {
-        mcpResourceContent.set(`Could not read this resource: ${error instanceof Error ? error.message : String(error)}`);
+        if (current()) mcpResourceContent.set(`Could not read this resource: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   } finally {
-    mcpResourceContentBusy.set(false);
+    if (current()) mcpResourceContentBusy.set(false);
   }
 }
 

@@ -170,6 +170,7 @@ test("a burst of disk changes refreshes the tree in one write, and an unchanged 
 
 const MANY = 300;
 
+// The two full-length synthetic wheel sweeps can exceed the default timeout on Windows.
 test("300 changed files: rows are virtualized, and checking, select all and staging stay exact", async () => {
   const backend = createBackend();
   const unstaged = Array.from({ length: MANY }, (_, i) => ({
@@ -251,4 +252,4 @@ test("300 changed files: rows are virtualized, and checking, select all and stag
   expect(added[0]).toContain("/repo/gen/file-299.ts");
   // The staged files leave the selection; the one left unchecked was never in it.
   await app.waitUntil(() => !app.shows("label:git-batch-bar"));
-});
+}, 45_000);

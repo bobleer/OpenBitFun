@@ -6,7 +6,7 @@
 // `Tree`) and custom scrollbars synced across launches and live switches.
 
 import { Storage, setColorScheme } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getEntryConfig, setEntryConfig } from "./api";
 import {
   APPEARANCE_ID_STORAGE_KEY,
   APPEARANCE_STORAGE_KEY,
@@ -40,7 +40,7 @@ export function currentAppearanceSelection(): string {
 }
 
 function storeOnHost(selection: string): void {
-  void setConfig(HOST_SELECTION_PATH, selection).catch(() => {
+  void setEntryConfig(HOST_SELECTION_PATH, selection).catch(() => {
     // An older or unreachable host keeps the choice in this surface only.
   });
 }
@@ -54,7 +54,7 @@ function storeOnHost(selection: string): void {
 export async function syncAppearanceFromHost(options: { initial?: boolean } = {}): Promise<void> {
   let selection: unknown;
   try {
-    selection = await getConfig(HOST_SELECTION_PATH, true);
+    selection = await getEntryConfig(HOST_SELECTION_PATH);
   } catch {
     return;
   }

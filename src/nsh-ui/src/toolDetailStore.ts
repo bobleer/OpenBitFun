@@ -6,9 +6,11 @@
 // and marks the call `detailOmitted`; opening that call reads its one turn whole.
 // A host that does not know the field answers whole results and never marks one.
 
+import { Buffer } from "buffer";
 import { signal, untracked } from "nsh";
 import type { SessionTranscriptView, TranscriptItemView, TranscriptToolView, TranscriptTurnView } from "./api";
-import { fleetActive, invokeCommand } from "./bridge";
+import { backendConnection, fleetActive, invokeCommand } from "./bridge";
+import type { BackendConnection } from "./backendConnection";
 import { toolCallOf, type ToolCallView } from "./format";
 
 export interface TranscriptSource {
@@ -17,17 +19,32 @@ export interface TranscriptSource {
   deviceId: string;
 }
 
+export interface FigureOwner extends TranscriptSource {
+  viaFleet: boolean;
+  connection: BackendConnection;
+}
+
+type FigureBindingRefresh = { name: string; turnId: string; turnIndex: number; requestToken?: string };
+type FigureRead = { uri: string; bindingRefresh?: FigureBindingRefresh };
+
 /** Opened calls kept whole; the oldest is dropped (and read again if reopened). */
 const MAX_HELD_DETAILS = 48;
 
-const sources = new WeakMap<object, TranscriptSource>();
+const sources = new WeakMap<object, FigureOwner>();
 const held = signal<Record<string, ToolCallView>>({});
 const failures = signal<Record<string, true>>({});
 const inFlight = new Map<string, Promise<TranscriptTurnView>>();
 
 /** Remembers where these turns were read from, so an opened call can be read whole. */
 export function noteTranscriptSource(turns: ReadonlyArray<TranscriptTurnView> | undefined, source: TranscriptSource): void {
-  for (const turn of turns ?? []) sources.set(turn, source);
+  const origin = { ...source, viaFleet: untracked(fleetActive), connection: untracked(backendConnection) };
+  for (const turn of turns ?? []) sources.set(turn, origin);
+}
+
+export function figureTurnOwnedBy(turn: TranscriptTurnView | undefined, owner: FigureOwner): boolean {
+  const origin = turn ? sources.get(turn) : undefined;
+  return !!origin && origin.connection === owner.connection && origin.viaFleet === owner.viaFleet &&
+    origin.deviceId === owner.deviceId && origin.workspaceId === owner.workspaceId && origin.sessionId === owner.sessionId;
 }
 
 function turnKeyOf(turn: TranscriptTurnView, source: TranscriptSource): string {
@@ -50,7 +67,7 @@ function findTool(items: ReadonlyArray<TranscriptItemView>, id: string): Transcr
   return null;
 }
 
-async function readTurn(turn: TranscriptTurnView, source: TranscriptSource): Promise<TranscriptTurnView> {
+async function readTurn(turn: TranscriptTurnView, source: TranscriptSource, figure?: FigureRead): Promise<TranscriptTurnView> {
   const view = await invokeCommand<SessionTranscriptView>(
     "get_session_transcript_view",
     {
@@ -58,12 +75,65 @@ async function readTurn(turn: TranscriptTurnView, source: TranscriptSource): Pro
       workspace_id: source.workspaceId,
       limit: 1,
       before_turn_index: turn.turnIndex + 1,
+      ...(figure ? { figure_source: { turnId: turn.turnId, ...figure } } : {}),
     },
     fleetActive() && source.deviceId ? { target: source.deviceId } : undefined,
   );
   const found = view.turns?.find(item => item.turnId === turn.turnId && item.turnIndex === turn.turnIndex);
   if (!found) throw new Error(`Turn ${turn.turnIndex} is no longer in the transcript`);
   return found;
+}
+
+const SESSION_FIGURE_URI = /^openbitfun:\/\/current-session\/artifacts\/visualizations\/v2\/[a-z0-9][a-z0-9-]{0,95}\.html$/;
+const MAX_FIGURE_BYTES = 1024 * 1024;
+
+export function publishedFigure(turn: TranscriptTurnView | undefined, uri: string) {
+  if (!turn?.settled || !SESSION_FIGURE_URI.test(uri) || !Array.isArray(turn.publishedFigures)) return undefined;
+  const figure = turn.publishedFigures.find(entry => entry?.uri === uri);
+  const size = figure?.contentBytes;
+  return typeof size === "number" && Number.isSafeInteger(size) && size > 0 && size <= MAX_FIGURE_BYTES
+    ? figure
+    : undefined;
+}
+
+/** Read immutable HTML from the original turn on the device that owns the session. */
+export async function readPublishedFigureSource(turn: TranscriptTurnView, uri: string): Promise<{
+  source: string; readerKey: string; bindings?: unknown; owner: FigureOwner; bindingRefreshSupported: boolean;
+}> {
+  const owner = sources.get(turn);
+  const summary = publishedFigure(turn, uri);
+  if (!owner || !summary || backendConnection() !== owner.connection ||
+      owner.viaFleet !== fleetActive() || (owner.viaFleet && !owner.deviceId)) {
+    throw new Error("The published figure has no reachable transcript source");
+  }
+  const saved = publishedFigure(await readTurn(turn, owner, { uri }), uri);
+  if (backendConnection() !== owner.connection || typeof saved?.source !== "string" || saved.contentBytes !== summary.contentBytes ||
+    Buffer.byteLength(saved.source, "utf8") !== saved.contentBytes) {
+    throw new Error("The published figure does not match its transcript summary");
+  }
+  const readerKey = "openbitfun.nsh.figure-reader.v1:" + JSON.stringify([
+    owner.viaFleet, owner.deviceId, owner.workspaceId, owner.sessionId, turn.turnIndex, turn.turnId, uri,
+  ]);
+  return { source: saved.source, readerKey, bindings: saved.bindings, owner,
+    bindingRefreshSupported: saved.bindingRefreshSupported === true };
+}
+
+export async function readFigureBindingRefresh(
+  turn: TranscriptTurnView,
+  owner: FigureOwner,
+  uri: string,
+  bindingRefresh: FigureBindingRefresh,
+): Promise<unknown> {
+  if (backendConnection() !== owner.connection || fleetActive() !== owner.viaFleet) {
+    throw new Error("The figure transcript source changed");
+  }
+  const saved = publishedFigure(await readTurn(turn, owner, { uri, bindingRefresh }), uri);
+  if (backendConnection() !== owner.connection || saved?.bindingRefreshSupported !== true ||
+      saved.contentBytes !== publishedFigure(turn, uri)?.contentBytes) {
+    throw new Error("The figure binding refresh is unavailable");
+  }
+  const value = saved.bindingRefresh;
+  return value?.name === bindingRefresh.name && value.turnId === bindingRefresh.turnId ? value.value : undefined;
 }
 
 /** Reads the opened call whole, once. Several cards of one turn share the read. */

@@ -4,17 +4,20 @@
  * name (MCP tools by their `mcp__server__tool` prefix, then the shape of their
  * arguments), and the kind decides three things: the localized verb title
  * ("Read", "Ran", "Edited"), the one-line target beside it, and what the expanded
- * card shows. Every expanded card ends with the tool's result (or its error), so
- * nothing the host sent back is hidden.
+ * card shows. Expanded cards show the tool result, a structured presentation of
+ * that result, or its error.
  *
- * Every call is one quiet 28 row (visual spec §3 Tool): icon 14, verb 13/500,
- * target mono 12, duration on the right; it expands into a mono well.
+ * The shared frame renders ambient records and prominent cards with the design
+ * system’s conversation rhythm. Tool-specific bodies mount only when opened.
  */
 
 import { McpAppLauncher } from "./sessionExtras"; // wave22-p5
 import { cleanup, Clipboard, computed, effect, Image, openUrl, Scroll, signal, Text, untracked, View } from "nsh";
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
+import { codeReviewReport } from "../codeReviewReport";
+import { fleetActive } from "../bridge";
+import { fleetDeviceById } from "../fleetStore";
 import { detailedToolCall, loadToolDetail, toolDetailState } from "../toolDetailStore";
 import {
   activityCounts,
@@ -32,7 +35,13 @@ import {
 import { tr, type MessageKey } from "../i18n";
 import { addReviewNote, editingReviewNote, removeReviewNote, reviewNotesFor, updateReviewNote, type ReviewNote } from "../reviewStore";
 import { activeSessionKey, openInAuxPane, selectSession } from "../state";
-import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { compactLayout, controlHeight, designControlColors, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { isProminentToolCall, normalizeToolName, toolAwaitsApproval, toolInputRecord } from "../toolPresentation";
+import { ToolCardFrame, toolCardHeaderHeight, toolCardMetrics } from "./ToolCardFrame";
+import { CodeReviewReport } from "./CodeReviewReport";
+import { ReviewCoverageRetry } from "./ReviewCoverageRetry";
+import { ReviewRemediation } from "./ReviewRemediation";
+import type { ReviewTarget } from "../reviewStore";
 import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { openImageLightbox } from "./ImageLightbox";
@@ -46,7 +55,7 @@ import {
   subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "./motion";
-import { Button, IconButton, InputBox, StatusDot, focusRingStyle } from "./primitives";
+import { Button, IconButton, InlineBanner, InputBox, StatusDot, focusRingStyle } from "./primitives";
 
 export type ToolRunState = "completed" | "running" | "failed" | "cancelled" | "confirmation";
 
@@ -64,6 +73,7 @@ export type ToolKind =
   | "todo"
   | "task"
   | "question"
+  | "review"
   | "image"
   | "skill"
   | "mcp"
@@ -109,6 +119,7 @@ const KIND_BY_NAME: Record<string, ToolKind> = {
   agentspawn: "task",
   agentfork: "task",
   askuserquestion: "question",
+  submitcodereview: "review",
   viewimage: "image",
   generateimage: "image",
   analyzeimage: "image",
@@ -129,8 +140,8 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
 
 export function toolKindOf(call: ToolCallView): ToolKind {
   if (call.name.startsWith("mcp__")) return "mcp";
-  const normalized = call.name.toLowerCase().replace(/[^a-z]/g, "");
-  const known = KIND_BY_NAME[normalized];
+  const normalized = normalizeToolName(call.name);
+  const known = Object.hasOwn(KIND_BY_NAME, normalized) ? KIND_BY_NAME[normalized] : undefined;
   if (known) return known;
   if (todosOf(call.input).length > 0) return "todo";
   if (diffOf(call.input) !== null) return "edit";
@@ -152,6 +163,7 @@ const VERB_KEYS: Record<Exclude<ToolKind, "mcp" | "generic" | "skill">, { done: 
   todo: { done: "chat.tool.todo.done", running: "chat.tool.todo.running" },
   task: { done: "chat.tool.task.done", running: "chat.tool.task.running" },
   question: { done: "chat.tool.question.done", running: "chat.tool.question.running" },
+  review: { done: "chat.review.report", running: "chat.review.submitting" },
   image: { done: "chat.tool.image.done", running: "chat.tool.image.running" },
 };
 
@@ -169,25 +181,14 @@ const ICON_BY_KIND: Record<ToolKind, IconName> = {
   todo: "check-circle",
   task: "bot",
   question: "help-circle",
+  review: "shield",
   image: "image",
   skill: "sparkles",
   mcp: "plug",
   generic: "wrench",
 };
 
-function inputRecord(call: ToolCallView): Record<string, unknown> {
-  const input = call.input;
-  if (input && typeof input === "object" && !Array.isArray(input)) return input as Record<string, unknown>;
-  if (typeof input === "string") {
-    try {
-      const parsed: unknown = JSON.parse(input);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
-    } catch {
-      // A partial argument string is not an object yet.
-    }
-  }
-  return {};
-}
+const inputRecord = (call: ToolCallView): Record<string, unknown> => toolInputRecord(call.input);
 
 function firstStringOf(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
@@ -417,6 +418,8 @@ export function toolTargetOf(call: ToolCallView, kind: ToolKind = toolKindOf(cal
       const first = Array.isArray(questions) ? (questions[0] as Record<string, unknown> | undefined) : undefined;
       return (first && firstStringOf(first, ["question", "header"])) || call.detail;
     }
+    case "review":
+      return "";
     case "image": {
       const path = firstStringOf(input, ["path", "image_path", "file_path"]);
       return path ? basename(path) : firstStringOf(input, ["prompt", "description"]) || call.detail;
@@ -441,6 +444,8 @@ export function toolTitleOf(call: ToolCallView, state: ToolRunState, kind: ToolK
   }
   if (kind === "skill") return tr("nav.skills");
   if (kind === "generic") return call.name;
+  const status = call.status?.toLowerCase();
+  if (kind === "exec" && (status === "queued" || status === "waiting")) return tr("chat.tool.command");
   const keys = VERB_KEYS[kind];
   return tr(state === "running" || state === "confirmation" ? keys.running : keys.done);
 }
@@ -761,6 +766,10 @@ function ReviewNoteView(props: { note: ReviewNote }) {
 }
 
 function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
+  const maxHeight = 240;
+  const lineHeight = () => textLineHeight(12, 18 / 12);
+  const contentHeight = signal(maxHeight);
+  const viewportHeight = () => Math.min(maxHeight, Math.max(lineHeight(), Math.ceil(contentHeight())));
   const filePath = computed(() => pathOf(props.call.input));
   const change = computed(() => {
     if (props.kind === "write") {
@@ -783,7 +792,7 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
             backgroundColor: palette().surfaceTertiary,
           }}
         >
-          <View style={{ height: 240 }}>
+          <View testID="tool-diff-preview" style={{ height: viewportHeight() }}>
             <DiffView
               oldValue={"oldText" in value() ? (value() as { oldText: string }).oldText : null}
               newValue={"newText" in value() ? (value() as { newText: string }).newText : null}
@@ -795,7 +804,10 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
               lineNumbers={true}
               fontFamily={fontMono()}
               fontSize={textSize(12)}
-              lineHeight={textLineHeight(12, 18 / 12)}
+              lineHeight={lineHeight()}
+              onScroll={({ contentSize }) => {
+                if (contentSize.height > 0) contentHeight.set(contentSize.height);
+              }}
               styles={createDiffViewStyles()}
               annotations={notes().map(note => ({ id: note.id, side: note.side, line: note.end }))}
               renderAnnotation={annotation => {
@@ -1261,8 +1273,11 @@ function ToolImagePreview(props: { src: string }) {
   );
 }
 
-function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind }) {
+function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind; reviewTarget?: ReviewTarget | null }) {
   const kind = () => props.kind;
+  const report = computed(() => kind() === "review" && !props.call.detailOmitted && !props.call.error && props.call.success !== false
+    ? codeReviewReport(props.call.result) : null);
+  const loadingReport = () => kind() === "review" && toolDetailState(props.call) === "loading";
   return (
     <View style={{ gap: space.sm }}>
       <If when={kind() === "todo"}>
@@ -1373,7 +1388,33 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
       <If when={kind() === "mcp"}>
         <McpAppLauncher call={props.call} cardId={props.cardId} />
       </If>
-      <If when={kind() !== "grep" && kind() !== "glob" && kind() !== "ls" && !(kind() === "websearch" && webResultsOf(props.call).length > 0)}>
+      <If when={report()}>
+        {value => <CodeReviewReport report={value()} actions={
+          <If when={props.reviewTarget && props.call.id ? { target: props.reviewTarget, reportId: props.call.id } : null}>
+            {source => {
+              const supports = (capability: string) => !fleetActive() ||
+                Boolean(fleetDeviceById(source().target.deviceId)?.hostCapabilities?.includes(capability));
+              const canFix = () => supports("review_remediation_v1");
+              const canRetry = () => value().hasIncompleteChecks && supports("review_coverage_retry_v1");
+              return <If when={canFix() || canRetry()}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+                  <If when={canFix()}><ReviewRemediation target={source().target} reportId={source().reportId} /></If>
+                  <If when={canRetry()}><ReviewCoverageRetry target={source().target} reportId={source().reportId} /></If>
+                </View>
+              </If>;
+            }}
+          </If>
+        } />}
+      </If>
+      <If when={loadingReport()}>
+        <Text style={{ color: palette().textSecondary, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.5) }}>
+          {tr("chat.review.loading")}
+        </Text>
+      </If>
+      <If when={kind() === "review" && !report() && !props.call.detailOmitted && props.call.success === true && !props.call.error}>
+        <InlineBanner tone="warning" message={tr("chat.review.unavailable")} />
+      </If>
+      <If when={!report() && !loadingReport() && kind() !== "grep" && kind() !== "glob" && kind() !== "ls" && !(kind() === "websearch" && webResultsOf(props.call).length > 0)}>
         <ResultSection
           call={props.call}
           cardId={props.cardId}
@@ -1418,7 +1459,8 @@ function hasRawArguments(call: ToolCallView): boolean {
 }
 
 function hasBody(call: ToolCallView, kind: ToolKind): boolean {
-  if (call.error || hasRawResult(call)) return true;
+  if (call.detailOmitted || call.error || hasRawResult(call)) return true;
+  if (kind === "review") return call.success === true;
   if (kind === "todo") return todosOf(call.input).length > 0;
   if (kind === "edit") return diffOf(call.input) !== null;
   if (kind === "write") return Boolean(writeContentOf(call));
@@ -1435,9 +1477,15 @@ function stateLabel(state: ToolRunState, call: ToolCallView): string {
     case "failed":
       return tr("chat.tool.failed");
     case "cancelled":
-      return call.status === "rejected" ? tr("chat.tool.rejected") : tr("chat.tool.cancelled");
+      return call.status?.toLowerCase() === "rejected" ? tr("chat.tool.rejected") : tr("chat.tool.cancelled");
     case "confirmation":
       return tr("chat.tool.awaitingApproval");
+    case "running": {
+      const status = call.status?.toLowerCase();
+      if (status === "queued") return tr("state.queued");
+      if (status === "waiting") return tr("state.waiting");
+      return "";
+    }
     default:
       return "";
   }
@@ -1455,12 +1503,16 @@ function stateLabel(state: ToolRunState, call: ToolCallView): string {
 export const TRANSCRIPT_ROW_ICON_SLOT = 16;
 export const TRANSCRIPT_ROW_RAIL_OFFSET = 7;
 
+export function transcriptRowMinHeight(): number {
+  return compactLayout() ? layout.touchTarget : controlHeight.sm;
+}
+
 export function transcriptRowStyle(interactive: boolean): ViewStyle {
   return {
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+    minHeight: transcriptRowMinHeight(),
     paddingHorizontal: space.chip,
     paddingVertical: 0,
     marginLeft: -space.chip,
@@ -1539,9 +1591,12 @@ function ToolDetailNotice(props: { call: ToolCallView; cardId: string }) {
  * One tool call. The summary row is always drawn; the body only once opened, so
  * a long transcript does not build hundreds of diff views it never shows.
  */
-export function ToolCard(props: { call: ToolCallView; cardId: string; status?: ToolRunState }) {
+export function ToolCard(props: {
+  call: ToolCallView; cardId: string; status?: ToolRunState; reviewTarget?: ReviewTarget | null; live?: boolean;
+}) {
   const kind = computed(() => toolKindOf(props.call));
-  const state = computed<ToolRunState>(() => props.status ?? "completed");
+  const state = computed<ToolRunState>(() => props.status ?? persistedToolState(props.call));
+  const prominent = computed(() => isProminentToolCall(props.call));
   const expandable = computed(() => hasBody(props.call, kind()));
   const expanded = computed(() => isCardExpanded(props.cardId));
   const filePath = computed(() =>
@@ -1551,190 +1606,81 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
   );
   const stats = computed(() => (kind() === "edit" || kind() === "write" ? diffStatsOf(props.call) : null));
   const exitCode = computed(() => (kind() === "exec" ? exitCodeOf(props.call) : undefined));
+  const failed = computed(() => state() === "failed" || (state() !== "running" && (exitCode() ?? 0) !== 0));
   const muted = computed(() => state() === "cancelled");
-  /** The row's one status mark: its state, else a failed exit code. */
+  const waiting = computed(() => ["queued", "waiting"].includes(props.call.status?.toLowerCase() ?? ""));
   const statusText = computed(() => {
     const label = stateLabel(state(), props.call);
     if (label) return label;
     const code = exitCode();
     return code !== undefined && code !== 0 && state() !== "running" ? tr("chat.tool.exitCode", { code }) : "";
   });
-  const statusColor = computed(() =>
-    state() === "failed" || (exitCode() ?? 0) !== 0
-      ? stateColor("failed")
-      : state() === "confirmation"
-        ? stateColor("needs_you")
-        : stateColor("idle"),
-  );
-  /** Duration and exit code stay one hover away instead of on every row. */
+  const statusColor = computed(() => failed() ? stateColor("failed")
+    : state() === "confirmation" ? stateColor("needs_you") : palette().textMuted);
   const hoverHint = computed(() => {
-    const parts: string[] = [];
     const duration = state() === "completed" ? formatDuration(props.call.durationMs) : "";
-    if (duration) parts.push(duration);
     const code = exitCode();
-    if (code !== undefined && state() !== "running") parts.push(tr("chat.tool.exitCode", { code }));
-    return parts.join(" · ");
+    return [filePath(), duration, code !== undefined && state() !== "running" ? tr("chat.tool.exitCode", { code }) : ""].filter(Boolean).join(" · ");
   });
-  const titleColor = computed(() =>
-    state() === "failed" ? stateColor("failed") : muted() ? palette().textMuted : palette().text,
-  );
+  const textStyle = () => ({
+    fontSize: textSize(toolCardMetrics.fontSize),
+    lineHeight: textLineHeight(toolCardMetrics.fontSize, toolCardMetrics.lineHeight),
+    numberOfLines: 1, textOverflow: "ellipsis" as const,
+  });
 
-  return (
-    <View style={{ borderRadius: radii.md, borderCurve: "continuous" }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-        <View
-          role={expandable() ? "button" : undefined}
-          accessibilityLabel={`tool-card-${props.call.name}`}
-          tooltip={hoverHint() || undefined}
-          onPress={() => {
-            if (expandable()) toggleCard(props.cardId);
-          }}
-          style={{ flex: 1, minWidth: 0, ...transcriptRowStyle(expandable()) }}
-          hoverStyle={expandable() ? { backgroundColor: palette().surfaceSubtle } : undefined}
-          activeStyle={expandable() ? tactileActiveStyle(0.985) : undefined}
-          focusVisibleStyle={expandable() ? focusRingStyle() : undefined}
-        >
-          <TranscriptRowIconSlot>
-            <If
-              when={state() === "running"}
-              else={<Icon name={ICON_BY_KIND[kind()]} size={14} color={palette().textMuted} />}
-            >
-              <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
-            </If>
-          </TranscriptRowIconSlot>
-          <Text
-            style={{
-              flexShrink: 0,
-              maxWidth: "50%",
-              color: titleColor(),
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 18 / 13),
-              fontWeight: "500",
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {toolTitleOf(props.call, state(), kind())}
-          </Text>
-          <Text
-            style={{
-              flex: 1,
-              minWidth: 0,
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 16 / 12),
-              fontFamily: fontMono(),
-              textDecorationLine: muted() ? "line-through" : "none",
-              numberOfLines: 1,
-              textOverflow: filePath() ? "ellipsis-middle" : "ellipsis",
-            }}
-          >
-            {toolTargetOf(props.call, kind())}
-          </Text>
-          <If when={kind() === "read" ? readRangeOf(props.call) : ""}>
-            {range => (
-              <Text
-                style={{
-                  flexShrink: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 16 / 12),
-                  fontVariant: ["tabular-nums"],
-                }}
-              >
-                {range()}
-              </Text>
-            )}
-          </If>
-          <If when={stats()}>
-            {value => (
-              <Text
-                style={{
-                  flexShrink: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 16 / 12),
-                  fontFamily: fontMono(),
-                  fontVariant: ["tabular-nums"],
-                }}
-              >
-                {`+${value().added} −${value().removed}`}
-              </Text>
-            )}
-          </If>
-          <If when={statusText()}>
-            {text => (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-                <If when={statusColor() === stateColor("failed")}>
-                  <Icon name="close" size={12} color={stateColor("failed")} />
-                </If>
-                <Text
-                  style={{
-                    color: statusColor(),
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 16 / 12),
-                    fontVariant: ["tabular-nums"],
-                  }}
-                >
-                  {text()}
-                </Text>
-              </View>
-            )}
-          </If>
-          <If when={expandable()}>
-            <TranscriptRowChevron expanded={expanded} />
-          </If>
-        </View>
-        <If when={filePath() ?? ""}>
-          {pathValue => (
-            <View
-              role="button"
-              accessibilityLabel={`open-tool-file-${props.call.name}`}
-              tooltip={tr("sessions.openInFiles")}
-              onPress={() => openInAuxPane("files", pathValue())}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                width: compactLayout() ? layout.touchTarget : undefined,
-                height: compactLayout() ? layout.touchTarget : undefined,
-                gap: space.xs,
-                paddingHorizontal: compactLayout() ? 0 : space.chip,
-                paddingVertical: compactLayout() ? 0 : space.xs,
-                borderRadius: radii.xs,
-                borderCurve: "continuous",
-                cursor: "pointer",
-                userSelect: "none",
-                ...pressTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-              activeStyle={tactileActiveStyle(0.97)}
-              focusVisibleStyle={focusRingStyle()}
-            >
-              <Icon name="external-link" size={14} color={palette().textMuted} />
-            </View>
-          )}
-        </If>
-      </View>
-      <If when={expanded()}>
-        {() => {
-          const reveal = subtleCrossfadeMotion();
-          return (
-            <View
-              style={[
-                { paddingLeft: space.xxl, paddingRight: space.chip, paddingTop: space.xs, paddingBottom: space.sm },
-                reveal.style,
-              ]}
-            >
-              <ToolBody call={detailedToolCall(props.call)} cardId={props.cardId} kind={kind()} />
-              <ToolDetailNotice call={props.call} cardId={props.cardId} />
-            </View>
-          );
-        }}
+  return <ToolCardFrame
+    name={props.call.name} prominent={prominent()} expanded={expanded()} canExpand={expandable()}
+    headerMinHeight={props.live ? transcriptRowMinHeight() : undefined}
+    muted={muted()} confirmation={state() === "confirmation"} hint={hoverHint() || undefined}
+    onToggle={() => toggleCard(props.cardId)}
+    actions={<If when={filePath() ?? ""}>
+      {path => <IconButton icon="external-link" size="xs" iconSize={toolCardMetrics.iconSize}
+        accessibilityLabel={"open-tool-file-" + props.call.name}
+        tooltip={tr("sessions.openInFiles")}
+        style={{ alignSelf: "center", width: toolCardHeaderHeight(false), height: toolCardHeaderHeight(false) }}
+        onPress={() => openInAuxPane("files", path())} />}
+    </If>}
+    leading={
+      <If when={state() === "running" && !waiting()} else={
+          <Icon name={waiting() ? "clock" : ICON_BY_KIND[kind()]}
+            size={toolCardMetrics.iconSize} color={palette().textSecondary} />
+        }>
+        <BrandSpinner size={toolCardMetrics.iconSize} color={stateColor("working")} variant="matrix" />
       </If>
-    </View>
-  );
+    }
+    summary={engaged => <>
+      <Text style={{ ...textStyle(), flexShrink: 0, maxWidth: "50%",
+        color: muted() || (!prominent() && !engaged()) ? palette().textMuted : palette().text,
+        fontWeight: toolCardMetrics.titleWeight }}>{toolTitleOf(props.call, state(), kind())}</Text>
+      <Text style={{ ...textStyle(), flex: 1, minWidth: 0,
+        color: prominent() ? palette().textSecondary : engaged() ? palette().text : palette().textMuted,
+        fontFamily: kind() === "exec" ? fontMono() : undefined,
+        textOverflow: filePath() ? "ellipsis-middle" : "ellipsis" }}>{toolTargetOf(props.call, kind())}</Text>
+      <If when={kind() === "read" ? readRangeOf(props.call) : ""}>
+        {range => <Text style={{ ...textStyle(), flexShrink: 0, color: palette().textMuted,
+          fontVariant: ["tabular-nums"] }}>{range()}</Text>}
+      </If>
+      <If when={stats()}>
+        {value => <View style={{ flexDirection: "row", flexShrink: 0, gap: space.xs }}>
+          <Text style={{ ...textStyle(), color: designControlColors()?.diffAddedMarker ?? palette().success,
+            fontVariant: ["tabular-nums"] }}>{"+" + value().added}</Text>
+          <Text style={{ ...textStyle(), color: designControlColors()?.diffRemovedMarker ?? palette().danger,
+            fontVariant: ["tabular-nums"] }}>{"−" + value().removed}</Text>
+        </View>}
+      </If>
+      <If when={statusText()}>
+        {label => <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <If when={failed()}><Icon name="close" size={12} color={statusColor()} /></If>
+          <Text style={{ ...textStyle(), flexShrink: 1, color: statusColor() }}>{label()}</Text>
+        </View>}
+      </If>
+      <If when={prominent() && expandable()}><TranscriptRowChevron expanded={expanded} /></If>
+    </>}
+    body={() => <>
+      <ToolBody call={detailedToolCall(props.call)} cardId={props.cardId} kind={kind()} reviewTarget={props.reviewTarget} />
+      <ToolDetailNotice call={props.call} cardId={props.cardId} />
+    </>}
+  />;
 }
 
 const COUNT_SPLIT_SENTINEL = "\u0000";
@@ -2020,8 +1966,8 @@ export function FoldedGroupStep(props: {
 export function persistedToolState(call: ToolCallView): ToolRunState {
   const status = (call.status ?? "").toLowerCase();
   if (status === "cancelled" || status === "rejected" || status === "interrupted") return "cancelled";
+  if (toolAwaitsApproval(status)) return "confirmation";
   if (call.success === false || Boolean(call.error) || status === "failed" || status === "error") return "failed";
-  if (status === "confirmation" || status === "awaiting_confirmation") return "confirmation";
   if (
     status === "running" ||
     status === "in_progress" ||

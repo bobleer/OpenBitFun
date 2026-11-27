@@ -13,6 +13,7 @@ import { refreshAttention } from "./attentionStore";
 import { fleetActive, listenEvent } from "./bridge";
 import { fleetDevices, refreshFleetNavigator, refreshFleetPrompts } from "./fleetStore";
 import { resetPermissions } from "./permissionStore";
+import { clearReviewQueueOrigins } from "./reviewQueueStore";
 import {
   activeSessionDevice,
   activeSessionId,
@@ -66,6 +67,8 @@ async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promi
   const secOpenHere = Boolean(secSessionId) && (!scoped || origins.has(secondarySessionDevice()));
   // Only forget followed live turns when the gap affects a viewed session's device.
   if (!scoped || openHere || secOpenHere) forgetFollowedTurns();
+
+  clearReviewQueueOrigins(scoped ? origins : null);
 
   // Clear stale question prompts before re-reading the mailbox so fresh answers are kept.
   if (scoped) {

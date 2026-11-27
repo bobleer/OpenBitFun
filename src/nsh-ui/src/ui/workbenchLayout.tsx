@@ -104,17 +104,3 @@ export function StackBackButton(props: {
     </View>
   );
 }
-
-/** A 1 px hairline between toolbar groups that separate different content. */
-export function ToolbarDivider() {
-  return (
-    <View
-      style={{
-        width: 1,
-        height: 16,
-        flexShrink: 0,
-        backgroundColor: palette().borderSubtle,
-      }}
-    />
-  );
-}

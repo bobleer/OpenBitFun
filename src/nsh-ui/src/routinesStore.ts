@@ -7,7 +7,7 @@ import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
 import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { basenameOfPath, isRemoteWorkspace } from "./shared/workspaceUtils";
-import { activeWorkspace, activeWorkspaceId, workspaces } from "./state";
+import { activeWorkspace, activeWorkspaceId, deviceContext, workspaces } from "./state";
 import { pushToast } from "./ui/overlays";
 
 export type CronSchedule =
@@ -74,6 +74,8 @@ export interface RoutineDraft {
   reportPolicy: RoutineReportPolicy;
   enabled: boolean;
   preservedTarget: CronJobTarget | null;
+  assistantWorkspace?: CronWorkspaceRef;
+  originalSchedule?: CronSchedule;
   /** Preserved remote SSH metadata when editing an existing remote-workspace routine. */
   remoteConnectionId?: string | null;
   remoteSshHost?: string | null;
@@ -129,8 +131,6 @@ const initialNow = new Date();
 export const calendarYear = signal(initialNow.getFullYear());
 export const calendarMonth = signal(initialNow.getMonth());
 export const selectedCalendarDay = signal<string>(dateKeyOf(initialNow));
-
-let cronHostReadySignaled = false;
 
 function defaultAtIso(): string {
   const future = new Date(Date.now() + 3600_000);
@@ -448,6 +448,7 @@ export async function refreshRoutineOccurrences(): Promise<void> {
 
 /** The schedule the draft describes, as the host's `CronSchedule`. Input conversion only. */
 export function draftSchedule(draft: RoutineDraft): CronSchedule {
+  if (draft.originalSchedule) return draft.originalSchedule;
   if (draft.scheduleKind === "every") {
     const mins = Number(draft.everyMinutes.trim());
     return { kind: "every", everyMs: Number.isFinite(mins) && mins > 0 ? Math.round(mins * 60_000) : 0 };
@@ -644,38 +645,70 @@ export function selectCalendarDay(dayKey: string): void {
 // --- Host actions & subscriptions ---
 
 const cronHostReadyDevices = new Set<string>();
+let routinePreviewDevice = "";
+let routinesScope = "";
+let scopedWorkspaceId: string | undefined;
+let routinesLoadTicket = 0;
+
+function routineScopeKey(): string {
+  return JSON.stringify([currentDeviceScopeKey(), scopedWorkspaceId]);
+}
 
 export function ensureCronHostReady(): void {
   const scope = currentDeviceScopeKey();
+  if (routinePreviewDevice !== scope) {
+    routinePreviewDevice = scope;
+    routinePreviewUnavailable.set(false);
+  }
   if (cronHostReadyDevices.has(scope)) return;
   cronHostReadyDevices.add(scope);
-  routinePreviewUnavailable.set(false);
   void invokeRawCommand<unknown>("notify_cron_host_ready", {}).catch(() => undefined);
 }
 
-export function subscribeRoutinesChanged(): () => void {
+export function subscribeRoutinesChanged(reload = loadRoutines): () => void {
   return listenEvent("cron://jobs-changed", (_payload, meta) => {
     if (fleetActive() && meta.origin && meta.origin !== currentDeviceScopeKey()) return;
-    void loadRoutines();
+    void reload();
   });
 }
 
-export async function loadRoutines(): Promise<void> {
+export async function loadRoutines(workspaceId?: string): Promise<void> {
+  scopedWorkspaceId = workspaceId;
+  const scope = routineScopeKey();
+  const ticket = ++routinesLoadTicket;
+  if (scope !== routinesScope) {
+    routinesScope = scope;
+    routines.set([]);
+    routinesNotice.set("");
+    occurrenceTicket++;
+    monthOccurrences.set({});
+    dueOccurrences.set({});
+    closeRoutineEditor();
+  }
+  const isCurrent = () => ticket === routinesLoadTicket && scope === routineScopeKey();
   routinesBusy.set(true);
   routinesError.set("");
   try {
-    const raw = await invokeCommand<Array<Record<string, unknown>>>("list_cron_jobs", {});
+    const raw = await invokeCommand<Array<Record<string, unknown>>>(
+      "list_cron_jobs",
+      workspaceId ? { workspaceId } : {},
+      workspaceId ? { target: deviceContext() || undefined } : undefined,
+    );
+    if (!isCurrent()) return;
     const list = (Array.isArray(raw) ? raw : []).map(item => normalizeJob(item ?? {}));
     routines.set(list);
-    void refreshRoutineOccurrences();
+    if (!workspaceId) void refreshRoutineOccurrences();
   } catch (error) {
-    routinesError.set(error instanceof Error ? error.message : String(error));
+    if (isCurrent()) routinesError.set(error instanceof Error ? error.message : String(error));
   } finally {
-    routinesBusy.set(false);
+    if (isCurrent()) routinesBusy.set(false);
   }
 }
 
 export async function toggleRoutineEnabled(job: CronJobRecord): Promise<void> {
+  const scope = routineScopeKey();
+  const workspaceId = scopedWorkspaceId;
+  const options = workspaceId ? { target: deviceContext() || undefined } : undefined;
   routinesBusy.set(true);
   routinesError.set("");
   try {
@@ -688,35 +721,43 @@ export async function toggleRoutineEnabled(job: CronJobRecord): Promise<void> {
       enabled: !job.enabled,
       ...(includePolicy ? { reportPolicy: job.reportPolicy } : {}),
       target: job.target,
-    });
+    }, options);
+    if (scope !== routineScopeKey()) return;
     if (updated && typeof updated === "object" && (updated.id || updated.jobId)) {
       const normalized = normalizeJob(updated);
       routines.update(list => list.map(row => (row.id === job.id ? normalized : row)));
-      void refreshRoutineOccurrences();
+      if (!workspaceId) void refreshRoutineOccurrences();
     } else {
-      await loadRoutines();
+      await loadRoutines(workspaceId);
     }
+    if (scope !== routineScopeKey()) return;
     const statusMsg = !job.enabled
       ? tr("routines.store.resumed", { name: job.name })
       : tr("routines.store.paused", { name: job.name });
     routinesNotice.set(statusMsg);
     pushToast(statusMsg, "success");
   } catch (error) {
-    routinesError.set(error instanceof Error ? error.message : String(error));
+    if (scope === routineScopeKey()) routinesError.set(error instanceof Error ? error.message : String(error));
   } finally {
-    routinesBusy.set(false);
+    if (scope === routineScopeKey()) routinesBusy.set(false);
   }
 }
 
-export function openCreateRoutineDraft(): void {
+export function openCreateRoutineDraft(assistantWorkspace?: CronWorkspaceRef): void {
   routineFormError.set("");
   routinesNotice.set("");
-  routineDraft.set(makeEmptyDraft());
+  const draft = makeEmptyDraft();
+  routineDraft.set(assistantWorkspace ? {
+    ...draft,
+    assistantWorkspace,
+    workspaceId: assistantWorkspace.workspaceId ?? "",
+    agentType: "Claw",
+  } : draft);
   editorOpen.set(true);
   scheduleDraftPreview(0);
 }
 
-export function openEditRoutineDraft(job: CronJobRecord): void {
+export function openEditRoutineDraft(job: CronJobRecord, assistantWorkspace?: CronWorkspaceRef): void {
   routineFormError.set("");
   routinesNotice.set("");
   let scheduleKind: RoutineScheduleKind = "every";
@@ -742,8 +783,9 @@ export function openEditRoutineDraft(job: CronJobRecord): void {
     workspaces().find(w => w.rootPath === job.target.workspace.workspacePath)?.id ||
     activeWorkspaceId() ||
     "";
-  const agentType =
-    job.target.kind === "workspace" ? job.target.launch.agentType || "Standard" : "Standard";
+  const agentType = job.target.kind === "workspace"
+    ? job.target.launch.agentType || "Standard"
+    : assistantWorkspace ? "Claw" : "Standard";
   const rawPolicy = job.reportPolicy;
   const reportPolicy: RoutineReportPolicy =
     rawPolicy === "always" || rawPolicy === "conditional" ? rawPolicy : "inherit";
@@ -761,7 +803,9 @@ export function openEditRoutineDraft(job: CronJobRecord): void {
     agentType,
     reportPolicy,
     enabled: job.enabled,
-    preservedTarget: job.target.kind === "session" ? job.target : null,
+    preservedTarget: assistantWorkspace || job.target.kind === "session" ? job.target : null,
+    assistantWorkspace,
+    originalSchedule: job.schedule,
     targetKind: job.target.kind,
     sessionId: job.target.kind === "session" ? job.target.sessionId : "",
     remoteConnectionId: job.target.workspace.remoteConnectionId ?? null,
@@ -780,39 +824,34 @@ const SCHEDULE_DRAFT_FIELDS: ReadonlyArray<keyof RoutineDraft> = [
 ];
 
 export function updateRoutineDraft(patch: Partial<RoutineDraft>): void {
-  routineDraft.update(current => ({ ...current, ...patch }));
-  if (SCHEDULE_DRAFT_FIELDS.some(field => field in patch)) scheduleDraftPreview();
+  const scheduleChanged = SCHEDULE_DRAFT_FIELDS.some(field => field in patch);
+  routineDraft.update(current => ({
+    ...current,
+    ...(scheduleChanged ? { originalSchedule: undefined } : {}),
+    ...(current.assistantWorkspace && ("targetKind" in patch || "sessionId" in patch)
+      ? { preservedTarget: null }
+      : {}),
+    ...patch,
+  }));
+  if (scheduleChanged) scheduleDraftPreview();
 }
 
 export function closeRoutineEditor(): void {
+  if (draftPreviewTimer) clearTimeout(draftPreviewTimer);
+  draftPreviewTimer = null;
+  draftPreviewTicket++;
   routineFormError.set("");
   editorOpen.set(false);
 }
 
 export async function saveRoutineDraft(): Promise<void> {
   const draft = routineDraft();
+  const scope = routineScopeKey();
+  const workspaceId = scopedWorkspaceId;
+  const options = workspaceId ? { target: deviceContext() || undefined } : undefined;
   const name = draft.name.trim();
   const text = draft.prompt.trim();
   const schedule = draftSchedule(draft);
-
-  // The scheduler's own rules decide; a host without the check still refuses
-  // an invalid job in create/update, whose error is shown as it comes.
-  try {
-    const verdict = await invokeCommand<{
-      valid?: boolean;
-      issues?: Array<{ code?: string; message?: string }>;
-    }>("validate_cron_job_draft", { name, payload: { text }, schedule });
-    const issue = verdict?.valid === false ? verdict.issues?.[0] : undefined;
-    if (issue) {
-      routineFormError.set(routineIssueText(issue.code ?? "", issue.message ?? ""));
-      return;
-    }
-  } catch (error) {
-    if (!isCommandUnavailable(error, "validate_cron_job_draft")) {
-      routineFormError.set(error instanceof Error ? error.message : String(error));
-      return;
-    }
-  }
 
   const wsRecord =
     workspaces().find(w => w.id === draft.workspaceId) ??
@@ -820,7 +859,7 @@ export async function saveRoutineDraft(): Promise<void> {
     workspaces()[0] ??
     null;
 
-  if (!draft.preservedTarget && !wsRecord) {
+  if (!draft.preservedTarget && !draft.assistantWorkspace && !wsRecord) {
     routineFormError.set(tr("routines.store.selectWorkspace"));
     return;
   }
@@ -833,14 +872,14 @@ export async function saveRoutineDraft(): Promise<void> {
   const wsIsRemote = isRemoteWorkspace(wsRecord);
   const remoteConnectionId = wsIsRemote ? (wsRecord?.connectionId ?? draft.remoteConnectionId ?? undefined) : undefined;
   const remoteSshHost = wsIsRemote ? (wsRecord?.sshHost ?? draft.remoteSshHost ?? undefined) : undefined;
-  const workspaceRef: CronWorkspaceRef | null = wsRecord
+  const workspaceRef: CronWorkspaceRef | null = draft.assistantWorkspace ?? (wsRecord
     ? {
         workspaceId: wsRecord.id,
         workspacePath: wsRecord.rootPath,
         ...(remoteConnectionId ? { remoteConnectionId } : {}),
         ...(remoteSshHost ? { remoteSshHost } : {}),
       }
-    : null;
+    : null);
 
   const target: CronJobTarget = draft.preservedTarget
     ? draft.preservedTarget
@@ -867,6 +906,21 @@ export async function saveRoutineDraft(): Promise<void> {
   routinesBusy.set(true);
   routinesError.set("");
   try {
+    // Older hosts validate within create/update instead.
+    const verdict = await invokeCommand<{
+      valid?: boolean;
+      issues?: Array<{ code?: string; message?: string }>;
+    }>("validate_cron_job_draft", { name, payload: { text }, schedule }, options).catch(error => {
+      if (!isCommandUnavailable(error, "validate_cron_job_draft")) throw error;
+      return undefined;
+    });
+    if (scope !== routineScopeKey() || !editorOpen() || routineDraft() !== draft) return;
+    const issue = verdict?.valid === false ? verdict.issues?.[0] : undefined;
+    if (issue) {
+      routineFormError.set(routineIssueText(issue.code ?? "", issue.message ?? ""));
+      return;
+    }
+
     if (draft.editingJobId) {
       const updated = await invokeCommand<Record<string, unknown>>("update_cron_job", {
         jobId: draft.editingJobId,
@@ -876,16 +930,18 @@ export async function saveRoutineDraft(): Promise<void> {
         enabled: draft.enabled,
         ...reportPolicyPayload,
         target,
-      });
+      }, options);
+      if (scope !== routineScopeKey()) return;
       if (updated && typeof updated === "object" && (updated.id || updated.jobId)) {
         const normalized = normalizeJob(updated);
         routines.update(list =>
           list.map(row => (row.id === draft.editingJobId ? normalized : row)),
         );
-        void refreshRoutineOccurrences();
+        if (!workspaceId) void refreshRoutineOccurrences();
       } else {
-        await loadRoutines();
+        await loadRoutines(workspaceId);
       }
+      if (scope !== routineScopeKey()) return;
       const updatedMsg = tr("routines.store.updated", { name });
       routinesNotice.set(updatedMsg);
       pushToast(updatedMsg, "success");
@@ -897,25 +953,28 @@ export async function saveRoutineDraft(): Promise<void> {
         enabled: draft.enabled,
         ...reportPolicyPayload,
         target,
-      });
+      }, options);
+      if (scope !== routineScopeKey()) return;
       if (created && typeof created === "object" && (created.id || created.jobId)) {
         const normalized = normalizeJob(created);
         routines.update(list => [normalized, ...list]);
-        void refreshRoutineOccurrences();
+        if (!workspaceId) void refreshRoutineOccurrences();
       } else {
-        await loadRoutines();
+        await loadRoutines(workspaceId);
       }
+      if (scope !== routineScopeKey()) return;
       const createdMsg = tr("routines.store.created", { name });
       routinesNotice.set(createdMsg);
       pushToast(createdMsg, "success");
     }
-    editorOpen.set(false);
+    if (routineDraft() === draft) closeRoutineEditor();
   } catch (error) {
+    if (scope !== routineScopeKey()) return;
     const errMsg = error instanceof Error ? error.message : String(error);
     routineFormError.set(errMsg);
     pushToast(errMsg, "error");
   } finally {
-    routinesBusy.set(false);
+    if (scope === routineScopeKey()) routinesBusy.set(false);
   }
 }
 
@@ -928,22 +987,26 @@ export function cancelDeleteRoutine(): void {
 }
 
 export async function confirmDeleteRoutine(jobId: string): Promise<void> {
+  const scope = routineScopeKey();
+  const options = scopedWorkspaceId ? { target: deviceContext() || undefined } : undefined;
   routinesBusy.set(true);
   routinesError.set("");
   try {
-    await invokeCommand<boolean>("delete_cron_job", { jobId });
+    await invokeCommand<boolean>("delete_cron_job", { jobId }, options);
+    if (scope !== routineScopeKey()) return;
     routines.update(list => list.filter(item => item.id !== jobId));
     confirmingDeleteRoutineId.set(null);
     if (routineDraft().editingJobId === jobId) {
-      editorOpen.set(false);
+      closeRoutineEditor();
     }
     routinesNotice.set(tr("routines.store.deleted"));
     pushToast(tr("routines.store.deleted"), "success");
   } catch (error) {
+    if (scope !== routineScopeKey()) return;
     const errMsg = error instanceof Error ? error.message : String(error);
     routinesError.set(errMsg);
     pushToast(errMsg, "error");
   } finally {
-    routinesBusy.set(false);
+    if (scope === routineScopeKey()) routinesBusy.set(false);
   }
 }

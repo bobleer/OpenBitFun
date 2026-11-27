@@ -10,14 +10,18 @@ import {
   updateSessionModel,
   updateSessionModelTarget,
   type ModelCatalogEntry,
+  type ModelCatalog,
   type ReasoningCatalogProjection,
+  type ReasoningPresetDescriptor,
   type SessionModelTargetResponse,
 } from "./api";
 import { entryDeviceId, fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { FLEET_INDEX_CHANGED_EVENT } from "./fleetTypes";
+import { tr } from "./i18n";
 import {
   loadModels as loadStoredModels,
   onDefaultModelsChanged,
+  saveModelContextWindow,
   storedModels,
   type StoredModel,
 } from "./modelSettingsStore";
@@ -26,6 +30,7 @@ import {
   activeSessionId,
   activeSessionKey,
   activeWorkspaceId,
+  deviceContext,
   deviceOfSession,
   onSessionCreated,
   onWorkspaceChanged,
@@ -96,6 +101,13 @@ function catalogDeviceId(): string | undefined {
 let fleetModelsTicket = 0;
 let fleetModelsFollowing = false;
 
+export async function readFleetModelsForDevice(deviceId?: string): Promise<FleetModelsDevice[] | null> {
+  if (!fleetActive()) return null;
+  const owner = deviceId && deviceId !== entryDeviceId() ? deviceId : undefined;
+  const answer = await invokeCommand<{ devices?: FleetModelsDevice[] }>("fleet_models", owner ? { deviceId: owner } : {});
+  return Array.isArray(answer?.devices) && answer.devices.length ? answer.devices : null;
+}
+
 /**
  * Reads `fleet_models` for the open session. A host that does not answer it
  * (signed out, no fleet, an older build) keeps the local-only list.
@@ -114,12 +126,9 @@ export async function refreshFleetModels(): Promise<void> {
   }
   const deviceId = catalogDeviceId();
   try {
-    const answer = await invokeCommand<{ devices?: FleetModelsDevice[] }>(
-      "fleet_models",
-      deviceId ? { deviceId } : {},
-    );
+    const answer = await readFleetModelsForDevice(deviceId);
     if (ticket !== fleetModelsTicket) return;
-    fleetModelGroups.set(Array.isArray(answer?.devices) && answer.devices.length > 0 ? answer.devices : null);
+    fleetModelGroups.set(answer);
   } catch {
     if (ticket === fleetModelsTicket) fleetModelGroups.set(null);
   }
@@ -140,6 +149,7 @@ export interface ModelOption {
   id: string;
   /** Stable config entry ID from `RemoteModelConfig.id`. */
   configId: string;
+  configName: string;
   /** Upstream model identifier (`RemoteModelConfig.model_name`). */
   modelName: string;
   /** What the picker shows first (the host's `label`). */
@@ -169,6 +179,8 @@ const sessionWriteGen: Record<string, number> = {};
 /** `sessionKey`s whose `get_session_model_target` has already been read for this workspace. */
 const targetReadFor = new Set<string>();
 let modelEventsSubscribed = false;
+let modelScopeRevision = 0;
+let modelCatalogTicket = 0;
 
 function bumpWriteGen(key: string): number {
   const next = (sessionWriteGen[key] ?? 0) + 1;
@@ -330,10 +342,13 @@ export function modelIdForSession(sessionId: string | null, deviceId?: string): 
 export function modelTextForSession(sessionId: string | null, deviceId?: string): { label: string; detail: string } {
   const id = modelIdForSession(sessionId, deviceId);
   if (!id) return { label: "default model", detail: "" };
-  const remote = fleetChoiceOf(id);
-  if (remote) {
-    const text = fleetModelText(remote.choice);
-    return remote.device.isThisDevice ? text : { label: `${text.label} · ${remote.device.name}`, detail: text.detail };
+  const sessionDevice = deviceId ?? activeSessionDevice();
+  const owner = modelCatalogTarget(id, sessionDevice);
+  const device = fleetModelGroups()?.find(group => group.deviceId === owner.deviceId);
+  const choice = device?.models.find(model => model.modelId === owner.modelId);
+  if (device && choice) {
+    const text = fleetModelText(choice);
+    return owner.deviceId === sessionDevice ? text : { label: `${text.label} · ${device.name}`, detail: text.detail };
   }
   const match = findOption(id);
   if (match) return { label: match.label, detail: match.detail };
@@ -371,7 +386,7 @@ function projectionToChoices(projection: ReasoningCatalogProjection | null | und
   return (projection.presets ?? [])
     .filter(preset => preset && preset.id)
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-    .map(preset => ({ id: preset.id, label: preset.label || preset.id }));
+    .map(preset => ({ ...preset, label: preset.label || preset.id, actions: preset.actions ?? [] }));
 }
 
 /** Loads the catalog once per workspace; the composer asks on mount. */
@@ -385,26 +400,19 @@ export function ensureModelsLoaded(): void {
 }
 
 export async function loadModels(): Promise<void> {
+  const deviceId = deviceContext();
+  const scope = modelScopeRevision;
+  const ticket = ++modelCatalogTicket;
   await runStep(
     async () => {
-      const catalog = await getModelCatalog();
-      const rawEntries = (catalog?.models ?? []).filter(
-        entry => entry && entry.enabled !== false && (entry.id || entry.model_name),
-      );
+      const catalog = await getModelCatalog({ target: deviceId || undefined });
+      if (ticket !== modelCatalogTicket || scope !== modelScopeRevision || deviceId !== deviceContext()) return;
+      const { rawEntries, options } = modelOptionsFromCatalog(catalog);
       const primaryRef = catalog?.default_models?.primary ?? null;
       // Backend snapshots new sessions from `ai.agent_model_selections.mode`
       // (`mode_default_model_id`), falling back to `default_models.primary` on
       // older hosts that omit the field.
       const preferred = catalog?.mode_default_model_id ?? primaryRef;
-      // Real Rust `get_ai_model_catalog` keys `default_models.primary` and
-      // `update_session_model` by `entry.id` (config ID). Legacy mock fixtures
-      // occasionally point `default_models.primary` at `entry.model_name` while
-      // using a distinct `entry.id`; detect that shape without breaking real hosts.
-      const legacyModelNameKeying = Boolean(
-        primaryRef && rawEntries.some(entry => entry.model_name === primaryRef && entry.id !== primaryRef),
-      );
-
-      const options = rawEntries.map(entry => optionOf(entry, legacyModelNameKeying));
       models.set(options);
       defaultModels.set({ ...(catalog?.default_models ?? {}) });
 
@@ -414,7 +422,7 @@ export async function loadModels(): Promise<void> {
       for (let index = 0; index < rawEntries.length; index += 1) {
         const choices = projectionToChoices(rawEntries[index].reasoning);
         if (choices !== null) {
-          embeddedReasoning[options[index].id] = choices;
+          embeddedReasoning[reasoningCacheKey(options[index].id, deviceId)] = choices;
         }
       }
       if (Object.keys(embeddedReasoning).length > 0) {
@@ -430,6 +438,19 @@ export async function loadModels(): Promise<void> {
   );
 }
 
+function modelOptionsFromCatalog(catalog: ModelCatalog | null | undefined) {
+  const rawEntries = (catalog?.models ?? []).filter(entry => entry && entry.enabled !== false && (entry.id || entry.model_name));
+  const primaryRef = catalog?.default_models?.primary;
+  // A legacy catalog can address its default by model name while real hosts key the update by config ID.
+  const legacyModelNameKeying = Boolean(primaryRef && rawEntries.some(entry => entry.model_name === primaryRef && entry.id !== primaryRef));
+  return { rawEntries, options: rawEntries.map(entry => optionOf(entry, legacyModelNameKeying)) };
+}
+
+export async function readChatModelsForDevice(deviceId: string): Promise<ModelOption[]> {
+  const catalog = await getModelCatalog({ target: deviceId || undefined });
+  return modelOptionsFromCatalog(catalog).options.filter(option => option.chat);
+}
+
 function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): ModelOption {
   const capabilities = Array.isArray(entry.capabilities) ? entry.capabilities : [];
   const configId = entry.id || entry.model_name;
@@ -437,6 +458,7 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
   return {
     id: legacyModelNameKeying ? modelName : configId,
     configId,
+    configName: entry.name || "",
     modelName,
     // The host labels each model; a host from before the rule sends no label,
     // and its entries read as they were shown then.
@@ -460,12 +482,16 @@ export async function chooseModel(modelId: string, target?: SessionModelTarget):
   const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
   modelPickerOpen.set(false);
   if (!sessionId || !key) return;
-  const resolved = findOption(modelId)?.id ?? modelId;
+  const release = beginModelSave(key);
+  if (!release) return;
+  const route = { target: deviceId || undefined };
+  const resolved = deviceId === deviceContext() ? findOption(modelId)?.id ?? modelId : modelId;
   const wasPool = Boolean(sessionPoolIds()[key]);
   const currentReasoning = reasoningIdForSession(sessionId, deviceId);
-  const keepReasoning = reasoningOfferedFor(resolved, currentReasoning);
+  const keepReasoning = reasoningOfferedFor(resolved, deviceId, currentReasoning);
   const preset = keepReasoning ? currentReasoning : null;
-  bumpWriteGen(key);
+  const scope = modelScopeRevision;
+  const write = bumpWriteGen(key);
   await runStep(async () => {
     if (wasPool) {
       await updateSessionModelTarget({
@@ -473,7 +499,7 @@ export async function chooseModel(modelId: string, target?: SessionModelTarget):
         selection: { kind: "model", model_ref: resolved },
         ...(workspaceId ? { workspaceId } : {}),
         includeInternal: false,
-      });
+      }, route);
       if (keepReasoning && preset !== null) {
         await updateSessionModel({
           sessionId,
@@ -481,7 +507,7 @@ export async function chooseModel(modelId: string, target?: SessionModelTarget):
           reasoningPreset: preset,
           ...(workspaceId ? { workspaceId } : {}),
           includeInternal: false,
-        });
+        }, route);
       }
     } else {
       await updateSessionModel({
@@ -492,25 +518,152 @@ export async function chooseModel(modelId: string, target?: SessionModelTarget):
         ...(keepReasoning ? { reasoningPreset: preset } : {}),
         ...(workspaceId ? { workspaceId } : {}),
         includeInternal: false,
-      });
+      }, route);
     }
+    if (scope !== modelScopeRevision || sessionWriteGen[key] !== write) return;
     targetReadFor.add(key);
     setSessionModelBinding(key, sessionId, resolved, null);
     if (!keepReasoning) applyReasoningToSession(key, null);
-  });
+  }).finally(release);
 }
 
 /** One reasoning setting a model offers, as the composer draws it. */
-export interface ReasoningChoice {
-  id: string;
-  label: string;
+export type ReasoningChoice = ReasoningPresetDescriptor;
+
+export function reasoningEffort(preset: ReasoningChoice): string | undefined {
+  if (preset.effective_effort) return preset.effective_effort;
+  if (preset.actions.some(action => action.type === "request_patch")) return undefined;
+  const toggle = preset.actions.find(action => action.type === "toggle");
+  if (toggle && !toggle.enabled) return "off";
+  const effort = preset.actions.find(action => action.type === "effort");
+  if (typeof effort?.value === "string") return effort.value;
+  if (preset.actions.some(action => action.type === "budget_tokens")) return undefined;
+  if (toggle) return "on";
+  return preset.source === "model_config" ? undefined : preset.id;
+}
+
+export function isAutomaticReasoning(preset: ReasoningChoice): boolean {
+  return ["on", "auto", "adaptive"].includes(reasoningEffort(preset) ?? "") &&
+    (preset.source !== "model_config" || ["on", "auto", "adaptive"].includes(preset.id));
+}
+
+export function reasoningPresetLabel(preset: ReasoningChoice): string {
+  if (isAutomaticReasoning(preset)) return tr("common.auto");
+  if (preset.source === "model_config") return preset.label;
+  switch (reasoningEffort(preset)) {
+    case "off": case "none": return tr("sessions.reasoningOff");
+    case "minimal": return tr("sessions.reasoningMinimal");
+    case "low": return tr("sessions.reasoningLow");
+    case "medium": return tr("sessions.reasoningMedium");
+    case "high": return tr("sessions.reasoningHigh");
+    case "xhigh": return tr("sessions.reasoningExtraHigh");
+    case "max": return tr("sessions.reasoningMax");
+    default: return preset.label;
+  }
 }
 
 /** `sessionKey` → the reasoning setting the host reported or this surface wrote. */
 export const sessionReasoning = signal<Record<string, string | null>>({});
-/** Model id → the settings that model offers; `null` before the host answered. */
-export const reasoningByModel = signal<Record<string, ReasoningChoice[] | null>>({});
+/** Device and model id → offered settings; `null` while that owner answers. */
+const reasoningByModel = signal<Record<string, ReasoningChoice[] | null>>({});
 export const reasoningPickerOpen = signal(false);
+const modelSaves = signal<ReadonlySet<string>>(new Set());
+const reasoningLoads = new Map<string, Promise<void>>();
+
+function beginModelSave(key: string): (() => void) | null {
+  if (modelSaves().has(key)) return null;
+  modelSaves.update(pending => new Set([...pending, key]));
+  return () => modelSaves.update(pending => {
+    const next = new Set(pending);
+    next.delete(key);
+    return next;
+  });
+}
+
+function modelCatalogTarget(modelId: string, deviceId: string): { modelId: string; deviceId: string } {
+  const fleet = /^fleet:([^/]+)\/(.+)$/.exec(modelId);
+  return fleet ? { deviceId: fleet[1], modelId: fleet[2] } : { deviceId, modelId };
+}
+
+function reasoningCacheKey(modelId: string, deviceId: string): string {
+  const owner = modelCatalogTarget(modelId, deviceId);
+  return JSON.stringify([owner.deviceId, owner.modelId]);
+}
+
+export interface ModelContextView {
+  key: string;
+  modelId: string;
+  configId: string;
+  deviceId: string;
+  contextWindow?: number;
+  editable: boolean;
+}
+
+export function modelContextOf(ref: string | null, deviceId: string): ModelContextView | null {
+  if (!ref) return null;
+  const owner = modelCatalogTarget(ref, deviceId);
+  const local = owner.deviceId === deviceContext() ? findOption(owner.modelId) : undefined;
+  const device = fleetModelGroups()?.find(group => group.deviceId === owner.deviceId);
+  const projected = device?.models.find(model => model.modelId === owner.modelId || model.modelId === local?.configId);
+  const configId = local?.configId || projected?.modelId || "";
+  return {
+    key: JSON.stringify([owner.deviceId, configId || owner.modelId]), modelId: owner.modelId, configId, deviceId: owner.deviceId,
+    contextWindow: local?.contextWindow ?? projected?.contextWindow,
+    editable: Boolean(configId && (device ? device.online && projected?.selectable : local?.chat)),
+  };
+}
+
+export function modelContextForSession(target?: SessionModelTarget): ModelContextView | null {
+  const { sessionId, deviceId, key } = resolveTarget(target);
+  const context = modelContextOf(modelIdForSession(sessionId, deviceId), deviceId || deviceContext());
+  if (context && key && sessionPoolIds()[key]) return { ...context, editable: false };
+  return context;
+}
+
+const savingContexts = signal<ReadonlySet<string>>(new Set());
+
+export function modelContextPending(context: ModelContextView | null): boolean {
+  return Boolean(context && savingContexts().has(context.key));
+}
+
+export async function saveComposerModelContext(context: ModelContextView, capacity: number) {
+  if (!context.editable || modelContextPending(context)) throw new Error(tr("sessions.modelContextSaveFailed"));
+  savingContexts.update(keys => new Set([...keys, context.key]));
+  const scope = modelScopeRevision;
+  try {
+    const saved = await saveModelContextWindow(context.deviceId, context.configId, capacity);
+    if (context.deviceId === deviceContext() && models().some(option => option.configId === context.configId)) {
+      modelCatalogTicket += 1;
+      models.update(options => options.map(option => option.configId === context.configId
+        ? { ...option, contextWindow: saved.contextWindow } : option));
+    }
+    const groups = fleetModelGroups();
+    if (groups?.some(device => device.deviceId === context.deviceId)) {
+      fleetModelsTicket += 1;
+      fleetModelGroups.set(groups.map(device => device.deviceId === context.deviceId ? {
+        ...device,
+        models: device.models.map(model => model.modelId === context.configId
+          ? { ...model, contextWindow: saved.contextWindow } : model),
+      } : device));
+    }
+    // The host compiles its reasoning presets against the model's output limit.
+    // The context edit can lower that limit, so the open picker needs fresh options.
+    const presetKeys = [...new Set([context.modelId, context.configId].map(id => reasoningCacheKey(id, context.deviceId)))];
+    if (scope === modelScopeRevision && presetKeys.some(key => reasoningByModel()[key] !== undefined)) {
+      const choices = await reasoningChoicesFor(context.configId, context.deviceId, true).catch(() => [] as ReasoningChoice[]);
+      if (scope === modelScopeRevision) {
+        reasoningByModel.update(current => ({ ...current, ...Object.fromEntries(presetKeys.map(key => [key, choices])) }));
+      }
+    }
+    return saved;
+  } finally {
+    savingContexts.update(keys => {
+      const next = new Set(keys);
+      next.delete(context.key);
+      return next;
+    });
+  }
+}
 
 /**
  * `sessionKey` → the model whose reasoning was already read. The composer's effect
@@ -526,16 +679,17 @@ export function reasoningIdForSession(sessionId: string | null, deviceId?: strin
 }
 
 export function reasoningChoicesForSession(sessionId: string | null, deviceId?: string): ReasoningChoice[] {
+  if (sessionId && sessionPoolIds()[sessionKey(sessionId, deviceId ?? activeSessionDevice())]) return [];
   const modelId = modelIdForSession(sessionId, deviceId);
   if (!modelId) return [];
-  return reasoningByModel()[modelId] ?? [];
+  return reasoningByModel()[reasoningCacheKey(modelId, deviceId ?? activeSessionDevice())] ?? [];
 }
 
 export function reasoningLabelForSession(sessionId: string | null, deviceId?: string): string {
   const id = reasoningIdForSession(sessionId, deviceId);
-  if (!id) return "Default";
+  if (!id) return tr("common.auto");
   const match = reasoningChoicesForSession(sessionId, deviceId).find(choice => choice.id === id);
-  return match ? match.label : id;
+  return match ? reasoningPresetLabel(match) : id;
 }
 
 /**
@@ -555,8 +709,8 @@ export const activeReasoningLabel = computed<string>(() =>
   reasoningLabelForSession(activeSessionId(), activeSessionDevice()),
 );
 
-function reasoningOfferedFor(modelId: string, presetId: string | null = activeReasoningId()): boolean {
-  const choices = reasoningByModel()[modelId];
+function reasoningOfferedFor(modelId: string, deviceId: string, presetId: string | null): boolean {
+  const choices = reasoningByModel()[reasoningCacheKey(modelId, deviceId)];
   // Until the host answers, the pair is left alone: sending a preset it may not
   // know would make the model change fail, which is worse than not carrying it.
   if (choices === null || choices === undefined) return false;
@@ -577,6 +731,8 @@ function applyReasoningToSession(key: string, preset: string | null): void {
 export async function ensureReasoningLoaded(target?: SessionModelTarget): Promise<void> {
   const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
   if (!sessionId || !key) return;
+  const pending = reasoningLoads.get(key);
+  if (pending) return pending;
   const needTarget = !targetReadFor.has(key);
   const initialModelId = modelIdForSession(sessionId, deviceId);
   const needReasoningForInitial =
@@ -584,15 +740,17 @@ export async function ensureReasoningLoaded(target?: SessionModelTarget): Promis
   if (!needTarget && !needReasoningForInitial) return;
 
   if (needTarget) targetReadFor.add(key);
+  const scope = modelScopeRevision;
   const writeGenBefore = sessionWriteGen[key] ?? 0;
 
-  await runStep(
+  const loading = runStep(
     async () => {
       if (needTarget) {
         const result = await getSessionModelTarget({
           sessionId,
           ...(workspaceId ? { workspaceId } : {}),
-        }).catch(() => null);
+        }, { target: deviceId || undefined }).catch(() => null);
+        if (scope !== modelScopeRevision) return;
         // Never overwrite an explicit user pick made while this read was in flight.
         if (result && (sessionWriteGen[key] ?? 0) === writeGenBefore) {
           const { modelRef, poolId } = extractTargetModel(result);
@@ -609,22 +767,44 @@ export async function ensureReasoningLoaded(target?: SessionModelTarget): Promis
 
       const effectiveModelId = modelIdForSession(sessionId, deviceId);
       if (!effectiveModelId) return;
-      if (reasoningReadFor[key] === effectiveModelId && reasoningByModel()[effectiveModelId] !== undefined) {
+      const cacheKey = reasoningCacheKey(effectiveModelId, deviceId);
+      if (reasoningReadFor[key] === effectiveModelId && reasoningByModel()[cacheKey] !== undefined) {
         return;
       }
       reasoningReadFor[key] = effectiveModelId;
-      if (reasoningByModel()[effectiveModelId] === undefined) {
-        reasoningByModel.update(current => ({ ...current, [effectiveModelId]: null }));
-        const choices = await reasoningChoicesFor(effectiveModelId).catch(() => [] as ReasoningChoice[]);
-        reasoningByModel.update(current => ({ ...current, [effectiveModelId]: choices }));
+      if (reasoningByModel()[cacheKey] === undefined) {
+        reasoningByModel.update(current => ({ ...current, [cacheKey]: null }));
+        const choices = await reasoningChoicesFor(effectiveModelId, deviceId).catch(() => [] as ReasoningChoice[]);
+        if (scope === modelScopeRevision && reasoningByModel()[cacheKey] === null) {
+          reasoningByModel.update(current => ({ ...current, [cacheKey]: choices }));
+        }
       }
     },
     { trackBusy: false, clearError: false },
   );
+  reasoningLoads.set(key, loading);
+  try { await loading; }
+  finally { if (reasoningLoads.get(key) === loading) reasoningLoads.delete(key); }
 }
 
 /** The presets a model's provider compiles its reasoning into (fallback when catalog omitted `reasoning`). */
-async function reasoningChoicesFor(modelId: string): Promise<ReasoningChoice[]> {
+async function reasoningChoicesFor(modelId: string, deviceId: string, refreshCatalog = false): Promise<ReasoningChoice[]> {
+  const owner = modelCatalogTarget(modelId, deviceId);
+  const route = { target: owner.deviceId || undefined };
+  const remoteOwner = owner.deviceId !== deviceContext();
+  if (remoteOwner || refreshCatalog) {
+    const catalog = await getModelCatalog(route);
+    const entry = catalog?.models?.find(model => model.id === owner.modelId || model.model_name === owner.modelId);
+    if (!entry) return [];
+    const choices = projectionToChoices(entry.reasoning);
+    if (choices !== null) return choices;
+    if (remoteOwner) {
+      return projectionToChoices(await projectAiModelReasoningCatalog({
+        provider: entry.provider, modelName: entry.model_name, baseUrl: entry.base_url ?? "",
+        contextWindow: entry.context_window, reasoning: {},
+      }, route)) ?? [];
+    }
+  }
   const entry = await storedModelEntry(modelId);
   if (entry) {
     const block = entry.reasoning;
@@ -635,7 +815,7 @@ async function reasoningChoicesFor(modelId: string): Promise<ReasoningChoice[]> 
       ...(typeof entry.context_window === "number" ? { contextWindow: entry.context_window } : {}),
       ...(typeof entry.max_tokens === "number" ? { maxTokens: entry.max_tokens } : {}),
       reasoning: block && typeof block === "object" ? (block as Record<string, unknown>) : {},
-    });
+    }, route);
     return projectionToChoices(projection) ?? [];
   }
   const fleetMatch = fleetChoiceOf(modelId);
@@ -646,7 +826,7 @@ async function reasoningChoicesFor(modelId: string): Promise<ReasoningChoice[]> 
     baseUrl: "",
     ...(typeof fleetMatch.choice.contextWindow === "number" ? { contextWindow: fleetMatch.choice.contextWindow } : {}),
     reasoning: {},
-  });
+  }, route);
   return projectionToChoices(projection) ?? [];
 }
 
@@ -678,28 +858,37 @@ async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
 }
 
 /** Sets the reasoning the next turn runs at, alongside the model it is bound to. */
-export async function chooseReasoning(presetId: string | null, target?: SessionModelTarget): Promise<void> {
+export function modelChangePending(target?: SessionModelTarget): boolean {
+  const { key } = resolveTarget(target);
+  return key !== null && modelSaves().has(key);
+}
+
+export async function chooseReasoning(presetId: string | null, target?: SessionModelTarget): Promise<boolean> {
   const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
-  reasoningPickerOpen.set(false);
-  if (!sessionId || !key) return;
-  // Ensure the session's authoritative model has been read before writing the pair,
-  // so changing reasoning never overwrites the session's real model with a default.
-  if (!targetReadFor.has(key)) {
-    await ensureReasoningLoaded(target);
-  }
-  const modelId = modelIdForSession(sessionId, deviceId);
-  if (!modelId) return;
-  bumpWriteGen(key);
-  await runStep(async () => {
+  if (!sessionId || !key) return false;
+  const release = beginModelSave(key);
+  if (!release) return false;
+  const pinned = { sessionId, deviceId, workspaceId };
+  const scope = modelScopeRevision;
+  try {
+    await ensureReasoningLoaded(pinned);
+    const modelId = modelIdForSession(sessionId, deviceId);
+    if (!modelId || sessionPoolIds()[key] || scope !== modelScopeRevision) return false;
+    if (presetId === reasoningIdForSession(sessionId, deviceId)) return true;
+    if (presetId !== null && !reasoningOfferedFor(modelId, deviceId, presetId)) return false;
+    const write = bumpWriteGen(key);
     await updateSessionModel({
       sessionId,
       modelName: modelId,
       reasoningPreset: presetId,
       ...(workspaceId ? { workspaceId } : {}),
       includeInternal: false,
-    });
-    applyReasoningToSession(key, presetId);
-  });
+    }, { target: deviceId || undefined });
+    if (scope === modelScopeRevision && sessionWriteGen[key] === write) applyReasoningToSession(key, presetId);
+    return true;
+  } finally {
+    release();
+  }
 }
 
 onSessionCreated(({ sessionId, deviceId, modelId }) => {
@@ -713,6 +902,7 @@ onDefaultModelsChanged(() => {
 });
 
 onWorkspaceChanged(() => {
+  modelScopeRevision += 1;
   models.set([]);
   defaultModels.set({});
   defaultModelId.set(null);
@@ -725,6 +915,7 @@ onWorkspaceChanged(() => {
   reasoningPickerOpen.set(false);
   sessionReasoning.set({});
   reasoningByModel.set({});
+  reasoningLoads.clear();
   targetReadFor.clear();
   for (const key of Object.keys(reasoningReadFor)) delete reasoningReadFor[key];
   for (const key of Object.keys(sessionWriteGen)) delete sessionWriteGen[key];

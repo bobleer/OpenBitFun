@@ -119,16 +119,16 @@ test("seq-numbered events reach the scenes once, and positional commands stay un
   await app.waitFor("Message");
 
   await app.host.send("openbitfun.wireEvents", wire.batch([{ seq: 7, ...question("tool-w1", "Deploy", "Ship it now?") }]));
-  await app.waitFor("Deploy: Ship it now?");
+  await app.waitFor("Ship it now?");
 
   // A replayed batch (same seq, as after a reconnect) is not delivered twice.
   await app.host.send("openbitfun.wireEvents", wire.batch([{ seq: 7, ...question("tool-w2", "Replay", "Seen before?") }]));
   await app.host.send("openbitfun.wireEvents", wire.batch([question("tool-w3", "Fresh", "Next one?")]));
-  await app.waitFor("Fresh: Next one?");
+  await app.waitFor("Next one?");
   expect(app.texts().some(text => text.includes("Seen before?"))).toBe(false);
 
-  await app.press("question-tool-w1-0-Yes");
-  await app.press("Send answer >> nth=0");
+  await app.press("id:question-tool-w1-0-Yes");
+  await app.press("id:question-send-tool-w1");
   await app.waitUntil(() => backend.userAnswers.length > 0);
   expect(backend.userAnswers[0]).toEqual({ toolId: "tool-w1", answers: { "0": "Yes" }, sessionId: "session-1" });
   // `submit_user_answers` is positional: its arguments travel unwrapped.

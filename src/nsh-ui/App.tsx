@@ -22,7 +22,6 @@ import {
   type ViewRef,
   untracked,
 } from "nsh";
-import { Input } from "nsh/base";
 import {
   backendConnection,
   closeWindow,
@@ -55,12 +54,15 @@ import {
   windowControlsRightInsetPx,
   windowMaximized,
   windowPlatform,
+  windowShellId,
 } from "./src/bridge";
 import { CaptionActionStrip, SceneCaptionInset } from "./src/ui/titleBar";
 import { installSystemBack } from "./src/navigationHistory";
 import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
-import { installControlPresenter } from "./src/controlPresenter";
+import { installControlPresenter, presentControlTarget, resolveControlDestination,
+  type ControlDestination, type ControlPresenterActions } from "./src/controlPresenter";
+import { capabilitySearchItems } from "./src/capabilitySearch";
 import { installServedBackend } from "./src/servedBackend";
 import { controllerPort } from "./src/controller/controllerPort";
 import { SessionActionDialogs } from "./src/ui/sessionActions";
@@ -74,14 +76,10 @@ import {
 } from "./src/controller/controllerStore";
 import { ControllerShell } from "./src/controller/ControllerShell";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
-import { basename, formatPlural } from "./src/format";
+import { basename } from "./src/format";
 import {
-  SUPPORTED_LOCALES,
-  currentLocale,
   isAuthRequiredError,
-  localeMeta,
   localizeHostError,
-  setAppLocale,
   tr,
   type MessageKey,
 } from "./src/i18n";
@@ -94,18 +92,22 @@ import {
 } from "./src/homeStore";
 import { pendingPermissions, startPermissionPrompts } from "./src/permissionStore";
 import { startQuestionPrompts } from "./src/userQuestionStore";
+import { loadBtwClosePreference, sideQuestionOpen } from "./src/btwStore";
 import {
   activeScene,
   activeSessionId,
   activeWorkspace,
   AUX_DEFAULT_HEIGHT,
+  AUX_DEFAULT_WIDTH,
   AUX_MAX_HEIGHT,
   AUX_MAX_WIDTH,
   AUX_MIN_HEIGHT,
   AUX_MIN_WIDTH,
+  auxPaneDisplayMode,
   auxPaneHeight,
   auxPaneMaximized,
   auxPaneOpen,
+  auxPaneOverlayWidth,
   auxPaneSide,
   auxPaneTab,
   auxPaneWidth,
@@ -145,9 +147,11 @@ import {
   splitPaneOpen,
   setAuxPaneHeight,
   setAuxPaneMaximized,
+  setAuxPaneOverlayWidth,
   setAuxPaneSide,
   setAuxPaneWidth,
   setNavWidth,
+  SESSION_PANE_MIN_WIDTH,
   swapAuxPanes,
   toggleAuxDockBottom,
   toggleAuxPane,
@@ -196,7 +200,7 @@ import { initAccountSync } from "./src/accountSyncStore";
 // wave24-replica: account records (agents, skills, routines, cards, pets, ...).
 import { initAccountRecords } from "./src/accountRecordsStore";
 import { keybindingOverrides, keystrokeReservedHere, loadKeybindings } from "./src/shortcutsStore"; // wave22-p5
-import { installSpaceAgentSurface } from "./src/spaceViewStore"; // wave22-p4
+import { closeSpacePage, installSpaceAgentSurface } from "./src/spaceViewStore"; // wave22-p4
 import { loadQueue } from "./src/queueStore";
 import { ensureSendPolicy } from "./src/sendPolicyStore";
 import { ensureQuickActions } from "./src/quickActionStore";
@@ -212,12 +216,7 @@ import {
   closeGlobalSearch,
   openGlobalSearch,
   runSearchItem,
-  searchBusy,
-  searchItems,
-  searchNotice,
   searchOpen,
-  searchQuery,
-  setSearchQuery,
   type SearchItem,
 } from "./src/globalSearchStore";
 import {
@@ -228,11 +227,11 @@ import {
   savedConnections,
 } from "./src/sshRemoteStore";
 import { Icon, type IconName } from "./src/ui/icons";
+import { GlobalSearchPanel } from "./src/ui/GlobalSearchPanel";
 import { ImageLightboxHost } from "./src/ui/ImageLightbox";
 import {
   MOTION_DURATION,
   SmoothSwap,
-  Spinner,
   drawerEnterMotion,
   paintTransition,
   pressTransition,
@@ -241,9 +240,6 @@ import {
 import {
   ContextMenuOverlay,
   DropdownMenu,
-  ListRowContent,
-  listRowHoverBg,
-  menuSurfaceStyle,
   ModalDialog,
   ToastHost,
   pushToast,
@@ -256,7 +252,6 @@ import {
   IconButton,
   InlineBanner,
   KbdHint,
-  PillChip,
   SplitHandle,
   StatusDot,
   TooltipBubble,
@@ -277,7 +272,7 @@ import {
   unreadNotificationCount,
 } from "./src/notificationStore";
 import { OpenBitFunScene } from "./src/scenes/OpenBitFunScene";
-import { SessionsScene } from "./src/scenes/SessionsScene";
+import { SessionsScene, SideQuestionCloseDialog } from "./src/scenes/SessionsScene";
 import { InboxScene, InboxSheet } from "./src/scenes/InboxScene";
 import { SessionListScene } from "./src/scenes/SessionListScene";
 import { DeviceActionDialogs } from "./src/deviceActions";
@@ -300,17 +295,17 @@ import { GitScene } from "./src/scenes/GitScene";
 import { TerminalScene } from "./src/scenes/TerminalScene";
 import { BrowserPageLayer, BrowserScene } from "./src/scenes/BrowserScene";
 import {
+  canOpenSettingsSearchTarget,
+  findSettingsHits,
   requestSettingsPage,
-  SETTINGS_PAGE_GROUPS,
-  SettingsNavigation,
   SettingsScene,
-  visibleSettingsPages,
-  type SettingsPageEntry,
 } from "./src/scenes/SettingsScene";
 import type { SettingsPageId } from "./src/settingsStore";
 // wave23-E: Super Agent gated off; the sidebar is the account's device → workspace → session tree.
 import { superAgentUi } from "./src/productGates";
 import { DeviceSidebarTree } from "./src/ui/deviceSidebar";
+import { SidebarRow } from "./src/ui/SidebarRow";
+import { SpaceShortcuts, spaceShortcutActive } from "./src/ui/SpaceShortcuts";
 import { newSessionHere } from "./src/deviceTree";
 
 // A page served by a backend connects back to it over OBP (before any command runs).
@@ -388,6 +383,14 @@ interface SearchCommandDef {
 }
 
 const SEARCH_COMMANDS: ReadonlyArray<SearchCommandDef> = [
+  {
+    id: "command:open-project", target: "", aliases: ["open project", "open folder"],
+    labelKey: "search.actionOpenProject", detailKey: "search.actionOpenProjectDetail",
+  },
+  {
+    id: "command:new-project", target: "", aliases: ["new project", "create project", "new workspace"],
+    labelKey: "search.actionNewProject", detailKey: "search.actionNewProjectDetail",
+  },
   {
     id: "command:new-session",
     target: "",
@@ -489,8 +492,6 @@ const SEARCH_COMMANDS: ReadonlyArray<SearchCommandDef> = [
 ];
 
 const studioGroupOpen = signal(true);
-const languageMenuOpen = signal(false);
-const languageTriggerRef = signal<ViewRef | null>(null);
 const appearanceMenuOpen = signal(false);
 const appearanceTriggerRef = signal<ViewRef | null>(null);
 const remoteMenuOpen = signal(false);
@@ -522,7 +523,7 @@ const unmountedSshHosts = computed(() => {
 
 /** The width the sidebar drag has reached, beyond the clamp, while a drag runs. */
 let navDragWidth: number | null = null;
-const DEFAULT_AUX_WIDTH = 460;
+const AUX_RESIZE_HANDLE_WIDTH = 9;
 
 /** Re-reads this device's id and the account after a sign-in. */
 function refreshAccountFacts(): void {
@@ -701,7 +702,7 @@ function sceneElementForGroup(group: string) {
     case "browser":
       return <BrowserScene />;
     default:
-      return <SessionsScene />;
+      return <SessionsScene overlayInset={sessionPanelOverlayInset} />;
   }
 }
 
@@ -722,58 +723,6 @@ function auxElementForTab(tab: string) {
 // The sidebar holds conversations, not devices: OpenBitFun, Inbox and Search,
 // the conversation history (UI-B's `ConversationHistory`), then All sessions,
 // Library and the account row. Devices, versions and routes never appear here.
-
-function SidebarRow(props: {
-  label: string;
-  icon?: IconName;
-  leading?: JSX.Element;
-  active: boolean;
-  accessibilityLabel?: string;
-  trailing?: JSX.Element;
-  onPress: () => void;
-}) {
-  return (
-    <View
-      role="button"
-      accessibilityLabel={props.accessibilityLabel ?? props.label}
-      accessibilityState={{ selected: props.active }}
-      onPress={props.onPress}
-      style={{
-        height: controlHeight.md,
-        paddingHorizontal: space.sm,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        backgroundColor: props.active ? palette().chromeActive : "transparent",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.sm + space.hair,
-        cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: props.active ? palette().chromeActive : palette().chromeHover }}
-      activeStyle={{ backgroundColor: palette().chromeActive }}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().chromeAccent, outlineOffset: -1 }}
-    >
-      <View style={{ width: 16, height: 16, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <If when={props.leading} else={<Icon name={props.icon ?? "inbox"} size={16} color={palette().chromeTextMuted} />}>
-          {props.leading}
-        </If>
-      </View>
-      <Text
-        style={{
-          ...textStyle("label", { color: palette().chromeText }),
-          flex: 1,
-          minWidth: 0,
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.label}
-      </Text>
-      {props.trailing}
-    </View>
-  );
-}
 
 /** The sidebar's 44 title row: the traffic lights' inset, sidebar toggle, back and forward. */
 function NavBar() {
@@ -1090,9 +1039,10 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
         <SidebarRow
           label={tr("nav.library")}
           icon="package"
-          active={activeScene() === "library"}
+          active={activeScene() === "library" && !spaceShortcutActive()}
           accessibilityLabel="nav-library"
           onPress={() => {
+            if (spaceShortcutActive()) closeSpacePage();
             navigateScene("library");
             props.onNavigate?.();
           }}
@@ -1105,6 +1055,7 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
         style={{ flex: 1, minHeight: 0, marginTop: space.lg }}
         contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.md }}
       >
+        <SpaceShortcuts onNavigate={props.onNavigate} />
         <DeviceSidebarTree onNavigate={props.onNavigate} />
       </Scroll>
       <View
@@ -1187,6 +1138,7 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
         </If>
         {/* The account's devices → workspaces → sessions, under the cloud conversations. */}
         <View style={{ marginTop: showCloudHistory() ? space.lg : 0 }}>
+          <SpaceShortcuts onNavigate={props.onNavigate} />
           <DeviceSidebarTree onNavigate={props.onNavigate} />
         </View>
       </Scroll>
@@ -1203,9 +1155,10 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
           <SidebarRow
             label={tr("nav.library")}
             icon="package"
-            active={activeScene() === "library"}
+            active={activeScene() === "library" && !spaceShortcutActive()}
             accessibilityLabel="nav-library"
             onPress={() => {
+              if (spaceShortcutActive()) closeSpacePage();
               navigateScene("library");
               props.onNavigate?.();
             }}
@@ -2012,53 +1965,74 @@ function ErrorBanner() {
   );
 }
 
-const SEARCH_GROUPS: ReadonlyArray<{
-  kind: SearchItem["kind"];
-  titleKey: MessageKey;
-  icon: IconName;
-}> = [
-  { kind: "command", titleKey: "search.commands", icon: "command" },
-  { kind: "session", titleKey: "search.sessions", icon: "chat" },
-  { kind: "message", titleKey: "search.messages", icon: "message-circle" },
-  { kind: "file", titleKey: "search.files", icon: "file-text" },
-  { kind: "workspace", titleKey: "search.workspaces", icon: "folder" },
-  { kind: "assistant", titleKey: "search.assistants", icon: "bot" },
-  { kind: "setting", titleKey: "search.settings", icon: "settings" },
-];
+function settingsSearchItems(query: string): SearchItem[] {
+  return findSettingsHits(query, 8).map(hit => ({
+    id: "setting:" + (hit.anchor ? hit.key : hit.pageId),
+    kind: "setting", label: hit.label, detail: hit.anchor ? hit.context : hit.detail,
+    target: hit.pageId, settingsAnchor: hit.anchor,
+  }));
+}
 
-/** Scope chips narrow the list to one group; `all` draws every group. */
-const searchScope = signal<SearchItem["kind"] | "all">("all");
+const shellControlActions: ControlPresenterActions = {
+  openSettingsPage: requestSettingsPage,
+  openFolder: () => void pickAndOpenWorkspaceFolder(),
+  newWorkspace: () => void openNewWorkspaceModal({ step: "project" }),
+  newSession: () => runShellShortcut("chat.newSession"),
+};
 
-/** Settings sections, matched by their localized names (the shell owns their navigation). */
-function settingsSearchItems(rawNeedle: string): SearchItem[] {
-  const needle = rawNeedle.trim().toLowerCase();
-  if (!needle) return [];
-  const items: SearchItem[] = [];
-  for (const group of SETTINGS_PAGE_GROUPS) {
-    for (const page of visibleSettingsPages(group)) {
-      const label = tr(page.labelKey);
-      const description = tr(page.descriptionKey);
-      const hit = [label, description, ...page.keywords].some(text =>
-        text.toLowerCase().includes(needle),
-      );
-      if (!hit) continue;
-      items.push({
-        id: `setting:${page.id}`,
-        kind: "setting" as const,
-        label,
-        detail: `${tr(group.labelKey)} · ${description}`,
-        target: page.id,
-      });
-    }
+function canPickSearchWorkspace(): boolean {
+  const shell = windowShellId();
+  return shell !== "browser" && shell !== "mobile" &&
+    (!fleetActive() || deviceContext() === entryDeviceId());
+}
+
+function resolveSearchCapability(destination: ControlDestination) {
+  const target = resolveControlDestination(destination, true);
+  if (target?.kind === "settings") {
+    if (!canOpenSettingsSearchTarget(target.page, target.anchor)) return null;
   }
-  return items.slice(0, 8);
+  if (target?.kind === "action" && target.action === "project.open" && !canPickSearchWorkspace()) return null;
+  return target;
+}
+
+function searchCapabilities(query: string): SearchItem[] {
+  return capabilitySearchItems(query, resolveSearchCapability);
 }
 
 function runShellSearchItem(item: SearchItem): void {
+  if (item.controlDestination) {
+    const target = resolveSearchCapability(item.controlDestination);
+    if (!target) {
+      pushToast(tr("search.destinationUnavailable"), "warning");
+      return;
+    }
+    closeGlobalSearch();
+    presentControlTarget(target, shellControlActions);
+    return;
+  }
+  if (item.id === "command:new-session") {
+    closeGlobalSearch();
+    void startNewSession();
+    return;
+  }
+  if (item.id === "command:open-project") {
+    if (!canPickSearchWorkspace()) {
+      pushToast(tr("search.destinationUnavailable"), "warning");
+      return;
+    }
+    closeGlobalSearch();
+    void pickAndOpenWorkspaceFolder();
+    return;
+  }
+  if (item.id === "command:new-project") {
+    closeGlobalSearch();
+    void openNewWorkspaceModal({ step: "project" });
+    return;
+  }
   if (item.kind === "setting") {
     closeGlobalSearch();
     navigateScene("settings");
-    requestSettingsPage(item.target as SettingsPageEntry["id"]);
+    requestSettingsPage(item.target as SettingsPageId, item.settingsAnchor);
     return;
   }
   void runSearchItem(item);
@@ -2069,6 +2043,7 @@ function localizedCommandItems(rawNeedle: string): SearchItem[] {
   return SEARCH_COMMANDS.filter(cmd => {
     // wave23-E: "Go to Super Agent" only while that gate is on (`productGates.ts`).
     if (cmd.target === "openbitfun" && !superAgentUi()) return false;
+    if (cmd.id === "command:open-project" && !canPickSearchWorkspace()) return false;
     if (!needle) return true;
     const label = tr(cmd.labelKey).toLowerCase();
     const detail = tr(cmd.detailKey).toLowerCase();
@@ -2086,505 +2061,6 @@ function localizedCommandItems(rawNeedle: string): SearchItem[] {
   }));
 }
 
-/**
- * Spotlight Command Palette: searches the active workspace's sessions, turns,
- * files, and studio commands behind a leading `>`. Opens instantaneously with
- * zero open/close animation (keyboard-triggered 100+/day tool).
- */
-function SearchPanel() {
-  const activeIndex = signal(0);
-  searchScope.set("all");
-  const itemRefs = new Map<string, ViewRef>();
-  cleanup(registerEscapeDismiss(() => closeGlobalSearch()));
-
-  // Localize command items reactively and support both English (`>files`, `>settings`)
-  // and localized (`>文件`, `>设置`) command queries seamlessly.
-  const effectiveItems = computed<SearchItem[]>(() => {
-    currentLocale();
-    const q = searchQuery().trim();
-    if (q === "") {
-      return localizedCommandItems("");
-    }
-    if (q.startsWith(">")) {
-      return localizedCommandItems(q.slice(1));
-    }
-    const hits = searchItems().map(item => {
-      if (item.kind !== "command") return item;
-      const def = SEARCH_COMMANDS.find(cmd => cmd.id === item.id);
-      if (!def) return item;
-      return {
-        ...item,
-        label: tr(def.labelKey),
-        detail: tr(def.detailKey),
-      };
-    });
-    return [...localizedCommandItems(q).filter(cmd => !hits.some(hit => hit.id === cmd.id)), ...hits, ...settingsSearchItems(q)];
-  });
-
-  /** The groups that have hits, for the scope chips. */
-  const availableKinds = computed<Array<SearchItem["kind"]>>(() =>
-    SEARCH_GROUPS.map(g => g.kind).filter(kind => effectiveItems().some(item => item.kind === kind)),
-  );
-  const scopedItems = computed<SearchItem[]>(() => {
-    const scope = searchScope();
-    const list = effectiveItems();
-    if (scope === "all" || !availableKinds().includes(scope)) return list;
-    return list.filter(item => item.kind === scope);
-  });
-
-  const groupedRows = (kind: SearchItem["kind"]) =>
-    scopedItems().filter(item => item.kind === kind);
-
-  const flatResults = computed<SearchItem[]>(() => {
-    const all: SearchItem[] = [];
-    const list = scopedItems();
-    for (const g of SEARCH_GROUPS) {
-      for (const item of list) {
-        if (item.kind === g.kind) all.push(item);
-      }
-    }
-    return all;
-  });
-
-  effect(() => {
-    searchQuery();
-    const len = flatResults().length;
-    if (len === 0) {
-      activeIndex.set(0);
-    } else if (activeIndex() >= len) {
-      activeIndex.set(0);
-    }
-  });
-
-  const activeItemId = computed(() => {
-    const list = flatResults();
-    const idx = activeIndex();
-    return list[idx]?.id ?? null;
-  });
-
-  const revealActiveItem = (id: string | null) => {
-    if (!id) return;
-    const node = itemRefs.get(id);
-    if (!node) return;
-    try {
-      node.reveal({ vertical: "nearest", animated: false });
-    } catch {
-      // Ignore reveal errors if list items changed before layout settled.
-    }
-  };
-
-  const moveSelection = (delta: number) => {
-    const len = flatResults().length;
-    if (len === 0) return;
-    const nextIdx = (activeIndex() + delta + len) % len;
-    activeIndex.set(nextIdx);
-    revealActiveItem(flatResults()[nextIdx]?.id ?? null);
-  };
-
-  const activateSelection = () => {
-    const list = flatResults();
-    const chosen = list[activeIndex()] ?? list[0];
-    if (chosen) runShellSearchItem(chosen);
-  };
-
-  const hasHeaderStatus = () =>
-    Boolean(searchNotice()) ||
-    (!searchBusy() && searchQuery().trim() !== "" && flatResults().length === 0);
-
-  return (
-    <Overlay
-      onCancel={() => closeGlobalSearch()}
-      style={{
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        paddingHorizontal: 16,
-        paddingTop: 56,
-        paddingBottom: 24,
-        alignItems: "center",
-      }}
-    >
-      {/* Clean dimming scrim — no double-blur stacking behind the command palette card */}
-      <View
-        focusable={false}
-        onPress={() => closeGlobalSearch()}
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: palette().scrimBg,
-        }}
-      />
-
-      <View
-        role="dialog"
-        accessibilityLabel="global-search-dialog"
-        style={{
-          width: "100%",
-          maxWidth: 744,
-          maxHeight: "100%",
-          flexShrink: 1,
-          minHeight: 0,
-          ...menuSurfaceStyle(),
-          borderRadius: radii.xl,
-          boxShadow: `${elevationShadow(3)}, ${palette().innerHighlight}`,
-          overflow: "hidden",
-          flexDirection: "column",
-        }}
-      >
-        {/* Top Search Input Row */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.sm,
-            paddingLeft: compactLayout() ? space.lg : space.xl,
-            paddingRight: compactLayout() ? space.md : space.lg,
-            minHeight: 56,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
-            flexShrink: 0,
-          }}
-        >
-          <View
-            style={{
-              flex: 1,
-              minWidth: 0,
-              height: controlHeight.lg,
-              minHeight: controlHeight.lg,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.md,
-            }}
-          >
-            <Icon name="search" size={16} color={palette().textMuted} />
-            <Input
-              autoFocus
-              value={searchQuery()}
-              placeholder={tr("search.placeholder")}
-              accessibilityLabel="global-search-input"
-              submitBehavior="submit"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                height: "100%",
-                minHeight: controlHeight.lg - 2,
-                color: palette().text,
-                placeholderColor: palette().textMuted,
-                caretColor: palette().accent,
-                backgroundColor: "transparent",
-                borderWidth: 0,
-                fontFamily: inputFontSans(),
-                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
-              }}
-              onChange={event => {
-                setSearchQuery(event.value);
-                activeIndex.set(0);
-              }}
-              onSubmit={() => activateSelection()}
-              onKeyPress={event => {
-                if (event.key === "Escape") {
-                  closeGlobalSearch();
-                } else if (event.key === "ArrowDown") {
-                  moveSelection(1);
-                } else if (event.key === "ArrowUp") {
-                  moveSelection(-1);
-                }
-              }}
-            />
-            <If when={searchBusy()}>
-              <Spinner size={13} color={palette().accent} />
-            </If>
-            <If when={!searchBusy() && searchQuery().length > 0}>
-              <Button
-                label={tr("common.clear")}
-                variant="ghost"
-                size="xs"
-                accessibilityLabel="global-search-clear"
-                tooltip={tr("common.clearSearch")}
-                onPress={() => {
-                  setSearchQuery("");
-                  activeIndex.set(0);
-                }}
-              />
-            </If>
-          </View>
-          <IconButton
-            icon="close"
-            size="sm"
-            accessibilityLabel="global-search-close"
-            tooltip={tr("common.closeEsc")}
-            onPress={() => closeGlobalSearch()}
-          />
-        </View>
-
-        {/* Scope chips: horizontal strip so a long set never creates a multi-row pill wall */}
-        <If when={availableKinds().length > 1}>
-          <Scroll
-            smoothWheel
-            horizontal
-            scrollbar={false}
-            style={{
-              flexShrink: 0,
-            }}
-            contentStyle={{
-              paddingHorizontal: compactLayout() ? space.md : space.lg,
-              paddingTop: space.md,
-              paddingBottom: space.xs,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.chip,
-            }}
-          >
-            <PillChip
-              label={tr("search.scopeAll")}
-              active={searchScope() === "all" || !availableKinds().includes(searchScope() as SearchItem["kind"])}
-              accessibilityLabel="global-search-scope-all"
-              onPress={() => {
-                searchScope.set("all");
-                activeIndex.set(0);
-              }}
-            />
-            <Each of={availableKinds()} key={kind => kind}>
-              {kind => (
-                <PillChip
-                  label={tr(SEARCH_GROUPS.find(g => g.kind === kind())!.titleKey)}
-                  active={searchScope() === kind()}
-                  badge={effectiveItems().filter(item => item.kind === kind()).length}
-                  accessibilityLabel={`global-search-scope-${kind()}`}
-                  onPress={() => {
-                    searchScope.set(kind());
-                    activeIndex.set(0);
-                  }}
-                />
-              )}
-            </Each>
-          </Scroll>
-        </If>
-
-        {/* Notices & Empty State (rendered only when needed — zero dead padding) */}
-        <If when={hasHeaderStatus()}>
-          <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm, flexShrink: 0 }}>
-            <If when={searchNotice()}>
-              {notice => <InlineBanner tone="warning" message={localizeHostError(notice())} />}
-            </If>
-            <If
-              when={!searchBusy() && searchQuery().trim() !== "" && flatResults().length === 0}
-            >
-              <View
-                style={{
-                  paddingVertical: space.xl,
-                  paddingHorizontal: space.lg,
-                  alignItems: "center",
-                  gap: space.sm,
-                }}
-              >
-                <Icon name="search" size={18} color={palette().textMuted} />
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.45),
-                    textAlign: "center",
-                  }}
-                >
-                  {tr("search.noMatches")}
-                </Text>
-                <Button
-                  label={tr("common.clearSearch")}
-                  size="xs"
-                  variant="ghost"
-                  onPress={() => {
-                    setSearchQuery("");
-                    activeIndex.set(0);
-                  }}
-                />
-              </View>
-            </If>
-          </View>
-        </If>
-
-        {/* Grouped Results */}
-        <If when={flatResults().length > 0}>
-          <Scroll
-            smoothWheel
-            scrollbar={true}
-            style={{ flexShrink: 1, minHeight: 0 }}
-            contentStyle={{ paddingHorizontal: space.sm, paddingVertical: space.sm, gap: space.md }}
-          >
-            <Each of={SEARCH_GROUPS} key={group => group.kind}>
-              {group => (
-                <If when={groupedRows(group().kind).length > 0}>
-                  <View style={{ gap: space.hair }}>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: space.chip,
-                        paddingHorizontal: space.sm,
-                        paddingVertical: space.xs,
-                      }}
-                    >
-                      <Text
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          color: palette().textMuted,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.3),
-                          fontWeight: "500",
-                        }}
-                      >
-                        {tr(group().titleKey)}
-                      </Text>
-                      <Text
-                        style={{
-                          color: palette().textMuted,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.3),
-                          fontVariant: ["tabular-nums"],
-                          flexShrink: 0,
-                        }}
-                      >
-                        {String(groupedRows(group().kind).length)}
-                      </Text>
-                    </View>
-                    <Each of={groupedRows(group().kind)} key={item => item.id}>
-                      {item => {
-                        const isSelected = () => activeItemId() === item().id;
-                        return (
-                          <View
-                            ref={el => {
-                              if (el) itemRefs.set(item().id, el);
-                              else itemRefs.delete(item().id);
-                            }}
-                            role="button"
-                            accessibilityLabel={`global-search-item-${item().id}`}
-                            accessibilityState={{ selected: isSelected() }}
-                            onMouseEnter={() => {
-                              const idx = flatResults().findIndex(
-                                entry => entry.id === item().id,
-                              );
-                              if (idx >= 0) activeIndex.set(idx);
-                            }}
-                            onPress={() => runShellSearchItem(item())}
-                            style={{
-                              minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
-                              flexDirection: "row",
-                              alignItems: "center",
-                              paddingHorizontal: space.md,
-                              paddingVertical: space.sm,
-                              borderRadius: radii.md,
-                              borderCurve: "continuous",
-                              backgroundColor: isSelected() ? listRowHoverBg() : "transparent",
-                              cursor: "pointer",
-                              userSelect: "none",
-                              ...pressTransition(MOTION_DURATION.fast),
-                            }}
-                            hoverStyle={{ backgroundColor: listRowHoverBg() }}
-                            activeStyle={tactileActiveStyle(0.99)}
-                            focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
-                          >
-                            <ListRowContent
-                              icon={searchItemIcon(item(), group().icon)}
-                              iconColor={isSelected() ? palette().textSecondary : palette().textMuted}
-                              title={item().label}
-                              titleWeight="500"
-                              titleOverflow={item().kind === "file" ? "ellipsis-middle" : "ellipsis"}
-                              subtitle={item().detail || undefined}
-                              subtitleOverflow={item().kind === "file" ? "ellipsis-middle" : "ellipsis"}
-                              trailing={
-                                isSelected() && !compactLayout() ? <KbdHint keys="↵" /> : undefined
-                              }
-                            />
-                          </View>
-                        );
-                      }}
-                    </Each>
-                  </View>
-                </If>
-              )}
-            </Each>
-          </Scroll>
-        </If>
-
-        {/* Bottom Keyboard Hint Footer (desktop only) */}
-        <If when={!compactLayout()}>
-          <View
-            style={{
-              minHeight: 34,
-              paddingHorizontal: space.lg,
-              paddingVertical: space.chip,
-              borderTopWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceTertiary,
-              flexDirection: "row",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: space.md,
-              flexShrink: 0,
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                <KbdHint keys="↑↓" />
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.3),
-                  }}
-                >
-                  {tr("search.hintNavigate")}
-                </Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                <KbdHint keys="↵" />
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.3),
-                  }}
-                >
-                  {tr("search.hintOpen")}
-                </Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                <KbdHint keys="Esc" />
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.3),
-                  }}
-                >
-                  {tr("search.hintClose")}
-                </Text>
-              </View>
-            </View>
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {formatPlural(flatResults().length, "format.resultOne", "format.resultOther")}
-            </Text>
-          </View>
-        </If>
-      </View>
-    </Overlay>
-  );
-}
-
-/** A command names its own destination glyph; other hits use their group's. */
 const COMMAND_ICONS: Readonly<Record<string, IconName>> = {
   "": "edit",
   openbitfun: "sparkles",
@@ -2604,6 +2080,9 @@ const COMMAND_ICONS: Readonly<Record<string, IconName>> = {
 
 function searchItemIcon(item: SearchItem, fallback: IconName): IconName {
   if (item.kind !== "command") return fallback;
+  if (item.id === "command:open-project") return "folder";
+  if (item.id === "command:new-project") return "plus";
+  if (item.id === "command:new-session") return "chat";
   return COMMAND_ICONS[item.target] ?? fallback;
 }
 
@@ -2706,6 +2185,31 @@ function auxFillsScene(): boolean {
   return auxPaneMaximized() || compactShell();
 }
 
+const auxCanvasWidth = computed(() => {
+  const navAllowance = sidebarDocked() ? dockedNavWidth() + AUX_RESIZE_HANDLE_WIDTH : 0;
+  return Math.max(0, shellWidth() - navAllowance - canvasWidthAllowance());
+});
+const twoSessionPanes = computed(() => splitPaneOpen() || sideQuestionOpen());
+const auxMinimumOverlayCanvas = computed(() =>
+  twoSessionPanes() ? SESSION_PANE_MIN_WIDTH * 2 + AUX_RESIZE_HANDLE_WIDTH
+    : Math.min(layout.canvasMinWidth, Math.floor(auxCanvasWidth() / 2)),
+);
+const auxAsOverlay = computed(() =>
+  activeScene() === "sessions" && auxPaneDisplayMode() === "overlay"
+  && !auxFillsScene() && auxPaneSide() !== "bottom"
+  && auxCanvasWidth() >= auxMinimumOverlayCanvas() + AUX_MIN_WIDTH + AUX_RESIZE_HANDLE_WIDTH,
+);
+const overlayAuxMaxWidth = computed(() =>
+  Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, auxCanvasWidth() - auxMinimumOverlayCanvas() - AUX_RESIZE_HANDLE_WIDTH)),
+);
+const overlayAuxWidth = computed(() => Math.min(overlayAuxMaxWidth(), auxPaneOverlayWidth()));
+const sessionPanelOverlayInset = computed(() =>
+  auxPaneOpen() && auxAsOverlay()
+    ? { side: auxPaneSide() === "left" ? "left" as const : "right" as const,
+        width: overlayAuxWidth() + AUX_RESIZE_HANDLE_WIDTH }
+    : null,
+);
+
 /**
  * When docking the aux inspector at its minimum width beside the canvas would
  * push the primary canvas below `layout.canvasMinWidth` (560 px, typical on
@@ -2715,12 +2219,10 @@ function auxFillsScene(): boolean {
  * between docked and sheet modes mid-drag.
  */
 const auxAsSheet = computed(() => {
-  if (compactShell() || auxPaneMaximized() || auxPaneSide() === "bottom") return false;
+  if (auxFillsScene() || auxPaneSide() === "bottom" || auxAsOverlay()) return false;
   const width = shellWidth();
   if (width <= 0) return false;
-  const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
-  const minDockedAuxAllowance = AUX_MIN_WIDTH + 9;
-  const canvasAllowance = width - navAllowance - canvasWidthAllowance() - minDockedAuxAllowance;
+  const canvasAllowance = auxCanvasWidth() - AUX_MIN_WIDTH - AUX_RESIZE_HANDLE_WIDTH;
   return canvasAllowance < layout.canvasMinWidth;
 });
 
@@ -2763,8 +2265,7 @@ const dockedAuxHeight = computed(() => Math.max(AUX_MIN_HEIGHT, Math.min(dockedA
 const dockedAuxMaxWidth = computed(() => {
   const width = shellWidth();
   if (width <= 0) return AUX_MAX_WIDTH;
-  const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
-  const sceneRowWidth = Math.max(0, width - navAllowance - canvasWidthAllowance());
+  const sceneRowWidth = auxCanvasWidth();
   const maxShare = splitPaneOpen() ? 0.45 : 0.68;
   const maxByRow = Math.floor(sceneRowWidth * maxShare) - 9;
   return Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, maxByRow));
@@ -3200,7 +2701,7 @@ function AuxPaneSheet() {
     setAuxPaneWidth(clamped);
   };
   const handleReset = () => {
-    setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, sheetAuxMaxWidth()));
+    setAuxPaneWidth(Math.min(AUX_DEFAULT_WIDTH, sheetAuxMaxWidth()));
   };
   return (
     // Mounted in-tree (not inside `<Overlay>`) so `<BrowserPageLayer />` can
@@ -3257,6 +2758,52 @@ function AuxPaneSheet() {
         onDelta={handleDelta}
         onReset={handleReset}
       />
+    </View>
+  );
+}
+
+/** The same side panel stays mounted when the workspace changes its presentation. */
+function SideAuxPane() {
+  const left = () => auxPaneSide() === "left";
+  const width = () => auxAsOverlay() ? overlayAuxWidth() : dockedAuxWidth();
+  const limit = () => auxAsOverlay() ? overlayAuxMaxWidth() : dockedAuxMaxWidth();
+  const resize = (next: number) => {
+    const clamped = Math.max(AUX_MIN_WIDTH, Math.min(limit(), Math.round(next)));
+    if (auxAsOverlay()) setAuxPaneOverlayWidth(clamped);
+    else setAuxPaneWidth(clamped);
+    return clamped;
+  };
+  let dragWidth: number | null = null;
+  return (
+    <View
+      testID={auxAsOverlay() ? "session-panel-overlay-pane" : "session-panel-docked-pane"}
+      style={{
+        position: auxAsOverlay() ? "absolute" : "relative",
+        top: auxAsOverlay() ? 0 : undefined,
+        bottom: auxAsOverlay() ? 0 : undefined,
+        left: auxAsOverlay() && left() ? 0 : undefined,
+        right: auxAsOverlay() && !left() ? 0 : undefined,
+        zIndex: auxAsOverlay() ? 3 : undefined,
+        boxShadow: auxAsOverlay() ? elevationShadow(3) : undefined,
+        flexDirection: left() ? "row-reverse" : "row",
+        minHeight: 0,
+        width: width() + AUX_RESIZE_HANDLE_WIDTH,
+        flexShrink: 0,
+      }}
+    >
+      <SplitHandle
+        surface="canvas"
+        seam={!auxAsOverlay()}
+        accessibilityLabel={auxAsOverlay()
+          ? left() ? "aux-overlay-split-handle-left" : "aux-overlay-split-handle-right"
+          : left() ? "aux-split-handle-left" : "aux-split-handle-right"}
+        onDragStateChange={dragging => { dragWidth = dragging ? width() : null; }}
+        onDelta={delta => {
+          dragWidth = resize((dragWidth ?? width()) + (left() ? delta : -delta));
+        }}
+        onReset={() => resize(AUX_DEFAULT_WIDTH)}
+      />
+      <AuxPane />
     </View>
   );
 }
@@ -3350,6 +2897,7 @@ function StudioApp() {
   // The host's font baseline decides every text size in every scene, so it is
   // read before anything is drawn rather than when the settings page opens.
   void loadFontPreference();
+  void loadBtwClosePreference();
   // The stored conversation width shapes how every transcript is laid out, so it
   // is read once here instead of when the settings page is opened.
   void loadContentWidth().then(() => syncContentWidthFromHost());
@@ -3446,12 +2994,7 @@ function StudioApp() {
   cleanup(() => stopShellIntegration());
 
   // Agent requests to open a product surface ("open the MCP settings") land here.
-  const stopControlPresenter = installControlPresenter({
-    openSettingsPage: (pageId, anchor) => requestSettingsPage(pageId as SettingsPageId, anchor),
-    openFolder: () => void pickAndOpenWorkspaceFolder(),
-    newWorkspace: () => void openNewWorkspaceModal({ step: "project" }),
-    newSession: () => runShellShortcut("chat.newSession"),
-  });
+  const stopControlPresenter = installControlPresenter(shellControlActions);
   cleanup(() => stopControlPresenter());
 
   bindShellShortcuts();
@@ -3496,14 +3039,7 @@ function StudioApp() {
     if (untracked(() => compactShell() || overlayNav())) untracked(() => drawerOpen.set(false));
   });
 
-  let auxDragWidth: number | null = null;
   let auxDragHeight: number | null = null;
-  const resizeDockedAux = (signedDelta: number) => {
-    const next = (auxDragWidth ?? dockedAuxWidth()) + signedDelta;
-    const clamped = Math.max(AUX_MIN_WIDTH, Math.min(dockedAuxMaxWidth(), Math.round(next)));
-    auxDragWidth = clamped;
-    setAuxPaneWidth(clamped);
-  };
   const resizeDockedAuxHeight = (signedDelta: number) => {
     const next = (auxDragHeight ?? dockedAuxHeight()) + signedDelta;
     const clamped = Math.max(AUX_MIN_HEIGHT, Math.min(dockedAuxMaxHeight(), Math.round(next)));
@@ -3624,29 +3160,12 @@ function StudioApp() {
         <ErrorBanner />
 
         <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", position: "relative" }}>
-          <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
-            <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene() && !auxAsSheet()}>
-              <View
-                style={{
-                  flexDirection: "row",
-                  minHeight: 0,
-                  width: dockedAuxWidth() + 9,
-                  flexShrink: 0,
-                }}
-              >
-                <AuxPane />
-                <SplitHandle
-                  surface="canvas"
-                  accessibilityLabel="aux-split-handle-left"
-                  onDragStateChange={dragging => {
-                    auxDragWidth = dragging ? dockedAuxWidth() : null;
-                  }}
-                  onDelta={delta => resizeDockedAux(delta)}
-                  onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
-                />
-              </View>
-            </If>
-
+          {/* Keep the pane's z-order local. BrowserPageLayer is drawn above the canvas. */}
+          <View style={{
+            flex: 1, minWidth: 0, minHeight: 0, position: "relative",
+            zIndex: auxAsOverlay() ? 0 : undefined,
+            flexDirection: auxPaneSide() === "left" ? "row-reverse" : "row",
+          }}>
             <If when={!(auxPaneOpen() && auxFillsScene())}>
               <View
                 onFileDrop={event => void handleSceneFileDrop(event.uris)}
@@ -3665,26 +3184,8 @@ function StudioApp() {
               </View>
             </If>
 
-            <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene() && !auxAsSheet()}>
-              <View
-                style={{
-                  flexDirection: "row",
-                  minHeight: 0,
-                  width: dockedAuxWidth() + 9,
-                  flexShrink: 0,
-                }}
-              >
-                <SplitHandle
-                  surface="canvas"
-                  accessibilityLabel="aux-split-handle-right"
-                  onDragStateChange={dragging => {
-                    auxDragWidth = dragging ? dockedAuxWidth() : null;
-                  }}
-                  onDelta={delta => resizeDockedAux(-delta)}
-                  onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
-                />
-                <AuxPane captionInset={canvasCaptionInset} />
-              </View>
+            <If when={auxPaneOpen() && auxPaneSide() !== "bottom" && !auxFillsScene() && !auxAsSheet()}>
+              <SideAuxPane />
             </If>
 
             <If when={auxPaneOpen() && auxFillsScene()}>
@@ -3723,6 +3224,7 @@ function StudioApp() {
                 accessibilityLabel={`aux-drop-preview-${target()}`}
                 style={{
                   position: "absolute",
+                  zIndex: 4,
                   pointerEvents: "none",
                   ...(target() === "bottom"
                     ? { left: space.sm, right: space.sm, bottom: space.sm, height: "34%" }
@@ -3780,11 +3282,13 @@ function StudioApp() {
       </If>
       <InboxSheet />
       <If when={searchOpen()}>
-        <SearchPanel />
+        <GlobalSearchPanel commands={localizedCommandItems} settings={settingsSearchItems} capabilities={searchCapabilities}
+          activate={runShellSearchItem} icon={searchItemIcon} shortcut={shortcutLabel("mod+k", "⌘K")} />
       </If>
       <SshWorkspaceModals />
       <AccountAuthModal />
       <SessionActionDialogs />
+      <SideQuestionCloseDialog />
       <DeviceActionDialogs />
       <WorkspaceActionDialogs />
       <AboutDialog />

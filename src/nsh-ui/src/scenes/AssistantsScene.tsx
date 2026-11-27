@@ -8,6 +8,7 @@ import {
   ASSISTANT_EMOJI_PRESETS,
   PERSONA_FILES,
   activePersonaFile,
+  assistantCatalogDevice,
   assistantNameDraft,
   assistantQuickPrompt,
   assistantQuickSending,
@@ -70,7 +71,6 @@ import {
   submitCustomAvatar,
   syncAssistantsScope,
   toggleAvatarPicker,
-  togglePersonaPreview,
   type AssistantWorkspaceView,
   type PersonaFileName,
   assistantWorkspaceBusy,
@@ -109,13 +109,16 @@ import {
   trackStudioWidth,
 } from "../ui/studio";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
+import { AssistantRoutinesSection } from "./RoutinesScene";
 import {
   MarkdownDocumentEditor,
+  MarkdownDocumentToolbar,
   MarkdownPreview,
+  type MarkdownDocumentMode,
   visualEditBlock,
-  visualEditBlockMessage,
   VisualEditNotice,
 } from "../ui/markdownEditor";
+import type { MarkdownImageWorkspace } from "../ui/markdownDocumentImage";
 import {
   MOTION_DURATION,
   paintTransition,
@@ -133,20 +136,30 @@ import {
   InputBox,
   SegmentedTabs,
   SkeletonBlock,
-  ToggleSwitch,
   focusRingStyle,
 } from "../ui/primitives";
 
 // Persona documents (wave 22 P1): the shared visual Markdown editor, with the
 // source editor when the user asks for it or the document needs it (front matter).
 const personaSourceMode = signal(false);
+const personaVisualAttempt = signal(0);
 /** Decided on the document as it loads, so the editor does not switch while the user types. */
 const personaVisualBlock = computed(() => {
   activePersonaFile();
-  if (personaLoading()) return null;
+  personaVisualAttempt();
+  if (personaLoading() || personaSourceMode()) return null;
   return visualEditBlock(untracked(() => personaDraft()));
 });
 const personaEditsVisually = () => !personaSourceMode() && !personaVisualBlock();
+const personaDocumentMode = (): MarkdownDocumentMode => personaPreview() ? "preview"
+  : personaEditsVisually() ? "visual" : "source";
+
+function selectPersonaDocumentMode(mode: MarkdownDocumentMode): void {
+  if (mode === personaDocumentMode()) return;
+  if (mode === "visual") personaVisualAttempt.update(version => version + 1);
+  if (mode !== "preview") personaSourceMode.set(mode === "source");
+  personaPreview.set(mode === "preview");
+}
 
 const PERSONA_TAB_OPTIONS: ReadonlyArray<{
   value: PersonaFileName;
@@ -1053,7 +1066,7 @@ function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
       style={{ flex: 1, minHeight: 0 }}
       contentStyle={{ paddingHorizontal: studioGutter(), paddingTop: 20, paddingBottom: 16, alignItems: "center" }}
     >
-      <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, gap: 8 }}>
+      <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, gap: space.sm }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 }}>
           <Text
             style={{
@@ -1173,6 +1186,14 @@ function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
             </Each>
           </View>
         </If>
+        <If when={assistantCatalogDevice() === deviceContext()}>
+          <View style={{ marginTop: space.md }}>
+            <AssistantRoutinesSection
+              workspace={{ workspaceId: props.assistant.id, workspacePath: props.assistant.rootPath }}
+              assistantSessions={assistantSessions}
+            />
+          </View>
+        </If>
       </View>
     </Scroll>
   );
@@ -1192,6 +1213,10 @@ function personaNoticeTone(notice: string): "info" | "success" {
     return "success";
   }
   return "info";
+}
+
+function personaImageWorkspace(assistant: AssistantWorkspaceView): MarkdownImageWorkspace {
+  return { deviceId: deviceContext(), workspaceId: assistant.id, workspacePath: assistant.rootPath, remote: false };
 }
 
 function PersonaStudioPane() {
@@ -1410,7 +1435,7 @@ function PersonaStudioPane() {
               when={studioTab() === "sessions"}
               else={
                 <>
-                    {/* Persona toolbar: file tabs, preview, reset, the one primary Save. */}
+                    {/* Persona file tabs and file actions. */}
                     <View
                       style={{
                         paddingHorizontal: studioGutter(),
@@ -1455,30 +1480,6 @@ function PersonaStudioPane() {
                               gap: space.sm,
                             }}
                           >
-                            <ToggleSwitch
-                              value={personaPreview()}
-                              label={tr("common.preview")}
-                              accessibilityLabel="persona-preview-toggle"
-                              onChange={togglePersonaPreview}
-                            />
-                            <If when={!personaPreview() && !personaVisualBlock()}>
-                              <Button
-                                label={personaSourceMode() ? tr("doc.editVisually") : tr("doc.editAsSource")}
-                                variant="ghost"
-                                size="sm"
-                                accessibilityLabel="persona-source-toggle"
-                                style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-                                onPress={() => {
-                                  // A source draft the visual editor cannot keep stays in the source editor.
-                                  const block = personaSourceMode() ? visualEditBlock(personaDraft()) : null;
-                                  if (block) {
-                                    personaNotice.set(visualEditBlockMessage(block));
-                                    return;
-                                  }
-                                  personaSourceMode.set(!personaSourceMode());
-                                }}
-                              />
-                            </If>
                             <Button
                               label={tr("common.reset")}
                               variant="ghost"
@@ -1540,6 +1541,10 @@ function PersonaStudioPane() {
                         </View>
                       </View>
                     </View>
+
+                    <MarkdownDocumentToolbar mode={personaDocumentMode()} onModeChange={selectPersonaDocumentMode}
+                      markdown={personaDraft()} copyDisabled={personaLoading()}
+                      ids={{ preview: "persona-preview", visual: "persona-rich-text", source: "persona-source", copy: "persona-copy-markdown" }} />
 
                     <If when={confirmingPersonaReset()}>
                       <View
@@ -1657,7 +1662,9 @@ function PersonaStudioPane() {
                                   accessibilityLabel="persona-editor-input"
                                   placeholder={tr("assistants.editorPlaceholder", { file: activePersonaFile() })}
                                   compact={true}
-                                  ai={true}
+                                  imageWorkspace={personaImageWorkspace(assistant())}
+                                  ai={{ documentKey: JSON.stringify(["persona", deviceContext(), assistant().id, activePersonaFile()]),
+                                    target: deviceContext() || null }}
                                 />
                               </If>
                             </View>
@@ -1703,6 +1710,7 @@ function PersonaStudioPane() {
                                     void revealPath(target);
                                     navigateScene("files");
                                   }}
+                                  imageWorkspace={personaImageWorkspace(assistant())}
                                   onLinkPress={event => {
                                     const baseDir = assistant().rootPath || activeWorkspace()?.rootPath || "";
                                     const resolved = resolveWorkspaceMarkdownLink(
@@ -1884,7 +1892,7 @@ export function AssistantsScene(props: { embedded?: boolean }) {
   effect(() => {
     const id = selectedAssistantId() ?? "";
     const tab = studioTab();
-    if (!id || tab !== "sessions") return;
+    if (!id || tab !== "sessions" || assistantCatalogDevice() !== deviceContext()) return;
     untracked(() => {
       const assistant = selectedAssistant();
       if (assistant && assistant.id === id) void loadAssistantSessions(assistant);

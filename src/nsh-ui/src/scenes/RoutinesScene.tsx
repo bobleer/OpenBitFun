@@ -1,4 +1,5 @@
-import { cleanup, computed, effect, Scroll, signal, Text, View } from "nsh";
+import { cleanup, computed, effect, Scroll, signal, Text, untracked, View } from "nsh";
+import type { SessionSummary } from "../api";
 import {
   formatDuration,
   formatMonthYear,
@@ -47,6 +48,7 @@ import {
   updateRoutineDraft,
   type CronJobRecord,
   type CronSchedule,
+  type CronWorkspaceRef,
   type RoutineFilter,
   type RoutineReportPolicy,
   type RoutineScheduleKind,
@@ -278,14 +280,14 @@ function routineMetaLine(job: CronJobRecord): string {
   return parts.join(" · ");
 }
 
-function routineMenuItems(job: CronJobRecord): DropdownMenuItem[] {
+function routineMenuItems(job: CronJobRecord, workspace?: CronWorkspaceRef): DropdownMenuItem[] {
   return [
     {
       id: "edit",
       label: tr("routines.editRoutine"),
       icon: "edit",
       accessibilityLabel: `routine-edit-${job.id}`,
-      onSelect: () => openEditRoutineDraft(job),
+      onSelect: () => openEditRoutineDraft(job, workspace),
     },
     {
       id: "toggle",
@@ -355,7 +357,12 @@ function ScheduleText(props: { schedule: CronSchedule }) {
  * One routine in the inset grouped list. The text area opens the editor; the
  * switch and the "…" menu sit beside it (siblings, never nested presses).
  */
-function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
+function RoutineRow(props: {
+  job: () => CronJobRecord;
+  first: boolean;
+  workspace?: CronWorkspaceRef;
+  targetLabel?: (job: CronJobRecord) => string;
+}) {
   return (
     <View
       style={{
@@ -397,7 +404,7 @@ function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
           role="button"
           accessibilityLabel={`routine-open-${props.job().id}`}
           hitSlop={touchSlop(STUDIO_TOUCH_MIN)}
-          onPress={() => openEditRoutineDraft(props.job())}
+          onPress={() => openEditRoutineDraft(props.job(), props.workspace)}
           style={{
             flex: 1,
             minWidth: 0,
@@ -426,7 +433,7 @@ function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
           <View style={{ flexDirection: "row", alignItems: "baseline", minWidth: 0, gap: space.xs }}>
             <ScheduleText schedule={props.job().schedule} />
             <Text style={{ ...textStyle("caption", { tabular: true }), flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis-middle" }}>
-              {`· ${routineTargetLabel(props.job())}`}
+              {`· ${(props.targetLabel ?? routineTargetLabel)(props.job())}`}
             </Text>
           </View>
           <If when={props.job().payload.text ?? ""}>
@@ -482,7 +489,7 @@ function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
           accessibilityLabel={`routine-more-${props.job().id}`}
           tooltip={tr("routines.routineActions")}
           minWidth={184}
-          items={routineMenuItems(props.job())}
+          items={routineMenuItems(props.job(), props.workspace)}
         />
       </View>
     </View>
@@ -928,7 +935,7 @@ function CalendarBlock() {
   );
 }
 
-function RoutineEditorModal() {
+function RoutineEditorModal(props: { assistantSessions?: () => SessionSummary[] }) {
   const everyCheck = () => schedulePreviewLine("every");
   const cronCheck = () => schedulePreviewLine("cron");
   const atCheck = () => schedulePreviewLine("at");
@@ -1139,7 +1146,7 @@ function RoutineEditorModal() {
             }}
           >
             <If
-              when={Boolean(routineDraft().preservedTarget)}
+              when={Boolean(routineDraft().preservedTarget) && !routineDraft().assistantWorkspace}
               else={
                 <View style={{ gap: space.sm }}>
                   <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
@@ -1154,66 +1161,74 @@ function RoutineEditorModal() {
                     />
                   </Scroll>
                   <View style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: space.sm }}>
-                    <View style={{ flex: 1, minWidth: 150, gap: space.xs }}>
-                      <Text
-                        style={{
-                          color: palette().textSecondary,
-                          fontSize: textSize(12),
-                          fontWeight: "500",
-                          lineHeight: textLineHeight(12, 1.35),
-                        }}
-                      >
-                        {tr("routines.targetWorkspace")}
-                      </Text>
-                      <SelectDropdown
-                        size="md"
-                        options={workspaceSelectOptions()}
-                        value={routineDraft().workspaceId}
-                        placeholder={tr("routines.selectWorkspace")}
-                        accessibilityLabel="routine-workspace-select"
-                        style={{ width: "100%" }}
-                        onChange={wsId => updateRoutineDraft({ workspaceId: wsId })}
-                      />
-                    </View>
-                    <View style={{ flex: 1, minWidth: 150, gap: space.xs }}>
-                      <Text
-                        style={{
-                          color: palette().textSecondary,
-                          fontSize: textSize(12),
-                          fontWeight: "500",
-                          lineHeight: textLineHeight(12, 1.35),
-                        }}
-                      >
-                        {(routineDraft().targetKind ?? "workspace") === "session"
-                          ? tr("routines.targetSessionLabel")
-                          : tr("routines.agentMode")}
-                      </Text>
-                      <If
-                        when={(routineDraft().targetKind ?? "workspace") === "session"}
-                        else={
-                          <SelectDropdown
-                            size="md"
-                            options={agentOptions()}
-                            value={routineDraft().agentType}
-                            accessibilityLabel="routine-agent-select"
-                            style={{ width: "100%" }}
-                            onChange={agentType => updateRoutineDraft({ agentType })}
-                          />
-                        }
-                      >
+                    <If when={!routineDraft().assistantWorkspace}>
+                      <View style={{ flex: 1, minWidth: 150, gap: space.xs }}>
+                        <Text
+                          style={{
+                            color: palette().textSecondary,
+                            fontSize: textSize(12),
+                            fontWeight: "500",
+                            lineHeight: textLineHeight(12, 1.35),
+                          }}
+                        >
+                          {tr("routines.targetWorkspace")}
+                        </Text>
                         <SelectDropdown
                           size="md"
-                          searchable
-                          options={routineSessionOptions()}
-                          value={routineDraft().sessionId || null}
-                          placeholder={tr("routines.selectSession")}
-                          emptyLabel={tr("routines.sessionsOtherWorkspace")}
-                          accessibilityLabel="routine-session-select"
+                          options={workspaceSelectOptions()}
+                          value={routineDraft().workspaceId}
+                          placeholder={tr("routines.selectWorkspace")}
+                          accessibilityLabel="routine-workspace-select"
                           style={{ width: "100%" }}
-                          onChange={sessionId => updateRoutineDraft({ sessionId })}
+                          onChange={wsId => updateRoutineDraft({ workspaceId: wsId })}
                         />
-                      </If>
-                    </View>
+                      </View>
+                    </If>
+                    <If when={!routineDraft().assistantWorkspace || routineDraft().targetKind === "session"}>
+                      <View style={{ flex: 1, minWidth: 150, gap: space.xs }}>
+                        <Text
+                          style={{
+                            color: palette().textSecondary,
+                            fontSize: textSize(12),
+                            fontWeight: "500",
+                            lineHeight: textLineHeight(12, 1.35),
+                          }}
+                        >
+                          {(routineDraft().targetKind ?? "workspace") === "session"
+                            ? tr("routines.targetSessionLabel")
+                            : tr("routines.agentMode")}
+                        </Text>
+                        <If
+                          when={(routineDraft().targetKind ?? "workspace") === "session"}
+                          else={
+                            <SelectDropdown
+                              size="md"
+                              options={agentOptions()}
+                              value={routineDraft().agentType}
+                              accessibilityLabel="routine-agent-select"
+                              style={{ width: "100%" }}
+                              onChange={agentType => updateRoutineDraft({ agentType })}
+                            />
+                          }
+                        >
+                          <SelectDropdown
+                            size="md"
+                            searchable
+                            options={props.assistantSessions
+                              ? routineSessionOptions(props.assistantSessions())
+                              : routineSessionOptions()}
+                            value={routineDraft().sessionId || null}
+                            placeholder={tr("routines.selectSession")}
+                            emptyLabel={tr(props.assistantSessions
+                              ? "assistants.page.sessionsEmpty"
+                              : "routines.sessionsOtherWorkspace")}
+                            accessibilityLabel="routine-session-select"
+                            style={{ width: "100%" }}
+                            onChange={sessionId => updateRoutineDraft({ sessionId })}
+                          />
+                        </If>
+                      </View>
+                    </If>
                   </View>
                 </View>
               }
@@ -1271,13 +1286,95 @@ function RoutineEditorModal() {
  * Sessions a routine can run in. The session list belongs to the active
  * workspace, so another workspace's sessions are offered only after switching.
  */
-function routineSessionOptions(): SelectDropdownOption<string>[] {
-  if (routineDraft().workspaceId !== activeWorkspaceId()) return [];
-  return sessions().map(session => ({
+function routineSessionOptions(assistantSessions?: SessionSummary[]): SelectDropdownOption<string>[] {
+  if (!assistantSessions && routineDraft().workspaceId !== activeWorkspaceId()) return [];
+  const options = (assistantSessions ?? sessions()).map(session => ({
     value: session.sessionId,
     label: session.sessionName || session.sessionId,
     accessibilityLabel: `routine-session-option-${session.sessionId}`,
   }));
+  const current = routineDraft().sessionId;
+  if (assistantSessions && current && !options.some(option => option.value === current)) {
+    options.push({ value: current, label: current, accessibilityLabel: `routine-session-option-${current}` });
+  }
+  return options;
+}
+
+export function AssistantRoutinesSection(props: {
+  workspace: CronWorkspaceRef & { workspaceId: string };
+  assistantSessions: () => SessionSummary[];
+}) {
+  const reload = () => loadRoutines(props.workspace.workspaceId);
+  effect(() => {
+    void deviceContext();
+    void props.workspace.workspaceId;
+    untracked(() => {
+      ensureCronHostReady();
+      void reload();
+    });
+  });
+  cleanup(subscribeRoutinesChanged(reload));
+  cleanup(() => {
+    if (routineDraft().assistantWorkspace?.workspaceId === props.workspace.workspaceId) closeRoutineEditor();
+  });
+
+  const start = () => openCreateRoutineDraft(props.workspace);
+  const targetLabel = (job: CronJobRecord) => {
+    const target = job.target;
+    if (target.kind === "workspace") return tr("routines.targetNewSession");
+    const session = props.assistantSessions().find(item => item.sessionId === target.sessionId);
+    return session?.sessionName || routineTargetLabel(job);
+  };
+
+  return (
+    <StudioSection
+      title={tr("assistants.page.scheduledSessionsTitle")}
+      accessibilityLabel="assistant-routines-section"
+      trailing={
+        <>
+          <IconButton
+            icon="refresh"
+            size="sm"
+            tooltip={tr("routines.refreshTooltip")}
+            accessibilityLabel="assistant-routines-refresh"
+            disabled={routinesBusy()}
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+            onPress={() => void reload()}
+          />
+          <Button
+            label={tr("routines.newRoutine")}
+            variant="secondary"
+            size="sm"
+            leadingIcon="plus"
+            accessibilityLabel="assistant-routines-new"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            disabled={routinesBusy() || (routines().length === 0 && Boolean(routinesError()))}
+            onPress={start}
+          />
+        </>
+      }
+    >
+      <If when={routinesError()}>
+        {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
+      </If>
+      <If when={routinesBusy() && routines().length === 0}>
+        <GallerySkeleton count={2} height={64} minColumn={560} />
+      </If>
+      <If when={!routinesBusy() && !routinesError() && routines().length === 0}>
+        <StudioEmpty icon="calendar" message={tr("routines.emptyTitle")} />
+      </If>
+      <If when={routines().length > 0}>
+        <InsetGroup accessibilityLabel="assistant-routines-list">
+          <Each of={routines()} key={job => job.id}>
+            {(job, index) => (
+              <RoutineRow job={job} first={index() === 0} workspace={props.workspace} targetLabel={targetLabel} />
+            )}
+          </Each>
+        </InsetGroup>
+      </If>
+      <RoutineEditorModal assistantSessions={props.assistantSessions} />
+    </StudioSection>
+  );
 }
 
 function RoutinesBody(props: { embedded?: boolean }) {
