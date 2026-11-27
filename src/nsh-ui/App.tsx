@@ -2803,7 +2803,7 @@ function SideAuxPane() {
         }}
         onReset={() => resize(AUX_DEFAULT_WIDTH)}
       />
-      <AuxPane />
+      <AuxPane captionInset={() => left() ? 0 : canvasCaptionInset()} />
     </View>
   );
 }

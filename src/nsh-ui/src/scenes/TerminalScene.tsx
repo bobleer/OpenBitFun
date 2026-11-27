@@ -1,5 +1,5 @@
 import { ToolPaneHeader } from "../ui/toolPane";
-import { cleanup, computed, effect, pixelRatio, Scroll, signal, Text, View, type Point, type ViewRef } from "nsh";
+import { cleanup, computed, effect, pixelRatio, Scroll, signal, Text, untracked, View, type Point, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
@@ -52,6 +52,7 @@ import {
   concentricRadius,
   controlHeight,
   fontMono,
+  isLightAppearance,
   layout,
   palette,
   radii,
@@ -91,13 +92,14 @@ import {
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import { createSceneWidth, WORKBENCH_TOUCH_MIN } from "../ui/workbenchLayout";
 import { ToolbarSeparator } from "../ui/Toolbar";
+import { createLightTerminalOutput } from "../ui/terminalLightColors";
 
 /**
  * Mounted `<Terminal>` widget refs across full-screen and compact AuxPane
  * instances. Fan-out writing + replay-on-mount prevents a remounted or AuxPane
  * terminal from appearing blank when a shell session is already active.
  */
-const mountedTerminals = new Set<TerminalRef>();
+const mountedTerminals = new Set<{ write(data: string): void; reset(): void }>();
 
 function writeToMountedTerminals(data: string): void {
   for (const ref of mountedTerminals) {
@@ -448,9 +450,35 @@ function TerminalViewport(props: { scrollback: number }) {
   };
   let bound: TerminalRef | undefined;
   let attachFrame: number | undefined;
+  let projectOutput: ReturnType<typeof createLightTerminalOutput> | undefined;
+  let light = isLightAppearance();
+  const renderer = {
+    write(data: string) {
+      const output = projectOutput ? projectOutput(data) : data;
+      if (output) bound?.write(output);
+    },
+    reset() {
+      projectOutput = light ? createLightTerminalOutput() : undefined;
+      bound?.reset();
+    },
+  };
+  function replayScrollback() {
+    const active = visibleTerminalTabs().find(tab => tab.id === terminalId());
+    if (active) renderer.write(getTerminalScrollback(active.id, active.deviceId));
+  }
+  effect(() => {
+    const nextLight = isLightAppearance();
+    if (nextLight === light) return;
+    light = nextLight;
+    // Recolor existing history from the original bytes without restarting the shell.
+    if (mountedTerminals.has(renderer)) untracked(() => {
+      renderer.reset();
+      replayScrollback();
+    });
+  });
   cleanup(() => {
     if (attachFrame !== undefined) cancelAnimationFrame(attachFrame);
-    if (bound) mountedTerminals.delete(bound);
+    mountedTerminals.delete(renderer);
   });
 
   return (
@@ -458,16 +486,15 @@ function TerminalViewport(props: { scrollback: number }) {
       ref={ref => {
         if (!ref || bound === ref) return;
         if (attachFrame !== undefined) cancelAnimationFrame(attachFrame);
-        if (bound) mountedTerminals.delete(bound);
+        mountedTerminals.delete(renderer);
         bound = ref;
         // Refs can arrive before the native component has been mounted. Replay
         // the current buffer once the renderer exists, then receive live output.
         attachFrame = requestAnimationFrame(() => {
           attachFrame = undefined;
-          const active = visibleTerminalTabs().find(tab => tab.id === terminalId());
-          const buffer = active ? getTerminalScrollback(active.id, active.deviceId) : "";
-          if (buffer) ref.write(buffer);
-          mountedTerminals.add(ref);
+          projectOutput = light ? createLightTerminalOutput() : undefined;
+          replayScrollback();
+          mountedTerminals.add(renderer);
         });
       }}
       style={{ flex: 1, minHeight: 0, minWidth: 0 }}
