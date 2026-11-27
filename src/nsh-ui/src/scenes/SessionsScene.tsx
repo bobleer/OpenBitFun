@@ -5474,9 +5474,43 @@ function SlashCommandsUnavailable(props: { placement: Placement }) {
   );
 }
 
+function SlashCommandRow(props: {
+  selected: () => boolean;
+  accessibilityLabel: string;
+  onPress: () => void;
+  children: JSX.Element;
+}) {
+  let rowRef: ViewRef | null = null;
+  const revealSelected = () => {
+    if (props.selected()) rowRef?.reveal({ vertical: "nearest", animated: false });
+  };
+  effect(revealSelected);
+  return (
+    <View
+      ref={el => { rowRef = el; }}
+      onLayout={revealSelected}
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{ selected: props.selected() }}
+      onPress={props.onPress}
+      style={popoverRowStyle(props.selected())}
+      hoverStyle={popoverRowHoverStyle()}
+      activeStyle={popoverRowActiveStyle()}
+      focusVisibleStyle={focusRingStyle(-1)}
+    >
+      {props.children}
+    </View>
+  );
+}
+
 function SlashCommandSurface(props: { placement: Placement }) {
   const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
   const cmdCount = () => (slashMatches() ?? []).length;
+  // Hardware arrow keys are not delivered by Input.onKeyPress on every NSH target.
+  cleanup(keymap.bind({
+    down: () => handleSlashKeyNavigation("ArrowDown"),
+    up: () => handleSlashKeyNavigation("ArrowUp"),
+  }, { when: "always" }));
   return (
     <View
       style={[
@@ -5491,20 +5525,16 @@ function SlashCommandSurface(props: { placement: Placement }) {
         motion.style,
       ]}
     >
-      <Scroll smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+      <Scroll testID="slash-command-list" smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <If when={cmdCount() > 0}>
             <PopoverSectionHeader label={tr("chat.slash.title")} />
             <Each of={slashMatches() ?? []} key={entry => entry.id}>
-              {(entry, idx) => (
-                <View
-                  role="button"
+              {entry => (
+                <SlashCommandRow
+                  selected={() => (slashMatches() ?? [])[slashSelectedIndex()]?.id === entry().id}
                   accessibilityLabel={`slash-command-${entry().id}`}
                   onPress={() => void executeSlashCommand(entry())}
-                  style={popoverRowStyle(idx() === slashSelectedIndex())}
-                  hoverStyle={popoverRowHoverStyle()}
-                  activeStyle={popoverRowActiveStyle()}
-                  focusVisibleStyle={focusRingStyle(-1)}
                 >
                   <ListRowContent
                     icon="command"
@@ -5513,7 +5543,7 @@ function SlashCommandSurface(props: { placement: Placement }) {
                     titleWeight="500"
                     subtitle={slashCommandLabel(entry())}
                   />
-                </View>
+                </SlashCommandRow>
               )}
             </Each>
           </If>
@@ -5521,17 +5551,12 @@ function SlashCommandSurface(props: { placement: Placement }) {
           <If when={slashSkillMatches().length > 0}>
             <PopoverSectionHeader label={tr("sessions.slashSkillsSection")} first={cmdCount() === 0} />
             <Each of={slashSkillMatches()} key={skill => skill.name}>
-              {(skill, idx) => {
-                const flatIndex = () => cmdCount() + idx();
+              {skill => {
                 return (
-                  <View
-                    role="button"
+                  <SlashCommandRow
+                    selected={() => slashSkillMatches()[slashSelectedIndex() - cmdCount()]?.name === skill().name}
                     accessibilityLabel={`slash-skill-${skill().name}`}
                     onPress={() => insertSlashSkill(skill(), composerInputRef)}
-                    style={popoverRowStyle(flatIndex() === slashSelectedIndex())}
-                    hoverStyle={popoverRowHoverStyle()}
-                    activeStyle={popoverRowActiveStyle()}
-                    focusVisibleStyle={focusRingStyle(-1)}
                   >
                     <ListRowContent
                       icon="sparkles"
@@ -5540,7 +5565,7 @@ function SlashCommandSurface(props: { placement: Placement }) {
                       titleWeight="500"
                       subtitle={skill().description || skill().argumentHint || ""}
                     />
-                  </View>
+                  </SlashCommandRow>
                 );
               }}
             </Each>
