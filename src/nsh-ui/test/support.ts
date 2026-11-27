@@ -12,6 +12,7 @@ export interface BackendCall {
 }
 
 export interface BackendOptions {
+  mcpRemoteAuthConfigured?: boolean;
   /** transcript view (wave 4): a host that predates `get_session_transcript_view`. */
   transcriptViewUnsupported?: boolean;
   /** remote link + terminal profiles (wave 4): a host that predates the profile commands. */
@@ -580,8 +581,8 @@ export interface Backend {
   mcpSaves: Array<{ jsonConfig: string; expectedFingerprint: string }>;
   /** The MCP document the host currently stores, parsed. */
   mcpDocument: () => unknown;
-  /** Makes the next save carry a stale fingerprint, as a concurrent edit would. */
-  changeMcpDocumentElsewhere: () => void;
+  /** Moves the stored fingerprint and optionally replaces the document, as a concurrent edit would. */
+  changeMcpDocumentElsewhere: (jsonConfig?: string) => void;
   /** Moves the remote OAuth session this host reports, as the flow does. */
   setMcpOAuthSession: (session: Record<string, unknown> | null) => void;
   /** Every `update_mcp_remote_auth` value the host accepted, in order. */
@@ -1310,6 +1311,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
   // Model pools belong to the host too: `save_model_pool` with an empty id is how
   // a new one is created, and the host allocates the id it returns.
   const poolRows: Array<{ id: string; name: string; strategy: string; member_model_ids: string[] }> = [];
+  const retriedPoolModels = new Set<string>();
   let poolSeq = 1;
   // A session's reasoning setting is host state, written together with its model.
   // `null` is the model's own default, and `undefined` is a host too old to report
@@ -1330,6 +1332,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
     const payload = (request ?? {}) as {
       pool?: { id?: string; name?: string; strategy?: string; member_model_ids?: string[] };
       poolId?: string;
+      modelId?: string;
     };
     switch (action) {
       case "get_model_pools":
@@ -1358,11 +1361,13 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return poolDocument();
       }
       case "get_model_pool_status":
-        return (poolRows.find(row => row.id === payload.poolId)?.member_model_ids ?? []).map(modelId => ({
-          modelId,
-          status: modelId === "model-1" ? "cooling_down" : "available",
-          ...(modelId === "model-1" ? { reason: "rate limited" } : {}),
-        }));
+        return (poolRows.find(row => row.id === payload.poolId)?.member_model_ids ?? []).map(modelId => {
+          const coolingDown = modelId === "model-1" && !retriedPoolModels.has(modelId);
+          return { modelId, status: coolingDown ? "cooling_down" : "available", ...(coolingDown ? { reason: "rate limited" } : {}) };
+        });
+      case "retry_model_pool_member":
+        if (payload.modelId) retriedPoolModels.add(payload.modelId);
+        return null;
       default:
         return poolDocument();
     }
@@ -1384,6 +1389,8 @@ export function createBackend(options: BackendOptions = {}): Backend {
       autoStart: true,
       command: "npx",
       commandAvailable: true,
+      commandSource: "managed",
+      commandResolvedPath: "/runtimes/node/bin/npx",
       startSupported: true,
     },
     {
@@ -1397,7 +1404,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
       startSupported: true,
       statusMessage: "not started yet",
       oauthEnabled: true,
-      authConfigured: false,
+      authConfigured: options.mcpRemoteAuthConfigured ?? false,
     },
   ];
   let mcpDocumentText = JSON.stringify(
@@ -2269,6 +2276,19 @@ export function createBackend(options: BackendOptions = {}): Backend {
       }
       case "get_configs":
         return options.configs ?? { appearance: { theme: "dark" }, editor: { fontSize: 13 } };
+      case "product_control_invoke": {
+        if (payload.action !== "configure" || payload.capabilityId !== "setting.ai.memory"
+            || payload.optionId !== "enabled" || typeof payload.value !== "boolean") {
+          throw new Error(`the simulated backend has no answer for ${action}`);
+        }
+        const enabled = payload.value;
+        liveConfigs.memories = { ...(liveConfigs.memories as Record<string, unknown>),
+          generate_memories: enabled, use_memories: enabled };
+        for (const path of ["memories.generate_memories", "memories.use_memories"]) {
+          if (path in liveConfigs) liveConfigs[path] = enabled;
+        }
+        return { configured: true, effectiveValue: enabled };
+      }
       case "set_config": {
         const path = String(payload.path ?? "");
         // The host's memory window rule applies to leaf writes too (wave 3 config).
@@ -2631,6 +2651,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "save_model_pool":
       case "delete_model_pool":
       case "get_model_pool_status":
+      case "retry_model_pool_member":
         return answerPools(action, request);
       case "get_mcp_servers":
       case "load_mcp_json_config":
@@ -2890,6 +2911,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return null;
       // A Space opened in its own window: the desktop answers with the instance/view ticket.
       case "miniapp_presentation":
+        if (payload.operation === "installation") return { paths: [] };
         if (payload.operation === "open") {
           return {
             instance: { instanceId: `instance-${String(payload.appId ?? "")}`, appId: payload.appId },
@@ -3252,7 +3274,8 @@ export function createBackend(options: BackendOptions = {}): Backend {
     clearedCredentials,
     mcpSaves,
     mcpDocument: () => JSON.parse(mcpDocumentText),
-    changeMcpDocumentElsewhere: () => {
+    changeMcpDocumentElsewhere: jsonConfig => {
+      if (jsonConfig !== undefined) mcpDocumentText = jsonConfig;
       mcpFingerprint += 1;
     },
     setMcpOAuthSession: (session: Record<string, unknown> | null) => {
@@ -3515,7 +3538,24 @@ export function createMiniAppMarketBackend(
   const listings = marketListingsFixture();
   const origins = { ...(market.origins ?? {}) };
   const localOverrides = new Set(market.localOverrides ?? []);
-  const installed: Array<Record<string, unknown>> = [];
+  const installedApp = (appId: string, listing: Record<string, unknown>) => ({
+    id: appId,
+    name: listing.name,
+    description: listing.description,
+    icon: listing.icon,
+    category: listing.category,
+    tags: [],
+    version: 1,
+    created_at: 1,
+    updated_at: 1,
+    permissions: listing.permissions,
+    runtime_profile: "compatibility",
+  });
+  const installed = new Map<string, Record<string, unknown>>();
+  for (const [appId, origin] of Object.entries(origins)) {
+    const listing = listings.find(item => item.listingId === origin.listingId);
+    if (listing) installed.set(appId, installedApp(appId, listing));
+  }
   const marketInstalls: Array<Record<string, unknown>> = [];
   const submissionRows: Array<Record<string, unknown>> = [
     { submissionId: "sub-1", slug: "focus-timer", name: "Focus Timer", icon: "box", releaseNumber: 2, status: "submitted", createdAt: 1761000000000, updatedAt: 1761000000000 },
@@ -3544,9 +3584,18 @@ export function createMiniAppMarketBackend(
           : null,
       );
     }
-    if (action === "list_miniapps" && installed.length > 0) {
+    if (action === "list_miniapps") {
       const reply = invoke(data) as { ok: boolean; value?: unknown };
-      return ok([...(Array.isArray(reply.value) ? reply.value : []), ...installed]);
+      const existingApps = Array.isArray(reply.value) ? reply.value.filter(app => !installed.has(app.id)) : [];
+      return ok([...existingApps, ...installed.values()]);
+    }
+    if (action === "delete_miniapp" && installed.has(String(payload.appId))) {
+      const appId = String(payload.appId);
+      base.calls.push({ action, request: payload, raw: isRaw });
+      installed.delete(appId);
+      delete origins[appId];
+      localOverrides.delete(appId);
+      return ok(null);
     }
     if (!action.startsWith("miniapp_market_")) return invoke(data);
     base.calls.push({ action, request: payload, raw: isRaw });
@@ -3555,6 +3604,10 @@ export function createMiniAppMarketBackend(
     if (structured && isRaw) return fail(`${action} takes a request struct`);
     switch (action) {
       case "miniapp_market_browse": {
+        if (Array.isArray(payload.listingIds)) {
+          const ids = new Set(payload.listingIds);
+          return ok({ items: listings.filter(item => ids.has(item.listingId)).map(summary) });
+        }
         const query = String(payload.query ?? "").toLowerCase();
         const category = String(payload.category ?? "all");
         const rows = listings
@@ -3570,7 +3623,7 @@ export function createMiniAppMarketBackend(
         return ok({ items: rows });
       }
       case "miniapp_market_get_listing": {
-        const found = listings.find(item => item.slug === payload.slug);
+        const found = listings.find(item => payload.listingId ? item.listingId === payload.listingId : item.slug === payload.slug);
         if (!found) return fail(JSON.stringify({ code: "not_found", message: "Listing not found.", request_id: null }));
         return ok(found);
       }
@@ -3625,20 +3678,8 @@ export function createMiniAppMarketBackend(
           packageSha256: String(release.packageSha256),
         };
         localOverrides.delete(appId);
-        const app = {
-          id: appId,
-          name: found.name,
-          description: found.description,
-          icon: found.icon,
-          category: found.category,
-          tags: [],
-          version: 1,
-          created_at: 1,
-          updated_at: 1,
-          permissions: found.permissions,
-          runtime_profile: "compatibility",
-        };
-        if (!existing) installed.push(app);
+        const app = installedApp(appId, found);
+        installed.set(appId, app);
         return ok({ app, origin: origins[appId], updated: Boolean(existing), permissionDiff: { added: [], expanded: [] } });
       }
       case "miniapp_market_inspect_package": {
@@ -3666,10 +3707,13 @@ export function createMiniAppMarketBackend(
 export interface ReviewLaunchFixtureOptions {
   /** The workspace changes the host reports, in its order. */
   files?: Array<{ path: string; status: string; previousPath?: string }>;
+  /** File budget reported by a host that supports ordinary Review in batches. */
+  managedFileBudget?: number;
   /** A host older than the command. */
   missing?: boolean;
   /** The first launch's start is not acknowledged. */
   uncertain?: boolean;
+  parentReviewCard?: boolean;
 }
 
 export interface ReviewLaunchBackend extends Backend {
@@ -3723,7 +3767,9 @@ export function withReviewLaunchFixtures(
     }
     const wanted = Array.isArray(request.files) ? (request.files as string[]) : [];
     const scoped = wanted.length ? files.filter(file => wanted.includes(file.path)) : files;
-    if (intent === "review" && scoped.length > 80) {
+    const managed = intent === "review" && scoped.length > 80;
+    const budget = options.managedFileBudget;
+    if (managed && budget === undefined) {
       return ok({
         status: "refused",
         code: "review_target_too_large",
@@ -3736,9 +3782,13 @@ export function withReviewLaunchFixtures(
     }
     const summary = {
       intent,
-      mode: intent === "strict" ? "strict" : "standard",
-      agentType: intent === "strict" ? "DeepReview" : "CodeReview",
+      mode: managed ? "managed" : intent === "strict" ? "strict" : "standard",
+      agentType: managed || intent === "strict" ? "DeepReview" : "CodeReview",
       fileCount: scoped.length,
+      ...(managed && budget !== undefined ? {
+        plannedFileCount: Math.min(scoped.length, budget),
+        deferredFileCount: Math.max(0, scoped.length - budget),
+      } : {}),
       changedLineCount: scoped.length * 7,
       completeness: "complete",
       limitations: ["mutable_workspace_evidence"],
@@ -3764,6 +3814,7 @@ export function withReviewLaunchFixtures(
       requestId,
       childSessionId,
       childSessionName,
+      ...(options.parentReviewCard ? { parentReviewCard: true } : {}),
     });
   };
   return Object.assign(backend, { reviewRequests });
@@ -4168,6 +4219,6 @@ export async function openToolScene(
 ): Promise<void> {
   await app.press("global-search-trigger");
   await app.type("global-search-input", `>${tool}`);
-  await app.press(`label:global-search-item-command:${tool}`);
+  await app.press(`id:global-search-item-command:${tool}`);
 }
 // end shell navigation (wave 15 UI-A)

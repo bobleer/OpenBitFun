@@ -4,7 +4,15 @@
 // `request` object, sessions use `workspace_id`, workspace and file commands use
 // `workspaceId`. Keep those names as they are; they are the host contract.
 
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import {
+  backendConnection,
+  entryDeviceId,
+  fleetActive,
+  invokeCommand,
+  invokeRawCommand,
+  settleFleetHandshake,
+  type InvokeCommandOptions,
+} from "./bridge";
 
 export interface WorkspaceRecord {
   id: string;
@@ -206,6 +214,7 @@ export interface TranscriptToolView {
   input?: unknown;
   inputPreview?: string;
   status: string;
+  interruptionReason?: string;
   success?: boolean;
   error?: string;
   result?: unknown;
@@ -216,7 +225,7 @@ export interface TranscriptToolView {
   diffStats?: { added: number; removed: number };
   durationMs?: number;
   startMs?: number;
-  plan?: { filePath: string; name: string; overview?: string };
+  plan?: { file_path?: string; filePath?: string; name: string; overview?: string };
   /** What a subagent this call started did; never the parent's own answer. */
   subagentItems?: TranscriptItemView[];
 }
@@ -235,6 +244,18 @@ export interface TranscriptTurnFileChange {
   operationId?: string;
 }
 
+export interface TranscriptPublishedFigure {
+  uri: string;
+  contentBytes?: number;
+  inspectionDeferred?: boolean;
+  /** Sent only in a scoped read of this figure. */
+  source?: string;
+  /** Checked data sealed with the scope and revision of source. */
+  bindings?: unknown;
+  bindingRefreshSupported?: boolean;
+  bindingRefresh?: { name: string; turnId: string; value: unknown };
+}
+
 export interface TranscriptTurnView {
   turnId: string;
   turnIndex: number;
@@ -244,7 +265,7 @@ export interface TranscriptTurnView {
   status: string;
   /** The host persisted a terminal status; the live stream may give way to this record. */
   settled: boolean;
-  user: { id: string; text: string; timestampMs: number; images?: TranscriptImage[] };
+  user: { id: string; text: string; timestampMs: number; images?: TranscriptImage[]; composerPresentation?: unknown };
   items: TranscriptItemView[];
   error?: string;
   errorDetail?: Record<string, unknown>;
@@ -256,6 +277,7 @@ export interface TranscriptTurnView {
   recovery?: { status: string; executionGeneration: number };
   /** Net file changes recorded by the turn's snapshots (empty when no files changed). */
   fileChanges?: TranscriptTurnFileChange[];
+  publishedFigures?: TranscriptPublishedFigure[];
 }
 
 export interface TranscriptPromptSuggestion {
@@ -340,27 +362,46 @@ export const getOperationDiff = (params: {
 export const getConfigs = (paths: string[]) => invokeCommand<Record<string, unknown>>("get_configs", { paths });
 
 /** One config path; `optional` tolerates a path an older or newer host lacks. */
-export const getConfig = (path: string, optional = false) =>
+export const getConfig = (path: string, optional = false, route?: InvokeCommandOptions) =>
   invokeCommand<unknown>("get_config", {
     path,
     ...(optional ? { skipRetryOnNotFound: true } : {}),
-  });
+  }, route);
 
-export const setConfig = (path: string, value: unknown) =>
-  invokeCommand<unknown>("set_config", { path, value });
+export const setConfig = (path: string, value: unknown, route?: InvokeCommandOptions) =>
+  invokeCommand<unknown>("set_config", { path, value }, route);
+
+async function withEntryConfig(readOrWrite: (route?: InvokeCommandOptions) => Promise<unknown>): Promise<unknown> {
+  const connection = backendConnection();
+  await settleFleetHandshake();
+  if (backendConnection() !== connection) throw new Error("The settings connection changed.");
+  if (!fleetActive()) return readOrWrite();
+  const target = entryDeviceId();
+  if (!target) throw new Error("The connection has no entry device for preferences.");
+  return readOrWrite({ target });
+}
+
+/** Controller preferences follow the entry while Settings is scoped to a peer. */
+export function getEntryConfig(path: string): Promise<unknown> {
+  return withEntryConfig(route => getConfig(path, true, route));
+}
+
+export function setEntryConfig(path: string, value: unknown): Promise<unknown> {
+  return withEntryConfig(route => setConfig(path, value, route));
+}
 
 export const getFileTree = (workspaceId: string, path: string, maxDepth: number) =>
   invokeCommand<WorkspaceEntry[]>("get_file_tree", { workspaceId, path, max_depth: maxDepth });
 
 /** One directory's children, the call the file explorer makes while the tree grows. */
-export const getDirectoryChildren = (workspaceId: string, path: string) =>
-  invokeCommand<WorkspaceEntry[]>("explorer_get_children", { workspaceId, path });
+export const getDirectoryChildren = (workspaceId: string, path: string, route?: InvokeCommandOptions) =>
+  invokeCommand<WorkspaceEntry[]>("explorer_get_children", { workspaceId, path }, route);
 
 export const createWorkspaceFile = (workspaceId: string, path: string) =>
   invokeCommand<unknown>("create_file", { workspaceId, path });
 
-export const createWorkspaceDirectory = (workspaceId: string, path: string) =>
-  invokeCommand<unknown>("create_directory", { workspaceId, path });
+export const createWorkspaceDirectory = (workspaceId: string, path: string, route?: InvokeCommandOptions) =>
+  invokeCommand<unknown>("create_directory", { workspaceId, path }, route);
 
 export const deleteWorkspaceFile = (workspaceId: string, path: string) =>
   invokeCommand<unknown>("delete_file", { workspaceId, path });
@@ -395,6 +436,7 @@ export const searchWorkspaceFiles = (
     wholeWord?: boolean;
     maxResults?: number;
   } = {},
+  route?: InvokeCommandOptions,
 ) =>
   invokeCommand<unknown[]>("search_files", {
     workspaceId,
@@ -405,15 +447,15 @@ export const searchWorkspaceFiles = (
     useRegex: options.useRegex === true,
     wholeWord: options.wholeWord === true,
     ...(options.maxResults ? { maxResults: options.maxResults } : {}),
-  });
+  }, route);
 
 
-export const readFileContent = (workspaceId: string, filePath: string, encoding?: string) =>
+export const readFileContent = (workspaceId: string, filePath: string, encoding?: string, route?: InvokeCommandOptions) =>
   invokeCommand<string>("read_file_content", {
     workspaceId,
     filePath,
     ...(encoding ? { encoding } : {}),
-  });
+  }, route);
 
 export interface GitFileStatus {
   path: string;
@@ -476,9 +518,9 @@ export interface TerminalShell {
   available?: boolean;
 }
 
-export const listTerminalShells = async (): Promise<TerminalShell[]> => {
-  const rows = await invokeCommand<Array<Record<string, unknown>>>("terminal_get_shells");
-  return (Array.isArray(rows) ? rows : []).map(row => ({
+export const listTerminalShells = async (route?: InvokeCommandOptions): Promise<TerminalShell[]> => {
+  const rows = await invokeCommand<Array<Record<string, unknown>>>("terminal_get_shells", undefined, route);
+  return (Array.isArray(rows) ? rows : []).map((row, index) => ({
     id: String(row?.id ?? row?.shellId ?? row?.shell_id ?? ""),
     name: String(row?.name ?? ""),
     type: String(row?.shellType ?? row?.shell_type ?? row?.type ?? ""),
@@ -490,12 +532,14 @@ export const listTerminalShells = async (): Promise<TerminalShell[]> => {
 
 export const createTerminal = (request: {
   workspaceId?: string;
+  hostWorkspaceTarget?: { rootPath: string; connectionId?: string };
   workingDirectory?: string;
+  name?: string;
   shellId?: string;
   shellType?: string;
   cols?: number;
   rows?: number;
-}) => invokeCommand<TerminalSession>("terminal_create", request);
+}, options?: InvokeCommandOptions) => invokeCommand<TerminalSession>("terminal_create", request, options);
 
 export const writeTerminal = (sessionId: string, data: string) =>
   invokeCommand<unknown>("terminal_write", { sessionId, data });
@@ -553,7 +597,8 @@ export interface ModelCatalog {
   session_reasoning_preset?: string | null;
 }
 
-export const getModelCatalog = () => invokeCommand<ModelCatalog>("get_ai_model_catalog");
+export const getModelCatalog = (route?: InvokeCommandOptions) =>
+  invokeCommand<ModelCatalog>("get_ai_model_catalog", undefined, route);
 
 /**
  * One agent the host can run a session as: a built-in execution profile
@@ -603,7 +648,7 @@ export const updateSessionModel = (request: {
   workspaceId?: string;
   workspacePath?: string;
   includeInternal?: boolean;
-}) => invokeCommand<unknown>("update_session_model", request);
+}, route?: InvokeCommandOptions) => invokeCommand<unknown>("update_session_model", request, route);
 
 /** One reasoning setting a model can run at, as the host's catalog describes it. */
 export interface ReasoningPresetDescriptor {
@@ -635,7 +680,7 @@ export const projectAiModelReasoningCatalog = (request: {
   contextWindow?: number;
   maxTokens?: number;
   reasoning: Record<string, unknown>;
-}) => invokeCommand<ReasoningCatalogProjection>("project_ai_model_reasoning_catalog", request);
+}, route?: InvokeCommandOptions) => invokeCommand<ReasoningCatalogProjection>("project_ai_model_reasoning_catalog", request, route);
 
 export interface SessionModelTargetResponse {
   sessionId?: string;
@@ -652,7 +697,7 @@ export const getSessionModelTarget = (request: {
   sessionId: string;
   workspaceId?: string;
   workspacePath?: string;
-}) => invokeCommand<SessionModelTargetResponse>("get_session_model_target", request);
+}, route?: InvokeCommandOptions) => invokeCommand<SessionModelTargetResponse>("get_session_model_target", request, route);
 
 /** Updates a session's explicit model/pool target (required when switching out of a model pool). */
 export const updateSessionModelTarget = (request: {
@@ -661,7 +706,7 @@ export const updateSessionModelTarget = (request: {
   workspaceId?: string;
   workspacePath?: string;
   includeInternal?: boolean;
-}) => invokeCommand<SessionModelTargetResponse>("update_session_model_target", request);
+}, route?: InvokeCommandOptions) => invokeCommand<SessionModelTargetResponse>("update_session_model_target", request, route);
 
 /** Session lifecycle and row actions; sessions address a workspace by `workspace_id`. */
 export const createSession = (request: {
@@ -679,13 +724,27 @@ export const createSession = (request: {
     modelName?: string | null;
   }>("create_session", request);
 
+export interface FreshExternalSubagentExecution {
+  kind: "fresh_external_subagent";
+  ecosystemId: string;
+  logicalId: string;
+}
+
+export interface ExternalCommandSubmission {
+  invocation: string;
+  execution?: FreshExternalSubagentExecution;
+}
+
 export const startDialogTurn = (request: {
   sessionId: string;
   userInput: string;
+  originalUserInput?: string;
+  userMessageMetadata?: Record<string, unknown>;
   agentType: string;
   workspaceId?: string;
   workspacePath?: string;
   turnId?: string;
+  execution?: FreshExternalSubagentExecution;
   imageContexts?: Array<{
     id: string;
     image_path?: string;
@@ -697,7 +756,7 @@ export const startDialogTurn = (request: {
     height?: number;
     source: string;
   }>;
-}) => invokeCommand<{ success: boolean; message: string }>("start_dialog_turn", request);
+}, route?: InvokeCommandOptions) => invokeCommand<{ success: boolean; message: string }>("start_dialog_turn", request, route);
 
 /**
  * Stops a running turn. `interrupt_dialog_turn` asks the runtime to stop at a
@@ -859,7 +918,7 @@ export const recoverInterruptedDialogTurn = (request: {
   executionGeneration: number;
   workspaceId?: string;
   workspacePath?: string;
-}) => invokeCommand<unknown>("recover_interrupted_dialog_turn", request);
+}, options?: InvokeCommandOptions) => invokeCommand<unknown>("recover_interrupted_dialog_turn", request, options);
 
 // Turn and session policy (wave 3 session). The host decides what a message
 // written during a turn does, which modes a session may switch to, which slash
@@ -877,12 +936,13 @@ export const submitUserMessage = (request: {
   workspaceId?: string;
   text: string;
   displayText?: string;
+  userMessageMetadata?: Record<string, unknown>;
   agentType?: string;
   attachments?: Array<Record<string, unknown>>;
   turnId?: string;
   /** An explicit choice for this message; omitted, the host's stored policy applies. */
   sendDuringTurn?: "immediate" | "queue";
-}) => invokeCommand<SubmitUserMessageResult>("submit_user_message", request);
+}, route?: InvokeCommandOptions) => invokeCommand<SubmitUserMessageResult>("submit_user_message", request, route);
 
 export interface SessionModeCatalogEntry {
   id: string;
@@ -915,15 +975,15 @@ export interface SessionCommandDescriptor {
   args?: string[];
 }
 
-export const listSessionCommands = (sessionId: string | null) =>
-  invokeCommand<SessionCommandDescriptor[]>("list_session_commands", sessionId ? { sessionId } : {});
+export const listSessionCommands = (sessionId: string | null, route?: InvokeCommandOptions) =>
+  invokeCommand<SessionCommandDescriptor[]>("list_session_commands", sessionId ? { sessionId } : {}, route);
 
 export const executeSessionCommand = (request: {
   sessionId: string;
   id: string;
   arg?: string;
   workspaceId?: string;
-}) => invokeCommand<{ id: string; outcome: string; turnId?: string }>("execute_session_command", request);
+}, route?: InvokeCommandOptions) => invokeCommand<{ id: string; outcome: string; turnId?: string }>("execute_session_command", request, route);
 
 export const stopDialogTurn = (sessionId: string, dialogTurnId?: string) =>
   invokeCommand<{ turnId: string; method: string }>("stop_dialog_turn", {

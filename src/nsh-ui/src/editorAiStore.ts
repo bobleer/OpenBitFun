@@ -12,12 +12,15 @@ import { signal } from "nsh";
 import { invokeCommand, listenEvent } from "./bridge";
 
 export type InlineAiStatus = "streaming" | "ready" | "failed";
+export type InlineAiIntent = "ask" | "continue" | "summary" | "todo";
 
 export interface InlineAiState {
   /** The editor (document) the answer belongs to. */
   documentKey: string;
+  target: string | null;
   requestId: string;
   /** What the user asked. */
+  intent: InlineAiIntent;
   instruction: string;
   status: InlineAiStatus;
   /** The answer so far (the whole answer once ready). */
@@ -65,14 +68,23 @@ function updateFor(requestId: string, change: (state: InlineAiState) => InlineAi
   inlineAi.update(current => (current && current.requestId === requestId ? change(current) : current));
 }
 
-/** Most of the document the prompt carries; the rest is cut around the caret. */
+/** For long documents the prompt carries the local context around the anchor. */
 const PROMPT_DOCUMENT_CHARS = 12000;
 
+const quickInstructions = {
+  continue: "Continue writing from the insertion point, keeping the document's language and style.",
+  summary: "Insert a short summary of the key points above, keeping the document's language and style.",
+  todo: "Insert a concise Markdown todo list with the next action items, keeping the document's language and style.",
+};
+
 export interface InlineAiPromptInput {
+  intent: InlineAiIntent;
   instruction: string;
   documentName: string;
   document: string;
   selection: string;
+  before: string;
+  after: string;
 }
 
 /**
@@ -81,9 +93,7 @@ export interface InlineAiPromptInput {
  * the passage and what the user asked.
  */
 export function buildInlineAiPrompt(input: InlineAiPromptInput): string {
-  const doc = input.document.length > PROMPT_DOCUMENT_CHARS
-    ? `${input.document.slice(0, PROMPT_DOCUMENT_CHARS)}\n…`
-    : input.document;
+  const instruction = input.intent === "ask" ? input.instruction.trim() : quickInstructions[input.intent];
   const lines = [
     `You are editing the Markdown document "${input.documentName}".`,
     input.selection.trim()
@@ -91,13 +101,23 @@ export function buildInlineAiPrompt(input: InlineAiPromptInput): string {
       : "Write what the request asks for, to insert at the cursor. Return only the Markdown to insert.",
     "Keep the document's language and style.",
     "",
-    `Request: ${input.instruction.trim()}`,
+    `Request: ${instruction}`,
   ];
   if (input.selection.trim()) {
     lines.push("", "Selected passage:", "<<<", input.selection, ">>>");
   }
-  lines.push("", "Document:", "<<<", doc, ">>>");
+  if (input.before) lines.push("", "Immediately before the target:", "<<<", input.before, ">>>");
+  if (input.after) lines.push("", "Immediately after the target:", "<<<", input.after, ">>>");
+  if (input.document.length <= PROMPT_DOCUMENT_CHARS) {
+    lines.push("", "Document:", "<<<", input.document, ">>>");
+  }
   return lines.join("\n");
+}
+
+/** Models sometimes wrap the proposed document content in a Markdown fence. */
+export function inlineAiMarkdown(text: string): string {
+  const trimmed = text.trim();
+  return /^```(?:markdown|md)[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)?.[1].trim() ?? trimmed;
 }
 
 /** Opens the "Ask AI" field of one editor. */
@@ -112,15 +132,20 @@ export function closeInlineAiComposer(): void {
 /** Asks the document's device for an answer and streams it into `inlineAi`. */
 export async function askInlineAi(
   documentKey: string,
+  target: string | null,
   prompt: InlineAiPromptInput,
 ): Promise<void> {
-  if (!prompt.instruction.trim()) return;
-  await cancelInlineAi();
+  if (prompt.intent === "ask" && !prompt.instruction.trim()) return;
+  // Cancellation is identified by the old request and sent to its own device.
+  // An offline device must not delay creating the new stream.
+  void cancelInlineAi();
   requestSeq += 1;
   const requestId = `editor-ai-${Date.now().toString(36)}-${requestSeq}`;
   inlineAi.set({
     documentKey,
+    target,
     requestId,
+    intent: prompt.intent,
     instruction: prompt.instruction.trim(),
     status: "streaming",
     text: "",
@@ -128,13 +153,13 @@ export async function askInlineAi(
     replacesSelection: Boolean(prompt.selection.trim()),
   });
   unlisten = [
-    listenEvent<TextChunkEvent>("editor-ai://text-chunk", payload => {
-      if (payload?.requestId !== requestId || typeof payload.text !== "string") return;
+    listenEvent<TextChunkEvent>("editor-ai://text-chunk", (payload, meta) => {
+      if ((target && meta.origin !== target) || payload?.requestId !== requestId || typeof payload.text !== "string") return;
       const chunk = payload.text;
       updateFor(requestId, state => ({ ...state, text: state.text + chunk }));
     }),
-    listenEvent<CompletedEvent>("editor-ai://completed", payload => {
-      if (payload?.requestId !== requestId) return;
+    listenEvent<CompletedEvent>("editor-ai://completed", (payload, meta) => {
+      if ((target && meta.origin !== target) || payload?.requestId !== requestId) return;
       updateFor(requestId, state => ({
         ...state,
         status: "ready",
@@ -142,8 +167,8 @@ export async function askInlineAi(
       }));
       stopListening();
     }),
-    listenEvent<ErrorEvent>("editor-ai://error", payload => {
-      if (payload?.requestId !== requestId) return;
+    listenEvent<ErrorEvent>("editor-ai://error", (payload, meta) => {
+      if ((target && meta.origin !== target) || payload?.requestId !== requestId) return;
       updateFor(requestId, state => ({ ...state, status: "failed", error: String(payload.error ?? "") }));
       stopListening();
     }),
@@ -152,8 +177,10 @@ export async function askInlineAi(
     await invokeCommand<unknown>("editor_ai_stream", {
       requestId,
       prompt: buildInlineAiPrompt(prompt),
-    });
+    }, { target });
   } catch (error) {
+    const current = inlineAi();
+    if (current?.requestId !== requestId || current.status !== "streaming") return;
     updateFor(requestId, state => ({
       ...state,
       status: "failed",
@@ -170,7 +197,7 @@ export async function cancelInlineAi(): Promise<void> {
   inlineAi.set(null);
   if (!current || current.status !== "streaming") return;
   try {
-    await invokeCommand<unknown>("editor_ai_cancel", { requestId: current.requestId });
+    await invokeCommand<unknown>("editor_ai_cancel", { requestId: current.requestId }, { target: current.target });
   } catch {
     // The answer is dropped here either way; a host that already finished has nothing to cancel.
   }

@@ -17,7 +17,8 @@ import type { ImageAttachment } from "./attachmentStore";
 import { invokeCommand } from "./bridge";
 import { queuedCounts } from "./sessionStatusStore";
 import { tr } from "./i18n";
-import { activeSessionId, agentTypeOf, runningTurnId } from "./state";
+import { sessionReferenceDraft, type SessionReferenceDraft } from "./sessionReferences";
+import { activeSessionId, agentTypeOf, deviceOfSession, runningTurnId } from "./state";
 
 export interface QueuedMessage {
   id: string;
@@ -27,6 +28,8 @@ export interface QueuedMessage {
   /** Why the host is holding the row back (`blocked` and friends). */
   reason: string;
   source: "host";
+  ownerDevice?: string;
+  referenceDraft?: SessionReferenceDraft;
   /** How many images the host holds with the message. */
   attachmentCount?: number;
   /** Client-cached image attachments so re-editing or starting a queued message preserves images. */
@@ -40,6 +43,7 @@ interface HostQueueItem {
   reason?: string | null;
   previewTruncated?: boolean;
   attachmentCount?: number;
+  composerPresentation?: unknown;
 }
 
 interface HostQueueSnapshot {
@@ -52,6 +56,7 @@ interface HostQueueSnapshot {
   supportsReorder?: boolean;
   capacity?: number;
   used?: number;
+  ownerDevice?: string;
 }
 
 const LEGACY_STORAGE_KEY = "openbitfun.nsh.pending-queue.v1";
@@ -71,6 +76,7 @@ export const hostQueueReorderSupported = signal<boolean | null>(null);
 let nextId = 1;
 let hostEpoch = "";
 let hostSessionId = "";
+let hostDeviceId = "";
 /** The revision the last snapshot was issued at; a reorder has to name it. */
 let hostRevision = 0;
 /** Per-session monotonic request sequence so an older in-flight `list` cannot overwrite newer state. */
@@ -91,7 +97,8 @@ function bumpSessionSeq(sessionId: string): number {
 /** The queue for one session, oldest first. */
 export function queueForSession(sessionId: string | null): QueuedMessage[] {
   if (!sessionId) return [];
-  return queuedMessages().filter(item => item.id.startsWith(`${sessionId}\u0000`))
+  const device = deviceOfSession(sessionId);
+  return queuedMessages().filter(item => item.id.startsWith(`${sessionId}\u0000`) && (item.ownerDevice ?? "") === device)
     .map(item => ({ ...item, id: item.id.slice(sessionId.length + 1) }));
 }
 
@@ -141,22 +148,25 @@ export function recordQueuedFromSubmit(
   content: string,
   attachmentCount = 0,
   attachments: ImageAttachment[] = [],
+  referenceDraft?: SessionReferenceDraft,
 ): void {
   if (!sessionId || !turnId) return;
   if (startedTurnsBySession.get(sessionId)?.has(turnId)) return;
   const targetId = idFor(sessionId, turnId);
+  const ownerDevice = deviceOfSession(sessionId);
   const cloned = attachments.length > 0 ? [...attachments] : [];
   if (cloned.length > 0) {
     queuedAttachmentsById.set(targetId, cloned);
   }
   const effectiveCount = Math.max(attachmentCount, cloned.length);
   const current = queuedMessages();
-  if (current.some(item => item.id === targetId)) {
-    if (cloned.length > 0) {
+  if (current.some(item => item.id === targetId && (item.ownerDevice ?? "") === ownerDevice)) {
+    if (cloned.length > 0 || referenceDraft) {
       queuedMessages.set(
         current.map(item =>
-          item.id === targetId
-            ? { ...item, attachmentCount: effectiveCount, attachments: cloned }
+          item.id === targetId && (item.ownerDevice ?? "") === ownerDevice
+            ? { ...item, ...(cloned.length ? { attachmentCount: effectiveCount, attachments: cloned } : {}),
+              ...(referenceDraft ? { referenceDraft } : {}) }
             : item,
         ),
       );
@@ -171,6 +181,8 @@ export function recordQueuedFromSubmit(
       status: "queued",
       reason: "",
       source: "host",
+      ownerDevice,
+      ...(referenceDraft ? { referenceDraft } : {}),
       ...(effectiveCount > 0 ? { attachmentCount: effectiveCount } : {}),
       ...(cloned.length > 0 ? { attachments: cloned } : {}),
     },
@@ -184,12 +196,22 @@ function idFor(sessionId: string, turnId: string): string {
   return `${sessionId}\u0000${turnId}`;
 }
 
+function activeQueueRow(id: string): QueuedMessage | undefined {
+  const sessionId = activeSessionId();
+  if (!sessionId) return undefined;
+  const device = deviceOfSession(sessionId);
+  const key = id.startsWith(`${sessionId}\u0000`) ? id : idFor(sessionId, id);
+  return queuedMessages().find(item => item.id === key && (item.ownerDevice ?? "") === device);
+}
+
 async function callQueue(sessionId: string, request: Record<string, unknown>): Promise<HostQueueSnapshot> {
-  return invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
+  const ownerDevice = deviceOfSession(sessionId);
+  const snapshot = await invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
     sessionId,
-    ...(hostEpoch && sessionId === hostSessionId ? { queueEpoch: hostEpoch } : {}),
+    ...(hostEpoch && sessionId === hostSessionId && ownerDevice === hostDeviceId ? { queueEpoch: hostEpoch } : {}),
     ...request,
-  });
+  }, ownerDevice ? { target: ownerDevice } : undefined);
+  return { ...snapshot, ownerDevice };
 }
 
 /** Rows the host still holds for the next turn; a started one has left the queue. */
@@ -200,6 +222,8 @@ function adoptSnapshot(
   snapshot: HostQueueSnapshot,
   options?: { fromListSeq?: number },
 ): void {
+  const ownerDevice = snapshot.ownerDevice ?? deviceOfSession(sessionId);
+  if (ownerDevice !== deviceOfSession(sessionId)) return;
   if (options?.fromListSeq !== undefined && options.fromListSeq < (listSeqBySession.get(sessionId) ?? 0)) {
     return;
   }
@@ -220,12 +244,14 @@ function adoptSnapshot(
   }
   hostEpoch = snapshot.queueEpoch ?? hostEpoch;
   hostSessionId = sessionId;
+  hostDeviceId = ownerDevice;
   hostRevision = snapshot.revision ?? hostRevision;
   hostQueueReorderSupported.set(snapshot.supportsReorder ?? null);
   const activeId = typeof snapshot.activeTurnId === "string" && snapshot.activeTurnId ? snapshot.activeTurnId : null;
   const started = startedTurnsBySession.get(sessionId);
   const snapshotTurnIds = new Set<string>();
-  const others = queuedMessages().filter(item => !item.id.startsWith(`${sessionId}\u0000`));
+  const current = queuedMessages();
+  const others = current.filter(item => !item.id.startsWith(`${sessionId}\u0000`) || (item.ownerDevice ?? "") !== ownerDevice);
   const rows: QueuedMessage[] = [];
   for (const item of snapshot.items ?? []) {
     const turnId = item.turnId;
@@ -235,6 +261,8 @@ function adoptSnapshot(
     if (activeId === turnId || started?.has(turnId)) continue;
     const rowId = idFor(sessionId, turnId);
     const cachedAttachments = queuedAttachmentsById.get(rowId);
+    const referenceDraft = sessionReferenceDraft(item.composerPresentation) ??
+      current.find(row => row.id === rowId && (row.ownerDevice ?? "") === ownerDevice)?.referenceDraft;
     const attachmentCount = Math.max(item.attachmentCount ?? 0, cachedAttachments?.length ?? 0);
     rows.push({
       id: rowId,
@@ -242,6 +270,8 @@ function adoptSnapshot(
       status: item.status ?? "queued",
       reason: item.reason ?? "",
       source: "host",
+      ownerDevice,
+      ...(referenceDraft ? { referenceDraft } : {}),
       ...(attachmentCount > 0 ? { attachmentCount } : {}),
       ...(cachedAttachments && cachedAttachments.length > 0 ? { attachments: cachedAttachments } : {}),
     });
@@ -278,7 +308,7 @@ function markQueueUnavailable(sessionId: string): void {
  */
 export async function loadQueueForSession(sessionId: string | null, force = false): Promise<void> {
   if (!sessionId) return;
-  if (!force && sessionId === hostSessionId) return;
+  if (!force && sessionId === hostSessionId && deviceOfSession(sessionId) === hostDeviceId) return;
   const seq = bumpSessionSeq(sessionId);
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, { action: "list" }), { fromListSeq: seq });
@@ -348,12 +378,12 @@ export async function loadQueue(): Promise<void> {
 }
 
 export async function removeQueued(id: string): Promise<void> {
-  const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
+  const row = activeQueueRow(id);
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
   const previous = queuedMessages();
-  const next = previous.filter(item => item.id !== row.id);
+  const next = previous.filter(item => item !== row);
   const seq = bumpSessionSeq(sessionId);
   queuedMessages.set(next);
   queuedCounts.update(counts => ({
@@ -380,17 +410,19 @@ export async function removeQueued(id: string): Promise<void> {
 }
 
 /** Hands a queued message (and its cached attachments) back to the composer and drops it from the queue. */
-export async function takeQueuedEntry(id: string): Promise<{ content: string; attachments: ImageAttachment[] } | null> {
-  const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
+export async function takeQueuedEntry(id: string): Promise<{
+  content: string; attachments: ImageAttachment[]; referenceDraft?: SessionReferenceDraft;
+} | null> {
+  const row = activeQueueRow(id);
   if (!row) return null;
   const cachedAttachments = [...(row.attachments ?? queuedAttachmentsById.get(row.id) ?? [])];
   await removeQueued(row.id);
   // Only a row the host actually let go of goes back to the composer.
-  if (queuedMessages().some(item => item.id === row.id)) {
+  if (queuedMessages().some(item => item.id === row.id && item.ownerDevice === row.ownerDevice)) {
     return null;
   }
   queuedAttachmentsById.delete(row.id);
-  return { content: row.content, attachments: cachedAttachments };
+  return { content: row.content, attachments: cachedAttachments, referenceDraft: row.referenceDraft };
 }
 
 /** Hands a queued message back to the composer and drops it from the queue. */
@@ -401,12 +433,12 @@ export async function takeQueued(id: string): Promise<string> {
 
 /** Sends one queued message now: the host promotes it, steering a running turn. */
 export async function sendQueuedNow(id: string): Promise<void> {
-  const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
+  const row = activeQueueRow(id);
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
   const previous = queuedMessages();
-  const next = previous.filter(item => item.id !== row.id);
+  const next = previous.filter(item => item !== row);
   const seq = bumpSessionSeq(sessionId);
   queuedMessages.set(next);
   queuedCounts.update(counts => ({
@@ -441,7 +473,7 @@ export async function sendQueuedNow(id: string): Promise<void> {
  * instead of being overwritten.
  */
 export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
-  const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
+  const row = activeQueueRow(id);
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
