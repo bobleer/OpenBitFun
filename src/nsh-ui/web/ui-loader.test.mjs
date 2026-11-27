@@ -131,9 +131,12 @@ function environment({ pool = new Map(), now = 1_700_000_000_000 } = {}) {
         return {
           match: async key => (store.has(key) ? store.get(key).clone() : undefined),
           put: async (key, response) => void store.set(key, response),
+          delete: async key => store.delete(typeof key === 'string' ? key : key.url),
+          keys: async () => [...store.keys()].map(url => ({ url })),
         };
       },
       delete: async name => caches.delete(name),
+      keys: async () => [...caches.keys()],
     },
     fetch: async (url, init) => {
       fetched.push({ url, init });
@@ -284,7 +287,7 @@ test('a mismatch is never served or cached; the page goes back to the launcher n
   assert.equal(script.status, 502);
   assert.equal(world.navigated[0].clientId, 'c7');
   assert.equal(new URLSearchParams(new URL(world.navigated[0].url).hash.slice(1)).get('file'), 'app.1234567890.js');
-  assert.equal(world.caches.get(`obf-ui-${bundleId}`).size, 0);
+  assert.equal(world.caches.get(loader.CAS_CACHE).size, 0);
 });
 
 test('a missing file names the file; a signed-out pool says so; an unknown bundle goes back to the launcher', async () => {
@@ -333,60 +336,89 @@ test('a newer manifest schema is refused with its own code; devices are remember
   assert.equal(world.records.get(bundleId).deviceId, 'cli-2');
 });
 
-test('bundles unused for 30 days are dropped with their cached files', async () => {
+test('bundles unused for 30 days are dropped with their unreferenced cached blobs', async () => {
   const old = bundle();
+  const nextIndex = Buffer.from('<!doctype html><title>device v2</title>');
   const world = environment();
   world.pool.set(sha(old.index), old.index);
+  world.pool.set(sha(old.wasm), old.wasm);
+  world.pool.set(sha(nextIndex), nextIndex);
   const ui = loader.createUiLoader(world.env);
   const first = await ui.storeManifest({ manifest: old.manifest, deviceId: 'desk-1' });
   await ui.handle(navigate(`${SCOPE}${first.bundleId}/index.html`), 'c1');
-  assert.equal(world.caches.has(`obf-ui-${first.bundleId}`), true);
+  await ui.handle(get(`${SCOPE}${first.bundleId}/nsh.6b263a5662.wasm`), 'c1');
+  const casStore = world.caches.get(loader.CAS_CACHE);
+  assert.equal(casStore.has(`${CAS}verified/${sha(old.index)}`), true);
+  assert.equal(casStore.has(`${CAS}verified/${sha(old.wasm)}`), true);
 
   world.clock.now += 29 * 24 * 3600 * 1000;
-  const next = { ...old.manifest, version: '1.0.12' };
+  // Next bundle shares `nsh.6b263a5662.wasm` but has a new `index.html`.
+  const next = {
+    ...old.manifest,
+    version: '1.0.12',
+    files: [old.manifest.files[0], file('index.html', nextIndex), old.manifest.files[2]],
+  };
   const second = await ui.storeManifest({ manifest: next, deviceId: 'desk-1' });
   assert.equal(world.records.has(first.bundleId), true);
 
   world.clock.now += 2 * 24 * 3600 * 1000;
   await ui.storeManifest({ manifest: next, deviceId: 'desk-1' });
   assert.equal(world.records.has(first.bundleId), false);
-  assert.equal(world.caches.has(`obf-ui-${first.bundleId}`), false);
+  // Old unreferenced index blob was GC'd, while shared wasm blob survived!
+  assert.equal(casStore.has(`${CAS}verified/${sha(old.index)}`), false);
+  assert.equal(casStore.has(`${CAS}verified/${sha(old.wasm)}`), true);
   assert.equal(world.records.has(second.bundleId), true);
 });
 
-test('bounded LRU eviction caps stored bundles and sweeps orphaned obf-ui-* caches', async () => {
+test('bounded LRU eviction caps stored bundles, sweeps legacy caches, and GCs unreferenced blobs', async () => {
   const base = bundle();
   const world = environment();
-  world.env.caches.keys = async () => [...world.caches.keys()];
-  world.pool.set(sha(base.index), base.index);
-  // Plant an orphaned cache with no record in IndexedDB.
+  // Plant a legacy per-bundle cache.
   world.caches.set(`obf-ui-${'9'.repeat(64)}`, new Map());
   const ui = loader.createUiLoader(world.env);
   const ids = [];
+  const indexHashes = [];
   for (let i = 1; i <= 6; i += 1) {
     world.clock.now += 1000;
-    const stored = await ui.storeManifest({ manifest: { ...base.manifest, version: `2.0.${i}` }, deviceId: 'desk-1' });
+    const html = Buffer.from(`<!doctype html><title>v${i}</title>`);
+    world.pool.set(sha(html), html);
+    const manifest = {
+      ...base.manifest,
+      version: `2.0.${i}`,
+      files: [base.manifest.files[0], file('index.html', html), base.manifest.files[2]],
+    };
+    const stored = await ui.storeManifest({ manifest, deviceId: 'desk-1' });
     await ui.handle(navigate(`${SCOPE}${stored.bundleId}/index.html`), 'c1');
     ids.push(stored.bundleId);
+    indexHashes.push(sha(html));
   }
-  // Orphaned cache was swept and only the 4 most recently used bundles remain.
+  // Legacy cache was swept and only the 4 most recently used bundles remain.
   assert.equal(world.caches.has(`obf-ui-${'9'.repeat(64)}`), false);
   assert.equal(world.records.size, 4);
   assert.equal(world.records.has(ids[0]), false);
   assert.equal(world.records.has(ids[1]), false);
-  assert.equal(world.caches.has(`obf-ui-${ids[0]}`), false);
   assert.equal(world.records.has(ids[5]), true);
+  const casStore = world.caches.get(loader.CAS_CACHE);
+  assert.equal(casStore.has(`${CAS}verified/${indexHashes[0]}`), false);
+  assert.equal(casStore.has(`${CAS}verified/${indexHashes[1]}`), false);
+  assert.equal(casStore.has(`${CAS}verified/${indexHashes[5]}`), true);
 });
 
-test('QuotaExceededError during cache.put evicts older caches and still serves verified bytes', async () => {
+test('QuotaExceededError during cache.put evicts older bundles/blobs and still serves verified bytes', async () => {
   const base = bundle();
+  const oldHtml = Buffer.from('<!doctype html><title>old</title>');
+  const newHtml = Buffer.from('<!doctype html><title>new</title>');
   const world = environment();
-  world.env.caches.keys = async () => [...world.caches.keys()];
-  world.pool.set(sha(base.index), base.index);
+  world.pool.set(sha(oldHtml), oldHtml);
+  world.pool.set(sha(newHtml), newHtml);
   const ui = loader.createUiLoader(world.env);
-  const old = await ui.storeManifest({ manifest: { ...base.manifest, version: '1.9.0' }, deviceId: 'desk-1' });
+  const old = await ui.storeManifest({
+    manifest: { ...base.manifest, version: '1.9.0', files: [base.manifest.files[0], file('index.html', oldHtml), base.manifest.files[2]] },
+    deviceId: 'desk-1',
+  });
   await ui.handle(navigate(`${SCOPE}${old.bundleId}/index.html`), 'c1');
-  assert.equal(world.caches.has(`obf-ui-${old.bundleId}`), true);
+  const casStore = world.caches.get(loader.CAS_CACHE);
+  assert.equal(casStore.has(`${CAS}verified/${sha(oldHtml)}`), true);
 
   // Inject QuotaExceededError on every cache.put for the new bundle.
   const baseOpen = world.env.caches.open;
@@ -395,6 +427,8 @@ test('QuotaExceededError during cache.put evicts older caches and still serves v
     const store = await baseOpen(name);
     return {
       match: store.match,
+      delete: store.delete,
+      keys: store.keys,
       put: async () => {
         putAttempts += 1;
         const err = new Error('Storage quota exceeded');
@@ -405,12 +439,112 @@ test('QuotaExceededError during cache.put evicts older caches and still serves v
   };
 
   world.clock.now += 5000;
-  const fresh = await ui.storeManifest({ manifest: { ...base.manifest, version: '2.0.0' }, deviceId: 'desk-1' });
+  const fresh = await ui.storeManifest({
+    manifest: { ...base.manifest, version: '2.0.0', files: [base.manifest.files[0], file('index.html', newHtml), base.manifest.files[2]] },
+    deviceId: 'desk-1',
+  });
   const response = await ui.handle(navigate(`${SCOPE}${fresh.bundleId}/index.html`), 'c1');
   assert.equal(response.status, 200);
-  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), base.index.toString());
+  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), newHtml.toString());
   assert.equal(putAttempts, 2);
-  assert.equal(world.caches.has(`obf-ui-${old.bundleId}`), false);
+  assert.equal(world.records.has(old.bundleId), false);
+  assert.equal(casStore.has(`${CAS}verified/${sha(oldHtml)}`), false);
+});
+
+test('cross-bundle updates reuse shared verified blobs with zero network fetches', async () => {
+  const b = bundle();
+  const appV2 = Buffer.from('console.log("device ui v2")');
+  const world = environment();
+  world.pool.set(sha(b.index), b.index);
+  world.pool.set(b.manifest.files[0].br.sha256, b.app);
+  world.pool.set(sha(b.wasm), b.wasm);
+  world.pool.set(sha(appV2), appV2);
+  const ui = loader.createUiLoader(world.env);
+
+  const v1 = await ui.storeManifest({ manifest: b.manifest, deviceId: 'desk-1' });
+  await ui.handle(get(`${SCOPE}${v1.bundleId}/nsh.6b263a5662.wasm`), 'c1');
+  const fetchesAfterV1 = world.fetched.length;
+
+  const v2Manifest = {
+    ...b.manifest,
+    version: '1.0.12',
+    files: [file('app.9999999999.js', appV2), b.manifest.files[1], b.manifest.files[2]],
+  };
+  const v2 = await ui.storeManifest({ manifest: v2Manifest, deviceId: 'desk-1' });
+  assert.notEqual(v2.bundleId, v1.bundleId);
+
+  const wasmRes = await ui.handle(get(`${SCOPE}${v2.bundleId}/nsh.6b263a5662.wasm`), 'c1');
+  assert.equal(wasmRes.status, 200);
+  assert.equal(wasmRes.headers.get('Content-Type'), 'application/wasm');
+  assert.equal(wasmRes.headers.get('Content-Length'), String(b.wasm.length));
+  assert.deepEqual(Buffer.from(await wasmRes.arrayBuffer()), b.wasm);
+  // Zero additional network requests for unchanged wasm!
+  assert.equal(world.fetched.length, fetchesAfterV1);
+});
+
+test('warmBundle prefetches only critical boot files and deduplicates in-flight pulls', async () => {
+  const index = Buffer.from('<!doctype html>');
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+  const app = Buffer.from('app()');
+  const runtime = Buffer.from('runtime()');
+  const facade = Buffer.from('export const x = 1;');
+  const mermaid = Buffer.from('mermaid()');
+  const mathWasm = Buffer.from([0, 97, 115, 109, 2, 0, 0, 0]);
+  const hot = Buffer.from('hot()');
+  const manifest = {
+    schema: 1,
+    product: 'openbitfun',
+    version: '2.0.0',
+    nsh: '0.7.1',
+    entry: 'index.html',
+    files: [
+      file('app.1111111111.js', app),
+      file('assets/vendor/mermaid.min.js', mermaid),
+      file('browser.de8aa0f5a1/hot.js', hot),
+      file('browser.de8aa0f5a1/runtime.js', runtime),
+      file('facades/nsh.1111111111.js', facade),
+      file('index.html', index),
+      file('nsh-math.1111111111.wasm', mathWasm),
+      file('nsh.1111111111.wasm', wasm),
+    ].sort((a, b) => (a.path < b.path ? -1 : 1)),
+  };
+  const world = environment();
+  for (const bytes of [index, wasm, app, runtime, facade, mermaid, mathWasm, hot]) {
+    world.pool.set(sha(bytes), bytes);
+  }
+  const ui = loader.createUiLoader(world.env);
+  const { bundleId } = await ui.storeManifest({ manifest, deviceId: 'desk-1' });
+
+  // Run warmBundle concurrently with a foreground fetch for the same wasm file.
+  const [, wasmResponse] = await Promise.all([
+    ui.warmBundle(bundleId),
+    ui.handle(get(`${SCOPE}${bundleId}/nsh.1111111111.wasm`), 'c1'),
+  ]);
+  assert.equal(wasmResponse.status, 200);
+  const fetchedHashes = world.fetched.map(item => new URL(item.url).pathname.split('/').pop());
+  // Critical files fetched exactly once (deduplicated!), lazy assets skipped.
+  assert.equal(fetchedHashes.filter(h => h === sha(wasm)).length, 1);
+  assert.equal(fetchedHashes.includes(sha(index)), true);
+  assert.equal(fetchedHashes.includes(sha(app)), true);
+  assert.equal(fetchedHashes.includes(sha(runtime)), true);
+  assert.equal(fetchedHashes.includes(sha(facade)), true);
+  assert.equal(fetchedHashes.includes(sha(mermaid)), false);
+  assert.equal(fetchedHashes.includes(sha(mathWasm)), false);
+  assert.equal(fetchedHashes.includes(sha(hot)), false);
+});
+
+test('realm page permits same-origin base-uri while bundle entry keeps base-uri none', async () => {
+  const { manifest, index } = bundle();
+  const world = environment();
+  world.pool.set(sha(index), index);
+  const ui = loader.createUiLoader(world.env);
+  const { bundleId } = await ui.storeManifest({ manifest, deviceId: 'desk-1' });
+  const realm = await ui.handle(navigate(`${SCOPE}${bundleId}/${loader.REALM_PAGE}`), 'c1');
+  assert.match(realm.headers.get('Content-Security-Policy'), /frame-ancestors 'self'/);
+  assert.match(realm.headers.get('Content-Security-Policy'), /base-uri 'self'/);
+  const entry = await ui.handle(navigate(`${SCOPE}${bundleId}/index.html`), 'c1');
+  assert.match(entry.headers.get('Content-Security-Policy'), /frame-ancestors 'none'/);
+  assert.match(entry.headers.get('Content-Security-Policy'), /base-uri 'none'/);
 });
 
 test('fleet holders are stored alongside deviceId and forwarded as &holders= on CAS pulls', async () => {

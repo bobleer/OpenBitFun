@@ -164,18 +164,23 @@ switcher in the main flow.
   carries `{controller}` installs it from `servedBackend.ts`. After sign-in the device
   opens by itself (`pickUiSourceDevice`, next candidate on failure); the device list
   shows only for the failure states.
-- `web/ui-loader.js`: the browser runs the exact web UI a device ships. The launcher
-  reads the device's manifest over the end-to-end channel (`ui_bundle_manifest`) and
-  drives the device in place when the bundleId is its own (`#nsh-params`
-  `controller.uiBundleId`). Otherwise it opens `/app/b/<bundleId>/`, which this Service
-  Worker serves from the server's pool (`/app/cas/<sha256>`) after checking every byte
-  against the manifest. `host.js` keeps the page-realm half (`prepareBundle`, `launch`,
-  `page`, `leave`, handoff v1 in sessionStorage `obf.controller.handoff.v1`; frozen,
-  add fields only). On a `/app/b/` page it also runs the NSH realm iframe through the
-  loader (`prepareBundleRealm`; Chrome gives the runtime's own `about:blank` iframe no
-  worker). `scripts/build-web-controller.mjs` ships `ui-loader.js` and `ui-boot.html`
-  (nginx's answer for `/app/b/` requests that bypass the worker). Tests:
-  `node --test src/nsh-ui/web/*.test.mjs` (loader and handoff) and
+- `web/ui-loader.js` + `web/launcher.{html,js,css}`: the browser runs the exact
+  web UI a device ships. `/` serves the lightweight HTML/JS launcher built by
+  `scripts/build-web-controller.mjs` (sign-in, `obp-e2e-v1` manifest fetch,
+  `obf-ui-store` + handoff v1) without downloading the full NSH WASM bundle on
+  `/` first; it opens `/b/<bundleId>/`, which this Service Worker serves from a
+  shared content-addressed Cache Storage (`obf-ui-cas-v1`, keyed by verified
+  SHA-256 so unchanged files such as `nsh.*.wasm` survive bundle updates) or
+  fetches from the server's pool (`/cas/<sha256>`) with parallel critical-boot
+  prefetching after checking every byte against the manifest. `host.js` keeps
+  the page-realm half (`prepareBundle`, `launch`, `page`, `leave`, handoff v1 in
+  sessionStorage `obf.controller.handoff.v1`; frozen, add fields only). On a
+  `/b/` page it also runs the NSH realm iframe through the loader
+  (`prepareBundleRealm`; Chrome gives the runtime's own `about:blank` iframe no
+  worker). `scripts/build-web-controller.mjs` ships the launcher, `ui-loader.js`,
+  `ui-boot.html` (nginx's answer for `/b/` requests that bypass the worker) and
+  `favicon.svg`, all precompressed with `.br` and `.gz`. Tests:
+  `pnpm run web-controller:test` (loader, handoff and launcher) and
   `test/controller-shell.test.tsx`.
 - `src/browserStore.ts` + `src/scenes/BrowserScene.tsx`: the embedded browser of the
   native desktop. The backend owns targets and agent semantics (`native_browser.rs`); the

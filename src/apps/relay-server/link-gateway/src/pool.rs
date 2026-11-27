@@ -90,7 +90,7 @@ impl Default for PoolOptions {
             max_age: Duration::from_secs(30 * 24 * 60 * 60),
             touch_interval: Duration::from_secs(60 * 60),
             pulls_per_account_per_minute: 240,
-            concurrent_pulls_per_account: 4,
+            concurrent_pulls_per_account: 8,
             concurrent_pulls: 64,
             queue_timeout: Duration::from_secs(60),
             busy_backoff: Duration::from_millis(500),

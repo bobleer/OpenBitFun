@@ -267,9 +267,30 @@ export function createWebController(options: WebControllerOptions): ControllerPo
   const connectTimeoutMs = options.connectTimeoutMs ?? 45_000;
   /** Where the gateway says the account's cloud node is reached (`GET /devices` `cloudNode`). */
   let cloudNode: { deviceId: string; path: string } | null = null;
+  /** Recent `GET /devices` answer reused by `entryCandidates()` right after `listDevices()`. */
+  let recentDevices: { at: number; answer: Record<string, unknown> } | null = null;
+  let devicesInFlight: Promise<Record<string, unknown>> | null = null;
   /** The running page's manifest version and bundle owner, captured when `placeUi` stays here. */
   let runningVersion: string | null = null;
   let runningOwnerDeviceId: string | null = null;
+
+  function fetchDevicesPayload(reuseRecent: boolean): Promise<Record<string, unknown>> {
+    if (reuseRecent && recentDevices && Date.now() - recentDevices.at < 5_000) {
+      return Promise.resolve(recentDevices.answer);
+    }
+    if (!devicesInFlight) {
+      devicesInFlight = request("/devices")
+        .then(answer => {
+          rememberCloudNode(answer.cloudNode);
+          recentDevices = { at: Date.now(), answer };
+          return answer;
+        })
+        .finally(() => {
+          devicesInFlight = null;
+        });
+    }
+    return devicesInFlight;
+  }
 
   function rememberCloudNode(value: unknown): void {
     const node = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -344,6 +365,7 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     },
     async signOut() {
       cloudNode = null;
+      recentDevices = null;
       try {
         await request("/auth/sign-out", { method: "POST" });
       } finally {
@@ -352,13 +374,11 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       }
     },
     async listDevices() {
-      const answer = await request("/devices");
-      rememberCloudNode(answer.cloudNode);
+      const answer = await fetchDevicesPayload(false);
       return Array.isArray(answer.devices) ? answer.devices.map(deviceOf) : [];
     },
     async entryCandidates() {
-      const answer = await request("/devices");
-      rememberCloudNode(answer.cloudNode);
+      const answer = await fetchDevicesPayload(true);
       return Array.isArray(answer.entryCandidates)
         ? answer.entryCandidates.filter((item): item is string => typeof item === "string" && item.length > 0)
         : [];

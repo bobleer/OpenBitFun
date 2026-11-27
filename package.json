@@ -80,7 +80,7 @@
     "desktop-nsh:bundle": "node scripts/desktop-nsh-dev.mjs --bundle-only",
     "desktop-nsh:web": "node scripts/build-desktop-web-ui.mjs",
     "web-controller:build": "node scripts/build-web-controller.mjs",
-    "web-controller:test": "node --test src/nsh-ui/web/ui-loader.test.mjs src/nsh-ui/web/handoff.test.mjs",
+    "web-controller:test": "node --test src/nsh-ui/web/ui-loader.test.mjs src/nsh-ui/web/handoff.test.mjs src/nsh-ui/web/launcher.test.mjs",
     "desktop-nsh:build": "node scripts/desktop-nsh-build.mjs",
     "desktop-nsh:build:dev": "node scripts/desktop-nsh-build.mjs --profile desktop-dev",
     "desktop-nsh:dev": "pnpm run desktop-nsh:build:dev && cross-env NSH_APP_DIR=target/desktop-nsh/nsh ./target/desktop-dev/openbitfun-nsh",

@@ -143,6 +143,7 @@ function controllerHost(options: HostOptions = {}) {
     identity: { provider: "email", accountId: "email-1", displayName: "me@example.com", initial: "M" },
     deviceId: "web-1",
   };
+  let deviceFetches = 0;
   const network = {
     [`GET ${API}/session`]: () => {
       sessionChecks.push(Date.now());
@@ -161,7 +162,10 @@ function controllerHost(options: HostOptions = {}) {
       session = true;
       return { body: { account } };
     },
-    [`GET ${API}/devices`]: { body: { devices: options.devices ?? [STUDIO_MAC, OLD_LAPTOP] } },
+    [`GET ${API}/devices`]: () => {
+      deviceFetches += 1;
+      return { body: { devices: options.devices ?? [STUDIO_MAC, OLD_LAPTOP] } };
+    },
     [`GET ${API}/devices/desk-1/key`]: { body: { deviceId: "desk-1", publicKey: "ZGVzay1rZXk=" } },
     [`GET ${API}/devices/cli-3/key`]: { body: { deviceId: "cli-3", publicKey: "Y2xpLWtleQ==" } },
   };
@@ -266,6 +270,9 @@ function controllerHost(options: HostOptions = {}) {
     handlers,
     requests,
     sessionChecks,
+    get deviceFetches() {
+      return deviceFetches;
+    },
     opened,
     closed,
     calls,
@@ -355,6 +362,8 @@ test("sign in with the email code; the device opens by itself and runs in place 
 
   // No device picker: the only usable device opens, and its UI is this page's.
   await until(app, "label:controller-studio");
+  // `listDevices()` and `entryCandidates()` share one `GET /devices` round-trip.
+  expect(host.deviceFetches).toBe(1);
   // No device bar and no connection time: the UI fills the page.
   expect(app.texts().some(text => text.startsWith("Using Studio Mac"))).toBe(false);
   // The browser's own device key is registered at sign-in.

@@ -187,7 +187,7 @@ stores each hash once for every account and device.
   and files without a sidecar are dropped at start. It is a cache: deleting
   the directory loses nothing.
 - **Limits:** 64 MiB per file, 4 GiB total (oldest-unused evicted first),
-  240 pulls per account per minute, 4 concurrent pulls per account and 64 in
+  240 pulls per account per minute, 8 concurrent pulls per account and 64 in
   total (`LINK_GATEWAY_UI_POOL_*` in the unit).
 - **Last use and cleanup:** recorded on every hit or store, the sidecar
   rewritten at most once an hour; a daily task deletes files unused for 30

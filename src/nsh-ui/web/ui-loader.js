@@ -7,12 +7,13 @@
 // - Service Worker (scope `/b/`). It serves `/b/<bundleId>/<path>`
 //   from the bundle the launcher stored. The manifest came over the end-to-end
 //   channel from the device, so the device key authenticates it, and the worker
-//   recomputes its id. A file is answered from Cache Storage
-//   (`obf-ui-<bundleId>`) or fetched from `/cas/<sha256>?device=<deviceId>`
-//   (the `.br` copy first when the manifest has one). The decoded body must
-//   match the manifest's size and SHA-256 before anything uses it. A failure
-//   never runs anything: the page goes back to the launcher, which names the
-//   file.
+//   recomputes its id. Verified files are cached in a shared content-addressed
+//   Cache Storage (`obf-ui-cas-v1`, keyed by verified SHA-256) so identical
+//   assets (such as the 11 MB NSH WASM runtime) are reused across bundle
+//   updates, or fetched from `/cas/<sha256>?device=<deviceId>` (the `.br` copy
+//   first when the manifest has one). The decoded body must match the
+//   manifest's size and SHA-256 before anything uses it. A failure never runs
+//   anything: the page goes back to the launcher, which names the file.
 // - Manifest store. The launcher (`host.js`, `openbitfun.controller.prepareBundle`)
 //   posts `{ type: "obf-ui-store", manifest, deviceId }` with a reply port; the
 //   worker checks the manifest and recomputes its bundleId (lowercase hex
@@ -32,6 +33,8 @@
   const BUNDLE_DB = "obf-ui-bundles";
   const BUNDLE_STORE = "bundles";
   const CACHE_PREFIX = "obf-ui-";
+  const CAS_CACHE = "obf-ui-cas-v1";
+  const PREFETCH_CONCURRENCY = 6;
   const MANIFEST_SCHEMA = 1;
   const MAX_FILE_BYTES = 64 * 1024 * 1024;
   const UNUSED_MS = 30 * 24 * 60 * 60 * 1000;
@@ -237,14 +240,82 @@
     return { bundleId, path };
   }
 
+  /** Whether `path` belongs to the critical startup waterfall (not a lazy vendor/data asset). */
+  function isBootFile(path, entry) {
+    if (path === entry) return true;
+    if (path.startsWith("assets/")) return false;
+    if (path.startsWith("facades/")) return /\.js$/i.test(path);
+    if (/^browser\.[^/]+\/(?:runtime|page|bootstrap|realm|loader)\.js$/i.test(path)) return true;
+    if (path.includes("/")) return false;
+    if (/^nsh-math\./i.test(path) || /^nsh-syntaxes\./i.test(path)) return false;
+    return /\.(?:js|css|wasm)$/i.test(path);
+  }
+
+  /** Priority order for critical boot prefetch: entry, large streaming binaries, then small scripts. */
+  function bootFilesOf(manifest) {
+    const entry = manifest.entry;
+    const files = manifest.files.filter(file => isBootFile(file.path, entry));
+    const rank = file => {
+      if (file.path === entry) return 0;
+      if (/^nsh\.[^/]+\.wasm$/i.test(file.path)) return 1;
+      if (/^app\.[^/]+\.js$/i.test(file.path)) return 2;
+      return 3;
+    };
+    files.sort((a, b) => rank(a) - rank(b) || a.size - b.size);
+    return files;
+  }
+
   // ── The loader (environment-free; the worker and the test give it one) ──
 
   /**
    * `env`: `{ subtle, caches, records: { get(id), put(record), remove(id), all() },
-   * fetch(url, init), now(), scopeUrl, casUrl, launcherUrl, navigateClient(clientId, url, bundleId) }`.
+   * fetch(url, init), now(), scopeUrl, casUrl, launcherUrl, navigateClient(clientId, url, bundleId),
+   * prefetch?: boolean }`.
    */
   function createUiLoader(env) {
     const verified = new Map();
+    const inFlight = new Map();
+
+    function casCacheKey(sha256) {
+      return `${env.casUrl}verified/${sha256}`;
+    }
+
+    function hashFromCasKey(entry) {
+      const url = typeof entry === "string" ? entry : entry && typeof entry.url === "string" ? entry.url : "";
+      const prefix = `${env.casUrl}verified/`;
+      if (!url.startsWith(prefix)) return null;
+      const hash = url.slice(prefix.length);
+      return HEX64.test(hash) ? hash : null;
+    }
+
+    async function sweepUnreferencedBlobs(keepRecords) {
+      const activeHashes = new Set();
+      for (const record of keepRecords) {
+        const files = record && record.manifest && Array.isArray(record.manifest.files) ? record.manifest.files : [];
+        for (const file of files) {
+          if (file && typeof file.sha256 === "string") activeHashes.add(file.sha256);
+        }
+      }
+      const cache = await env.caches.open(CAS_CACHE).catch(() => null);
+      if (!cache || typeof cache.keys !== "function" || typeof cache.delete !== "function") return;
+      const keys = await cache.keys().catch(() => []);
+      for (const key of keys) {
+        const hash = hashFromCasKey(key);
+        if (hash && !activeHashes.has(hash)) {
+          await cache.delete(key).catch(() => undefined);
+        }
+      }
+    }
+
+    async function sweepLegacyCaches() {
+      if (typeof env.caches.keys !== "function") return;
+      const names = await env.caches.keys().catch(() => []);
+      for (const name of names) {
+        if (typeof name === "string" && name.startsWith(CACHE_PREFIX) && name !== CAS_CACHE) {
+          await env.caches.delete(name).catch(() => undefined);
+        }
+      }
+    }
 
     async function storeManifest(message) {
       const manifest = message && message.manifest;
@@ -271,7 +342,7 @@
 
     /**
      * Drops bundles unused for 30 days, enforces an LRU cap (`MAX_CACHED_BUNDLES`),
-     * and sweeps orphaned `obf-ui-*` caches that have no surviving record.
+     * sweeps legacy per-bundle caches, and garbage-collects unreferenced CAS blobs.
      */
     async function prune(keep, now) {
       const all = await env.records.all();
@@ -285,7 +356,6 @@
         if (typeof record.usedAt === "number" && now - record.usedAt >= UNUSED_MS) {
           verified.delete(record.bundleId);
           await env.records.remove(record.bundleId);
-          await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`);
           continue;
         }
         survivors.push(record);
@@ -300,21 +370,15 @@
           const record = evictable[i];
           verified.delete(record.bundleId);
           await env.records.remove(record.bundleId);
-          await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`);
         }
       }
-      // Sweep any orphaned `obf-ui-*` caches whose manifest record is gone.
-      if (typeof env.caches.keys === "function") {
-        const remaining = await env.records.all();
-        const activeIds = new Set(remaining.filter(Boolean).map(record => record.bundleId));
-        if (keep) activeIds.add(keep);
-        const names = await env.caches.keys();
-        for (const name of names) {
-          if (typeof name !== "string" || !name.startsWith(CACHE_PREFIX)) continue;
-          const id = name.slice(CACHE_PREFIX.length);
-          if (!activeIds.has(id)) await env.caches.delete(name);
-        }
+      await sweepLegacyCaches();
+      const remaining = await env.records.all().catch(() => []);
+      const kept = remaining.filter(Boolean);
+      if (keep && !kept.some(record => record.bundleId === keep) && verified.has(keep)) {
+        kept.push(verified.get(keep));
       }
+      await sweepUnreferencedBlobs(kept);
     }
 
     function isQuotaError(error) {
@@ -323,37 +387,37 @@
       return /quota/i.test(String(error.message || ""));
     }
 
-    /** Frees space on quota pressure by evicting older bundle caches (never `keep`). */
+    /** Frees space on quota pressure by evicting all bundles except `keep` and sweeping their blobs. */
     async function evictOtherBundleCaches(keep) {
       const all = await env.records.all().catch(() => []);
-      const others = all
-        .filter(record => record && record.bundleId && record.bundleId !== keep)
-        .sort((a, b) => (typeof a.usedAt === "number" ? a.usedAt : 0) - (typeof b.usedAt === "number" ? b.usedAt : 0));
-      for (const record of others) {
+      const kept = [];
+      for (const record of all) {
+        if (!record || !record.bundleId) continue;
+        if (record.bundleId === keep) {
+          kept.push(record);
+          continue;
+        }
         verified.delete(record.bundleId);
         await env.records.remove(record.bundleId).catch(() => undefined);
-        await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`).catch(() => undefined);
       }
-      if (typeof env.caches.keys === "function") {
-        const names = await env.caches.keys().catch(() => []);
-        for (const name of names) {
-          if (typeof name === "string" && name.startsWith(CACHE_PREFIX) && name !== `${CACHE_PREFIX}${keep}`) {
-            await env.caches.delete(name).catch(() => undefined);
-          }
-        }
+      if (keep && kept.length === 0 && verified.has(keep)) {
+        kept.push(verified.get(keep));
       }
+      await sweepLegacyCaches();
+      await sweepUnreferencedBlobs(kept);
     }
 
-    /** Writes a verified response into Cache Storage; quota failures never brick the load. */
-    async function putCached(cache, bundleId, key, response) {
+    /** Writes verified bytes into the shared CAS Cache Storage; quota failures never brick the load. */
+    async function putCached(cache, bundleId, key, body) {
       if (!cache) return;
+      const entry = () => new Response(body, { status: 200, headers: { "Content-Type": "application/octet-stream" } });
       try {
-        await cache.put(key, response.clone());
+        await cache.put(key, entry());
       } catch (error) {
         if (!isQuotaError(error)) return;
         await evictOtherBundleCaches(bundleId);
         try {
-          await cache.put(key, response.clone());
+          await cache.put(key, entry());
         } catch {
           // Still over quota: serve the verified bytes without caching them.
         }
@@ -379,12 +443,17 @@
       await env.records.put(record);
     }
 
-    function headersFor(path) {
+    function headersFor(path, size) {
       const headers = { "Content-Type": mimeOf(path), "X-Content-Type-Options": "nosniff" };
+      if (typeof size === "number" && Number.isSafeInteger(size) && size >= 0) {
+        headers["Content-Length"] = String(size);
+      }
       if (/\.html?$/i.test(path)) {
-        // The realm page is framed by its own bundle page, and nothing else.
+        // The realm page is framed by its own bundle page and sets a same-origin `<base>`.
         headers["Content-Security-Policy"] =
-          path === REALM_PAGE ? PAGE_CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'") : PAGE_CSP;
+          path === REALM_PAGE
+            ? PAGE_CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'").replace("base-uri 'none'", "base-uri 'self'")
+            : PAGE_CSP;
         headers["Referrer-Policy"] = "no-referrer";
         headers["Cross-Origin-Opener-Policy"] = "same-origin";
         headers["Cache-Control"] = "no-cache";
@@ -435,6 +504,60 @@
       throw new LoadFailure("unavailable", file.path, `${file.path} could not be loaded (${lastStatus})`);
     }
 
+    /** Pulls `file` with in-flight deduplication by verified SHA-256 and stores it in CAS Cache Storage. */
+    function pullAndCache(record, file, cache) {
+      const existing = inFlight.get(file.sha256);
+      if (existing) return existing;
+      const promise = (async () => {
+        const body = await pull(record, file);
+        const targetCache = cache || (await env.caches.open(CAS_CACHE).catch(() => null));
+        await putCached(targetCache, record.bundleId, casCacheKey(file.sha256), body);
+        return body;
+      })();
+      inFlight.set(file.sha256, promise);
+      promise.then(
+        () => inFlight.delete(file.sha256),
+        () => inFlight.delete(file.sha256),
+      );
+      return promise;
+    }
+
+    /**
+     * Warms the critical boot files of `bundleId` into CAS Cache Storage in parallel
+     * so the runtime waterfall (host.js, browser.*, facades/*) hits local cache.
+     * Background errors are swallowed; foreground `handle()` still enforces every check.
+     */
+    async function warmBundle(bundleId) {
+      let record;
+      try {
+        record = await recordOf(bundleId);
+      } catch {
+        return;
+      }
+      if (!record) return;
+      const cache = await env.caches.open(CAS_CACHE).catch(() => null);
+      const queue = bootFilesOf(record.manifest);
+      let cursor = 0;
+      async function workerLoop() {
+        while (cursor < queue.length) {
+          const file = queue[cursor];
+          cursor += 1;
+          const key = casCacheKey(file.sha256);
+          const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
+          if (hit) continue;
+          try {
+            await pullAndCache(record, file, cache);
+          } catch {
+            // Foreground fetch will retry or fail loudly if needed.
+          }
+        }
+      }
+      const workers = [];
+      const count = Math.min(PREFETCH_CONCURRENCY, queue.length);
+      for (let i = 0; i < count; i += 1) workers.push(workerLoop());
+      await Promise.all(workers);
+    }
+
     function failureUrl(failure, bundleId) {
       const params = new URLSearchParams({ "ui-error": failure.reason, file: failure.path || "", bundle: bundleId });
       return `${env.launcherUrl}#${params.toString()}`;
@@ -476,15 +599,15 @@
       const file = path === null ? null : record.manifest.files.find(entry => entry.path === path);
       if (!file) return new Response("Not in this bundle", { status: 404, headers: { "Content-Type": "text/plain" } });
       await touch(record).catch(() => undefined);
-      const key = `${env.scopeUrl}${bundleId}/${file.path.split("/").map(encodeURIComponent).join("/")}`;
-      const cache = await env.caches.open(`${CACHE_PREFIX}${bundleId}`).catch(() => null);
+      const cache = await env.caches.open(CAS_CACHE).catch(() => null);
+      const key = casCacheKey(file.sha256);
       const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
-      if (hit) return hit;
+      if (hit) {
+        return new Response(hit.body ?? new Uint8Array(0), { status: 200, headers: headersFor(file.path, file.size) });
+      }
       try {
-        const body = await pull(record, file);
-        const response = new Response(body, { status: 200, headers: headersFor(file.path) });
-        await putCached(cache, bundleId, key, response);
-        return response;
+        const body = await pullAndCache(record, file, cache);
+        return new Response(body, { status: 200, headers: headersFor(file.path, file.size) });
       } catch (error) {
         const failure =
           error instanceof LoadFailure ? error : new LoadFailure("unavailable", file.path, String(error && error.message));
@@ -496,7 +619,7 @@
       }
     }
 
-    return { storeManifest, handle, prune };
+    return { storeManifest, handle, prune, warmBundle };
   }
 
   // ── IndexedDB records (worker) ──
@@ -571,6 +694,9 @@
         parsed = null;
       }
       if (!parsed) return;
+      if (event.request.mode === "navigate" && parsed.path !== REALM_PAGE && parsed.path !== FIGURE_PAGE) {
+        event.waitUntil(loader.warmBundle(parsed.bundleId).catch(() => undefined));
+      }
       event.respondWith(
         loader.handle(event.request, event.clientId).then(
           response => response || worker.fetch(event.request),
@@ -584,7 +710,12 @@
       if (!data || data.type !== STORE_MESSAGE || !port) return;
       event.waitUntil(
         loader.storeManifest(data).then(
-          answer => port.postMessage({ ok: true, bundleId: answer.bundleId }),
+          answer => {
+            port.postMessage({ ok: true, bundleId: answer.bundleId });
+            if (data.prefetch !== false) {
+              return loader.warmBundle(answer.bundleId).catch(() => undefined);
+            }
+          },
           error => port.postMessage({ ok: false, error: String((error && error.message) || error) }),
         ),
       );
@@ -680,12 +811,15 @@
     MANIFEST_SCHEMA,
     STORE_MESSAGE,
     REALM_PAGE,
+    CAS_CACHE,
     canonicalJson,
     bundleIdOf,
     checkManifest,
     validPath,
     mimeOf,
     parseBundleUrl,
+    isBootFile,
+    bootFilesOf,
     createUiLoader,
     activeWorker,
   };
