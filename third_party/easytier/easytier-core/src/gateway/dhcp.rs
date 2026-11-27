@@ -395,6 +395,21 @@ impl DhcpService {
         self.state.lock().unwrap().current()
     }
 
+    /// Whether every enabled DHCP family currently holds an applied address
+    /// (OpenBitFun: keep the fast startup cadence until addressed).
+    fn has_configured_addresses(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        let ipv4_ready = state
+            .ipv4
+            .as_ref()
+            .is_none_or(|allocator| allocator.current().is_some());
+        let ipv6_ready = state
+            .ipv6
+            .as_ref()
+            .is_none_or(|allocator| allocator.current().is_some());
+        ipv4_ready && ipv6_ready && !state.needs_apply
+    }
+
     pub async fn reconcile_once(&self) -> bool {
         let _operation = self.operation.lock().await;
         let interface_closed = self.host.take_interface_closed();
@@ -468,13 +483,24 @@ impl DhcpService {
             let mut next_sleep = Duration::ZERO;
             loop {
                 crate::foundation::time::sleep(next_sleep).await;
-                next_sleep = if service.reconcile_once().await {
-                    Duration::from_secs(rand::thread_rng().gen_range(5..10))
-                } else {
-                    Duration::from_secs(1)
-                };
+                let has_routes = service.reconcile_once().await;
+                // OpenBitFun: a relay node without a virtual IP sets `has_routes = true`
+                // while this node is still waiting for peer IPv4 routes or bootstrap.
+                // Stay on a fast cadence until every enabled family has an address.
+                let addressed = service.has_configured_addresses();
+                next_sleep = next_reconcile_sleep(has_routes, addressed, &mut rand::thread_rng());
             }
         }))
+    }
+}
+
+fn next_reconcile_sleep(has_routes: bool, addressed: bool, rng: &mut impl Rng) -> Duration {
+    if has_routes && addressed {
+        Duration::from_secs(rng.gen_range(5..10))
+    } else if !addressed {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_secs(1)
     }
 }
 
@@ -1268,5 +1294,43 @@ mod tests {
                 next: Some("fd12::2/126".parse().unwrap()),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn unaddressed_relay_only_routes_stay_on_fast_reconcile_cadence() {
+        use rand::SeedableRng;
+        let host = Arc::new(RecordingHost::default());
+        let (service, _runtime, routes) = service_with_config(
+            host,
+            crate::config::runtime::CoreRuntimeConfig {
+                dhcp_ipv4: true,
+                ..Default::default()
+            },
+        );
+        // Connected to a public relay (has_routes = true) before peer IPv4 routes sync.
+        *routes.snapshot.lock().unwrap() = DhcpRouteSnapshot {
+            has_routes: true,
+            used_ipv4: HashSet::new(),
+            used_ipv6: HashSet::new(),
+        };
+        assert!(service.reconcile_once().await);
+        assert!(!service.has_configured_addresses());
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        assert_eq!(
+            next_reconcile_sleep(true, service.has_configured_addresses(), &mut rng),
+            Duration::from_millis(500)
+        );
+        // Once an online peer's IPv4 route arrives, the next round assigns an address
+        // and transitions back to the steady-state 5..10s sleep window.
+        routes
+            .snapshot
+            .lock()
+            .unwrap()
+            .used_ipv4
+            .insert("10.126.126.2/24".parse().unwrap());
+        assert!(service.reconcile_once().await);
+        assert!(service.has_configured_addresses());
+        let steady = next_reconcile_sleep(true, service.has_configured_addresses(), &mut rng);
+        assert!(steady >= Duration::from_secs(5) && steady < Duration::from_secs(10));
     }
 }

@@ -1124,6 +1124,11 @@ export function syncGlobalNativeTheme(family = fontSans()): void {
       },
       horizontal: {
         style: {
+          // NSH leaves built-in track placement to the app, inside the viewport.
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
           height: 10,
           paddingVertical: 2,
           paddingHorizontal: 4,

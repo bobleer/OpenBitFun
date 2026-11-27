@@ -164,6 +164,15 @@ network namespaces).
     trace/debug sites format `?network_identity` or whole route sessions, so
     the account network's secret landed in host logs.
 
+12. **Fast DHCP convergence while unaddressed** (`gateway/dhcp.rs`).
+    `DhcpService::start` stays on a 500 ms reconciliation cadence until every
+    enabled DHCP family holds an applied address (`has_configured_addresses`),
+    and only switches to the steady-state 5–10 s window once both routes and
+    addresses are present. Why: connecting to a public relay sets
+    `has_routes = true` before OSPF delivers other peers' IPv4 routes, causing
+    upstream to sleep 5–10 s (up to two `BOOTSTRAP_WAIT_ROUNDS`) with no
+    virtual IP and stalling OBP bind and outbound peer dials on startup.
+
 The data plane (`DataPlaneTcpStream`/`DataPlaneTcpListener`,
 `CoreInstance::data_plane_tcp_connect/bind`) is used unchanged: it is
 upstream's in-process virtual TCP over the node's smoltcp stack.

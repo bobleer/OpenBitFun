@@ -844,27 +844,40 @@ impl CoreFleetDigestSource {
             records.truncate(MAX_WORKSPACES_PER_DEVICE);
             snapshot.sessions_truncated = true;
         }
+        const DIGEST_WORKSPACE_CONCURRENCY: usize = 8;
         let store = crate::agentic::session::CoreSessionStorePort::default();
-        for info in &records {
-            let mut workspace = workspace_summary_with_primary(
-                info,
-                current.as_deref(),
-                primary_assistant.as_deref(),
-            );
-            let page = match store.resolve_workspace_storage(&info.id).await {
-                Ok(resolution) => self
-                    .compatibility
-                    .list_persisted_sessions_page_with_activity(
-                        &self.agent_runtime,
-                        &resolution.effective_storage_path,
-                        None,
-                        MAX_TOP_LEVEL_SESSIONS_PER_WORKSPACE,
-                        None,
-                    )
-                    .await
-                    .map_err(|error| error.to_string()),
-                Err(error) => Err(error.to_string()),
-            };
+        let pages =
+            futures::stream::StreamExt::collect::<Vec<_>>(futures::stream::StreamExt::buffered(
+                futures::stream::iter((0..records.len()).map(|idx| {
+                    let info = &records[idx];
+                    let store = &store;
+                    let compatibility = &self.compatibility;
+                    let agent_runtime = &self.agent_runtime;
+                    let current = current.as_deref();
+                    let primary_assistant = primary_assistant.as_deref();
+                    async move {
+                        let workspace =
+                            workspace_summary_with_primary(info, current, primary_assistant);
+                        let page = match store.resolve_workspace_storage(&info.id).await {
+                            Ok(resolution) => compatibility
+                                .list_persisted_sessions_page_with_activity(
+                                    agent_runtime,
+                                    &resolution.effective_storage_path,
+                                    None,
+                                    MAX_TOP_LEVEL_SESSIONS_PER_WORKSPACE,
+                                    None,
+                                )
+                                .await
+                                .map_err(|error| error.to_string()),
+                            Err(error) => Err(error.to_string()),
+                        };
+                        (info, workspace, page)
+                    }
+                })),
+                DIGEST_WORKSPACE_CONCURRENCY,
+            ))
+            .await;
+        for (info, mut workspace, page) in pages {
             match page {
                 Ok(page) => {
                     let activities: HashMap<&str, &SessionActivitySummary> = page

@@ -419,22 +419,69 @@ impl MeshDialer {
 
     /// Finds `target`'s OBP mesh port (the known one, else the range).
     pub async fn locate(&self, target: &MeshTarget) -> Result<(u16, MeshInfo), String> {
-        let ports: Vec<u16> = match target.port {
-            Some(port) => vec![port],
-            None => (MESH_OBP_PORT_FIRST..=MESH_OBP_PORT_LAST).collect(),
-        };
-        let mut last_error = format!(
-            "mesh_unreachable: device {} has no OBP mesh listener",
-            target.device_id
-        );
+        if let Some(port) = target.port {
+            return match self.probe_info(target.virtual_ip, port).await {
+                Ok(info) if info.device_id == target.device_id => Ok((port, info)),
+                Ok(info) => Err(format!(
+                    "mesh port {port} at {} belongs to device {}",
+                    target.virtual_ip, info.device_id
+                )),
+                Err(error) => Err(error),
+            };
+        }
+        match self
+            .probe_info(target.virtual_ip, MESH_OBP_PORT_FIRST)
+            .await
+        {
+            Ok(info) if info.device_id == target.device_id => {
+                return Ok((MESH_OBP_PORT_FIRST, info));
+            }
+            Ok(info) => {
+                let first_error = format!(
+                    "mesh port {MESH_OBP_PORT_FIRST} at {} belongs to device {}",
+                    target.virtual_ip, info.device_id
+                );
+                return self
+                    .locate_in_ports(
+                        target,
+                        (MESH_OBP_PORT_FIRST + 1)..=MESH_OBP_PORT_LAST,
+                        first_error,
+                    )
+                    .await;
+            }
+            Err(error) if should_scan_other_ports(&error) => {
+                return self
+                    .locate_in_ports(
+                        target,
+                        (MESH_OBP_PORT_FIRST + 1)..=MESH_OBP_PORT_LAST,
+                        error,
+                    )
+                    .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    /// Probes `ports` concurrently and returns as soon as one identifies `target`.
+    async fn locate_in_ports(
+        &self,
+        target: &MeshTarget,
+        ports: impl IntoIterator<Item = u16>,
+        mut last_error: String,
+    ) -> Result<(u16, MeshInfo), String> {
+        let mut probes = futures::stream::FuturesUnordered::new();
         for port in ports {
-            match self.probe_info(target.virtual_ip, port).await {
+            let ip = target.virtual_ip;
+            probes.push(async move { (port, self.probe_info(ip, port).await) });
+        }
+        while let Some((port, result)) = probes.next().await {
+            match result {
                 Ok(info) if info.device_id == target.device_id => return Ok((port, info)),
                 Ok(info) => {
                     last_error = format!(
                         "mesh port {port} at {} belongs to device {}",
                         target.virtual_ip, info.device_id
-                    )
+                    );
                 }
                 Err(error) => last_error = error,
             }
@@ -467,22 +514,109 @@ impl MeshDialer {
             .authority
             .local_device_id()
             .ok_or_else(|| "mesh_signed_out: sign in to reach your other devices".to_string())?;
-        let (port, _) = self.locate(target).await?;
-        let pair_key = self.authority.pair_key(&target.device_id).await?;
-        let stream = self.open(target.virtual_ip, port).await?;
-        connect(
-            stream,
-            Dial {
-                local_device_id: &local,
-                target_device_id: &target.device_id,
-                pair_key,
-                authority: format!("{}:{port}", target.virtual_ip),
-                client: default_client_name(),
-            },
-            options,
-        )
-        .await
+        let first_port = target.port.unwrap_or(MESH_OBP_PORT_FIRST);
+        // Overlap the directory pair-key lookup with opening the Link stream,
+        // and dial the OBP WebSocket directly without a redundant `/obp/mesh/info`
+        // round trip (the upgrade checks `HEADER_TARGET` and verifies mutual proofs).
+        let (pair_key, first_stream) = tokio::join!(
+            self.authority.pair_key(&target.device_id),
+            self.open(target.virtual_ip, first_port),
+        );
+        let pair_key = pair_key?;
+        let first_attempt = match first_stream {
+            Ok(stream) => {
+                connect(
+                    stream,
+                    Dial {
+                        local_device_id: &local,
+                        target_device_id: &target.device_id,
+                        pair_key,
+                        authority: format!("{}:{first_port}", target.virtual_ip),
+                        client: default_client_name(),
+                    },
+                    options.clone(),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match first_attempt {
+            Ok(connection) => Ok(connection),
+            Err(error) if target.port.is_none() && should_scan_other_ports(&error) => {
+                let wrong_device = is_wrong_device_error(&error);
+                let (port, _) = match self
+                    .locate_in_ports(
+                        target,
+                        (MESH_OBP_PORT_FIRST + 1)..=MESH_OBP_PORT_LAST,
+                        error.clone(),
+                    )
+                    .await
+                {
+                    Ok(found) => found,
+                    Err(scan_error) => {
+                        return Err(if wrong_device {
+                            self.describe_wrong_device_port(target, first_port, error)
+                                .await
+                        } else {
+                            scan_error
+                        });
+                    }
+                };
+                let stream = self.open(target.virtual_ip, port).await?;
+                connect(
+                    stream,
+                    Dial {
+                        local_device_id: &local,
+                        target_device_id: &target.device_id,
+                        pair_key,
+                        authority: format!("{}:{port}", target.virtual_ip),
+                        client: default_client_name(),
+                    },
+                    options,
+                )
+                .await
+            }
+            Err(error) if is_wrong_device_error(&error) => Err(self
+                .describe_wrong_device_port(target, first_port, error)
+                .await),
+            Err(error) => Err(error),
+        }
     }
+
+    async fn describe_wrong_device_port(
+        &self,
+        target: &MeshTarget,
+        port: u16,
+        fallback: String,
+    ) -> String {
+        match self.probe_info(target.virtual_ip, port).await {
+            Ok(info) if info.device_id != target.device_id => format!(
+                "mesh port {port} at {} belongs to device {}",
+                target.virtual_ip, info.device_id
+            ),
+            _ => fallback,
+        }
+    }
+}
+
+fn is_wrong_device_error(error: &str) -> bool {
+    error.starts_with("mesh_refused:") && error.contains("(421")
+}
+
+/// Whether a failure on `MESH_OBP_PORT_FIRST` may mean the target bound another
+/// port in `MESH_OBP_PORT_FIRST..=MESH_OBP_PORT_LAST`, rather than the target
+/// host being unreachable or rejecting our credentials.
+fn should_scan_other_ports(error: &str) -> bool {
+    if error.starts_with("mesh_impostor:") {
+        return false;
+    }
+    if error.starts_with("mesh_refused:") {
+        // 401/403 mean the right device rejected authentication or clock skew;
+        // 421 (`wrong_device`), 404, or 503 may belong to another listener on that port.
+        return !(error.contains("(401") || error.contains("(403"));
+    }
+    let lower = error.to_ascii_lowercase();
+    !(lower.contains("timed out") || lower.contains("timeout") || lower.contains("did not answer"))
 }
 
 enum Outgoing {
@@ -835,4 +969,37 @@ async fn pump<S: ObpSocket>(
     }
     *inbox.closed.lock().unwrap_or_else(|p| p.into_inner()) = Some(closed);
     inbox.notify.notify_waiters();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_scan_other_ports;
+
+    #[test]
+    fn port_scan_predicate_skips_auth_refusals_and_timeouts() {
+        assert!(should_scan_other_ports(
+            "mesh_refused: device dev-b refused the connection (421 Misdirected Request): wrong_device"
+        ));
+        assert!(should_scan_other_ports(
+            "mesh_refused: device dev-b refused the connection (503 Service Unavailable): mesh_signed_out"
+        ));
+        assert!(should_scan_other_ports(
+            "mesh_unreachable: port 47612: Connection refused (os error 61)"
+        ));
+        assert!(!should_scan_other_ports(
+            "mesh_refused: device dev-b refused the connection (401 Unauthorized): unauthorized"
+        ));
+        assert!(!should_scan_other_ports(
+            "mesh_refused: device dev-b refused the connection (403 Forbidden): not_account_device"
+        ));
+        assert!(!should_scan_other_ports(
+            "mesh_impostor: the device at 10.126.126.2:47612 could not prove it is dev-b"
+        ));
+        assert!(!should_scan_other_ports(
+            "mesh_unreachable: 10.126.126.2:47612: operation timed out"
+        ));
+        assert!(!should_scan_other_ports(
+            "mesh_unreachable: 10.126.126.2:47612 did not answer"
+        ));
+    }
 }

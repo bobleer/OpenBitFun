@@ -446,37 +446,49 @@ impl MeshRuntime {
     }
 
     async fn directory_names(&self) -> HashMap<String, String> {
-        if let Some((at, names)) = lock(&self.directory).as_ref() {
-            if at.elapsed() < DIRECTORY_CACHE_TTL {
-                return names.clone();
+        let stale = {
+            let guard = lock(&self.directory);
+            if let Some((at, names)) = guard.as_ref() {
+                if at.elapsed() < DIRECTORY_CACHE_TTL {
+                    return names.clone();
+                }
+                Some(names.clone())
+            } else {
+                None
             }
-        }
-        let names = match crate::api::account_directory::read_directory_context().await {
+        };
+        let fetched = match crate::api::account_directory::read_directory_context().await {
             Ok((session, directory_url)) => {
                 match openbitfun_core::service::remote_connect::AccountClient::new()
                     .list_devices(&directory_url, &session)
                     .await
                 {
-                    Ok(devices) => devices
-                        .into_iter()
-                        .map(|device| {
-                            let name = device
-                                .device_alias
-                                .filter(|alias| !alias.trim().is_empty())
-                                .unwrap_or(device.device_name);
-                            (device.device_id, name)
-                        })
-                        .collect(),
+                    Ok(devices) => Some(
+                        devices
+                            .into_iter()
+                            .map(|device| {
+                                let name = device
+                                    .device_alias
+                                    .filter(|alias| !alias.trim().is_empty())
+                                    .unwrap_or(device.device_name);
+                                (device.device_id, name)
+                            })
+                            .collect::<HashMap<String, String>>(),
+                    ),
                     Err(error) => {
                         log::debug!("Mesh device names unavailable: {}", error);
-                        HashMap::new()
+                        None
                     }
                 }
             }
-            Err(_) => HashMap::new(),
+            Err(_) => None,
         };
-        *lock(&self.directory) = Some((Instant::now(), names.clone()));
-        names
+        if let Some(names) = fetched {
+            *lock(&self.directory) = Some((Instant::now(), names.clone()));
+            return names;
+        }
+        // Do not cache transient directory failures as empty maps for 60s.
+        stale.unwrap_or_default()
     }
 
     /// Devices of the account in the mesh, with reachability and protocol.
@@ -565,7 +577,15 @@ impl MeshRuntime {
         options: MeshConnectOptions,
     ) -> Result<MeshObpConnection, String> {
         let dialer = self.dialer().await?;
-        let status = self.refresh().await;
+        let mut status = self.status();
+        let needs_refresh = status.virtual_ip.is_none()
+            || status.peer(device_id).is_none_or(|peer| {
+                peer.virtual_ip.is_empty()
+                    || status.virtual_ip.as_deref() == Some(peer.virtual_ip.as_str())
+            });
+        if needs_refresh {
+            status = self.refresh().await;
+        }
         let peer = status.peer(device_id).ok_or_else(|| {
             format!("mesh_unreachable: device {device_id} is not in the account mesh right now")
         })?;
@@ -590,7 +610,23 @@ impl MeshRuntime {
             virtual_ip,
             port,
         };
-        dialer.connect(&target, options).await
+        match dialer.connect(&target, options.clone()).await {
+            Ok(connection) => Ok(connection),
+            Err(error) if port.is_some() => {
+                lock(&self.probes).remove(device_id);
+                dialer
+                    .connect(
+                        &MeshTarget {
+                            port: None,
+                            ..target
+                        },
+                        options,
+                    )
+                    .await
+                    .map_err(|_| error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Opens an OBP connection to the account's cloud node (`cloud-…`) at

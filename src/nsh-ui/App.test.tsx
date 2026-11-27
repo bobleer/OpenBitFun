@@ -4039,7 +4039,7 @@ test("About comes from the native menu and shows this window's build", async () 
   await showAllSessions(app, "NSH skeleton");
   await app.host.send("openbitfun.event", { event: "openbitfun_menu_about", payload: null });
   await app.waitFor("About OpenBitFun");
-  await app.waitFor("1.4.2");
+  await app.waitFor("label:About OpenBitFun >> text:1.4.2");
 });
 
 test("the account menu checks for updates, offers the download and then the restart", async () => {
@@ -4066,9 +4066,14 @@ test("the account menu checks for updates, offers the download and then the rest
   await app.press("label:account-row");
   await app.press("Check for updates");
   await app.waitFor("Update 1.5.0 available");
+  // The bottom-left toast overlaps the account entry until it is dismissed.
+  await app.press("label:Update 1.5.0 available >> role:button");
+  await app.waitFor("label:Update 1.5.0 available", { state: "gone" });
   await app.press("label:account-row");
   await app.press("Download update 1.5.0");
   await app.waitFor("Update 1.5.0 is ready to install");
+  await app.press("label:Update 1.5.0 is ready to install >> role:button");
+  await app.waitFor("label:Update 1.5.0 is ready to install", { state: "gone" });
   // A ready update puts one accent dot on the avatar and "Restart to update" in the menu; no banner.
   await app.waitFor("label:account-update-ready");
   await app.press("label:account-row");

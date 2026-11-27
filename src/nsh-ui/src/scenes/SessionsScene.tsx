@@ -559,10 +559,13 @@ const threadMenuAnchor = signal<ViewRef | null>(null);
 const composerCardAnchor = signal<ViewRef | null>(null);
 const secondaryComposerCardAnchor = signal<ViewRef | null>(null);
 const agentPickerAnchor = signal<ViewRef | null>(null);
+const composerModelAnchor = signal<ViewRef | null>(null);
+const secondaryComposerModelAnchor = signal<ViewRef | null>(null);
 const modelPickerAnchor = signal<ViewRef | null>(null);
 const reasoningPickerAnchor = signal<ViewRef | null>(null);
 const quickActionsAnchor = signal<ViewRef | null>(null);
 const composerPlusAnchor = signal<ViewRef | null>(null);
+const secondaryComposerPlusAnchor = signal<ViewRef | null>(null);
 const composerPlusOpen = signal(false);
 
 const threadMenuPlacement = signal<Placement>("bottom");
@@ -5533,6 +5536,7 @@ interface ComposerSlashPane {
   running: () => string | null;
   pending: () => unknown;
   anchor: () => ViewRef | null;
+  modelAnchor: () => ViewRef | null;
   focus: () => void;
   error: (message: string) => void;
   reloadTurns: (sessionId: string) => void;
@@ -5608,7 +5612,7 @@ async function runModelSlashCommand(arg: string, pane: ComposerSlashPane): Promi
   const openPicker = () => {
     modelPickerRequestedSearch.set(query);
     modelPickerTarget.set({ kind: "session", ...target });
-    modelPickerAnchor.set(pane.anchor());
+    modelPickerAnchor.set(pane.modelAnchor() ?? pane.anchor());
     closePickers("model");
     modelPickerOpen.set(true);
   };
@@ -6051,6 +6055,7 @@ const primarySlash = createComposerSlash({
   },
   draft: composerText, images: imageAttachments, files: fileAttachments, references: sessionReferenceAttachments,
   running: runningTurnId, pending: pendingTurnState, anchor: composerCardAnchor, focus: () => composerInputRef?.focus(),
+  modelAnchor: () => composerModelAnchor() ?? composerPlusAnchor(),
   error: turnError.set, reloadTurns: id => { void loadTurns(id, { silent: true }); }, send: sendComposerTurn,
 });
 
@@ -6059,6 +6064,7 @@ const secondarySlash = createComposerSlash({
   workspaceId: secondaryWorkspaceId, workspace: secondaryWorkspaceRecord, draft: secondaryComposerText,
   images: secondaryImageAttachments, files: secondaryFileAttachments, references: secondarySessionReferences,
   running: secondaryRunningTurnId, pending: secondaryPendingTurnState, anchor: secondaryComposerCardAnchor,
+  modelAnchor: () => secondaryComposerModelAnchor() ?? secondaryComposerPlusAnchor(),
   focus: () => secondaryComposerInputRef?.focus(), error: secondaryTurnError.set,
   reloadTurns: id => { void loadSecondaryTurns(id, { silent: true }); },
   send: async (text, policy, externalCommand) => { await sendSecondaryTurn(text, policy, { externalCommand }); },
@@ -7714,6 +7720,8 @@ function SessionComposer(props: SessionComposerProps) {
             <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.xs }}>
               <If when={!collapseInline()}>
                 <ModelReasoningCapsule
+                  primary={props.pane === 0}
+                  modelAnchor={props.pane === 0 ? composerModelAnchor : props.pane === 1 ? secondaryComposerModelAnchor : undefined}
                   compact={isCompact}
                   sessionId={props.sessionId}
                   deviceId={props.deviceId}
@@ -8354,6 +8362,8 @@ function selectReasoningForPickerTarget(presetId: string | null): Promise<boolea
 
 /** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
 function ModelReasoningCapsule(props: {
+  primary: boolean;
+  modelAnchor?: Signal<ViewRef | null>;
   compact: () => boolean;
   sessionId?: () => string | null;
   deviceId?: () => string;
@@ -8366,6 +8376,9 @@ function ModelReasoningCapsule(props: {
 }) {
   let modelTriggerRef: ViewRef | null = null;
   let reasoningTriggerRef: ViewRef | null = null;
+  cleanup(() => {
+    if (props.modelAnchor?.() === modelTriggerRef) props.modelAnchor?.set(null);
+  });
   const resolvedText = computed(() => {
     if (props.btwMode) {
       const override = sideQuestionModelOverride();
@@ -8424,7 +8437,7 @@ function ModelReasoningCapsule(props: {
       <View
         ref={el => {
           modelTriggerRef = el;
-          if (!props.onFocusPane && !props.btwMode) modelPickerAnchor.set(el);
+          props.modelAnchor?.set(el);
         }}
         role="button"
         accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
@@ -8496,7 +8509,7 @@ function ModelReasoningCapsule(props: {
         <View
           ref={el => {
             reasoningTriggerRef = el;
-            if (!props.onFocusPane && !props.btwMode) reasoningPickerAnchor.set(el);
+            if (props.primary) reasoningPickerAnchor.set(el);
           }}
           role="button"
           accessibilityLabel={props.reasoningAccessibilityLabel ?? "reasoning-picker"}
@@ -9219,6 +9232,7 @@ function ModelPickerSurface(props: {
   }))]);
   return (
     <View
+      testID="model-picker"
       style={[
         overlayPopoverStyle(),
         {
@@ -10651,6 +10665,7 @@ function SecondaryComposerDock() {
         secondaryComposerInputRef = el;
       }}
       cardRef={el => secondaryComposerCardAnchor.set(el)}
+      plusAnchor={secondaryComposerPlusAnchor}
       onInputChange={(next, caret) => {
         secondaryComposerText.set(next);
         syncInlineMention(next, caret, false, secondaryMentionOwner);

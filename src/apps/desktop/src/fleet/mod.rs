@@ -508,9 +508,13 @@ pub fn start(device_id: String, authority: Arc<dyn MeshAuthority>, link: Arc<Lin
     reapply_follow(&host);
     *CURRENT
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(host);
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&host));
     // The account fleet serves this host's UI now.
     stop_local();
+    // Re-announce the installed account fleet with a strictly newer revision so
+    // any UI that received an early event while `LOCAL` was active immediately
+    // reloads from `CURRENT`.
+    host.index().announce_current();
     // Sessions here may run other devices' models (`fleet_models`).
     openbitfun_core::service::fleet::models::install_peers(Arc::new(models::DesktopModelPeers));
     models::schedule_sync();

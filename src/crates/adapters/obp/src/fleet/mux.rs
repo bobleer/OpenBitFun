@@ -78,6 +78,7 @@ pub struct FleetMux {
     /// Serializes follow changes (they adjust link holds).
     apply: tokio::sync::Mutex<()>,
     follow_changed: watch::Sender<u64>,
+    closed: watch::Sender<bool>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -101,7 +102,14 @@ impl FleetMux {
             clients: Mutex::new(HashMap::new()),
             apply: tokio::sync::Mutex::new(()),
             follow_changed: watch::channel(0).0,
+            closed: watch::channel(false).0,
         })
+    }
+
+    /// Marks this mux closed so in-flight [`Self::poll`] calls unblock immediately
+    /// (for example when a local-only fleet is replaced by the account fleet).
+    pub fn close(&self) {
+        let _ = self.closed.send(true);
     }
 
     /// This device's id (the origin of local events); `None` signed out.
@@ -221,12 +229,18 @@ impl FleetMux {
         let deadline = tokio::time::Instant::now() + wait.min(MAX_POLL_WAIT);
         loop {
             stream.fill(u64::MAX, READ_BATCH).await;
-            if !stream.is_empty() || tokio::time::Instant::now() >= deadline {
+            if !stream.is_empty()
+                || *self.closed.borrow()
+                || tokio::time::Instant::now() >= deadline
+            {
                 break;
             }
-            tokio::select! {
-                _ = stream.wait() => {}
-                _ = tokio::time::sleep_until(deadline) => {}
+            let open = tokio::select! {
+                open = stream.wait() => open,
+                _ = tokio::time::sleep_until(deadline) => false,
+            };
+            if !open {
+                break;
             }
         }
         let mut events = Vec::new();
@@ -377,6 +391,7 @@ pub(crate) struct FleetStream {
     pending_bytes: HashMap<String, u64>,
     arrivals: watch::Receiver<u64>,
     follows: watch::Receiver<u64>,
+    closed: watch::Receiver<bool>,
 }
 
 /// Where a fleet stream starts: the client's cursor answer per origin.
@@ -386,6 +401,7 @@ impl FleetStream {
     fn base(mux: Arc<FleetMux>, client: FleetClientKey, scope: Scope) -> Self {
         let arrivals = mux.links.arrivals();
         let follows = mux.follow_changed.subscribe();
+        let closed = mux.closed.subscribe();
         Self {
             mux,
             client,
@@ -397,6 +413,7 @@ impl FleetStream {
             pending_bytes: HashMap::new(),
             arrivals,
             follows,
+            closed,
         }
     }
 
@@ -834,9 +851,12 @@ impl FleetStream {
         (instance.to_string(), last)
     }
 
-    /// Waits until a source may have something new. `false` once the hub
+    /// Waits until a source may have something new. `false` once the hub or mux
     /// closed.
     pub(crate) async fn wait(&mut self) -> bool {
+        if *self.closed.borrow() {
+            return false;
+        }
         let cursor = self.local.as_ref().map(|local| local.cursor);
         let hub = Arc::clone(&self.mux.hub);
         let local = async move {
@@ -845,8 +865,16 @@ impl FleetStream {
                 None => std::future::pending::<bool>().await,
             }
         };
+        let closed = async {
+            while !*self.closed.borrow_and_update() {
+                if self.closed.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
         tokio::select! {
             open = local => open,
+            _ = closed => false,
             _ = self.arrivals.changed() => true,
             _ = self.follows.changed() => true,
             _ = tokio::time::sleep(RECHECK) => true,
@@ -899,5 +927,60 @@ mod tests {
         assert_eq!(seqs, [5, 6]);
         assert!(serve_replay(&hub, "i1", &request(1, "i1")).history_gone);
         assert!(serve_replay(&hub, "i1", &request(4, "i0")).history_gone);
+    }
+
+    #[tokio::test]
+    async fn close_unblocks_in_flight_poll_promptly() {
+        struct NoAuthority;
+        impl MeshAuthority for NoAuthority {
+            fn local_device_id(&self) -> Option<String> {
+                Some("dev-a".into())
+            }
+            fn pair_key<'a>(&'a self, _device_id: &'a str) -> crate::authority::PairKeyFuture<'a> {
+                Box::pin(async { Err("unused".into()) })
+            }
+        }
+        struct NoConnector;
+        impl crate::client::links::PeerConnector for NoConnector {
+            fn connect(
+                &self,
+                _device_id: String,
+                _options: crate::client::MeshConnectOptions,
+            ) -> crate::client::links::ConnectFuture {
+                Box::pin(async { Err("unused".into()) })
+            }
+            fn route(&self, _device_id: &str) -> Option<(String, Option<f64>)> {
+                None
+            }
+        }
+
+        let mux = FleetMux::new(
+            Arc::new(NoAuthority),
+            EventHub::new(8),
+            PeerLinks::new(Arc::new(NoConnector)),
+        );
+        let poll_mux = Arc::clone(&mux);
+        let started = tokio::time::Instant::now();
+        let poll = tokio::spawn(async move {
+            poll_mux
+                .poll(
+                    FleetClientKey::Local,
+                    &FleetCursor::default(),
+                    Duration::from_secs(20),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        mux.close();
+        let response = tokio::time::timeout(Duration::from_secs(2), poll)
+            .await
+            .expect("poll must unblock when mux closes")
+            .unwrap();
+        assert!(response.events.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "poll waited too long after close: {:?}",
+            started.elapsed()
+        );
     }
 }
