@@ -103,6 +103,13 @@ pub enum PeerHostCapability {
     ToolCatalog,
     /// Workspace-backed pull request context and detail pages are implemented.
     ReviewPlatformV1,
+    /// Starts a read-only Review bound to a provider's exact pull request revisions.
+    PullRequestReviewLaunchV1,
+    /// Lists persisted PR Review runs and their phase on the owning runtime.
+    PullRequestReviewHistoryV1,
+    SessionReviewRecordsV1,
+    ReviewRemediationV1,
+    ReviewCoverageRetryV1,
     /// `terminal_create` can validate an owning workspace and pin the PTY to the host.
     HostTerminalWorkspaceV1,
     /// Mode/workspace-scoped `get_chat_mcp_catalog` is implemented.
@@ -139,9 +146,15 @@ pub enum PeerHostCapability {
     TerminalCursorReplayV1,
     /// `git_get_tracked_change_count` returns a workspace-scoped count.
     GitTrackedChangeCountV1,
+    /// `read_file_content` accepts `textEncoding` and returns a checked byte identity.
+    FileTextEncodingV1,
     /// `peer_mode_ping` reports `caller_attached`: whether the calling
     /// controller is still a DeviceEvent delivery target on this host.
     PeerAttachmentStatusV1,
+    /// The marketplace detail command accepts the installed origin's listing ID.
+    MiniappMarketListingIdV1,
+    /// Marketplace browse can request the public summaries of explicit listing IDs.
+    MiniappMarketSummariesV1,
 }
 
 impl PeerHostCapability {
@@ -187,6 +200,11 @@ impl PeerHostCapability {
         Self::CancelTool,
         Self::ToolCatalog,
         Self::ReviewPlatformV1,
+        Self::PullRequestReviewLaunchV1,
+        Self::PullRequestReviewHistoryV1,
+        Self::SessionReviewRecordsV1,
+        Self::ReviewRemediationV1,
+        Self::ReviewCoverageRetryV1,
         Self::HostTerminalWorkspaceV1,
         Self::ChatMcpCatalogV1,
         Self::WorkspaceIconV1,
@@ -203,7 +221,10 @@ impl PeerHostCapability {
         Self::SshNoneAuthV1,
         Self::TerminalCursorReplayV1,
         Self::GitTrackedChangeCountV1,
+        Self::FileTextEncodingV1,
         Self::PeerAttachmentStatusV1,
+        Self::MiniappMarketListingIdV1,
+        Self::MiniappMarketSummariesV1,
     ];
 
     /// The key used in the `peer_mode_ping` `capabilities` object.
@@ -249,6 +270,11 @@ impl PeerHostCapability {
             Self::CancelTool => "cancel_tool",
             Self::ToolCatalog => "tool_catalog",
             Self::ReviewPlatformV1 => "review_platform_v1",
+            Self::PullRequestReviewLaunchV1 => "pull_request_review_launch_v1",
+            Self::PullRequestReviewHistoryV1 => "pull_request_review_history_v1",
+            Self::SessionReviewRecordsV1 => "session_review_records_v1",
+            Self::ReviewRemediationV1 => "review_remediation_v1",
+            Self::ReviewCoverageRetryV1 => "review_coverage_retry_v1",
             Self::HostTerminalWorkspaceV1 => "host_terminal_workspace_v1",
             Self::ChatMcpCatalogV1 => "chat_mcp_catalog_v1",
             Self::WorkspaceIconV1 => "workspace_icon_v1",
@@ -265,7 +291,10 @@ impl PeerHostCapability {
             Self::SshNoneAuthV1 => "ssh_none_auth_v1",
             Self::TerminalCursorReplayV1 => "terminal_cursor_replay_v1",
             Self::GitTrackedChangeCountV1 => "git_tracked_change_count_v1",
+            Self::FileTextEncodingV1 => "file_text_encoding_v1",
             Self::PeerAttachmentStatusV1 => "peer_attachment_status_v1",
+            Self::MiniappMarketListingIdV1 => "miniapp_market_listing_id_v1",
+            Self::MiniappMarketSummariesV1 => "miniapp_market_summaries_v1",
         }
     }
 
@@ -317,6 +346,11 @@ const DESKTOP_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::CancelTool,
     PeerHostCapability::ToolCatalog,
     PeerHostCapability::ReviewPlatformV1,
+    PeerHostCapability::PullRequestReviewLaunchV1,
+    PeerHostCapability::PullRequestReviewHistoryV1,
+    PeerHostCapability::SessionReviewRecordsV1,
+    PeerHostCapability::ReviewRemediationV1,
+    PeerHostCapability::ReviewCoverageRetryV1,
     PeerHostCapability::HostTerminalWorkspaceV1,
     PeerHostCapability::ChatMcpCatalogV1,
     PeerHostCapability::WorkspaceIconV1,
@@ -332,7 +366,10 @@ const DESKTOP_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::UserQuestionInteractionV1,
     PeerHostCapability::SshNoneAuthV1,
     PeerHostCapability::GitTrackedChangeCountV1,
+    PeerHostCapability::FileTextEncodingV1,
     PeerHostCapability::PeerAttachmentStatusV1,
+    PeerHostCapability::MiniappMarketListingIdV1,
+    PeerHostCapability::MiniappMarketSummariesV1,
 ];
 
 /// The CLI peer host has no MiniApp runtime, WSL or SSH connection setup,
@@ -372,6 +409,7 @@ const CLI_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::UserQuestionInteractionV1,
     PeerHostCapability::TerminalCursorReplayV1,
     PeerHostCapability::GitTrackedChangeCountV1,
+    PeerHostCapability::FileTextEncodingV1,
     PeerHostCapability::PeerAttachmentStatusV1,
 ];
 

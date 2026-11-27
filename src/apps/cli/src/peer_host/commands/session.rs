@@ -499,6 +499,18 @@ pub(crate) async fn get_session_transcript_view(
         .or_else(|| request.get("beforeTurnIndex"))
         .and_then(|value| value.as_u64())
         .map(|value| value as usize);
+    let figure_source = request
+        .get("figure_source")
+        .or_else(|| request.get("figureSource"))
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<openbitfun_core::TranscriptFigureSourceRequest>(value.clone())
+        })
+        .transpose()
+        .map_err(|error| format!("Invalid published figure request: {error}"))?;
+    if figure_source.is_some() && (limit != Some(1) || before_turn_index.is_none()) {
+        return Err("Published figure source requires a single-turn before page".to_string());
+    }
     let page = state
         .compatibility
         .load_persisted_session_turns_page(&workspace_path, &session_id, before_turn_index, limit)
@@ -520,6 +532,34 @@ pub(crate) async fn get_session_transcript_view(
             page.has_earlier,
         )
     };
+    if let Some(figure) = &figure_source {
+        let later_turns = if let Some(before) =
+            figure.binding_refresh_before_index(before_turn_index.unwrap_or_default())?
+        {
+            state
+                .compatibility
+                .load_persisted_session_turns_page(
+                    &workspace_path,
+                    &session_id,
+                    Some(before),
+                    Some(1),
+                )
+                .await
+                .map_err(|error| format!("Failed to load figure refresh turn: {error}"))?
+                .turns
+        } else {
+            Vec::new()
+        };
+        openbitfun_core::attach_transcript_figure_source(
+            &mut view,
+            &page.turns,
+            figure,
+            &later_turns,
+        )?;
+        view.summarize_tool_results();
+        return serde_json::to_value(view)
+            .map_err(|error| format!("serialize transcript: {error}"));
+    }
     let explicit_workspace_id = optional_string(request, "workspace_id")
         .or_else(|| optional_string(request, "workspaceId"));
     let settled_turn_indices: std::collections::BTreeSet<usize> = view

@@ -92,6 +92,8 @@ pub struct DeepReviewQueueState {
     pub max_queue_wait_seconds: Option<u64>,
     #[serde(default)]
     pub session_concurrency_high: bool,
+    #[serde(default)]
+    pub controls_available: bool,
 }
 
 /// Workspace binding of the session that owns a Turn. A surface that has not
@@ -1186,6 +1188,7 @@ mod tests {
                 run_elapsed_ms: None,
                 max_queue_wait_seconds: Some(60),
                 session_concurrency_high: true,
+                controls_available: true,
             },
         };
 

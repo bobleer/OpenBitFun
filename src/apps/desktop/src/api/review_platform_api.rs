@@ -243,7 +243,7 @@ pub async fn review_platform_get_pull_request_review_target_by_identity(
     })
 }
 
-fn review_platform_ui_error(error: &ReviewPlatformError) -> String {
+pub(super) fn review_platform_ui_error(error: &ReviewPlatformError) -> String {
     let code = match error {
         ReviewPlatformError::RepositoryUntrusted {
             repository_path, ..

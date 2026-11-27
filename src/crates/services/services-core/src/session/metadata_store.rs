@@ -443,6 +443,36 @@ impl SessionMetadataStore {
             .collect())
     }
 
+    /// Project a narrow selection from the authoritative Session index without
+    /// opening unrelated metadata or any transcript files.
+    pub async fn project_indexed_metadata<T>(
+        &self,
+        project: impl Fn(&SessionMetadata) -> Option<T>,
+    ) -> Result<Vec<T>, SessionMetadataStoreError> {
+        if !self.sessions_root().exists() {
+            return Ok(Vec::new());
+        }
+        let lock = self.get_index_lock().await;
+        let _guard = lock.lock().await;
+        let _file_guard = self.lock_index_file().await?;
+        let (index, _) = self.read_or_rebuild_index_locked().await?;
+        let mut selected = Vec::new();
+        for metadata in index.sessions {
+            if let Some(record) = project(&metadata) {
+                if !self.metadata_path(&metadata.session_id).exists() {
+                    return Ok(self
+                        .rebuild_index_locked()
+                        .await?
+                        .iter()
+                        .filter_map(project)
+                        .collect());
+                }
+                selected.push(record);
+            }
+        }
+        Ok(selected)
+    }
+
     pub async fn list_metadata_page(
         &self,
         cursor: Option<&str>,

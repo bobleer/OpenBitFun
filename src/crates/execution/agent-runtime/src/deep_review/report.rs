@@ -8,14 +8,119 @@ use super::manifest::{DeepReviewEvidencePack, DeepReviewScopeProfile};
 use super::target_evidence::{
     ReviewTargetEvidence, ReviewTargetEvidenceCompleteness, ReviewTargetWorkspaceBinding,
 };
+use super::task_execution::{file_paths_for_manifest_packet, is_retryable_capacity_reason};
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeepReviewCacheUpdate {
     pub value: Value,
     pub hit_count: usize,
     pub miss_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncompleteReviewCheck {
+    pub packet_id: String,
+    pub paths: Vec<String>,
+}
+
+fn unique_review_entry<'a>(
+    entries: &'a [Value],
+    packet_id: &str,
+    keys: &[&str],
+) -> Option<&'a Value> {
+    let mut matches = entries
+        .iter()
+        .filter(|entry| packet_string_field(entry, keys) == Some(packet_id));
+    let only = matches.next()?;
+    matches.next().is_none().then_some(only)
+}
+
+fn review_paths<'a>(fields: &'a Value, keys: &[&str]) -> Option<BTreeSet<&'a str>> {
+    let paths = keys.iter().find_map(|key| fields.get(*key))?.as_array()?;
+    let strings: BTreeSet<_> = paths.iter().map(Value::as_str).collect::<Option<_>>()?;
+    (strings.len() == paths.len()).then_some(strings)
+}
+
+/// Projects only a proven incomplete subset of a saved review packet. New
+/// adaptive runs without packets have no packet coverage to recover this way.
+pub fn incomplete_review_checks(
+    report: &Value,
+    manifest: &Value,
+    evidence: &ReviewTargetEvidence,
+) -> Vec<IncompleteReviewCheck> {
+    let packets = manifest
+        .get("workPackets")
+        .or_else(|| manifest.get("work_packets"))
+        .and_then(Value::as_array);
+    let reviewers = report.get("reviewers").and_then(Value::as_array);
+    let (Some(packets), Some(reviewers)) = (packets, reviewers) else {
+        return Vec::new();
+    };
+    let target: BTreeSet<_> = evidence.files().iter().map(|file| file.path()).collect();
+    packets
+        .iter()
+        .filter_map(|packet| {
+            let keys = ["packetId", "packet_id"];
+            let packet_id = packet_string_field(packet, &keys)?;
+            // Duplicate manifests or final receipts do not identify a single check.
+            unique_review_entry(packets, packet_id, &keys)?;
+            if packet.get("phase").is_some_and(|phase| phase != "reviewer") {
+                return None;
+            }
+            let reviewer = unique_review_entry(reviewers, packet_id, &keys)?;
+            match reviewer.get("status").and_then(Value::as_str) {
+                Some("partial_timeout") => {}
+                Some("capacity_skipped")
+                    if packet_string_field(
+                        reviewer,
+                        &["capacity_reason", "capacityReason", "reason"],
+                    )
+                    .is_some_and(is_retryable_capacity_reason) => {}
+                _ => return None,
+            }
+            let assigned = file_paths_for_manifest_packet(packet).ok()?;
+            let packet_files: BTreeSet<_> = assigned.iter().map(String::as_str).collect();
+            if packet_files.len() != assigned.len() || !packet_files.is_subset(&target) {
+                return None;
+            }
+            let covered_keys = ["covered_files", "coveredFiles"];
+            let covered = review_paths(reviewer, &covered_keys);
+            if covered.is_none() && covered_keys.iter().any(|key| reviewer.get(*key).is_some()) {
+                return None;
+            }
+            let covered_present = covered.is_some();
+            let covered = covered.unwrap_or_default();
+            let retry_keys = [
+                "retry_scope_files",
+                "retryScopeFiles",
+                "unresolved_files",
+                "unresolvedFiles",
+            ];
+            let retry = if retry_keys.iter().any(|key| reviewer.get(*key).is_some()) {
+                review_paths(reviewer, &retry_keys)?
+            } else if covered_present {
+                packet_files.difference(&covered).copied().collect()
+            } else {
+                return None;
+            };
+            if retry.is_empty()
+                || retry.len() >= packet_files.len()
+                || !covered.is_subset(&packet_files)
+                || !retry.is_subset(&packet_files)
+                || !retry.is_disjoint(&covered)
+            {
+                return None;
+            }
+            Some(IncompleteReviewCheck {
+                packet_id: packet_id.to_owned(),
+                paths: retry.into_iter().map(str::to_owned).collect(),
+            })
+        })
+        .collect()
 }
 
 fn normalized_non_empty_string(value: Option<&Value>) -> Option<String> {
@@ -508,6 +613,7 @@ pub fn apply_review_evidence_guardrail(input: &mut Value, run_manifest: Option<&
         .and_then(Value::as_str)
         .is_some_and(|status| status == "failed")
     {
+        input["evidence_coverage"] = json!("failed");
         return;
     }
 
@@ -515,6 +621,12 @@ pub fn apply_review_evidence_guardrail(input: &mut Value, run_manifest: Option<&
         return;
     };
     input["evidence_status"] = json!(status);
+    if status == "stale" {
+        input["target_changed_during_review"] = json!(true);
+        input["evidence_coverage"] = json!("unknown");
+    } else {
+        input["evidence_coverage"] = json!(status);
+    }
     if status == "complete" {
         return;
     }
@@ -540,6 +652,9 @@ pub fn apply_review_evidence_guardrail(input: &mut Value, run_manifest: Option<&
 pub fn apply_review_runtime_limitation(input: &mut Value, detail: &str) {
     if input.get("evidence_status").and_then(Value::as_str) != Some("failed") {
         input["evidence_status"] = json!("limited");
+        input["evidence_coverage"] = json!("limited");
+    } else {
+        input["evidence_coverage"] = json!("failed");
     }
     push_reliability_signal_if_missing(
         input,
@@ -553,6 +668,7 @@ pub fn apply_review_runtime_limitation(input: &mut Value, detail: &str) {
 }
 
 pub fn apply_review_runtime_stale(input: &mut Value) {
+    input["target_changed_during_review"] = json!(true);
     if input.get("evidence_status").and_then(Value::as_str) != Some("failed") {
         input["evidence_status"] = json!("stale");
     }
@@ -565,6 +681,17 @@ pub fn apply_review_runtime_stale(input: &mut Value) {
             "detail": "Pull request revisions changed during the Review; rerun before relying on the result."
         }),
     );
+}
+
+#[cfg(test)]
+#[test]
+fn review_result_preserves_coverage_when_target_moves() {
+    let mut report = json!({});
+    apply_review_runtime_limitation(&mut report, "Provider diff was incomplete");
+    apply_review_runtime_stale(&mut report);
+    assert_eq!(report["evidence_status"], "stale");
+    assert_eq!(report["evidence_coverage"], "limited");
+    assert_eq!(report["target_changed_during_review"], true);
 }
 
 fn deep_review_cache_fingerprint(run_manifest: Option<&Value>) -> Option<String> {
@@ -631,6 +758,56 @@ pub fn deep_review_cache_from_completed_reviewers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn incomplete_coverage_uses_exact_reported_or_uncovered_paths() {
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs"].map(|path| {
+            json!({
+                "path": path, "status": "modified", "completeness": "complete"
+            })
+        });
+        let evidence = ReviewTargetEvidence::from_evidence(&json!({
+            "version": 1,
+            "source": "workspace",
+            "fingerprint": "0123456789abcdef",
+            "headRevision": "WORKTREE",
+            "completeness": "complete",
+            "workspaceBinding": "matching_dirty",
+            "files": files,
+            "limitations": []
+        }))
+        .unwrap();
+        let manifest = json!({"workPackets": [
+            {"packetId": "legacy", "assignedScope": {"files": ["a.rs", "b.rs"]}},
+            {"packetId": "managed", "assignedScope": {"files": ["c.rs", "d.rs"]}}
+        ]});
+        let mut report = json!({"reviewers": [
+            {"packet_id": "legacy", "status": "capacity_skipped", "reason": "provider_rate_limit",
+             "retry_scope_files": ["b.rs"]},
+            {"packetId": "managed", "status": "partial_timeout", "coveredFiles": ["c.rs"]}
+        ]});
+        let checks = incomplete_review_checks(&report, &manifest, &evidence);
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].paths, ["b.rs"]);
+        assert_eq!(checks[1].paths, ["d.rs"]);
+
+        report["reviewers"][0]["retry_scope_files"] = json!(["c.rs"]);
+        report["reviewers"][1]["coveredFiles"] = json!(["c.rs", "outside.rs"]);
+        assert!(incomplete_review_checks(&report, &manifest, &evidence).is_empty());
+        report["reviewers"][0]["retry_scope_files"] = json!(["b.rs"]);
+        report["reviewers"][0]["reason"] = json!("user_cancelled");
+        report["reviewers"][1]["coveredFiles"] = json!(["c.rs"]);
+        report["reviewers"][1]["unresolvedFiles"] = json!(["c.rs"]);
+        assert!(incomplete_review_checks(&report, &manifest, &evidence).is_empty());
+        report["reviewers"][1]["unresolvedFiles"] = json!(["d.rs"]);
+        report["reviewers"].as_array_mut().unwrap().push(json!({
+            "packet_id": "managed", "status": "completed"
+        }));
+        assert!(incomplete_review_checks(&report, &manifest, &evidence).is_empty());
+        assert!(
+            incomplete_review_checks(&report, &json!({"workPackets": []}), &evidence).is_empty()
+        );
+    }
 
     #[test]
     fn runtime_tracker_signal_adds_concurrency_limited_warning_once() {

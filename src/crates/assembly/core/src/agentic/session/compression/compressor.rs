@@ -233,7 +233,7 @@ impl ContextCompressor {
         }))
     }
 
-    fn latest_successful_todo_snapshot_for_turn(
+    pub(crate) fn latest_successful_todo_snapshot_for_turn(
         messages: &[Message],
         current_turn_id: &str,
     ) -> Option<(usize, CompressedTodoSnapshot)> {

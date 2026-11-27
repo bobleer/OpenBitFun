@@ -247,6 +247,17 @@ impl ReviewPlatformService {
             .await
     }
 
+    pub async fn pull_request_review_target_with_remote(
+        repository: &ReviewRepositoryLocator,
+        remote_id: &str,
+        pull_request_id: &str,
+    ) -> Result<(ReviewPlatformRemote, ReviewPlatformPullRequestReviewTarget), ReviewPlatformError>
+    {
+        owner_service()?
+            .pull_request_review_target_with_remote(repository, remote_id, pull_request_id)
+            .await
+    }
+
     pub async fn issue(
         platform: ReviewPlatformKind,
         host: &str,

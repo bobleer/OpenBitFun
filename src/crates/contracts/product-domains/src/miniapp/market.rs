@@ -88,6 +88,12 @@ pub struct MarketListingSummary {
     pub my_rating: Option<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketListingLookupRequest {
+    pub listing_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketListingDetail {

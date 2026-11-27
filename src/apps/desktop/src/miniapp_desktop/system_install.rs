@@ -234,6 +234,64 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_system_app_shortcut_round_trip_preserves_storage() {
+        use super::super::launcher::{install_windows, prepare_icons, write_record};
+
+        let root = tempfile::tempdir().unwrap();
+        let record = fixture(root.path());
+        let applications = root.path().join("Start Menu");
+        let shell = root.path().join("openbitfun-nsh.exe");
+        std::fs::write(&shell, "Shell target").unwrap();
+        let manifest = write_record(&record).unwrap();
+        let launcher = manifest.parent().unwrap();
+        let saved = record.data_dir.join("storage.json");
+        std::fs::write(&saved, r#"{"note":"keep"}"#).unwrap();
+        prepare_icons(
+            &record,
+            Some(r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M4 4H20V20H4Z" stroke="white" fill="none"/></svg>"#),
+        ).unwrap();
+        assert!(std::fs::read(launcher.join("icon.ico"))
+            .unwrap()
+            .starts_with(&[0, 0, 1, 0]));
+
+        let shortcut =
+            install_windows(&record, &manifest, launcher, &shell, &applications).unwrap();
+        let owned = records(&record.data_dir, &record.app_id, record.host_channel).unwrap();
+        assert_eq!(
+            installed_in(&applications, &owned).unwrap(),
+            vec![shortcut.clone()]
+        );
+        assert_eq!(
+            install_windows(&record, &manifest, launcher, &shell, &applications).unwrap(),
+            shortcut
+        );
+
+        let mut other_record = fixture(root.path());
+        other_record.app_id = "another-notes".into();
+        other_record.name = "Other Notes".into();
+        let other_manifest = write_record(&other_record).unwrap();
+        let other = install_windows(
+            &other_record,
+            &other_manifest,
+            other_manifest.parent().unwrap(),
+            &shell,
+            &applications,
+        )
+        .unwrap();
+        assert_ne!(shortcut, other);
+        let owned = records(&record.data_dir, &record.app_id, record.host_channel).unwrap();
+        uninstall_in(&applications, &owned).unwrap();
+        uninstall_in(&applications, &owned).unwrap();
+        assert!(installed_in(&applications, &owned).unwrap().is_empty());
+        assert!(other.exists() && manifest.exists() && launcher.join("icon.ico").exists());
+        assert_eq!(
+            std::fs::read_to_string(saved).unwrap(),
+            r#"{"note":"keep"}"#
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn uninstall_removes_only_owned_exports_and_preserves_runtime_and_data() {

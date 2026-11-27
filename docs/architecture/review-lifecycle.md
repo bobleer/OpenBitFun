@@ -14,6 +14,30 @@ still represented primarily by that child session. This design adds a stable
 user-facing layer above those executions; it does not replace their runtime,
 target-evidence, or safety owners.
 
+NSH lists saved PR Review runs from the Session metadata index with execution
+status, commit match, and the available bounded report outcome. The outcome is
+projected from a persisted turn and includes findings, risk, AI recommendation,
+an assessment excerpt, and independent evidence coverage and target-change facts.
+Older runs without the projection still open the saved transcript. In PR history,
+the first saved child is the record anchor. Re-review starts a linked revision
+from the latest completed, failed, stopped, or interrupted run after the owning
+runtime revalidates the provider target. Older revisions remain reopenable.
+On owners that advertise `session_review_records_v1`, Review starts in the
+background and the parent session shows the latest saved revision of each
+record. The same card works in either conversation pane. It reads the owning
+runtime's session metadata, refreshes on reconnect and offers an explicit action
+to open the saved transcript. Older owners open the review child directly.
+Whole-record archive and deletion are pending.
+
+NSH can prepare fixes from the latest completed, visible report of a workspace
+Review. The owning runtime projects the selectable items and verifies the
+report revision and required choices again on approval. It starts a separate
+`ReviewFixer` session in the Review's checkout, with the approved items as its
+scope. A retry uses the same request ID and can reopen the existing fix
+session. The original Review stays available as a read-only record. Provider
+PR and Git-range reports need a Review of the editable checkout before this
+action can start.
+
 The product outcome is simple:
 
 - one explicit review lineage is one **Review record**;

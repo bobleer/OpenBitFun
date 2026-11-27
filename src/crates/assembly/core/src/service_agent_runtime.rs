@@ -1039,17 +1039,10 @@ pub fn session_transcript_view_from_turns(
     cursor: Option<&str>,
     has_earlier: bool,
 ) -> openbitfun_services_integrations::remote_connect::SessionTranscriptView {
-    use openbitfun_services_integrations::remote_connect::{
-        build_transcript_view, session_transcript_view,
-    };
-    let projected_turns = turns
-        .iter()
-        .filter(|turn| turn.kind.is_transcript_visible())
-        .map(|turn| remote_chat_history_turn_from_core_turn(turn, None))
-        .collect::<Vec<_>>();
+    use openbitfun_services_integrations::remote_connect::session_transcript_view;
     session_transcript_view(
         session_id,
-        build_transcript_view(projected_turns),
+        transcript_turns_with_figure_summaries(turns),
         cursor,
         has_earlier,
     )
@@ -1063,19 +1056,120 @@ pub fn session_transcript_view_before_from_turns(
     turns: &[DialogTurnData],
     has_earlier: bool,
 ) -> openbitfun_services_integrations::remote_connect::SessionTranscriptView {
-    use openbitfun_services_integrations::remote_connect::{
-        build_transcript_view, session_transcript_view_before,
-    };
-    let projected_turns = turns
-        .iter()
-        .filter(|turn| turn.kind.is_transcript_visible())
-        .map(|turn| remote_chat_history_turn_from_core_turn(turn, None))
-        .collect::<Vec<_>>();
+    use openbitfun_services_integrations::remote_connect::session_transcript_view_before;
     session_transcript_view_before(
         session_id,
-        build_transcript_view(projected_turns),
+        transcript_turns_with_figure_summaries(turns),
         has_earlier,
     )
+}
+
+#[cfg(feature = "remote-connect")]
+fn transcript_turns_with_figure_summaries(
+    turns: &[DialogTurnData],
+) -> Vec<openbitfun_services_integrations::remote_connect::TranscriptTurnView> {
+    use crate::agentic::inline_figure::figure_uri;
+    use openbitfun_services_integrations::remote_connect::{
+        build_transcript_view, TranscriptPublishedFigure,
+    };
+    let visible = turns
+        .iter()
+        .filter(|turn| turn.kind.is_transcript_visible());
+    let projected = visible
+        .clone()
+        .map(|turn| remote_chat_history_turn_from_core_turn(turn, None))
+        .collect();
+    let mut views = build_transcript_view(projected);
+    for (view, turn) in views.iter_mut().zip(visible) {
+        if !view.settled {
+            continue;
+        }
+        view.published_figures = turn
+            .published_figures
+            .iter()
+            .filter_map(|(uri, snapshot)| {
+                let uri = figure_uri(uri, None)?;
+                let snapshot = snapshot
+                    .as_ref()
+                    .filter(|figure| valid_figure_snapshot(figure));
+                Some(TranscriptPublishedFigure {
+                    uri,
+                    content_bytes: snapshot.map(|figure| figure.content_bytes),
+                    inspection_deferred: snapshot.is_some_and(|figure| figure.inspection_deferred),
+                    source: None,
+                    bindings: None,
+                    binding_refresh_supported: false,
+                    binding_refresh: None,
+                })
+            })
+            .collect();
+    }
+    views
+}
+
+#[cfg(feature = "remote-connect")]
+fn valid_figure_snapshot(figure: &crate::service::session::PublishedFigure) -> bool {
+    figure.content_bytes <= crate::agentic::inline_figure::MAX_SOURCE_BYTES
+        && figure.content_bytes == figure.source.len()
+        && !figure.source.trim().is_empty()
+}
+
+/// Attaches one sealed source after a single-turn transcript read. The URI is
+/// looked up in the turn, without resolving a filesystem or network location.
+#[cfg(feature = "remote-connect")]
+pub fn attach_transcript_figure_source(
+    view: &mut openbitfun_services_integrations::remote_connect::SessionTranscriptView,
+    turns: &[DialogTurnData],
+    request: &openbitfun_services_integrations::remote_connect::TranscriptFigureSourceRequest,
+    later_turns: &[DialogTurnData],
+) -> Result<(), String> {
+    let [projected] = view.turns.as_mut_slice() else {
+        return Err("Published figure requires an exact transcript turn".to_string());
+    };
+    if !projected.settled || projected.turn_id != request.turn_id {
+        return Err("Published figure turn is unavailable".to_string());
+    }
+    let snapshot = turns
+        .iter()
+        .find(|turn| turn.turn_id == projected.turn_id && turn.turn_index == projected.turn_index)
+        .and_then(|turn| {
+            let figure = turn.published_figures.get(&request.uri)?.as_ref()?;
+            valid_figure_snapshot(figure).then_some((turn, figure))
+        });
+    let figure = projected
+        .published_figures
+        .iter_mut()
+        .find(|figure| figure.uri == request.uri);
+    match (figure, snapshot) {
+        (Some(figure), Some((turn, snapshot))) => {
+            figure.binding_refresh_supported = true;
+            if let Some(refresh) = &request.binding_refresh {
+                figure.binding_refresh = later_turns.iter().find_map(|candidate| {
+                    let value = crate::agentic::inline_figure::refreshed_figure_binding(
+                        turn,
+                        candidate,
+                        &request.uri,
+                        snapshot,
+                        refresh,
+                    )?;
+                    Some(openbitfun_services_integrations::remote_connect::TranscriptFigureBindingRefresh {
+                        name: refresh.name.clone(),
+                        turn_id: candidate.turn_id.clone(),
+                        value,
+                    })
+                });
+            } else {
+                figure.source = Some(snapshot.source.clone());
+                figure.bindings = crate::agentic::inline_figure::sealed_figure_bindings(
+                    turn,
+                    &request.uri,
+                    snapshot,
+                );
+            }
+            Ok(())
+        }
+        _ => Err("Published figure source is unavailable".to_string()),
+    }
 }
 
 /// Returns the persisted next-input suggestion when it still applies to the
@@ -1247,6 +1341,12 @@ fn remote_chat_history_turn_from_core_turn(
             DialogTurnKind::LocalCommand => Some("local_command".to_string()),
         },
         user_display_content,
+        user_composer_presentation: turn
+            .user_message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("composerPresentation"))
+            .cloned(),
         user_timestamp_ms: turn.user_message.timestamp,
         user_images,
         user_image_refs,
@@ -5387,6 +5487,213 @@ mod tests {
                 .map(|cursor| cursor.starts_with("tv1:0:")),
             Some(true)
         );
+    }
+
+    #[test]
+    fn transcript_figure_source_is_bounded_and_matches_the_published_turn() {
+        use crate::service::session::PublishedFigure;
+        use openbitfun_services_integrations::remote_connect::TranscriptFigureSourceRequest;
+        let mut turn = remote_history_test_turn(TurnStatus::Completed, None);
+        let uri = "openbitfun://current-session/artifacts/visualizations/v2/latency.html";
+        let rejected = "openbitfun://current-session/artifacts/visualizations/v2/rejected.html";
+        let source = "<svg><title>延迟</title></svg>";
+        let bindings = serde_json::json!({ "latency": { "kind": "json", "value": 32 } })
+            .as_object()
+            .cloned();
+        turn.published_figures.insert(
+            uri.into(),
+            Some(PublishedFigure {
+                source: source.into(),
+                content_bytes: source.len(),
+                bindings: bindings.clone(),
+                inspection_deferred: true,
+            }),
+        );
+        turn.published_figures.insert(rejected.into(), None);
+        turn.published_figures
+            .insert("/controller/figure.html".into(), None);
+        let mut turns = [turn];
+        let summary = session_transcript_view_from_turns("session-1", &turns, None, false);
+        let figures = &summary.turns[0].published_figures;
+        assert_eq!(figures.len(), 2);
+        assert_eq!(figures[0].content_bytes, Some(source.len()));
+        assert_eq!(figures[1].content_bytes, None);
+        assert!(figures
+            .iter()
+            .all(|figure| figure.source.is_none() && figure.bindings.is_none()));
+        let legacy_json = serde_json::to_value(&figures[0]).unwrap();
+        assert!(legacy_json.get("bindings").is_none());
+        let legacy: openbitfun_services_integrations::remote_connect::TranscriptPublishedFigure =
+            serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.bindings.is_none());
+        assert!(!legacy.binding_refresh_supported);
+
+        let mut exact = session_transcript_view_before_from_turns("session-1", &turns, false);
+        let mut request: TranscriptFigureSourceRequest =
+            serde_json::from_value(serde_json::json!({
+                "turnId": "other-turn", "uri": uri,
+            }))
+            .unwrap();
+        assert!(request.binding_refresh.is_none());
+        assert!(attach_transcript_figure_source(&mut exact, &turns, &request, &[]).is_err());
+        request.turn_id = "turn-1".into();
+        attach_transcript_figure_source(&mut exact, &turns, &request, &[]).unwrap();
+        assert_eq!(
+            exact.turns[0].published_figures[0].source.as_deref(),
+            Some(source)
+        );
+        assert!(exact.turns[0].published_figures[0].inspection_deferred);
+        assert!(exact.turns[0].published_figures[0].binding_refresh_supported);
+        assert_eq!(exact.turns[0].published_figures[0].bindings, bindings);
+        let encoded = serde_json::to_string(&exact.turns[0].published_figures[0]).unwrap();
+        let decoded: openbitfun_services_integrations::remote_connect::TranscriptPublishedFigure =
+            serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, exact.turns[0].published_figures[0]);
+        request.uri = rejected.into();
+        assert!(attach_transcript_figure_source(&mut exact, &turns, &request, &[]).is_err());
+        request.uri = uri.into();
+        let snapshot = turns[0]
+            .published_figures
+            .get_mut(uri)
+            .unwrap()
+            .as_mut()
+            .unwrap();
+        snapshot.bindings = serde_json::json!({
+            "oversize": { "kind": "json", "value": "x".repeat(1024 * 1024) },
+        })
+        .as_object()
+        .cloned();
+        attach_transcript_figure_source(&mut exact, &turns, &request, &[]).unwrap();
+        assert!(exact.turns[0].published_figures[0].bindings.is_none());
+    }
+
+    #[test]
+    fn transcript_figure_source_recovers_only_prior_producer_values() {
+        use crate::service::session::PublishedFigure;
+        use openbitfun_services_integrations::remote_connect::TranscriptFigureSourceRequest;
+        use serde_json::{json, Value};
+
+        fn tool(name: &str, input: Value, result: Value, start: u64, end: u64) -> ToolItemData {
+            serde_json::from_value(json!({
+                "id": format!("item-{start}"),
+                "toolName": name,
+                "toolCall": { "id": format!("call-{start}"), "input": input },
+                "toolResult": { "success": true, "result": result },
+                "status": "completed",
+                "startTime": start,
+                "endTime": end,
+            }))
+            .unwrap()
+        }
+
+        let uri = "openbitfun://current-session/artifacts/visualizations/v2/traffic.html";
+        let file = "openbitfun://current-session/artifacts/visualizations/v2/series.csv";
+        let source = r#"<!-- vis-bindings
+{"series":{"type":"file","path":"./series.csv"},"counts":{"type":"tool","tool":"GetCounts","arguments":{"team":"UI"},"refreshIntervalSeconds":60}}
+-->
+<p>Traffic</p>"#;
+        let csv = "name,value\nα,3\n";
+        let mut turn = remote_history_test_turn(TurnStatus::Completed, None);
+        let mut child = tool("GetCounts", json!({"team":"UI"}), json!(77), 22, 23);
+        child.subagent_session_id = Some("child-1".into());
+        turn.model_rounds[0].tool_items = vec![
+            tool("GetCounts", json!({"team":"UI"}), json!(14), 10, 11),
+            tool("GetCounts", json!({"team":"Data"}), json!(88), 12, 13),
+            tool(
+                "Write",
+                json!({"payload": format!("+++ {file}\n{csv}")}),
+                json!({"file_path":file,"content_bytes":csv.len()}),
+                15,
+                16,
+            ),
+            child,
+            tool("GetCounts", json!({"team":"UI"}), json!(66), 25, 80),
+            tool(
+                "Write",
+                json!({"payload": format!("+++ {uri}\n{source}")}),
+                json!({"file_path":uri,"content_bytes":source.len(),"visualization_check_deferred":true}),
+                30,
+                31,
+            ),
+            tool("GetCounts", json!({"team":"UI"}), json!(99), 32, 33),
+        ];
+        turn.published_figures.insert(
+            uri.into(),
+            Some(PublishedFigure {
+                inspection_deferred: true,
+                bindings: None,
+                source: source.into(),
+                content_bytes: source.len(),
+            }),
+        );
+        let turns = [turn];
+        let mut view = session_transcript_view_before_from_turns("session-1", &turns, false);
+        attach_transcript_figure_source(
+            &mut view,
+            &turns,
+            &TranscriptFigureSourceRequest {
+                turn_id: "turn-1".into(),
+                uri: uri.into(),
+                binding_refresh: None,
+            },
+            &[],
+        )
+        .unwrap();
+        let saved = view.turns[0].published_figures[0]
+            .bindings
+            .as_ref()
+            .unwrap();
+        assert_eq!(saved["counts"], json!({ "kind": "json", "value": 14 }));
+        assert_eq!(saved["series"]["value"]["text"], csv);
+
+        let token = "[visualize:9834c743993a4dca97075c44ba1d38a0]";
+        let mut later = remote_history_test_turn(TurnStatus::Completed, None);
+        later.turn_id = "refresh-turn".into();
+        later.turn_index = turns[0].turn_index + 1;
+        later.user_message.content = format!("Refresh the figure. {token}");
+        let mut child = tool("GetCounts", json!({"team":"UI"}), json!(55), 22, 23);
+        child.subagent_session_id = Some("child-2".into());
+        later.model_rounds[0].tool_items = vec![
+            tool("GetCounts", json!({"team":"UI"}), json!(32), 10, 11),
+            tool("GetCounts", json!({"team":"Data"}), json!(91), 12, 13),
+            child,
+        ];
+        let request: TranscriptFigureSourceRequest = serde_json::from_value(json!({
+            "turnId": "turn-1", "uri": uri,
+            "bindingRefresh": {
+                "name": "counts", "turnId": later.turn_id,
+                "turnIndex": later.turn_index, "requestToken": token,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            request
+                .binding_refresh_before_index(turns[0].turn_index + 1)
+                .unwrap(),
+            Some(later.turn_index + 1)
+        );
+        assert!(request
+            .binding_refresh_before_index(later.turn_index + 1)
+            .is_err());
+        let read = |candidate: &crate::service::session::DialogTurnData| {
+            let mut view = session_transcript_view_before_from_turns("session-1", &turns, false);
+            attach_transcript_figure_source(
+                &mut view,
+                &turns,
+                &request,
+                std::slice::from_ref(candidate),
+            )
+            .unwrap();
+            let figure = view.turns[0].published_figures.pop().unwrap();
+            assert!(figure.source.is_none() && figure.bindings.is_none());
+            figure.binding_refresh.map(|update| update.value)
+        };
+        assert_eq!(read(&later), Some(json!({"kind":"json", "value":32})));
+        let mut other_session = later.clone();
+        other_session.session_id = "other-session".into();
+        assert!(read(&other_session).is_none());
+        later.user_message.content = "An unrelated request".into();
+        assert!(read(&later).is_none());
     }
 
     #[test]

@@ -43,17 +43,27 @@ check* only as the internal execution term.
 > launch, target resolution, manifest building, queue-state projection, report
 > rendering and the action bar has been retired. Launch now belongs to the host:
 > `launch_review` (`src/apps/desktop/src/api/review_launch_api.rs`) resolves the
-> workspace changes with Git, and `deep_review::launch_plan` in `agent-runtime`
-> builds the classified target, target evidence, run manifest and prompt, then the
+> working-tree diff or resolves a Git range to immutable commits.
+> `deep_review::launch_plan` builds the target evidence, run manifest and prompt. The
 > host creates and starts the child (`CodeReview` for ordinary Review of at most 80
-> files, `DeepReview` with a deep L3 manifest for strict Review). The native UI
+> files, `DeepReview` with bounded packets for larger ordinary targets, or
+> `DeepReview` with a deep L3 manifest for strict Review). The native UI
 > (`src/nsh-ui`) offers it from the session "…" menu ("Review changes…": mode,
-> file scope from a dry run, focus) and from `/review`, `/review strict …` and
-> `/DeepReview …` in the composer, and opens the child session. Not ported yet:
-> the managed packet plan for ordinary targets over 80 files (refused with the file
-> list so the user can narrow the scope or choose Strict), explicit Git range and
-> pull request targets, fix follow-up, the parent-session summary marker, the
-> queue-state projection and the action bar. Remote workspaces are refused
+> file scope and planned coverage from a dry run, focus) and from `/review`,
+> `/review strict …` and `/DeepReview …` in the composer. A composer command
+> can select two commits with `BASE..HEAD` or one commit with `commit REF`.
+> The owning runtime returns both commit IDs during preparation and checks them
+> again at launch. The chat's saved Review card identifies the committed range.
+> Git > Pull requests also launches an ordinary read-only Review from
+> a chat in the same workspace. Its history opens saved runs and shows the
+> owning runtime's status and whether their commits match the loaded PR.
+> For workspace reports, the shared fix dialog starts the writable fixer on the
+> owning runtime and offers an explicit read-only follow-up. The parent chat
+> displays its latest saved revision in the Review record card.
+> The NSH review session displays live capacity waits and sends queue controls
+> to the owning runtime. It shows launched checks, their saved partial output,
+> and the runtime's checkpoint recovery in either conversation pane.
+> SSH workspaces are refused
 > (`review_remote_workspace_unsupported`). The `src/web-ui/...` paths below name
 > the last React implementation in Git history; they are not live files.
 
@@ -64,11 +74,13 @@ The implementation has four layers:
 - Provider-neutral policy, admission, queue, retry, diagnostics, and report transforms in `src/crates/execution/agent-runtime/src/deep_review`.
 - Agent definitions, tool integration, event emission, diagnostics logging, and session-metadata IO in `src/crates/assembly/core/src/agentic`.
 
-The launch adapter is currently desktop-only. Browser/server surfaces hide every Review launch action, including fix follow-up retry, and reject typed Review commands with a clear unsupported-state message until the server owns the same session, Git-target, and policy command contracts; existing review attempts remain viewable. Adding only one RPC method to the current ping-only server would not make the workflow functional. The Review settings route remains visible for navigation compatibility on those surfaces, but renders a read-only desktop-only state and never loads or saves desktop capacity settings.
+The execution adapter is on the desktop runtime. A fleet client sends a PR launch to the parent chat's runtime only when it advertises `pull_request_review_launch_v1`. Older runtime versions, CLI hosts, and SSH workspace launches are reported as unavailable.
 
 Review strength follows explicit intent instead of a risk-score threshold table. An ordinary target of at most 80 prepared files launches one read-only `CodeReview` child. A larger or provider-truncated target remains ordinary L1 Review but uses an internal managed manifest so bounded workers can cover deterministic file batches without blocking launch. Only explicit strict intent changes review strength. L0 completion checks and Verify evidence remain outside this production contract until the separate Verify exploration defines a trustworthy evidence source.
 
-For workspace targets the host resolves the review target and builds the launch manifest (`launch_review`); the retired React launcher did this in the frontend, and its Git range and pull request paths have no host owner yet. Strict Review builds one deep L3 manifest; managed large Review builds one bounded L1 execution manifest. Each manifest is reused unchanged for execution, and neither path requires routine consent.
+For workspace targets the host resolves the review target and builds the launch manifest (`launch_review`). The PR launch command (`review_platform_launch_pull_request_review`) uses the registered workspace root and authorized provider remote. It compares the fresh provider identity and revisions with the selected PR, binds its evidence to the exact base and head commits, and uses the same child launch path. A stale target requires a refresh. Replaying a request does not resend its initial turn. The runtime serializes admission for the same PR and revisions and opens an existing active child when another controller already launched it. Strict Review builds one deep L3 manifest. Managed Review builds one bounded L1 execution manifest. Execution uses the prepared manifest and neither path requires routine consent.
+
+The PR history query (`review_platform_list_pull_request_reviews`) projects a bounded page from the owning workspace's Session metadata index. The host derives live status from its scheduler and terminal state from the saved last turn. Commit match uses the exact provider identity and the revisions from the loaded PR. Prepared evidence limitations are shown separately from execution state. Opening a saved run loads the existing transcript.
 
 ## Runtime Roles
 
@@ -425,8 +437,9 @@ The frontend listens through `AgentAPI.onDeepReviewQueueStateChanged` on `agenti
 - optional queue/run elapsed time
 - optional max queue wait
 - session concurrency flag
+- whether the runtime accepts controls for the published wait
 
-`src/web-ui/src/flow_chat/utils/deepReviewQueueStateEvents.ts` applies queue events only to `deep_review` sessions.
+The NSH queue notice follows the active turn of each visible Review session. The runtime journal keeps the latest sample for each reviewer in its snapshot and removes terminal tools. Rehydration replaces the affected device's samples and replays the active turn. The desktop checks the live wait before advertising replayed controls. Queue actions target the exact session, turn and tools on that device. Pause and continue apply to waiting and paused tools respectively. Skip applies to the selected optional waits. Cancel applies to pending reviewers and leaves active reviewers to finish. The owner checks the live wait before accepting a control. Older owners can display queue events and use the session's Stop action.
 
 ## Report Submission
 
@@ -445,9 +458,33 @@ Report enrichment is guarded by the tool context. Standard Code Review output sh
 
 ## Frontend Report and Action UI
 
-DeepReview report rendering lives under `src/web-ui/src/flow_chat/deep-review/report` and is consumed by `CodeReviewToolCard`.
+NSH renders a structured `submit_code_review` result in the transcript's shared tool card. Before admitting a workspace fix, its runtime saves the approved item IDs and report revision on the fixer child and links it to the source report. Opening the fix dialog projects progress from successful TodoWrite receipts in the linked fixer's original turn. During execution and recovery it also reads the owning runtime's existing turn context checkpoint. The dialog refreshes while a run is active and can reopen the fixer from saved metadata. A completed turn leaves items without a matching receipt pending. A reported completion stays distinct from a finding disposition or independent re-review. The owning runtime refreshes the workspace evidence on an explicit follow-up. It combines the original paths with the resolved file receipts from the linked fixer turns. Unknown mutation effects or incomplete receipts require the current-workspace fallback shown before confirmation. The follow-up preserves the original Review strength and records the source report, fixer and predecessor on the new revision. Retrying after a lost acknowledgement can open the reserved child, and reopening the original report restores access to its follow-up. Older fix sessions remain readable with their existing transcript. Opening a summarized card reads that turn from the session owner. The card displays the assessment, AI recommendation, findings with file and line references, remediation, strengths, and coverage notes. A truncated preview is never used to infer finding counts, and an unreadable result stays inspectable as tool output. The report does not change the PR's provider review state.
 
-The action surface is shared with standard Code Review but includes DeepReview-specific phases and capacity state:
+The progress strip above either composer counts launched checks by tool invocation
+in the current review turn. Its detail dialog shows completed and partial worker
+output separately from the final report. Selecting a summarized result loads the
+exact tool output from that turn on the owning device. A submitted report takes
+over from the progress strip. An interrupted turn keeps its saved checks and, when
+the runtime has a recovery checkpoint, exposes Resume from the turn in either pane.
+It sends the saved execution generation to the owner, which arbitrates recovery.
+Provider failures in a strict or managed Review show the runtime's structured
+reason and known replay constraints. The model action opens Models settings for
+the device that owns the Review. Copy diagnostics includes the provider, error
+code, status and request id when present. A recovery action in Settings leaves
+model changes and restarting the Review to the user.
+
+Saved managed or historical packet reports can offer **Review incomplete files**.
+The owner validates the latest completed report against the original manifest and
+target evidence. It accepts confirmed incomplete subsets from timeouts and
+transient capacity skips. The preview lists the current workspace changes in
+those paths or their changes between the saved Git revisions. Confirmation
+rebuilds the scope and refuses changed or unresolved evidence. The child Review
+keeps the original result available, and the same approved scope identifies the
+same child after a lost acknowledgement. Adaptive Strict Review runs without
+packets can resume an interrupted turn when the runtime has a checkpoint. Provider pull requests
+use full re-review from their Review history.
+
+The legacy React reference renders the report under `src/web-ui/src/flow_chat/deep-review/report` through `CodeReviewToolCard`. Its action surface is shared with standard Code Review but includes DeepReview-specific phases and capacity state:
 
 - `src/web-ui/src/flow_chat/store/deepReviewActionBarStore.ts`
 - `src/web-ui/src/flow_chat/components/btw/BtwSessionPanel.tsx`

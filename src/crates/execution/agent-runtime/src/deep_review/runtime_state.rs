@@ -10,7 +10,7 @@ use super::execution_policy::{
 };
 use super::queue::{
     DeepReviewCapacityQueueReason, DeepReviewQueueControlAction, DeepReviewQueueControlSnapshot,
-    DeepReviewQueueControlTracker,
+    DeepReviewQueueControlTracker, DeepReviewReviewerWaitGuard,
 };
 use super::shared_context::DeepReviewSharedContextMeasurementSnapshot;
 use std::sync::LazyLock;
@@ -301,6 +301,41 @@ pub fn apply_deep_review_queue_control(
     action: DeepReviewQueueControlAction,
 ) -> DeepReviewQueueControlSnapshot {
     GLOBAL_DEEP_REVIEW_QUEUE_CONTROL_TRACKER.apply(parent_dialog_turn_id, tool_id, action)
+}
+
+pub fn track_deep_review_reviewer_wait(
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+    optional: bool,
+) -> DeepReviewReviewerWaitGuard<'static> {
+    GLOBAL_DEEP_REVIEW_QUEUE_CONTROL_TRACKER.track_wait(session_id, turn_id, tool_id, optional)
+}
+
+pub fn publish_deep_review_reviewer_wait(
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+    waiting: bool,
+) -> bool {
+    GLOBAL_DEEP_REVIEW_QUEUE_CONTROL_TRACKER.publish_wait(session_id, turn_id, tool_id, waiting)
+}
+
+pub fn has_live_deep_review_reviewer_control(
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+) -> bool {
+    GLOBAL_DEEP_REVIEW_QUEUE_CONTROL_TRACKER.has_live_control(session_id, turn_id, tool_id)
+}
+
+pub fn control_live_deep_review_reviewer_wait(
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+    action: DeepReviewQueueControlAction,
+) -> bool {
+    GLOBAL_DEEP_REVIEW_QUEUE_CONTROL_TRACKER.apply_live(session_id, turn_id, tool_id, action)
 }
 
 pub fn deep_review_queue_control_snapshot(

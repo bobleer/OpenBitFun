@@ -338,10 +338,14 @@ async fn host_queue_steering_retains_payload_until_formal_turn_handoff_and_rejec
         "composerPresentation".into(),
         serde_json::json!({"version":1}),
     );
-    scheduler
+    let admitted = scheduler
         .manage_host_queue(request(Some(&epoch), Action::Submit { message: input }))
         .await
         .unwrap();
+    assert_eq!(
+        admitted.receipt.unwrap().composer_presentation,
+        Some(serde_json::json!({"version":1}))
+    );
     let promote = request(
         Some(&epoch),
         Action::Promote {

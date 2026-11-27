@@ -39,7 +39,10 @@
 ## 不变量
 
 - 公开 API 固定在 `/miniapp/api/v1`。
-- 列表响应保持 `{items,nextCursor}`。
+- `GET /listings/{slug}` 和 `GET /listings/by-id/{listing_id}` 返回同一详情结构，
+  使用相同的公开浏览、发布状态和撤回校验。已安装副本使用记录中的 listing ID。
+- `POST /listings/lookup/summaries` 接收最多 50 个 `listingIds`，按普通浏览的发布和撤回规则返回对应条目的摘要。缺失或撤回的条目不出现在结果中。结果独立于市场搜索及分页。
+- 列表响应保持 `{items,nextCursor}`，按 ID 批量查询时 `nextCursor` 为空。
 - 错误保持 `{error:{code,message,requestId,details?}}`。
 - 投稿状态保持 `draft → submitted → approved | rejected | withdrawn`；批准的
   release 可被永久 yank。

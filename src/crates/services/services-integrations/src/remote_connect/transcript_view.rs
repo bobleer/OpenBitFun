@@ -460,6 +460,8 @@ pub struct TranscriptUserMessage {
     pub timestamp_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<TranscriptImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_presentation: Option<serde_json::Value>,
 }
 
 /// Lines added and removed by one edit or write call (`TranscriptToolView::diff_stats`).
@@ -583,6 +585,77 @@ pub struct TranscriptTurnView {
     /// Net file changes recorded by the turn's snapshots (empty when no files changed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_changes: Vec<TranscriptTurnFileChange>,
+    /// Immutable figures sealed with this turn. Source is opt-in for one figure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published_figures: Vec<TranscriptPublishedFigure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPublishedFigure {
+    pub uri: String,
+    /// Omitted for rejected or unavailable snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inspection_deferred: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Checked data sealed with this exact revision. Omitted from summary reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Advertised on the exact source read by hosts that can project later receipts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub binding_refresh_supported: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_refresh: Option<TranscriptFigureBindingRefresh>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptFigureBindingRefresh {
+    pub name: String,
+    pub turn_id: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptFigureSourceRequest {
+    #[serde(alias = "turn_id")]
+    pub turn_id: String,
+    pub uri: String,
+    #[serde(default)]
+    pub binding_refresh: Option<TranscriptFigureBindingRefreshRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptFigureBindingRefreshRequest {
+    pub name: String,
+    pub turn_id: String,
+    pub turn_index: usize,
+    /// A manually requested refresh must match the submitted user message.
+    #[serde(default)]
+    pub request_token: Option<String>,
+}
+
+impl TranscriptFigureSourceRequest {
+    pub fn binding_refresh_before_index(
+        &self,
+        source_before_index: usize,
+    ) -> Result<Option<usize>, String> {
+        self.binding_refresh
+            .as_ref()
+            .map(|refresh| {
+                refresh
+                    .turn_index
+                    .checked_add(1)
+                    .filter(|before| *before > source_before_index)
+                    .ok_or_else(|| "Figure refresh requires a later transcript turn".to_string())
+            })
+            .transpose()
+    }
 }
 
 impl TranscriptTurnView {
@@ -841,6 +914,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
             text: turn.user_display_content,
             timestamp_ms: turn.user_timestamp_ms,
             images,
+            composer_presentation: turn.user_composer_presentation,
         },
         items,
         error: turn.error,
@@ -853,6 +927,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
         recovery: turn.recovery,
         background_delivery: turn.background_delivery,
         file_changes: Vec::new(),
+        published_figures: Vec::new(),
     }
 }
 
@@ -1017,6 +1092,17 @@ fn turn_fingerprint(turn: &TranscriptTurnView) -> String {
     if let Some(recovery) = &turn.recovery {
         feed(recovery.status.as_bytes());
         feed(recovery.execution_generation.to_string().as_bytes());
+    }
+    for figure in &turn.published_figures {
+        feed(figure.uri.as_bytes());
+        feed(
+            figure
+                .content_bytes
+                .unwrap_or_default()
+                .to_string()
+                .as_bytes(),
+        );
+        feed(&[u8::from(figure.inspection_deferred)]);
     }
     format!("{hash:016x}")
 }
@@ -1196,6 +1282,31 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn transcript_user_presentation_survives_projection_and_old_wire_payloads() {
+        let legacy = build_transcript_view(vec![history_turn(0, false)]).remove(0);
+        let legacy_wire = serde_json::to_value(&legacy.user).unwrap();
+        assert!(legacy_wire.get("composerPresentation").is_none());
+        assert_eq!(
+            serde_json::from_value::<TranscriptUserMessage>(legacy_wire).unwrap(),
+            legacy.user
+        );
+
+        let presentation = serde_json::json!({"version": 1, "segments": [{
+            "kind": "context",
+            "context": {"type": "session-reference", "sessionId": "reference"}
+        }]});
+        let mut history = history_turn(0, false);
+        history.user_composer_presentation = Some(presentation.clone());
+        let projected = build_transcript_view(vec![history]).remove(0);
+        let wire = serde_json::to_value(&projected.user).unwrap();
+        assert_eq!(wire["composerPresentation"], presentation);
+        assert_eq!(
+            serde_json::from_value::<TranscriptUserMessage>(wire).unwrap(),
+            projected.user
+        );
     }
 
     #[test]

@@ -196,14 +196,129 @@ impl DeepReviewQueueControlKey {
     }
 }
 
+struct LiveReviewerWait {
+    session_id: String,
+    optional: bool,
+    published: bool,
+    control: DeepReviewQueueControlSnapshot,
+}
+
+/// Owns one waiting period. Dropping a cancelled tool also retires its controls.
+pub struct DeepReviewReviewerWaitGuard<'a> {
+    tracker: &'a DeepReviewQueueControlTracker,
+    key: Option<DeepReviewQueueControlKey>,
+}
+
+impl Drop for DeepReviewReviewerWaitGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.as_ref() {
+            self.tracker.live_waits.remove(key);
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct DeepReviewQueueControlTracker {
+    live_waits: DashMap<DeepReviewQueueControlKey, LiveReviewerWait>,
     paused_tools: DashMap<DeepReviewQueueControlKey, Instant>,
     cancelled_tools: DashMap<DeepReviewQueueControlKey, Instant>,
     skip_optional_turns: DashMap<String, Instant>,
 }
 
 impl DeepReviewQueueControlTracker {
+    pub(crate) fn track_wait(
+        &self,
+        session_id: &str,
+        parent_dialog_turn_id: &str,
+        tool_id: &str,
+        optional: bool,
+    ) -> DeepReviewReviewerWaitGuard<'_> {
+        let key = DeepReviewQueueControlKey::new(parent_dialog_turn_id, tool_id)
+            .filter(|_| !session_id.is_empty());
+        let key = key.and_then(|key| match self.live_waits.entry(key.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => None,
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(LiveReviewerWait {
+                    session_id: session_id.to_owned(),
+                    optional,
+                    published: false,
+                    control: DeepReviewQueueControlSnapshot {
+                        paused: false,
+                        cancelled: false,
+                        skip_optional: false,
+                    },
+                });
+                Some(key)
+            }
+        });
+        DeepReviewReviewerWaitGuard { tracker: self, key }
+    }
+
+    pub(crate) fn publish_wait(
+        &self,
+        session_id: &str,
+        parent_dialog_turn_id: &str,
+        tool_id: &str,
+        waiting: bool,
+    ) -> bool {
+        let Some(key) = DeepReviewQueueControlKey::new(parent_dialog_turn_id, tool_id) else {
+            return false;
+        };
+        let Some(mut wait) = self.live_waits.get_mut(&key) else {
+            return false;
+        };
+        if wait.session_id != session_id {
+            return false;
+        }
+        wait.published = waiting;
+        waiting
+    }
+
+    pub(crate) fn has_live_control(
+        &self,
+        session_id: &str,
+        parent_dialog_turn_id: &str,
+        tool_id: &str,
+    ) -> bool {
+        let Some(key) = DeepReviewQueueControlKey::new(parent_dialog_turn_id, tool_id) else {
+            return false;
+        };
+        self.live_waits
+            .get(&key)
+            .is_some_and(|wait| wait.session_id == session_id && wait.published)
+    }
+
+    pub(crate) fn apply_live(
+        &self,
+        session_id: &str,
+        parent_dialog_turn_id: &str,
+        tool_id: &str,
+        action: DeepReviewQueueControlAction,
+    ) -> bool {
+        let Some(key) = DeepReviewQueueControlKey::new(parent_dialog_turn_id, tool_id) else {
+            return false;
+        };
+        let Some(mut wait) = self.live_waits.get_mut(&key) else {
+            return false;
+        };
+        if wait.session_id != session_id
+            || !wait.published
+            || (action == DeepReviewQueueControlAction::SkipOptional && !wait.optional)
+        {
+            return false;
+        }
+        match action {
+            DeepReviewQueueControlAction::Pause => wait.control.paused = true,
+            DeepReviewQueueControlAction::Continue => wait.control.paused = false,
+            DeepReviewQueueControlAction::Cancel => {
+                wait.control.cancelled = true;
+                wait.control.paused = false;
+            }
+            DeepReviewQueueControlAction::SkipOptional => wait.control.skip_optional = true,
+        }
+        true
+    }
+
     pub(crate) fn apply(
         &self,
         parent_dialog_turn_id: &str,
@@ -251,14 +366,16 @@ impl DeepReviewQueueControlTracker {
                 skip_optional: false,
             };
         };
-        let skip_optional = self
-            .skip_optional_turns
-            .contains_key(&key.parent_dialog_turn_id);
-
+        let live = self.live_waits.get(&key).map(|wait| wait.control.clone());
         DeepReviewQueueControlSnapshot {
-            paused: self.paused_tools.contains_key(&key),
-            cancelled: self.cancelled_tools.contains_key(&key),
-            skip_optional,
+            paused: self.paused_tools.contains_key(&key)
+                || live.as_ref().is_some_and(|control| control.paused),
+            cancelled: self.cancelled_tools.contains_key(&key)
+                || live.as_ref().is_some_and(|control| control.cancelled),
+            skip_optional: self
+                .skip_optional_turns
+                .contains_key(&key.parent_dialog_turn_id)
+                || live.as_ref().is_some_and(|control| control.skip_optional),
         }
     }
 
@@ -267,6 +384,43 @@ impl DeepReviewQueueControlTracker {
             self.paused_tools.remove(&key);
             self.cancelled_tools.remove(&key);
         }
+    }
+}
+
+#[cfg(test)]
+mod live_wait_tests {
+    use super::*;
+
+    #[test]
+    fn controls_follow_published_waits_and_only_skip_the_selected_optional_tool() {
+        use DeepReviewQueueControlAction::*;
+        let tracker = DeepReviewQueueControlTracker::default();
+        let wait = tracker.track_wait("review", "turn", "optional", true);
+        let _other = tracker.track_wait("review", "turn", "required", false);
+        assert!(!tracker.apply_live("review", "turn", "optional", Pause));
+        assert!(tracker.publish_wait("review", "turn", "optional", true));
+        assert!(tracker.publish_wait("review", "turn", "required", true));
+        assert!(tracker.has_live_control("review", "turn", "optional"));
+        assert!(!tracker.has_live_control("another-review", "turn", "optional"));
+        assert!(!tracker.apply_live("another-review", "turn", "optional", Pause));
+        assert!(!tracker.apply_live("review", "another-turn", "optional", Pause));
+        assert!(tracker.apply_live("review", "turn", "optional", Pause));
+        assert!(tracker.snapshot("turn", "optional").paused);
+        assert!(tracker.apply_live("review", "turn", "optional", Continue));
+        assert!(!tracker.snapshot("turn", "optional").paused);
+        assert!(!tracker.apply_live("review", "turn", "required", SkipOptional));
+        assert!(tracker.apply_live("review", "turn", "optional", SkipOptional));
+        assert!(tracker.snapshot("turn", "optional").skip_optional);
+        assert!(!tracker.snapshot("turn", "required").skip_optional);
+
+        assert!(!tracker.publish_wait("review", "turn", "optional", false));
+        assert!(!tracker.has_live_control("review", "turn", "optional"));
+        assert!(!tracker.apply_live("review", "turn", "optional", Cancel));
+        drop(wait);
+        assert!(!tracker.snapshot("turn", "optional").skip_optional);
+        assert!(!tracker.apply_live("review", "turn", "optional", Pause));
+        assert!(tracker.apply_live("review", "turn", "required", Cancel));
+        assert!(tracker.snapshot("turn", "required").cancelled);
     }
 }
 

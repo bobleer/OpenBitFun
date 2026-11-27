@@ -22,9 +22,10 @@ use crate::host::State;
 use crate::runtime::DesktopRuntimeContext;
 use openbitfun_core::service::snapshot::open_snapshot_history_for_workspace;
 use openbitfun_core::{
-    is_prompt_suggestion_enabled, resolved_transcript_prompt_suggestion,
-    session_transcript_view_before_from_turns, session_transcript_view_from_turns,
-    SessionTranscriptView, TranscriptTurnFileChange, TRANSCRIPT_TOOL_DETAIL_SUMMARY,
+    attach_transcript_figure_source, is_prompt_suggestion_enabled,
+    resolved_transcript_prompt_suggestion, session_transcript_view_before_from_turns,
+    session_transcript_view_from_turns, SessionTranscriptView, TranscriptFigureSourceRequest,
+    TranscriptTurnFileChange, TRANSCRIPT_TOOL_DETAIL_SUMMARY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -71,6 +72,9 @@ pub struct GetSessionTranscriptViewRequest {
     /// (`detailOmitted`); anything else, and absence, answers them whole.
     #[serde(default, alias = "toolDetail")]
     pub tool_detail: Option<String>,
+    /// Explicit read of one published figure in a single-turn before page.
+    #[serde(default, alias = "figureSource")]
+    pub figure_source: Option<TranscriptFigureSourceRequest>,
 }
 
 // @backend-command
@@ -84,6 +88,9 @@ pub async fn get_session_transcript_view(
     }
     let limit = request.limit.filter(|limit| *limit > 0);
     let before_turn_index = request.before_turn_index;
+    if request.figure_source.is_some() && (limit != Some(1) || before_turn_index.is_none()) {
+        return Err("Published figure source requires a single-turn before page".to_string());
+    }
     let request_workspace_id = request.workspace_id.clone();
     let scope = desktop_session_scope(
         request.workspace_id,
@@ -110,6 +117,26 @@ pub async fn get_session_transcript_view(
             page.has_earlier,
         )
     };
+    if let Some(figure) = &request.figure_source {
+        let later_turns = if let Some(before) =
+            figure.binding_refresh_before_index(before_turn_index.unwrap_or_default())?
+        {
+            runtime
+                .session_application()
+                .load_session_turns_page(scope, &session_id, Some(before), Some(1))
+                .await
+                .map_err(|error| format!("Failed to load figure refresh turn: {error}"))?
+                .turns
+        } else {
+            Vec::new()
+        };
+        attach_transcript_figure_source(&mut view, &page.turns, figure, &later_turns)?;
+        view.summarize_tool_results();
+        return Ok(DesktopSessionTranscriptView {
+            view,
+            running_turn: None,
+        });
+    }
     let running_turn = if is_before_page {
         None
     } else {

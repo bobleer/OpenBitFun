@@ -35,8 +35,7 @@ use openbitfun_core::agentic::coordination::{
 };
 use openbitfun_core::agentic::core::*;
 use openbitfun_core::agentic::deep_review_policy::{
-    apply_deep_review_queue_control, default_review_team_definition, DeepReviewQueueControlAction,
-    ReviewTeamDefinition,
+    default_review_team_definition, DeepReviewQueueControlAction, ReviewTeamDefinition,
 };
 use openbitfun_core::agentic::goal_mode::{ThreadGoal, ThreadGoalStatus};
 use openbitfun_core::agentic::image_analysis::ImageContextData;
@@ -144,6 +143,9 @@ pub struct CreateSessionRequest {
     pub deep_review_run_manifest: Option<serde_json::Value>,
     #[serde(default)]
     pub review_target_evidence: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub(crate) admitted_review_revision:
+        Option<openbitfun_core::agentic::deep_review::revision::PullRequestReviewRevision>,
     pub config: Option<SessionConfigDTO>,
 }
 
@@ -682,7 +684,7 @@ fn frontend_event_projection_snapshot(
 /// The journal's current-turn projection as replayable frontend events, or
 /// `None` when it holds no turn or the turn already reached a terminal event.
 pub(crate) fn running_turn_event_snapshot(
-    snapshot: SessionEventProjectionSnapshot,
+    mut snapshot: SessionEventProjectionSnapshot,
     acp: bool,
 ) -> Option<FrontendSessionEventProjectionSnapshot> {
     snapshot.active_turn_id.as_ref()?;
@@ -706,6 +708,23 @@ pub(crate) fn running_turn_event_snapshot(
         .unwrap_or(false);
     if terminal {
         return None;
+    }
+    // A persisted projection can survive the process that owned the wait.
+    // Reconfirm the live registration before offering controls on a replay.
+    for event in &mut snapshot.events {
+        if let AgenticEvent::DeepReviewQueueStateChanged {
+            session_id,
+            turn_id,
+            queue_state,
+        } = event
+        {
+            queue_state.controls_available = queue_state.controls_available
+                && openbitfun_agent_runtime::deep_review::has_live_deep_review_reviewer_control(
+                    session_id,
+                    turn_id,
+                    &queue_state.tool_id,
+                );
+        }
     }
     let mut projected = frontend_event_projection_snapshot(snapshot);
     if acp {
@@ -1072,6 +1091,9 @@ fn default_cancel_descendants() -> bool {
 fn sanitize_create_session_review_metadata(request: &mut CreateSessionRequest) {
     if let Some(manifest) = request.deep_review_run_manifest.as_mut() {
         sanitize_focused_review_public_metadata(manifest);
+        openbitfun_core::agentic::deep_review::revision::PullRequestReviewRevision::apply_to_manifest(
+            manifest, request.admitted_review_revision.as_ref(),
+        );
     }
 }
 
@@ -3603,11 +3625,14 @@ pub async fn control_deep_review_queue(
         return Err("Missing tool_id".to_string());
     }
 
-    apply_deep_review_queue_control(
+    if !openbitfun_agent_runtime::deep_review::control_live_deep_review_reviewer_wait(
+        &request.session_id,
         &request.dialog_turn_id,
         &request.tool_id,
         request.action.into(),
-    );
+    ) {
+        return Err("This reviewer is no longer available for that queue action".into());
+    }
     Ok(())
 }
 
@@ -5122,6 +5147,7 @@ mod tests {
             }),
             deep_review_run_manifest: None,
             review_target_evidence: None,
+            admitted_review_revision: None,
             config: None,
         }
     }

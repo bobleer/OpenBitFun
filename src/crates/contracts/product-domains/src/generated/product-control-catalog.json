@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "b8dea7e5ab42bd8cc78c5fe3917400199e345e80aa52a06ed27191632076d58c",
+  "digest": "01c779e9d3b35b07773453b2716f1bef77695e48af9d66c40828552e94af2d18",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -178,11 +178,11 @@
     "features": 23,
     "settings": 24,
     "userFacing": 47,
-    "documentedItems": 353,
+    "documentedItems": 356,
     "controlCoverage": {
       "direct": 63,
       "delegated": 67,
-      "interactive": 223,
+      "interactive": 226,
       "unsupported": 0
     }
   },
@@ -4537,6 +4537,9 @@
       "itemIds": [
         "deep-review",
         "pull-request",
+        "review-pull-request",
+        "session-review-records",
+        "review-remediation",
         "ci-logs",
         "workspace-context",
         "issues",
@@ -4668,6 +4671,144 @@
       "delegateTools": [
         "ReviewPlatform"
       ],
+      "presentationTarget": {
+        "kind": "action",
+        "actionId": "surface.files.open"
+      }
+    },
+    {
+      "id": "feature.code-review:open:review-pull-request",
+      "capabilityId": "feature.code-review",
+      "itemIds": [
+        "review-pull-request"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "action",
+        "actionId": "surface.files.open"
+      }
+    },
+    {
+      "id": "feature.code-review:open:session-review-records",
+      "capabilityId": "feature.code-review",
+      "itemIds": [
+        "session-review-records"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "action",
+        "actionId": "surface.files.open"
+      }
+    },
+    {
+      "id": "feature.code-review:open:review-remediation",
+      "capabilityId": "feature.code-review",
+      "itemIds": [
+        "review-remediation"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
       "presentationTarget": {
         "kind": "action",
         "actionId": "surface.files.open"
@@ -24166,6 +24307,39 @@
           }
         },
         {
+          "id": "review-pull-request",
+          "titleZh": "从拉取请求面板开始只读审查",
+          "titleEn": "Start a read-only review from the pull request panel",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "从该工作区的会话中选择要审查的拉取请求。",
+            "reasonEn": "Select the pull request to review from a chat in its workspace."
+          }
+        },
+        {
+          "id": "session-review-records",
+          "titleZh": "在原会话中查看审查进度与结果",
+          "titleEn": "View review progress and results in the original chat",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "打开发起审查的会话并选择记录。",
+            "reasonEn": "Open the chat that requested the review and select its record."
+          }
+        },
+        {
+          "id": "review-remediation",
+          "titleZh": "选择审查发现并启动修复",
+          "titleEn": "Select Review findings and start fixes",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "打开审查报告并确认要修复的项目。",
+            "reasonEn": "Open the Review report and confirm the items to fix."
+          }
+        },
+        {
           "id": "ci-logs",
           "titleZh": "一键拉取 PR 失败或运行中的 CI 任务日志，快速定位构建与测试报错",
           "titleEn": "Fetch CI run logs for a pull request to pinpoint build, lint, or test failures",
@@ -24309,6 +24483,12 @@
         "Run multi-agent Deep Review against uncommitted workspace changes, a commit, or a pull request",
         "分页读取 Pull Request / Merge Request 的描述、评论讨论与关联代码改动",
         "Read pull-request descriptions, review threads, and paged file changes directly in context",
+        "从拉取请求面板开始只读审查",
+        "Start a read-only review from the pull request panel",
+        "在原会话中查看审查进度与结果",
+        "View review progress and results in the original chat",
+        "选择审查发现并启动修复",
+        "Select Review findings and start fixes",
         "一键拉取 PR 失败或运行中的 CI 任务日志，快速定位构建与测试报错",
         "Fetch CI run logs for a pull request to pinpoint build, lint, or test failures",
         "自动识别当前仓库的 Git 远端地址、分支快照与对应的评审平台目标",

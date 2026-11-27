@@ -377,6 +377,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("install_update", NativeCommandSupport::Adapter),
     ("interrupt_dialog_turn", NativeCommandSupport::Native),
     ("launch_review", NativeCommandSupport::Native),
+    ("launch_review_remediation", NativeCommandSupport::Native),
     ("list_agent_companion_pets", NativeCommandSupport::Native),
     ("list_agent_tool_names", NativeCommandSupport::Native),
     ("list_ai_models_by_config", NativeCommandSupport::Native),
@@ -395,6 +396,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("list_project_permission_grants", NativeCommandSupport::Native),
     ("list_removed_external_sessions", NativeCommandSupport::Native),
     ("list_session_commands", NativeCommandSupport::Native),
+    ("list_session_review_records", NativeCommandSupport::Native),
     ("list_sessions", NativeCommandSupport::Native),
     ("list_skill_market", NativeCommandSupport::Native),
     ("list_subagents", NativeCommandSupport::Native),
@@ -453,6 +455,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("miniapp_market_installed_origins", NativeCommandSupport::Native),
     ("miniapp_market_installed_status", NativeCommandSupport::Native),
     ("miniapp_market_list_submissions", NativeCommandSupport::Native),
+    ("miniapp_market_read_screenshot", NativeCommandSupport::Native),
     ("miniapp_market_set_favorite", NativeCommandSupport::Native),
     ("miniapp_market_set_rating", NativeCommandSupport::Native),
     ("miniapp_market_withdraw_submission", NativeCommandSupport::Native),
@@ -577,6 +580,8 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("review_platform_get_pull_request_review_target_by_identity", NativeCommandSupport::Native),
     ("review_platform_get_workspace_context", NativeCommandSupport::Native),
     ("review_platform_get_workspace_snapshot", NativeCommandSupport::Native),
+    ("review_platform_launch_pull_request_review", NativeCommandSupport::Native),
+    ("review_platform_list_pull_request_reviews", NativeCommandSupport::Native),
     ("review_platform_update_auth_token", NativeCommandSupport::Native),
     ("rollback_miniapp", NativeCommandSupport::Native),
     ("rollback_session", NativeCommandSupport::Native),
@@ -1117,6 +1122,7 @@ pub(super) fn dispatch<'a>(
         "install_update" => super::native_commands::install_update(host, args),
         "interrupt_dialog_turn" => command_interrupt_dialog_turn(host, args),
         "launch_review" => command_launch_review(host, args),
+        "launch_review_remediation" => command_launch_review_remediation(host, args),
         "list_agent_companion_pets" => command_list_agent_companion_pets(host, args),
         "list_agent_tool_names" => command_list_agent_tool_names(host, args),
         "list_ai_models_by_config" => command_list_ai_models_by_config(host, args),
@@ -1135,6 +1141,7 @@ pub(super) fn dispatch<'a>(
         "list_project_permission_grants" => command_list_project_permission_grants(host, args),
         "list_removed_external_sessions" => command_list_removed_external_sessions(host, args),
         "list_session_commands" => command_list_session_commands(host, args),
+        "list_session_review_records" => command_list_session_review_records(host, args),
         "list_sessions" => command_list_sessions(host, args),
         "list_skill_market" => command_list_skill_market(host, args),
         "list_subagents" => command_list_subagents(host, args),
@@ -1193,6 +1200,7 @@ pub(super) fn dispatch<'a>(
         "miniapp_market_installed_origins" => command_miniapp_market_installed_origins(host, args),
         "miniapp_market_installed_status" => command_miniapp_market_installed_status(host, args),
         "miniapp_market_list_submissions" => command_miniapp_market_list_submissions(host, args),
+        "miniapp_market_read_screenshot" => command_miniapp_market_read_screenshot(host, args),
         "miniapp_market_set_favorite" => command_miniapp_market_set_favorite(host, args),
         "miniapp_market_set_rating" => command_miniapp_market_set_rating(host, args),
         "miniapp_market_withdraw_submission" => command_miniapp_market_withdraw_submission(host, args),
@@ -1317,6 +1325,8 @@ pub(super) fn dispatch<'a>(
         "review_platform_get_pull_request_review_target_by_identity" => command_review_platform_get_pull_request_review_target_by_identity(host, args),
         "review_platform_get_workspace_context" => command_review_platform_get_workspace_context(host, args),
         "review_platform_get_workspace_snapshot" => command_review_platform_get_workspace_snapshot(host, args),
+        "review_platform_launch_pull_request_review" => command_review_platform_launch_pull_request_review(host, args),
+        "review_platform_list_pull_request_reviews" => command_review_platform_list_pull_request_reviews(host, args),
         "review_platform_update_auth_token" => command_review_platform_update_auth_token(host, args),
         "rollback_miniapp" => command_rollback_miniapp(host, args),
         "rollback_session" => command_rollback_session(host, args),
@@ -5069,6 +5079,20 @@ fn command_launch_review(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
 }
 
 #[inline(never)]
+fn command_launch_review_remediation(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::review_launch_api::launch_review_remediation(
+            HostHandle::new(Arc::clone(host)),
+            host.command_state("launch_review_remediation")?,
+            host.command_state("launch_review_remediation")?,
+            host.command_state("launch_review_remediation")?,
+            arg(&args, "request", "launch_review_remediation")?,
+        ).await;
+        CommandResponse(result).finish()
+    })
+}
+
+#[inline(never)]
 fn command_list_agent_companion_pets(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::list_agent_companion_pets(
@@ -5259,6 +5283,17 @@ fn command_list_session_commands(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::session_policy_api::list_session_commands(
             host.command_state("list_session_commands")?,
             arg(&args, "request", "list_session_commands")?,
+        ).await;
+        CommandResponse(result).finish()
+    })
+}
+
+#[inline(never)]
+fn command_list_session_review_records(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::review_launch_api::list_session_review_records(
+            host.command_state("list_session_review_records")?,
+            arg(&args, "request", "list_session_review_records")?,
         ).await;
         CommandResponse(result).finish()
     })
@@ -5879,6 +5914,16 @@ fn command_miniapp_market_installed_status(host: &Arc<NativeHost>, args: Value) 
 fn command_miniapp_market_list_submissions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::miniapp_market_api::miniapp_market_list_submissions().await;
+        CommandResponse(result).finish()
+    })
+}
+
+#[inline(never)]
+fn command_miniapp_market_read_screenshot(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::miniapp_market_api::miniapp_market_read_screenshot(
+            arg(&args, "request", "miniapp_market_read_screenshot")?,
+        ).await;
         CommandResponse(result).finish()
     })
 }
@@ -7141,6 +7186,31 @@ fn command_review_platform_get_workspace_snapshot(host: &Arc<NativeHost>, args: 
         let result = crate::review_platform_get_workspace_snapshot(
             host.command_state("review_platform_get_workspace_snapshot")?,
             arg(&args, "request", "review_platform_get_workspace_snapshot")?,
+        ).await;
+        CommandResponse(result).finish()
+    })
+}
+
+#[inline(never)]
+fn command_review_platform_launch_pull_request_review(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::review_launch_api::review_platform_launch_pull_request_review(
+            HostHandle::new(Arc::clone(host)),
+            host.command_state("review_platform_launch_pull_request_review")?,
+            host.command_state("review_platform_launch_pull_request_review")?,
+            host.command_state("review_platform_launch_pull_request_review")?,
+            arg(&args, "request", "review_platform_launch_pull_request_review")?,
+        ).await;
+        CommandResponse(result).finish()
+    })
+}
+
+#[inline(never)]
+fn command_review_platform_list_pull_request_reviews(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::review_launch_api::review_platform_list_pull_request_reviews(
+            host.command_state("review_platform_list_pull_request_reviews")?,
+            arg(&args, "request", "review_platform_list_pull_request_reviews")?,
         ).await;
         CommandResponse(result).finish()
     })

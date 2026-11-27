@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:5fa315dded153ec3",
+  "digest": "fnv1a64:8e7fd25f6c43a7f3",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -49,6 +49,11 @@
       "cancel_tool",
       "tool_catalog",
       "review_platform_v1",
+      "pull_request_review_launch_v1",
+      "pull_request_review_history_v1",
+      "session_review_records_v1",
+      "review_remediation_v1",
+      "review_coverage_retry_v1",
       "host_terminal_workspace_v1",
       "chat_mcp_catalog_v1",
       "workspace_icon_v1",
@@ -65,7 +70,10 @@
       "ssh_none_auth_v1",
       "terminal_cursor_replay_v1",
       "git_tracked_change_count_v1",
-      "peer_attachment_status_v1"
+      "file_text_encoding_v1",
+      "peer_attachment_status_v1",
+      "miniapp_market_listing_id_v1",
+      "miniapp_market_summaries_v1"
     ],
     "desktop": [
       "model_routing_v1",
@@ -107,6 +115,11 @@
       "cancel_tool",
       "tool_catalog",
       "review_platform_v1",
+      "pull_request_review_launch_v1",
+      "pull_request_review_history_v1",
+      "session_review_records_v1",
+      "review_remediation_v1",
+      "review_coverage_retry_v1",
       "host_terminal_workspace_v1",
       "chat_mcp_catalog_v1",
       "workspace_icon_v1",
@@ -122,7 +135,10 @@
       "user_question_interaction_v1",
       "ssh_none_auth_v1",
       "git_tracked_change_count_v1",
-      "peer_attachment_status_v1"
+      "file_text_encoding_v1",
+      "peer_attachment_status_v1",
+      "miniapp_market_listing_id_v1",
+      "miniapp_market_summaries_v1"
     ],
     "cli": [
       "model_routing_v1",
@@ -159,6 +175,7 @@
       "user_question_interaction_v1",
       "terminal_cursor_replay_v1",
       "git_tracked_change_count_v1",
+      "file_text_encoding_v1",
       "peer_attachment_status_v1"
     ]
   },
@@ -4820,6 +4837,18 @@
       }
     },
     {
+      "id": "launch_review_remediation",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteUnsupported",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not run this desktop IDE surface"
+      }
+    },
+    {
       "id": "list_agent_companion_pets",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -5046,6 +5075,18 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "list_session_review_records",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not run this desktop IDE surface"
       }
     },
     {
@@ -5778,6 +5819,18 @@
     },
     {
       "id": "miniapp_market_list_submissions",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "miniapp_market_read_screenshot",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
@@ -7554,6 +7607,30 @@
     },
     {
       "id": "review_platform_get_workspace_snapshot",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteRouted",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not run this desktop IDE surface"
+      }
+    },
+    {
+      "id": "review_platform_launch_pull_request_review",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteUnsupported",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host does not run this desktop IDE surface"
+      }
+    },
+    {
+      "id": "review_platform_list_pull_request_reviews",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
       "peer": {
@@ -12223,6 +12300,14 @@
       }
     },
     {
+      "id": "launch_review_remediation",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
       "id": "list_agent_companion_pets",
       "route": {
         "kind": "entry_local"
@@ -12344,6 +12429,14 @@
     },
     {
       "id": "list_session_commands",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "list_session_review_records",
       "route": {
         "kind": "by_owner",
         "entity": "session",
@@ -12722,6 +12815,12 @@
     },
     {
       "id": "miniapp_market_list_submissions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_read_screenshot",
       "route": {
         "kind": "by_target"
       }
@@ -13535,6 +13634,22 @@
     },
     {
       "id": "review_platform_get_workspace_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_launch_pull_request_review",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.parentSessionId"
+      }
+    },
+    {
+      "id": "review_platform_list_pull_request_reviews",
       "route": {
         "kind": "by_owner",
         "entity": "workspace",

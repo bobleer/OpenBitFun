@@ -330,7 +330,8 @@ pub(crate) fn install(record: &LaunchRecord, svg: Option<&str>) -> Result<PathBu
     }
     #[cfg(target_os = "windows")]
     {
-        return install_windows(record, &path, dir, &host);
+        let applications = super::system_install::applications_directory()?;
+        return install_windows(record, &path, dir, &host, &applications);
     }
     #[allow(unreachable_code)]
     Err("System MiniApp launchers are unsupported on this platform".into())
@@ -453,11 +454,12 @@ fn app_user_model_id_property(
 }
 
 #[cfg(target_os = "windows")]
-fn install_windows(
+pub(super) fn install_windows(
     record: &LaunchRecord,
     manifest: &Path,
     dir: &Path,
     shell: &Path,
+    applications: &Path,
 ) -> Result<PathBuf, String> {
     use windows::core::{Interface, HSTRING, PCWSTR};
     use windows::Win32::System::Com::{
@@ -465,8 +467,7 @@ fn install_windows(
         COINIT_APARTMENTTHREADED, STGM_READ,
     };
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-    let target = super::system_install::applications_directory()?;
-    std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(applications).map_err(|e| e.to_string())?;
     // SAFETY: COM is initialized on this blocking worker thread; all interface
     // calls and borrowed UTF-16 buffers remain on it until persistence completes.
     unsafe {
@@ -475,7 +476,7 @@ fn install_windows(
             .map_err(|e| e.to_string())?;
         let result = (|| -> Result<PathBuf, String> {
             let arguments = format!("--miniapp-launch \"{}\"", manifest.display());
-            let target = launcher_destination(record, &target, "lnk", |candidate| {
+            let target = launcher_destination(record, applications, "lnk", |candidate| {
                 // Inspect the persisted target before migrating or replacing a
                 // shortcut. Matching its filename alone does not establish ownership.
                 (|| -> windows::core::Result<bool> {

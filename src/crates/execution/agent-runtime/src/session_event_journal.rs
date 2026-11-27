@@ -542,6 +542,12 @@ fn apply_event(projection: &mut SessionProjection, event: &AgenticEvent) -> bool
                 |candidate| matches!(candidate, AgenticEvent::ModelRoundCompleted { round_id: candidate_round, .. } if candidate_round == round_id),
             );
         }
+        AgenticEvent::DeepReviewQueueStateChanged { queue_state, .. } => {
+            replace_unique(&mut projection.events, event.clone(), |candidate| {
+                matches!(candidate, AgenticEvent::DeepReviewQueueStateChanged { queue_state: previous, .. }
+                    if previous.tool_id == queue_state.tool_id)
+            });
+        }
         AgenticEvent::TokenUsageUpdated { .. } => {
             replace_unique(&mut projection.events, event.clone(), |candidate| {
                 matches!(candidate, AgenticEvent::TokenUsageUpdated { .. })
@@ -580,6 +586,20 @@ fn apply_event(projection: &mut SessionProjection, event: &AgenticEvent) -> bool
         }
         AgenticEvent::ToolEvent { tool_event, .. } => {
             let tool_id = tool_event_identity(tool_event);
+            if matches!(
+                tool_event,
+                ToolEventData::Completed { .. }
+                    | ToolEventData::Failed { .. }
+                    | ToolEventData::Cancelled { .. }
+                    | ToolEventData::Rejected { .. }
+            ) {
+                projection.events.retain(|candidate| {
+                    !matches!(
+                        candidate, AgenticEvent::DeepReviewQueueStateChanged { queue_state, .. }
+                        if queue_state.tool_id == tool_id
+                    )
+                });
+            }
             replace_unique(&mut projection.events, event.clone(), |candidate| {
                 matches!(candidate, AgenticEvent::ToolEvent { tool_event: candidate_event, .. }
                     if tool_event_identity(candidate_event) == tool_id
@@ -762,6 +782,55 @@ mod tests {
             user_message_metadata: None,
             session_binding: None,
         }
+    }
+
+    #[test]
+    fn review_queue_snapshot_keeps_the_latest_sample_per_tool() {
+        use openbitfun_events::{DeepReviewQueueState, DeepReviewQueueStatus};
+        let journal = SessionEventJournal::default();
+        journal.record(&turn_started("review", "turn"));
+        let event = |id: &str, status, elapsed| AgenticEvent::DeepReviewQueueStateChanged {
+            session_id: "review".into(),
+            turn_id: "turn".into(),
+            queue_state: DeepReviewQueueState {
+                tool_id: id.into(),
+                subagent_type: "ReviewWorker".into(),
+                status,
+                reason: None,
+                queued_reviewer_count: 1,
+                active_reviewer_count: Some(1),
+                effective_parallel_instances: None,
+                optional_reviewer_count: None,
+                queue_elapsed_ms: Some(elapsed),
+                run_elapsed_ms: None,
+                max_queue_wait_seconds: Some(120),
+                session_concurrency_high: false,
+                controls_available: true,
+            },
+        };
+        journal.record(&event("a", DeepReviewQueueStatus::QueuedForCapacity, 100));
+        journal.record(&event("b", DeepReviewQueueStatus::QueuedForCapacity, 200));
+        journal.record(&event("a", DeepReviewQueueStatus::PausedByUser, 300));
+        let snapshot = journal.snapshot("review");
+        let samples: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                AgenticEvent::DeepReviewQueueStateChanged { queue_state, .. } => Some((
+                    queue_state.tool_id.as_str(),
+                    &queue_state.status,
+                    queue_state.queue_elapsed_ms,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            samples,
+            [
+                ("a", &DeepReviewQueueStatus::PausedByUser, Some(300)),
+                ("b", &DeepReviewQueueStatus::QueuedForCapacity, Some(200)),
+            ]
+        );
     }
 
     fn text(session_id: &str, turn_id: &str, value: &str) -> AgenticEvent {

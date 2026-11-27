@@ -341,6 +341,7 @@ mod tests {
                     reason: None,
                     target_turn_id: None,
                     steering_id: None,
+                    composer_presentation: None,
                     steering_display: None,
                 }),
             })
