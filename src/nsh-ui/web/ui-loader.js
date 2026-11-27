@@ -43,6 +43,7 @@
   const MAX_CACHED_BUNDLES = 4;
   const HEX64 = /^[0-9a-f]{64}$/;
   const STORE_MESSAGE = "obf-ui-store";
+  const LOOKUP_MESSAGE = "obf-ui-lookup";
   // The blank page a device UI page runs the NSH realm in (`host.js`,
   // `prepareBundleRealm`). A dot-file, so no manifest can list it.
   const REALM_PAGE = ".obf-realm.html";
@@ -333,11 +334,73 @@
         if (!devices.includes(id)) devices.push(id);
         if (devices.length >= MAX_DEVICES) break;
       }
-      const record = { bundleId, manifest, deviceId, devices, storedAt: now, usedAt: now };
+      const entryDeviceId =
+        typeof message.entryDeviceId === "string" && message.entryDeviceId.length > 0 ? message.entryDeviceId : null;
+      const entryDevices = [];
+      for (const id of [
+        ...(entryDeviceId ? [entryDeviceId] : []),
+        ...((previous && Array.isArray(previous.entryDevices) ? previous.entryDevices : [])),
+      ]) {
+        if (!entryDevices.includes(id)) entryDevices.push(id);
+        if (entryDevices.length >= MAX_DEVICES) break;
+      }
+      const record = {
+        bundleId,
+        manifest,
+        deviceId,
+        devices,
+        ...(entryDevices.length > 0 ? { entryDevices } : {}),
+        storedAt: now,
+        usedAt: now,
+      };
       await env.records.put(record);
       verified.set(bundleId, record);
       await prune(bundleId, now);
       return { bundleId };
+    }
+
+    /**
+     * Returns the newest verified bundle for `deviceId` whose critical boot files
+     * are all already present in `CAS_CACHE`, enabling the launcher to jump straight
+     * into `/b/<bundleId>/` without an extra E2EE manifest round-trip.
+     */
+    async function lookupBundle(deviceId) {
+      if (typeof deviceId !== "string" || !deviceId) return { bundleId: null, version: null };
+      const all = await env.records.all().catch(() => []);
+      const matching = all
+        .filter(
+          record =>
+            record &&
+            typeof record.bundleId === "string" &&
+            (record.deviceId === deviceId ||
+              (Array.isArray(record.devices) && record.devices.includes(deviceId)) ||
+              (Array.isArray(record.entryDevices) && record.entryDevices.includes(deviceId))),
+        )
+        .sort((a, b) => (typeof b.usedAt === "number" ? b.usedAt : 0) - (typeof a.usedAt === "number" ? a.usedAt : 0));
+      if (matching.length === 0) return { bundleId: null, version: null };
+      const cache = await env.caches.open(CAS_CACHE).catch(() => null);
+      if (!cache) return { bundleId: null, version: null };
+      for (const candidate of matching) {
+        let valid;
+        try {
+          valid = await recordOf(candidate.bundleId);
+        } catch {
+          valid = null;
+        }
+        if (!valid) continue;
+        const bootFiles = bootFilesOf(valid.manifest);
+        if (bootFiles.length === 0) continue;
+        const hits = await Promise.all(
+          bootFiles.map(file => cache.match(casCacheKey(file.sha256)).catch(() => undefined)),
+        );
+        if (hits.every(Boolean)) {
+          return {
+            bundleId: valid.bundleId,
+            version: typeof valid.manifest.version === "string" ? valid.manifest.version : null,
+          };
+        }
+      }
+      return { bundleId: null, version: null };
     }
 
     /**
@@ -619,7 +682,7 @@
       }
     }
 
-    return { storeManifest, handle, prune, warmBundle };
+    return { storeManifest, lookupBundle, handle, prune, warmBundle };
   }
 
   // ── IndexedDB records (worker) ──
@@ -707,7 +770,17 @@
     worker.addEventListener("message", event => {
       const data = event.data;
       const port = event.ports && event.ports[0];
-      if (!data || data.type !== STORE_MESSAGE || !port) return;
+      if (!data || !port) return;
+      if (data.type === LOOKUP_MESSAGE) {
+        event.waitUntil(
+          loader.lookupBundle(data.deviceId).then(
+            answer => port.postMessage({ ok: true, bundleId: answer.bundleId, version: answer.version }),
+            error => port.postMessage({ ok: false, error: String((error && error.message) || error) }),
+          ),
+        );
+        return;
+      }
+      if (data.type !== STORE_MESSAGE) return;
       event.waitUntil(
         loader.storeManifest(data).then(
           answer => {
@@ -810,6 +883,7 @@
   const api = {
     MANIFEST_SCHEMA,
     STORE_MESSAGE,
+    LOOKUP_MESSAGE,
     REALM_PAGE,
     CAS_CACHE,
     canonicalJson,

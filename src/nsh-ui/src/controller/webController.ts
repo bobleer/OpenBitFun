@@ -269,20 +269,42 @@ export function createWebController(options: WebControllerOptions): ControllerPo
   let cloudNode: { deviceId: string; path: string } | null = null;
   /** Recent `GET /devices` answer reused by `entryCandidates()` right after `listDevices()`. */
   let recentDevices: { at: number; answer: Record<string, unknown> } | null = null;
+  /** One-shot devices payload preloaded by `GET /session?include=devices` for the first `listDevices()`. */
+  let prefetchedDevices: Record<string, unknown> | null = null;
   let devicesInFlight: Promise<Record<string, unknown>> | null = null;
+  /** Device X25519 public keys supplied inline by `/devices` (avoids a separate `/devices/:id/key` RTT). */
+  const deviceKeys = new Map<string, string>();
   /** The running page's manifest version and bundle owner, captured when `placeUi` stays here. */
   let runningVersion: string | null = null;
   let runningOwnerDeviceId: string | null = null;
 
+  function ingestDevicesPayload(answer: Record<string, unknown>): void {
+    rememberCloudNode(answer.cloudNode);
+    recentDevices = { at: Date.now(), answer };
+    if (Array.isArray(answer.devices)) {
+      for (const raw of answer.devices) {
+        if (!raw || typeof raw !== "object") continue;
+        const item = raw as Record<string, unknown>;
+        const id = asString(item.deviceId);
+        const key = asString(item.publicKey);
+        if (id && key) deviceKeys.set(id, key);
+      }
+    }
+  }
+
   function fetchDevicesPayload(reuseRecent: boolean): Promise<Record<string, unknown>> {
+    if (!reuseRecent && prefetchedDevices) {
+      const preloaded = prefetchedDevices;
+      prefetchedDevices = null;
+      return Promise.resolve(preloaded);
+    }
     if (reuseRecent && recentDevices && Date.now() - recentDevices.at < 5_000) {
       return Promise.resolve(recentDevices.answer);
     }
     if (!devicesInFlight) {
       devicesInFlight = request("/devices")
         .then(answer => {
-          rememberCloudNode(answer.cloudNode);
-          recentDevices = { at: Date.now(), answer };
+          ingestDevicesPayload(answer);
           return answer;
         })
         .finally(() => {
@@ -333,8 +355,18 @@ export function createWebController(options: WebControllerOptions): ControllerPo
   return {
     kind: "web",
     async restore() {
-      const answer = await request("/session");
-      return answer.signedIn === true ? accountOf(answer.account) : null;
+      const answer = await request("/session?include=devices");
+      if (answer.signedIn !== true) return null;
+      if (Array.isArray(answer.devices)) {
+        const preloaded: Record<string, unknown> = {
+          devices: answer.devices,
+          entryCandidates: answer.entryCandidates,
+          cloudNode: answer.cloudNode,
+        };
+        ingestDevicesPayload(preloaded);
+        prefetchedDevices = preloaded;
+      }
+      return accountOf(answer.account);
     },
     async requestCode(email, requestOptions) {
       const answer = await request("/auth/code", {
@@ -366,6 +398,8 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     async signOut() {
       cloudNode = null;
       recentDevices = null;
+      prefetchedDevices = null;
+      deviceKeys.clear();
       try {
         await request("/auth/sign-out", { method: "POST" });
       } finally {
@@ -384,8 +418,12 @@ export function createWebController(options: WebControllerOptions): ControllerPo
         : [];
     },
     async connect(deviceId, connectOptions) {
-      const key = await request(`/devices/${encodeURIComponent(deviceId)}/key`);
-      const devicePublicKey = asString(key.publicKey);
+      let devicePublicKey = deviceKeys.get(deviceId) ?? null;
+      if (!devicePublicKey) {
+        const key = await request(`/devices/${encodeURIComponent(deviceId)}/key`);
+        devicePublicKey = asString(key.publicKey);
+        if (devicePublicKey) deviceKeys.set(deviceId, devicePublicKey);
+      }
       if (!devicePublicKey) throw new ControllerError("unreachable", "This device has no key in your account");
       let settled = false;
       let refuse: (error: ControllerError) => void = () => undefined;
@@ -439,7 +477,7 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     },
     async placeUi(connection): Promise<ControllerUiPlacement> {
       const resolved = await resolveUiBundle(connection, { allowTransientFallback: true });
-      const prepared = await prepareBundleOnLoader(resolved);
+      const prepared = await prepareBundleOnLoader(resolved, connection.deviceId);
       if (options.uiBundleId && prepared.bundleId === options.uiBundleId) {
         runningVersion = asString((resolved.manifest as Record<string, unknown>)?.version);
         runningOwnerDeviceId = resolved.ownerDeviceId;
@@ -478,7 +516,7 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       if (resolved.statedBundleId && resolved.statedBundleId === options.uiBundleId) {
         return null;
       }
-      const prepared = await prepareBundleOnLoader(resolved);
+      const prepared = await prepareBundleOnLoader(resolved, connection.deviceId);
       if (
         !shouldOfferUiUpdate({
           runningBundleId: options.uiBundleId,
@@ -590,11 +628,12 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     };
   }
 
-  async function prepareBundleOnLoader(resolved: ResolvedUiBundle): Promise<{ bundleId: string }> {
+  async function prepareBundleOnLoader(resolved: ResolvedUiBundle, entryDeviceId?: string): Promise<{ bundleId: string }> {
     const extraHolders = resolved.holders.filter(id => id !== resolved.ownerDeviceId);
     const args: Record<string, unknown> = {
       manifest: resolved.manifest,
       deviceId: resolved.ownerDeviceId,
+      ...(entryDeviceId && entryDeviceId !== resolved.ownerDeviceId ? { entryDeviceId } : {}),
       ...(extraHolders.length > 0 ? { holders: resolved.holders } : {}),
     };
     let prepared: { bundleId: string };

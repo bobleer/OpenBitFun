@@ -113,6 +113,8 @@ pub struct DeviceListEntry {
     pub compatible: bool,
     pub online: bool,
     pub last_seen_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 /// `GET /api/devices` query: `include=cloud_agent` (comma-separated) also
@@ -193,6 +195,7 @@ async fn list_devices(
                         compatible: true,
                         online: false,
                         last_seen_at: row.last_seen_at,
+                        public_key: row.public_key.filter(|key| !key.is_empty()),
                     });
                     continue;
                 }
@@ -218,6 +221,7 @@ async fn list_devices(
                     ),
                     online: is_online,
                     last_seen_at: row.last_seen_at,
+                    public_key: row.public_key.filter(|key| !key.is_empty()),
                 });
             }
         }
@@ -244,6 +248,7 @@ async fn list_devices(
                 compatible: crate::db::client_builds_compatible(caller_protocol, None),
                 online: true,
                 last_seen_at: None,
+                public_key: None,
             });
         }
     }

@@ -517,7 +517,25 @@ fn account_json(session: &Session) -> serde_json::Value {
     })
 }
 
-async fn session_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
+#[derive(Deserialize, Default)]
+struct SessionQuery {
+    #[serde(default)]
+    include: Option<String>,
+}
+
+impl SessionQuery {
+    fn includes_devices(&self) -> bool {
+        self.include
+            .as_deref()
+            .is_some_and(|include| include.split(',').any(|item| item.trim() == "devices"))
+    }
+}
+
+async fn session_route(
+    State(gateway): State<Arc<Gateway>>,
+    axum::extract::Query(query): axum::extract::Query<SessionQuery>,
+    headers: HeaderMap,
+) -> Response {
     match gateway.session(&headers) {
         // Re-issued on every path, so a browser signed in before the pool
         // existed (cookie on `/obp` only) gets the `/cas` one too.
@@ -528,9 +546,38 @@ async fn session_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
                 .and_then(session::cookie_value)
                 .unwrap_or_default()
                 .to_string();
-            let response =
-                Json(serde_json::json!({ "signedIn": true, "account": account_json(&session) }))
-                    .into_response();
+            let mut body = serde_json::json!({
+                "signedIn": true,
+                "account": account_json(&session),
+            });
+            if query.includes_devices() {
+                match build_devices_payload(&gateway, &session).await {
+                    Ok(payload) => {
+                        if let (Some(target), Some(extra)) =
+                            (body.as_object_mut(), payload.as_object())
+                        {
+                            for (key, val) in extra {
+                                target.insert(key.clone(), val.clone());
+                            }
+                        }
+                    }
+                    Err(error) if error.code == "signed_out" => {
+                        let response =
+                            Json(serde_json::json!({ "signedIn": false })).into_response();
+                        return no_store(with_cookies(
+                            response,
+                            session::clear_cookies(gateway.options.secure_cookies),
+                        ));
+                    }
+                    Err(error) => {
+                        log::debug!(
+                            "Session devices include unavailable, falling back to /devices: {}",
+                            error.message
+                        );
+                    }
+                }
+            }
+            let response = Json(body).into_response();
             no_store(with_cookies(
                 response,
                 session::set_cookies(
@@ -859,7 +906,7 @@ fn device_view(
             ),
         },
     };
-    serde_json::json!({
+    let mut entry = serde_json::json!({
         "deviceId": device.device_id,
         "name": name,
         "kind": device.device_kind,
@@ -871,7 +918,11 @@ fn device_view(
         "connectable": connectable,
         "unavailable": unavailable,
         "route": route,
-    })
+    });
+    if let Some(public_key) = device.public_key.as_deref().filter(|key| !key.is_empty()) {
+        entry["publicKey"] = serde_json::Value::String(public_key.to_string());
+    }
+    entry
 }
 
 /// Where a page reaches the account's cloud node (an OBP endpoint on this
@@ -980,12 +1031,12 @@ fn cloud_node_view(devices: &[DirectoryDevice]) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
-    let Some(session) = gateway.session(&headers) else {
-        return signed_out(gateway.options.secure_cookies);
-    };
+async fn build_devices_payload(
+    gateway: &Gateway,
+    session: &Session,
+) -> Result<serde_json::Value, UpstreamError> {
     let (directory, network) = tokio::join!(
-        gateway.directory_devices(&session),
+        gateway.directory_devices(session),
         gateway.streams.online(&session.account_id)
     );
     // Without the network's view (busy, or the network cannot be joined
@@ -997,35 +1048,45 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
             None
         }
     };
-    match directory {
-        Ok(devices) => {
-            let mut views: Vec<serde_json::Value> = devices
-                .iter()
-                .filter(|device| !device.is_cloud_node())
-                .map(|device| device_view(device, network.as_ref()))
-                .collect();
-            // Online first, then by name.
-            views.sort_by(|a, b| {
-                b["online"]
-                    .as_bool()
-                    .cmp(&a["online"].as_bool())
-                    .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
-            });
-            let targets = probe_targets(&devices, network.as_ref());
-            let facts = gateway
-                .probes
-                .facts(&gateway.streams, &session.account_id, &targets)
-                .await;
-            let entry_candidates = entry_candidates(&devices, network.as_ref(), &facts);
-            no_store(
-                Json(serde_json::json!({
-                    "devices": views,
-                    "entryCandidates": entry_candidates,
-                    "cloudNode": cloud_node_view(&devices),
-                }))
-                .into_response(),
-            )
-        }
+    let devices = directory?;
+    let mut views: Vec<serde_json::Value> = devices
+        .iter()
+        .filter(|device| !device.is_cloud_node())
+        .map(|device| device_view(device, network.as_ref()))
+        .collect();
+    // Online first, then by name.
+    views.sort_by(|a, b| {
+        b["online"]
+            .as_bool()
+            .cmp(&a["online"].as_bool())
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    let targets = probe_targets(&devices, network.as_ref());
+    // Probing `/obp/mesh/info` only changes ranking among two or more online
+    // hosts; a single online host always ranks ahead of the cloud node, so
+    // skip blocking the response on a probe round-trip when there is at most one.
+    let facts = if targets.len() > 1 {
+        gateway
+            .probes
+            .facts(&gateway.streams, &session.account_id, &targets)
+            .await
+    } else {
+        HashMap::new()
+    };
+    let entry_candidates = entry_candidates(&devices, network.as_ref(), &facts);
+    Ok(serde_json::json!({
+        "devices": views,
+        "entryCandidates": entry_candidates,
+        "cloudNode": cloud_node_view(&devices),
+    }))
+}
+
+async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
+    let Some(session) = gateway.session(&headers) else {
+        return signed_out(gateway.options.secure_cookies);
+    };
+    match build_devices_payload(&gateway, &session).await {
+        Ok(payload) => no_store(Json(payload).into_response()),
         Err(error) if error.code == "signed_out" => signed_out(gateway.options.secure_cookies),
         Err(error) => upstream_error(error),
     }

@@ -29,6 +29,7 @@
   const HANDOFF_KEY = "obf.controller.handoff.v1";
   const DISCLAIMER_KEY = "openbitfun:remote-connect:disclaimer-agreed:v1";
   const UI_LOADER_STORE_MESSAGE = "obf-ui-store";
+  const UI_LOADER_LOOKUP_MESSAGE = "obf-ui-lookup";
   const UI_LOADER_TIMEOUT_MS = 15000;
   const CONNECT_TIMEOUT_MS = 45000;
   const E2E_HANDSHAKE_TIMEOUT_MS = 30000;
@@ -511,7 +512,7 @@
 
   // ── One-shot E2EE manifest fetch (`fleet_ui_bundle` -> `ui_bundle_manifest`) ──
 
-  async function fetchManifestOverE2e({
+  function fetchManifestOverE2e({
     url,
     deviceId,
     devicePublicKey,
@@ -520,21 +521,25 @@
     createSocket,
     timeoutMs = CONNECT_TIMEOUT_MS,
   }) {
-    const pair = await devicePairKey(subtle, key, devicePublicKey);
-    const handshakeKey = await hmacSha256(subtle, pair, utf8Encode(HANDSHAKE_KEY_DOMAIN));
-    pair.fill(0);
-    const ephemeral = await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
-    const eph = bytesToBase64Url(new Uint8Array(await subtle.exportKey("raw", ephemeral.publicKey)));
-    const nonceBytes = new Uint8Array(16);
-    scope.crypto.getRandomValues(nonceBytes);
-    const claims = {
-      client: key.deviceId,
-      server: deviceId,
-      fingerprint: `${E2E_FINGERPRINT_PREFIX}${eph}`,
-      time: Date.now(),
-      nonce: bytesToBase64Url(nonceBytes),
-    };
-    const proof = await meshProof(subtle, handshakeKey, "client", claims);
+    // Prepare X25519 handshake material in parallel with opening the WebSocket.
+    const handshakeReady = (async () => {
+      const pair = await devicePairKey(subtle, key, devicePublicKey);
+      const handshakeKey = await hmacSha256(subtle, pair, utf8Encode(HANDSHAKE_KEY_DOMAIN));
+      pair.fill(0);
+      const ephemeral = await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+      const eph = bytesToBase64Url(new Uint8Array(await subtle.exportKey("raw", ephemeral.publicKey)));
+      const nonceBytes = new Uint8Array(16);
+      scope.crypto.getRandomValues(nonceBytes);
+      const claims = {
+        client: key.deviceId,
+        server: deviceId,
+        fingerprint: `${E2E_FINGERPRINT_PREFIX}${eph}`,
+        time: Date.now(),
+        nonce: bytesToBase64Url(nonceBytes),
+      };
+      const proof = await meshProof(subtle, handshakeKey, "client", claims);
+      return { handshakeKey, ephemeral, eph, claims, proof };
+    })();
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -543,6 +548,7 @@
       let receiveCounter = 0;
       let sendKey = null;
       let receiveKey = null;
+      let handshakeState = null;
       let inbound = Promise.resolve();
       let outbound = Promise.resolve();
       let chunks = [];
@@ -721,6 +727,7 @@
           fail(refusalError(code, `${answer.error}: ${answer.message || "the device refused the connection"}`));
           return;
         }
+        const { handshakeKey, ephemeral, eph, claims, proof } = handshakeState || (await handshakeReady);
         const serverClaims = { ...claims, fingerprint: `${E2E_FINGERPRINT_PREFIX}${eph}:${answer.eph}` };
         const expected = await meshProof(subtle, handshakeKey, "server", serverClaims);
         if (typeof answer.proof !== "string" || answer.proof !== expected) {
@@ -854,20 +861,33 @@
         }
       }
 
+      handshakeReady.catch(err =>
+        fail(err instanceof LauncherError ? err : new LauncherError("unavailable", String(err && err.message ? err.message : err))),
+      );
+
       ws.onopen = () => {
         if (settled) return;
-        const hello = utf8Encode(
-          JSON.stringify({
-            v: 1,
-            device: claims.client,
-            target: claims.server,
-            time: claims.time,
-            nonce: claims.nonce,
-            eph,
-            proof,
-          }),
-        );
-        sendBytes(concatBytes(utf8Encode(E2E_MAGIC), lengthPrefixed(hello)));
+        handshakeReady
+          .then(state => {
+            if (settled) return;
+            handshakeState = state;
+            const { claims, eph, proof } = state;
+            const hello = utf8Encode(
+              JSON.stringify({
+                v: 1,
+                device: claims.client,
+                target: claims.server,
+                time: claims.time,
+                nonce: claims.nonce,
+                eph,
+                proof,
+              }),
+            );
+            sendBytes(concatBytes(utf8Encode(E2E_MAGIC), lengthPrefixed(hello)));
+          })
+          .catch(err =>
+            fail(err instanceof LauncherError ? err : new LauncherError("unavailable", String(err && err.message ? err.message : err))),
+          );
       };
       ws.onmessage = event => {
         if (settled) return;
@@ -1077,8 +1097,9 @@
     async function openDeviceBundle(device) {
       state.connectingId = device.deviceId;
       render();
+      const inlineKey = typeof device.publicKey === "string" && device.publicKey.length > 0 ? device.publicKey : null;
       const [keyAnswer, key, worker] = await Promise.all([
-        apiRequest(`/devices/${encodeURIComponent(device.deviceId)}/key`),
+        inlineKey ? Promise.resolve({ publicKey: inlineKey }) : apiRequest(`/devices/${encodeURIComponent(device.deviceId)}/key`),
         getDeviceKey(),
         ensureUiWorker().catch(err => {
           throw uiPrepareError(err);
@@ -1096,10 +1117,13 @@
       });
 
       const extraHolders = resolved.holders.filter(id => id !== resolved.ownerDeviceId);
-      const payload =
-        extraHolders.length > 0
-          ? { type: UI_LOADER_STORE_MESSAGE, manifest: resolved.manifest, deviceId: resolved.ownerDeviceId, holders: resolved.holders }
-          : { type: UI_LOADER_STORE_MESSAGE, manifest: resolved.manifest, deviceId: resolved.ownerDeviceId };
+      const payload = {
+        type: UI_LOADER_STORE_MESSAGE,
+        manifest: resolved.manifest,
+        deviceId: resolved.ownerDeviceId,
+        entryDeviceId: device.deviceId,
+        ...(extraHolders.length > 0 ? { holders: resolved.holders } : {}),
+      };
 
       let answer;
       try {
@@ -1125,25 +1149,57 @@
       window.location.replace(target.href);
     }
 
-    async function loadDevicesAndConnect(showListOnly, initialFailure) {
+    async function tryFastPathBundle(device) {
+      let worker;
+      try {
+        worker = await ensureUiWorker();
+      } catch {
+        return false;
+      }
+      let lookup;
+      try {
+        lookup = await askWorker(worker, { type: UI_LOADER_LOOKUP_MESSAGE, deviceId: device.deviceId });
+      } catch {
+        return false;
+      }
+      if (!lookup || !lookup.ok || typeof lookup.bundleId !== "string" || !BUNDLE_ID_RE.test(lookup.bundleId)) {
+        return false;
+      }
+      if (device.clientVersion && lookup.version && compareVersions(device.clientVersion, lookup.version) > 0) {
+        return false;
+      }
+      try {
+        writeHandoff(window.sessionStorage, device.deviceId);
+      } catch {
+        return false;
+      }
+      const target = new URL(`b/${lookup.bundleId}/index.html`, baseHref);
+      target.hash = `device=${encodeURIComponent(device.deviceId)}`;
+      window.location.replace(target.href);
+      return true;
+    }
+
+    async function loadDevicesAndConnect(showListOnly, initialFailure, preloadedPayload = null) {
       state.phase = "opening";
       state.failure = null;
       state.connectingId = null;
       render();
-      let payload;
-      try {
-        payload = await apiRequest("/devices");
-      } catch (err) {
-        const failure = err instanceof LauncherError ? err : new LauncherError("unavailable", String(err));
-        state.failure = failure;
-        if (failure.code === "signed_out") {
-          state.account = null;
-          state.phase = "email";
-        } else {
-          state.phase = "devices";
+      let payload = preloadedPayload;
+      if (!payload) {
+        try {
+          payload = await apiRequest("/devices");
+        } catch (err) {
+          const failure = err instanceof LauncherError ? err : new LauncherError("unavailable", String(err));
+          state.failure = failure;
+          if (failure.code === "signed_out") {
+            state.account = null;
+            state.phase = "email";
+          } else {
+            state.phase = "devices";
+          }
+          render();
+          return;
         }
-        render();
-        return;
       }
 
       state.devices = Array.isArray(payload.devices) ? payload.devices : [];
@@ -1160,6 +1216,9 @@
 
       const tried = new Set();
       let next = pickUiSourceDevice(state.devices, tried, state.entryCandidates);
+      if (next && !initialFailure && (await tryFastPathBundle(next))) {
+        return;
+      }
       let tooOld = 0;
       while (next) {
         tried.add(next.deviceId);
@@ -1712,10 +1771,13 @@
         } catch {}
       }
       try {
-        const session = await apiRequest("/session");
+        const session = await apiRequest("/session?include=devices");
         if (session.signedIn === true) {
           state.account = session.account || { signedIn: true };
-          await loadDevicesAndConnect(fragment.showDevices, fragment.failure);
+          const preloaded = Array.isArray(session.devices)
+            ? { devices: session.devices, entryCandidates: session.entryCandidates, cloudNode: session.cloudNode }
+            : null;
+          await loadDevicesAndConnect(fragment.showDevices, fragment.failure, preloaded);
           return;
         }
         state.account = null;

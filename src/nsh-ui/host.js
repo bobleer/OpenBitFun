@@ -5005,13 +5005,14 @@ function askUiLoader(worker, message) {
 }
 
 async function prepareUiBundle(args) {
-  const { manifest, deviceId, holders } = args || {};
+  const { manifest, deviceId, holders, entryDeviceId } = args || {};
   if (!manifest || typeof manifest !== "object" || typeof deviceId !== "string" || !deviceId) {
     throw new Error("ui_bundle_invalid: openbitfun.controller.prepareBundle needs a manifest and a device");
   }
   const cleanHolders = Array.isArray(holders)
     ? holders.filter(id => typeof id === "string" && id.length > 0)
     : [];
+  const cleanEntry = typeof entryDeviceId === "string" && entryDeviceId.length > 0 ? entryDeviceId : null;
   const container = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
   if (!container) {
     throw new Error(
@@ -5029,10 +5030,13 @@ async function prepareUiBundle(args) {
     throw new Error(`ui_loader_failed: the UI loader could not be installed (${error && error.message ? error.message : error})`);
   }
   const worker = await uiLoaderWorker(registration);
-  const payload =
-    cleanHolders.length > 0
-      ? { type: UI_LOADER_STORE_MESSAGE, manifest, deviceId, holders: cleanHolders }
-      : { type: UI_LOADER_STORE_MESSAGE, manifest, deviceId };
+  const payload = {
+    type: UI_LOADER_STORE_MESSAGE,
+    manifest,
+    deviceId,
+    ...(cleanEntry ? { entryDeviceId: cleanEntry } : {}),
+    ...(cleanHolders.length > 0 ? { holders: cleanHolders } : {}),
+  };
   const answer = await askUiLoader(worker, payload);
   if (!answer.ok || typeof answer.bundleId !== "string") throw new Error(answer.error || "ui_bundle_invalid: no bundle id");
   return { bundleId: answer.bundleId };

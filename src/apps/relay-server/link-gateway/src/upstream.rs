@@ -88,6 +88,9 @@ pub(crate) struct DirectoryDevice {
     /// Unix seconds.
     #[serde(default)]
     pub(crate) last_seen_at: Option<i64>,
+    /// X25519 public key (standard base64), when supplied by the directory.
+    #[serde(default)]
+    pub(crate) public_key: Option<String>,
 }
 
 /// The directory row kind of the account's cloud agent (the cloud runtime

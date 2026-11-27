@@ -109,6 +109,8 @@ interface HostOptions {
   page?: Record<string, unknown>;
   devices?: unknown[];
   signedIn?: boolean;
+  /** When true, `/session?include=devices` embeds `devices` and `entryCandidates` in one response. */
+  includeDevicesInSession?: boolean;
 }
 
 /** The gateway API, the page realm's channel and loader, and device backends behind it. */
@@ -144,11 +146,18 @@ function controllerHost(options: HostOptions = {}) {
     deviceId: "web-1",
   };
   let deviceFetches = 0;
+  let keyFetches = 0;
+  const sessionAnswer = (withDevices: boolean) => {
+    sessionChecks.push(Date.now());
+    if (!session) return { body: { signedIn: false } };
+    if (withDevices && options.includeDevicesInSession) {
+      return { body: { signedIn: true, account, devices: options.devices ?? [STUDIO_MAC, OLD_LAPTOP] } };
+    }
+    return { body: { signedIn: true, account } };
+  };
   const network = {
-    [`GET ${API}/session`]: () => {
-      sessionChecks.push(Date.now());
-      return session ? { body: { signedIn: true, account } } : { body: { signedIn: false } };
-    },
+    [`GET ${API}/session`]: () => sessionAnswer(false),
+    [`GET ${API}/session?include=devices`]: () => sessionAnswer(true),
     [`POST ${API}/auth/code`]: (request: Request) => {
       record(request);
       return { body: { challengeId: "ch-1", email: "me@example.com", codeLength: 8, retryAfterSeconds: 60, expiresAt: null } };
@@ -166,8 +175,14 @@ function controllerHost(options: HostOptions = {}) {
       deviceFetches += 1;
       return { body: { devices: options.devices ?? [STUDIO_MAC, OLD_LAPTOP] } };
     },
-    [`GET ${API}/devices/desk-1/key`]: { body: { deviceId: "desk-1", publicKey: "ZGVzay1rZXk=" } },
-    [`GET ${API}/devices/cli-3/key`]: { body: { deviceId: "cli-3", publicKey: "Y2xpLWtleQ==" } },
+    [`GET ${API}/devices/desk-1/key`]: () => {
+      keyFetches += 1;
+      return { body: { deviceId: "desk-1", publicKey: "ZGVzay1rZXk=" } };
+    },
+    [`GET ${API}/devices/cli-3/key`]: () => {
+      keyFetches += 1;
+      return { body: { deviceId: "cli-3", publicKey: "Y2xpLWtleQ==" } };
+    },
   };
   const handlers: Record<string, (data: unknown) => unknown> = {
     "openbitfun.controller.key": () => ({ ok: true, value: { deviceId: "web-1", publicKey: "d2ViLWtleQ==" } }),
@@ -272,6 +287,9 @@ function controllerHost(options: HostOptions = {}) {
     sessionChecks,
     get deviceFetches() {
       return deviceFetches;
+    },
+    get keyFetches() {
+      return keyFetches;
     },
     opened,
     closed,
@@ -597,6 +615,7 @@ test("fleet entry prefers fleet_ui_bundle with peer holders (updated CLI alongsi
   expect(host.prepared[0]).toEqual({
     manifest: NEWER_MANIFEST,
     deviceId: "cli-3",
+    entryDeviceId: "desk-1",
     holders: ["cli-3", "cli-4"],
   });
   // Launch still hands off to the entry device while CAS pulls use the bundle's holders.
@@ -789,4 +808,17 @@ test("fleet reconnects never show a spurious Reload notice for same-version peer
   host.push({ id: host.latestSocketId()!, type: "close", code: 1006, reason: "restarting" });
   await until(app, "label:web-ui-update-notice");
   await app.waitFor("text:OpenBitFun 2.0.1 interface is ready.");
+});
+
+test("inline devices and publicKey in /session?include=devices skip separate /devices and /key calls", async () => {
+  const host = controllerHost({
+    signedIn: true,
+    includeDevicesInSession: true,
+    devices: [{ ...STUDIO_MAC, publicKey: "ZGVzay1rZXk=" }, OLD_LAPTOP],
+  });
+  const app = await start(host);
+  await until(app, "label:controller-studio");
+  expect(host.deviceFetches).toBe(0);
+  expect(host.keyFetches).toBe(0);
+  expect(host.opened[0]?.targetPublicKey).toBe("ZGVzay1rZXk=");
 });

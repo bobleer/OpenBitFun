@@ -566,3 +566,30 @@ test('fleet holders are stored alongside deviceId and forwarded as &holders= on 
     `${CAS}${sha(b.index)}?device=cli-new&holders=${encodeURIComponent('desk-2,cli-backup')}`,
   );
 });
+
+test('lookupBundle returns cached bundle only when all boot files are in CAS cache and matches entryDeviceId', async () => {
+  const b = bundle();
+  const world = environment();
+  world.pool.set(sha(b.index), b.index);
+  world.pool.set(b.manifest.files[0].br.sha256, b.app);
+  world.pool.set(sha(b.wasm), b.wasm);
+  const ui = loader.createUiLoader(world.env);
+
+  const stored = await ui.storeManifest({
+    manifest: b.manifest,
+    deviceId: 'cli-owner',
+    entryDeviceId: 'mac-entry',
+  });
+
+  // Before warming, boot files are not in CAS cache -> lookup returns null.
+  assert.deepEqual({ ...(await ui.lookupBundle('mac-entry')) }, { bundleId: null, version: null });
+
+  // Warm the critical boot files into obf-ui-cas-v1.
+  await ui.warmBundle(stored.bundleId);
+
+  // Matches both owner deviceId and entryDeviceId.
+  assert.deepEqual({ ...(await ui.lookupBundle('cli-owner')) }, { bundleId: stored.bundleId, version: '1.0.11' });
+  assert.deepEqual({ ...(await ui.lookupBundle('mac-entry')) }, { bundleId: stored.bundleId, version: '1.0.11' });
+  // Unrelated device never matches.
+  assert.deepEqual({ ...(await ui.lookupBundle('other-device')) }, { bundleId: null, version: null });
+});

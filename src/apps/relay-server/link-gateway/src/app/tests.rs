@@ -97,6 +97,7 @@ impl Accounts for FakeAccounts {
                         device_id: id.into(),
                         device_name: format!("{id} name"),
                         online,
+                        public_key: Some(format!("key-of-{id}")),
                         ..Default::default()
                     },
                     DirectoryDevice {
@@ -1495,4 +1496,52 @@ async fn signed_out_honors_secure_cookies_option() {
         cookies.iter().all(|c| c.contains("; Secure")),
         "{cookies:?}"
     );
+}
+
+#[tokio::test]
+async fn session_include_devices_returns_inline_keys_and_skips_probe_for_single_online_host() {
+    let harness = harness(GatewayOptions::default()).await;
+    *harness.streams.network.lock().unwrap() = Some(HashMap::from([(
+        "desk-b".to_string(),
+        OnlineMember {
+            route: Some("relayed_server".into()),
+            latency_ms: Some(45.0),
+            controller: false,
+        },
+    )]));
+
+    // Unauthenticated request stays 200 `{ signedIn: false }` (no 401 console noise).
+    let anon = harness
+        .http
+        .get(harness.url("/obp/api/v1/session?include=devices"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 200);
+    assert_eq!(
+        anon.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({ "signedIn": false })
+    );
+
+    // Signed-in request returns account, devices (with inline publicKey), entryCandidates,
+    // and cloudNode in one round-trip, without probing `/obp/mesh/info` for a single online host.
+    let cookie_b = harness.sign_in("b@example.com", "web-b").await;
+    let resp = harness
+        .http
+        .get(harness.url("/obp/api/v1/session?include=devices"))
+        .header("cookie", &cookie_b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(body["signedIn"], true);
+    assert_eq!(
+        body["entryCandidates"],
+        serde_json::json!(["desk-b", "cloud-b"])
+    );
+    let rows = body["devices"].as_array().unwrap();
+    let desk = rows.iter().find(|row| row["deviceId"] == "desk-b").unwrap();
+    assert_eq!(desk["publicKey"], "key-of-desk-b");
+    assert_eq!(harness.streams.info_requests.load(Ordering::SeqCst), 0);
 }
