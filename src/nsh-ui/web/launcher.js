@@ -31,6 +31,9 @@
   const UI_LOADER_STORE_MESSAGE = "obf-ui-store";
   const UI_LOADER_LOOKUP_MESSAGE = "obf-ui-lookup";
   const UI_LOADER_TIMEOUT_MS = 15000;
+  // Fast-path cache lookup should resolve locally in a few ms; a short cap avoids
+  // stalling when an older Service Worker ignores `obf-ui-lookup` during upgrades.
+  const UI_LOADER_LOOKUP_TIMEOUT_MS = 250;
   const CONNECT_TIMEOUT_MS = 45000;
   const E2E_HANDSHAKE_TIMEOUT_MS = 30000;
   const E2E_MAGIC = "OBPE2E1\n";
@@ -945,13 +948,13 @@
     });
   }
 
-  function askWorker(worker, message) {
+  function askWorker(worker, message, timeoutMs = UI_LOADER_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
       const channel = new MessageChannel();
       const timer = setTimeout(() => {
         channel.port1.close();
         reject(new Error("the UI loader did not answer"));
-      }, UI_LOADER_TIMEOUT_MS);
+      }, timeoutMs);
       channel.port1.onmessage = event => {
         clearTimeout(timer);
         channel.port1.close();
@@ -1158,7 +1161,11 @@
       }
       let lookup;
       try {
-        lookup = await askWorker(worker, { type: UI_LOADER_LOOKUP_MESSAGE, deviceId: device.deviceId });
+        lookup = await askWorker(
+          worker,
+          { type: UI_LOADER_LOOKUP_MESSAGE, deviceId: device.deviceId },
+          UI_LOADER_LOOKUP_TIMEOUT_MS,
+        );
       } catch {
         return false;
       }

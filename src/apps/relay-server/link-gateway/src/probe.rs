@@ -24,8 +24,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::upstream::{BoxFuture, DeviceStreams};
 
-/// How long one device's probe answer is reused.
+/// How long one device's probe answer is reused without refreshing.
 pub(crate) const INFO_PROBE_TTL: Duration = Duration::from_secs(30);
+/// How long a previously probed device's facts may be served immediately while
+/// a background refresh updates the cache (used by the launcher's session bootstrap).
+const STALE_REVALIDATE_TTL: Duration = Duration::from_secs(300);
 /// One probe, open to answer (the device list waits for it).
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// The largest answer read.
@@ -131,6 +134,55 @@ impl InfoProbes {
             .map(|(_, facts)| *facts)
     }
 
+    fn cached_with_stale(&self, key: &(String, String)) -> Option<(ProbeFacts, bool)> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.get(key).and_then(|(at, facts)| {
+            let age = at.elapsed();
+            if age < self.ttl {
+                Some((*facts, true))
+            } else if age < STALE_REVALIDATE_TTL {
+                Some((*facts, false))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn start_or_join_probe(
+        &self,
+        streams: &Arc<dyn DeviceStreams>,
+        key: (String, String),
+    ) -> ProbeFlight {
+        let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(flight) = inflight.get(&key) {
+            return flight.clone();
+        }
+        let entries = Arc::clone(&self.entries);
+        let inflight_map = Arc::clone(&self.inflight);
+        let streams = Arc::clone(streams);
+        let ttl = self.ttl;
+        let task_key = key.clone();
+        let task = tokio::spawn(async move {
+            let _guard = InflightGuard {
+                inflight: inflight_map,
+                key: task_key.clone(),
+            };
+            let facts = tokio::time::timeout(
+                PROBE_TIMEOUT,
+                probe(streams.as_ref(), &task_key.0, &task_key.1),
+            )
+            .await
+            .unwrap_or_default();
+            insert_cached(&entries, ttl, task_key, facts);
+            facts
+        });
+        let flight: BoxFuture<'static, ProbeFacts> =
+            Box::pin(async move { task.await.unwrap_or_default() });
+        let flight = flight.shared();
+        inflight.insert(key, flight.clone());
+        flight
+    }
+
     /// The facts of every device in `device_ids`, probing the ones whose
     /// cached answer is missing or older than the TTL (all at once).
     /// Concurrent callers for the same `(account_id, device_id)` share one
@@ -141,6 +193,30 @@ impl InfoProbes {
         account_id: &str,
         device_ids: &[String],
     ) -> HashMap<String, ProbeFacts> {
+        self.facts_inner(streams, account_id, device_ids, false)
+            .await
+    }
+
+    /// Like [`facts`], but serves recently probed stale entries (`< 5 min`)
+    /// immediately while refreshing them asynchronously in the background so
+    /// launcher startup never blocks on a periodic load re-probe.
+    pub(crate) async fn facts_stale_while_revalidate(
+        &self,
+        streams: &Arc<dyn DeviceStreams>,
+        account_id: &str,
+        device_ids: &[String],
+    ) -> HashMap<String, ProbeFacts> {
+        self.facts_inner(streams, account_id, device_ids, true)
+            .await
+    }
+
+    async fn facts_inner(
+        &self,
+        streams: &Arc<dyn DeviceStreams>,
+        account_id: &str,
+        device_ids: &[String],
+        allow_stale: bool,
+    ) -> HashMap<String, ProbeFacts> {
         let mut seen = HashSet::with_capacity(device_ids.len());
         let mut known = HashMap::new();
         let mut pending: Vec<(String, ProbeFlight)> = Vec::new();
@@ -149,44 +225,19 @@ impl InfoProbes {
                 continue;
             }
             let key = (account_id.to_string(), device_id.clone());
-            if let Some(facts) = self.cached(&key) {
+            if allow_stale {
+                if let Some((facts, fresh)) = self.cached_with_stale(&key) {
+                    known.insert(device_id.clone(), facts);
+                    if !fresh {
+                        let _ = self.start_or_join_probe(streams, key);
+                    }
+                    continue;
+                }
+            } else if let Some(facts) = self.cached(&key) {
                 known.insert(device_id.clone(), facts);
                 continue;
             }
-            let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(flight) = inflight.get(&key) {
-                pending.push((device_id.clone(), flight.clone()));
-                continue;
-            }
-            // Re-check the cache under the inflight lock in case a flight
-            // finished between the fast check above and acquiring `inflight`.
-            if let Some(facts) = self.cached(&key) {
-                known.insert(device_id.clone(), facts);
-                continue;
-            }
-            let entries = Arc::clone(&self.entries);
-            let inflight_map = Arc::clone(&self.inflight);
-            let streams = Arc::clone(streams);
-            let ttl = self.ttl;
-            let task_key = key.clone();
-            let task = tokio::spawn(async move {
-                let _guard = InflightGuard {
-                    inflight: inflight_map,
-                    key: task_key.clone(),
-                };
-                let facts = tokio::time::timeout(
-                    PROBE_TIMEOUT,
-                    probe(streams.as_ref(), &task_key.0, &task_key.1),
-                )
-                .await
-                .unwrap_or_default();
-                insert_cached(&entries, ttl, task_key, facts);
-                facts
-            });
-            let flight: BoxFuture<'static, ProbeFacts> =
-                Box::pin(async move { task.await.unwrap_or_default() });
-            let flight = flight.shared();
-            inflight.insert(key, flight.clone());
+            let flight = self.start_or_join_probe(streams, key);
             pending.push((device_id.clone(), flight));
         }
         let probed = futures::future::join_all(
@@ -444,5 +495,48 @@ mod tests {
             INFO_PROBE_TTL
         );
         assert_eq!(InfoProbes::default().ttl, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn stale_while_revalidate_returns_cached_facts_immediately_and_refreshes_in_background() {
+        let devices = Arc::new(InfoDevices::default());
+        devices.answers.lock().unwrap().insert(
+            "desk".into(),
+            serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 1 }),
+        );
+        let streams: Arc<dyn DeviceStreams> = Arc::clone(&devices) as Arc<dyn DeviceStreams>;
+        let probes = InfoProbes::new(Duration::from_millis(60));
+        let ids = vec!["desk".to_string()];
+
+        // Initial miss blocks to populate the cache.
+        let first = probes
+            .facts_stale_while_revalidate(&streams, "acct", &ids)
+            .await;
+        assert_eq!(first["desk"].fleet_load, Some(1));
+        assert_eq!(devices.opens.load(Ordering::SeqCst), 1);
+
+        // Wait past the fresh TTL, make the device slow, and change its load.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        devices.delay_ms.store(120, Ordering::SeqCst);
+        devices.answers.lock().unwrap().insert(
+            "desk".into(),
+            serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 7 }),
+        );
+
+        // Stale-while-revalidate returns the previous load immediately without waiting 120ms.
+        let started = Instant::now();
+        let stale = probes
+            .facts_stale_while_revalidate(&streams, "acct", &ids)
+            .await;
+        assert!(started.elapsed() < Duration::from_millis(60));
+        assert_eq!(stale["desk"].fleet_load, Some(1));
+
+        // Once the background refresh completes, subsequent reads see the updated load.
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let refreshed = probes
+            .facts_stale_while_revalidate(&streams, "acct", &ids)
+            .await;
+        assert_eq!(refreshed["desk"].fleet_load, Some(7));
+        assert_eq!(devices.opens.load(Ordering::SeqCst), 2);
     }
 }

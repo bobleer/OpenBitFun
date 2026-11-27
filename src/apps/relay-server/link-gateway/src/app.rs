@@ -551,7 +551,7 @@ async fn session_route(
                 "account": account_json(&session),
             });
             if query.includes_devices() {
-                match build_devices_payload(&gateway, &session).await {
+                match build_devices_payload(&gateway, &session, true).await {
                     Ok(payload) => {
                         if let (Some(target), Some(extra)) =
                             (body.as_object_mut(), payload.as_object())
@@ -1034,6 +1034,7 @@ fn cloud_node_view(devices: &[DirectoryDevice]) -> serde_json::Value {
 async fn build_devices_payload(
     gateway: &Gateway,
     session: &Session,
+    allow_stale_probes: bool,
 ) -> Result<serde_json::Value, UpstreamError> {
     let (directory, network) = tokio::join!(
         gateway.directory_devices(session),
@@ -1066,10 +1067,17 @@ async fn build_devices_payload(
     // hosts; a single online host always ranks ahead of the cloud node, so
     // skip blocking the response on a probe round-trip when there is at most one.
     let facts = if targets.len() > 1 {
-        gateway
-            .probes
-            .facts(&gateway.streams, &session.account_id, &targets)
-            .await
+        if allow_stale_probes {
+            gateway
+                .probes
+                .facts_stale_while_revalidate(&gateway.streams, &session.account_id, &targets)
+                .await
+        } else {
+            gateway
+                .probes
+                .facts(&gateway.streams, &session.account_id, &targets)
+                .await
+        }
     } else {
         HashMap::new()
     };
@@ -1085,7 +1093,7 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
     let Some(session) = gateway.session(&headers) else {
         return signed_out(gateway.options.secure_cookies);
     };
-    match build_devices_payload(&gateway, &session).await {
+    match build_devices_payload(&gateway, &session, false).await {
         Ok(payload) => no_store(Json(payload).into_response()),
         Err(error) if error.code == "signed_out" => signed_out(gateway.options.secure_cookies),
         Err(error) => upstream_error(error),

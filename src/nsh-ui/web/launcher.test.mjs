@@ -286,3 +286,18 @@ test('fetchManifestOverE2e completes obp-e2e-v1 handshake and prefers fleet_ui_b
   assert.equal(direct.resolved.ownerDeviceId, 'desk-1');
   assert.deepEqual([...direct.resolved.holders], ['desk-1']);
 });
+
+test('askWorker honors short custom timeout when an older worker ignores obf-ui-lookup', async () => {
+  const silentWorker = {
+    postMessage(_msg, ports) {
+      // Simulate an older ui-loader.js that ignores unknown message types.
+      if (ports && ports[0]) ports[0].close?.();
+    },
+  };
+  const started = Date.now();
+  await assert.rejects(
+    () => launcher.askWorker(silentWorker, { type: 'obf-ui-lookup', deviceId: 'desk-1' }, 40),
+    /did not answer/,
+  );
+  assert.equal(Date.now() - started < 500, true);
+});
