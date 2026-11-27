@@ -82,7 +82,7 @@ test("session references replace inline queries, queue with their locator and st
   await app.waitFor("session-reference-Archive review");
 });
 
-test("a persisted transcript reference remains structured when editing and rerunning", async () => {
+async function openHistoricReference() {
   const { backend } = referenceBackend();
   const base = backend.handlers["openbitfun.invoke"];
   const presentation = { version: 1, segments: [
@@ -107,6 +107,20 @@ test("a persisted transcript reference remains structured when editing and rerun
   const app = await open("../App.tsx", { ...desktop, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
   await app.waitFor("user-session-reference-Archive review");
+  return { app, backend };
+}
+
+test("rolling back a saved message restores its session reference without resending", async () => {
+  const { app, backend } = await openHistoricReference();
+  await app.press("rollback-historic-reference");
+  await app.press("text:Roll back to here");
+  await app.waitFor("session-reference-Archive review");
+  expect(backend.actions()).toContain("rollback_session_to_turn");
+  expect(backend.actions()).not.toContain("submit_user_message");
+});
+
+test("a persisted transcript reference remains structured when editing and rerunning", async () => {
+  const { app, backend } = await openHistoricReference();
   await app.press("edit-rerun-historic-reference");
   await app.waitFor("rerun-session-reference-Archive review");
   await app.press("Roll back and rerun");

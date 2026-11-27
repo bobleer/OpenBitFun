@@ -895,7 +895,7 @@ export const rollbackSessionToTurn = (request: {
   targetTurnId: string;
   workspaceId: string;
   workspacePath?: string;
-}) =>
+}, options?: InvokeCommandOptions) =>
   invokeCommand<{ status?: string; retiredTurnIds?: string[]; restoredFiles?: string[] }>(
     "rollback_session_to_turn",
     {
@@ -905,6 +905,7 @@ export const rollbackSessionToTurn = (request: {
       workspacePath: request.workspacePath ?? "",
       requireIdle: true,
     },
+    options,
   );
 
 /**

@@ -2657,6 +2657,8 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "chat.showMore": "展开更多",
   "chat.showLess": "收起",
   "chat.editAndRerun": "编辑并重发",
+  "chat.rollbackAction": "回滚到此处",
+  "chat.rollbackConfirm": "将撤销本轮及之后的对话和文件改动，并将这条消息放回输入框。",
   "chat.rerunConfirm": "将撤销本轮及之后的对话和文件改动，再发送修改后的消息。",
   "chat.rerunAction": "撤销并重发",
   "chat.thinking": "思考",

@@ -1107,11 +1107,12 @@ test("a transcript block goes to the clipboard on Copy", async () => {
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  await app.press("Copy >> nth=0");
+  await app.press("label:copy-user-message-turn-1|user|Port the session list.");
   // The user's own message, exactly as the transcript drew it.
   expect(copied).toEqual(["Port the session list."]);
-  // The label says the copy happened, then goes back to offering it.
-  await app.waitFor("Copied");
+  // Copy feedback stays in the icon and tooltip, with no text beside the button.
+  expect(app.texts()).not.toContain("Copy");
+  expect(app.texts()).not.toContain("Copied");
 });
 
 test("a running turn streams its text and can be stopped", async () => {
