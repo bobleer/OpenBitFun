@@ -97,24 +97,24 @@ test("memory keeps three sections and reveals processing fields only when expand
   const { app } = await openFleetSettings();
   await app.waitFor("nav-settings-page-session-memory");
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("memory-processing-toggle");
+  await app.waitFor("id:memory-advanced-toggle");
   expect(app.texts()).toContain("Memory");
   expect(app.texts()).toContain("Memory models");
-  expect(app.texts()).toContain("Memory processing");
+  expect(app.texts()).toContain("Advanced memory settings");
   expect(app.texts()).toContain("Clear external tool output");
   expect(app.shows("memory-enabled")).toBe(true);
-  expect(app.shows("memory-open-folder")).toBe(true);
+  expect(app.shows("memory-manage")).toBe(true);
   expect(app.shows("memory-extract-model")).toBe(true);
   expect(app.shows("memory-consolidation-model")).toBe(true);
   expect(app.shows("memory-idle-hours")).toBe(false);
   expect(app.shows("memory-consolidation-batch")).toBe(false);
   expect(app.shows("memory-max-unused-days")).toBe(false);
 
-  await app.press("memory-processing-toggle");
+  await app.press("id:memory-advanced-toggle");
   await app.waitFor("memory-idle-hours");
   expect(app.shows("memory-consolidation-batch")).toBe(true);
   expect(app.shows("memory-max-unused-days")).toBe(true);
-  await app.press("memory-processing-toggle");
+  await app.press("id:memory-advanced-toggle");
   expect(app.shows("memory-idle-hours")).toBe(false);
 
   await app.type("settings-search", "Days before unused memories expire");
@@ -122,6 +122,9 @@ test("memory keeps three sections and reveals processing fields only when expand
   await app.press("settings-search-hit-field-memory-max-unused-days");
   await app.waitFor("memory-max-unused-days");
   expect(app.value("memory-max-unused-days")).toBe("30");
+
+  await app.press("memory-manage");
+  await app.waitFor("memory-open-folder");
 });
 
 for (const [generate, use] of [[true, false], [false, true]] as const) {
