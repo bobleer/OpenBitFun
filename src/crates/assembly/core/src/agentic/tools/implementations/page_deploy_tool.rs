@@ -31,11 +31,11 @@ impl Tool for PageDeployTool {
         Ok(
             r#"Switch the production pointer of an existing OpenBitFun Page to a previously saved version_id (rollback or promote a prior version).
 
-Requires a logged-in GitHub account. This tool is only available after account login. To create or update page content and publish, use PagePublish instead. Existing versions can also be reviewed from the Pages scene.
+Requires a logged-in OpenBitFun account. This tool is only available after account login. To create or update page content and publish, use PagePublish or PageManage instead.
 
 When the user has requested deployment, call the tool directly; the permission system requests confirmation only in Ask mode. Auto Approve and Full Access do not need an additional confirmation.
 
-Input: slug (page path id), version_id (immutable saved version from a prior PagePublish). Returns absolute `url` plus url_path / deployed_version_id. Public links can be shared directly. Private and relay links must be opened or copied through the Pages scene/tool card so the browser receives a scoped one-time access handoff.
+Input: slug (page path id), version_id (immutable saved version from a prior PagePublish). Returns absolute `url` plus url_path / deployed_version_id. Public links can be shared directly. Private and relay links require OpenBitFun account sign-in in the browser (owner only for private; any signed-in account for relay); never describe restricted URLs as public share links.
 
 When telling the user the link: paste the full absolute URL and put a trailing space after it (before any punctuation or newline).
 
@@ -138,7 +138,7 @@ Preview a version at /p/{username}/{slug}/@v/{version_id}."#
     ) -> OpenBitFunResult<Vec<ToolResult>> {
         if !page_account_available().await {
             return Err(OpenBitFunError::tool(
-                "PageDeploy requires a logged-in GitHub account".to_string(),
+                "PageDeploy requires a logged-in OpenBitFun account".to_string(),
             ));
         }
 
@@ -188,8 +188,14 @@ fn deploy_result_for_assistant(
     url: &str,
 ) -> String {
     if visibility != "public" {
+        let url_note = if url.is_empty() {
+            String::new()
+        } else {
+            format!(" URL: {url} ")
+        };
         return format!(
-            "Deployed OpenBitFun Page '{slug}' version '{version_id}' with {visibility} visibility. Open or copy it from the Pages scene/tool card so OpenBitFun can create a scoped browser-access link; do not share the raw Page URL."
+            "Deployed OpenBitFun Page '{slug}' version '{version_id}' with {visibility} visibility.{url_note}\n\
+             Opening this URL in a browser requires OpenBitFun account sign-in (owner only for private; any signed-in account for relay). Never describe it as a public share link."
         );
     }
     // Trailing space after URL keeps chat linkifiers from eating the next char.
@@ -282,14 +288,15 @@ mod tests {
     }
 
     #[test]
-    fn private_deploy_result_never_advertises_the_raw_url() {
+    fn private_deploy_result_marks_url_as_authenticated_not_public() {
         let message = deploy_result_for_assistant(
             "demo",
             "v1",
             "private",
             "https://relay.example/p/alice/demo",
         );
-        assert!(!message.contains("https://"));
-        assert!(message.contains("scoped browser-access link"));
+        assert!(message.contains("https://relay.example/p/alice/demo "));
+        assert!(message.contains("requires OpenBitFun account sign-in"));
+        assert!(message.contains("Never describe it as a public share link"));
     }
 }

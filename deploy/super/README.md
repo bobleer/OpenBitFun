@@ -73,9 +73,15 @@ The binary builds in the reduced context of `deploy/easytier` (it is
 It runs with `RELAY_PROFILE=directory`
 (`relay-service/src/directory_hygiene.rs`), which the 1.0 relay never sets:
 
-- Published Pages are off: the Page routes are not mounted (404), there is
-  no asset store on disk, and the service refuses to start when any
-  `RELAY_PAGE_*` or `RELAY_ASSET_*` variable is set.
+- Published Pages are opt-in: when `RELAY_PAGE_PUBLIC_BASE_URL`,
+  `RELAY_PAGE_AUTH_BASE_URL` and `RELAY_ASSET_DIR` are all set, `/api/pages`,
+  `/api/page-auth` and `/p` are mounted with isolated browser origins
+  (`https://pages.openbitfun.com/v2` for content and
+  `https://auth.openbitfun.com/v2` for private/relay browser sign-in) and
+  assets stored under `/var/lib/openbitfun-directory/assets`. When omitted,
+  Page routes are not mounted (404). `super.openbitfun.com` exposes only the
+  authenticated management API (`/directory/api/pages/*`, with a 20 MiB upload
+  limit) and rejects `/directory/p/` and `/directory/api/page-auth/` with 404.
 - Retention, swept hourly: expired tokens are deleted; a device row with no
   live token goes after `RELAY_STALE_DEVICE_DAYS` (90) without being seen, or
   `RELAY_STALE_CONTROLLER_DAYS` (30) for phones and browser sign-ins (kind
@@ -85,6 +91,18 @@ It runs with `RELAY_PROFILE=directory`
   room: the dead row seen longest ago, else the controller seen longest ago
   (that browser or phone signs in again). Hosts and the cloud agent are never
   removed this way.
+
+### Isolated Pages origins (`pages.openbitfun.com` and `auth.openbitfun.com`)
+
+2.0 published Pages reuse `pages.openbitfun.com` and `auth.openbitfun.com`
+under the `/v2` path prefix so 1.x Pages (`/p/` and `/v/1.0.2/`) stay untouched:
+
+- On `pages.openbitfun.com`, proxy `/v2/p/` and `/v2/api/page-auth/` to
+  `http://127.0.0.1:19750` after `rewrite ^/v2(/.*)$ $1 break;` with
+  `Host $host` and `X-Forwarded-Proto https`.
+- On `auth.openbitfun.com` (see `deploy/miniapp-market/nginx-auth.conf`), proxy
+  `^/v2/api/(page-auth/(sign-in|login|client\.js)|auth/github/(start|poll))$` to
+  `http://127.0.0.1:19750` after `rewrite ^/v2/(.*)$ /$1 break;`.
 
 ## nginx
 

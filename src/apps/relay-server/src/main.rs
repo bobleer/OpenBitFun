@@ -113,23 +113,57 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `RELAY_PROFILE=directory`: the OpenBitFun 2.0 account directory. No
-/// published Pages, no asset store on disk, and periodic retention of
-/// tokens, device rows and users.
+/// `RELAY_PROFILE=directory`: the OpenBitFun 2.0 account directory with
+/// periodic retention of tokens, device rows and users. Published Pages are
+/// opt-in and require explicit isolated public/sign-in origins plus an asset
+/// directory.
 async fn serve_directory(
     cfg: RelayConfig,
     start_time: std::time::Instant,
     db: Arc<openbitfun_relay_service::db::DbPool>,
 ) -> anyhow::Result<()> {
     use openbitfun_relay_service::directory_hygiene;
+    let page_browser_auth = match (
+        cfg.page_public_base_url.as_deref(),
+        cfg.page_auth_base_url.as_deref(),
+    ) {
+        (Some(public_base_url), Some(auth_base_url)) => Some(
+            openbitfun_relay_service::PageBrowserAuthConfig::new(public_base_url, auth_base_url)
+                .map_err(anyhow::Error::msg)?,
+        ),
+        (None, None) => None,
+        _ => anyhow::bail!(
+            "RELAY_PAGE_PUBLIC_BASE_URL and RELAY_PAGE_AUTH_BASE_URL must be configured together"
+        ),
+    };
     let hygiene = directory_hygiene::DirectoryHygiene::from_env()?;
     let _sweeper = directory_hygiene::spawn_sweeper(Arc::clone(&db), hygiene);
-    let mut app = openbitfun_relay_service::build_directory_router(
-        start_time,
-        db,
-        env!("CARGO_PKG_VERSION"),
-        cfg.cors_allow_origins.clone(),
-    );
+    let pages_enabled = page_browser_auth.is_some();
+    let mut app = if let Some(page_browser_auth) = page_browser_auth {
+        let asset_store = Arc::new(DiskAssetStore::new_with_max_bytes(
+            &cfg.asset_dir,
+            cfg.asset_store_max_bytes,
+        ));
+        let page_data_dir = std::path::PathBuf::from(&cfg.asset_dir).join("page-data");
+        info!("Page asset directory: {}", cfg.asset_dir);
+        info!("Asset store capacity: {} bytes", cfg.asset_store_max_bytes);
+        openbitfun_relay_service::build_directory_router_with_pages(
+            asset_store,
+            start_time,
+            db,
+            env!("CARGO_PKG_VERSION"),
+            Some(page_data_dir),
+            cfg.cors_allow_origins.clone(),
+            page_browser_auth,
+        )
+    } else {
+        openbitfun_relay_service::build_directory_router(
+            start_time,
+            db,
+            env!("CARGO_PKG_VERSION"),
+            cfg.cors_allow_origins.clone(),
+        )
+    };
     if let Some(static_dir) = &cfg.static_dir {
         info!("Serving static files from: {static_dir}");
         app = app.fallback_service(
@@ -138,10 +172,18 @@ async fn serve_directory(
     }
     app = app.layer(axum::middleware::from_fn(host_security_headers));
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
-    info!(
-        "Account directory listening on {} (published Pages off)",
-        cfg.listen_addr
-    );
+    if pages_enabled {
+        info!(
+            "Account directory listening on {} (published Pages on: {})",
+            cfg.listen_addr,
+            cfg.page_public_base_url.as_deref().unwrap_or("")
+        );
+    } else {
+        info!(
+            "Account directory listening on {} (published Pages off)",
+            cfg.listen_addr
+        );
+    }
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

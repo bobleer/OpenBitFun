@@ -132,9 +132,10 @@ Actions:
 - unpublish: take a Page offline while retaining saved versions.
 
 Prefer inline files (relative path -> UTF-8 content); include index.html and/or server/worker.js. Do not create workspace files solely to publish. directory is only for sources already on disk or explicitly requested local copies; remote workspaces must use files. Content updates replace the entire bundle, not a patch.
+When you produce self-contained publishable web content (such as a landing page, interactive prototype, visual report, or docs site) that the user may want to view or share at a live URL, you may proactively offer to publish it as an OpenBitFun Page with a suggested slug and visibility.
 Use the returned version_id to retry deployment after a saved-version/deploy failure. Do not upload again blindly.
 Content updates require Relay metadata precondition support. If unsupported, report it; do not substitute publish, which can change access settings. If metadata changes during an update, list the Page again before retrying.
-Public URLs can be shared directly. Private/relay URLs require authenticated access; open them through the Pages scene/tool card. Never describe raw restricted URLs as public share links.
+Public URLs can be shared directly. Private/relay URLs require OpenBitFun account sign-in in the browser (owner only for private; any signed-in account for relay); state that access requirement clearly and never describe restricted URLs as public share links. Put a trailing space after any URL you paste so chat linkifiers do not swallow the next character.
 When the user requests an operation, call it directly. The permission system handles confirmation in Ask mode; Auto Approve and Full Access need no extra confirmation."#.into())
     }
 
@@ -285,7 +286,10 @@ When the user requests an operation, call it directly. The permission system han
         let result = invoke_page_manage(request)
             .await
             .map_err(OpenBitFunError::tool)?;
-        let assistant = format!("{}\nPrivate/relay URLs require authenticated access; use the Pages scene/tool card to open them.", serde_json::to_string(&result).map_err(|error| OpenBitFunError::tool(error.to_string()))?);
+        let assistant = format!(
+            "{}\nPublic URLs can be shared directly. Private/relay URLs require OpenBitFun account sign-in in the browser (owner only for private; any signed-in account for relay); never describe them as public share links.",
+            serde_json::to_string(&result).map_err(|error| OpenBitFunError::tool(error.to_string()))?
+        );
         Ok(vec![ToolResult::Result {
             data: result,
             result_for_assistant: Some(assistant),

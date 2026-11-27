@@ -34,7 +34,7 @@ impl Tool for PagePublishTool {
         Ok(
             r#"Publish a OpenBitFun Page to the account relay: upload content, freeze an immutable version, and optionally deploy it to production.
 
-Requires a logged-in GitHub account. This tool is only available after account login. Published Pages can be reviewed and managed later from the Pages scene.
+Requires a logged-in OpenBitFun account. This tool is only available after account login.
 
 When you produce self-contained publishable web content (landing page, docs site, or a Page with server/worker.js) and the user is logged in, proactively ask whether they want it published to OpenBitFun Page (suggest a slug and visibility). If they already said publish/deploy/上线, call the tool directly; the permission system requests confirmation only in Ask mode. Auto Approve and Full Access do not need an additional confirmation.
 
@@ -51,7 +51,7 @@ Input:
   - files: object map of relative path → UTF-8 file content (default/preferred). Must include index.html and/or server/worker.js
   - directory: existing local workspace path (only when user wants on-disk sources)
 
-Returns version_id, absolute `url` / `preview_url` (plus relative paths), deployed_version_id when deployed. Public links can be shared directly. Private and relay links must be opened or copied through the Pages scene/tool card so the browser receives a scoped one-time access handoff; never share their raw URL as if it were independently accessible.
+Returns version_id, absolute `url` / `preview_url` (plus relative paths), deployed_version_id when deployed. Public links can be shared directly. Private and relay links require OpenBitFun account sign-in in the browser (owner only for private; any signed-in account for relay); never describe restricted URLs as public share links.
 
 When telling the user the link: paste the full absolute URL and put a trailing space after it (before any punctuation or newline), so chat linkifiers do not swallow the next character.
 
@@ -190,7 +190,7 @@ Use PageDeploy only to switch an already-saved version_id (rollback / promote a 
     ) -> OpenBitFunResult<Vec<ToolResult>> {
         if !page_account_available().await {
             return Err(OpenBitFunError::tool(
-                "PagePublish requires a logged-in GitHub account".to_string(),
+                "PagePublish requires a logged-in OpenBitFun account".to_string(),
             ));
         }
 
@@ -322,8 +322,15 @@ fn publish_result_for_assistant(
         } else {
             "saved without changing production"
         };
+        let target_url = if deployed { url } else { preview };
+        let url_note = if target_url.is_empty() {
+            String::new()
+        } else {
+            format!(" URL: {target_url} ")
+        };
         return format!(
-            "OpenBitFun Page '{slug}' version '{version_id}' was {state} with {visibility} visibility. Open or copy it from the Pages scene/tool card so OpenBitFun can create a scoped browser-access link; do not share the raw Page URL."
+            "OpenBitFun Page '{slug}' version '{version_id}' was {state} with {visibility} visibility.{url_note}\n\
+             Opening this URL in a browser requires OpenBitFun account sign-in (owner only for private; any signed-in account for relay). Never describe it as a public share link."
         );
     }
 
@@ -530,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn private_result_never_advertises_the_raw_url() {
+    fn private_result_marks_url_as_authenticated_not_public() {
         let message = publish_result_for_assistant(
             "demo",
             "v1",
@@ -539,7 +546,8 @@ mod tests {
             "https://relay.example/p/alice/demo",
             "https://relay.example/p/alice/demo/@v/v1",
         );
-        assert!(!message.contains("https://"));
-        assert!(message.contains("scoped browser-access link"));
+        assert!(message.contains("https://relay.example/p/alice/demo "));
+        assert!(message.contains("requires OpenBitFun account sign-in"));
+        assert!(message.contains("Never describe it as a public share link"));
     }
 }

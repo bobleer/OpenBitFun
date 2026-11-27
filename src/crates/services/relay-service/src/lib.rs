@@ -1156,14 +1156,14 @@ pub fn build_relay_router_with_page_data_origins_and_page_auth(
         cors_allow_origins,
         page_browser_auth,
         false,
+        true,
     )
 }
 
-/// The OpenBitFun 2.0 account directory (`RELAY_PROFILE=directory`): the
-/// account, device and realtime routes only. Published Pages are not mounted
-/// (no Page data, assets or sign-in origin), and sign-ins free quota from
-/// dead or stale controller rows ([`directory_hygiene::make_room`]). The
-/// caller runs [`directory_hygiene::spawn_sweeper`] for retention.
+/// The OpenBitFun 2.0 account directory (`RELAY_PROFILE=directory`) without
+/// published Pages: account, device and realtime routes only, while sign-ins
+/// free quota from dead or stale controller rows ([`directory_hygiene::make_room`]).
+/// The caller runs [`directory_hygiene::spawn_sweeper`] for retention.
 pub fn build_directory_router(
     start_time: std::time::Instant,
     db: std::sync::Arc<crate::db::DbPool>,
@@ -1180,6 +1180,34 @@ pub fn build_directory_router(
         cors_allow_origins,
         None,
         true,
+        false,
+    )
+}
+
+/// The OpenBitFun 2.0 account directory (`RELAY_PROFILE=directory`) with
+/// published Pages mounted on an explicit isolated public/sign-in origin pair.
+/// Sign-ins keep directory quota freeing ([`directory_hygiene::make_room`])
+/// and the caller runs [`directory_hygiene::spawn_sweeper`] for retention.
+#[allow(clippy::too_many_arguments)]
+pub fn build_directory_router_with_pages(
+    asset_store: Arc<dyn WebAssetStore>,
+    start_time: std::time::Instant,
+    db: std::sync::Arc<crate::db::DbPool>,
+    host_version: &'static str,
+    page_data_dir: Option<std::path::PathBuf>,
+    cors_allow_origins: Vec<String>,
+    page_browser_auth: PageBrowserAuthConfig,
+) -> Router {
+    build_router(
+        asset_store,
+        start_time,
+        db,
+        host_version,
+        page_data_dir,
+        cors_allow_origins,
+        Some(page_browser_auth),
+        true,
+        true,
     )
 }
 
@@ -1193,6 +1221,7 @@ fn build_router(
     cors_allow_origins: Vec<String>,
     page_browser_auth: Option<PageBrowserAuthConfig>,
     directory_profile: bool,
+    mount_pages: bool,
 ) -> Router {
     let page_data = page_data_dir.map(crate::page_data::PageDataStore::new);
     let cors_allow_origins = cors_allow_origins
@@ -1246,10 +1275,10 @@ fn build_router(
             routes::cloud_agent::CloudAgentKey::from_env(),
             Arc::clone(&state.db),
         ));
-    let router = if directory_profile {
-        router
-    } else {
+    let router = if mount_pages {
         router.merge(routes::pages::pages_router())
+    } else {
+        router
     };
     let router = realtime::mount(router, state.clone())
         .layer(axum::middleware::from_fn_with_state(
@@ -1409,12 +1438,50 @@ mod tests {
         let relay = build_relay_router(
             Arc::new(MemoryAssetStore::new()),
             std::time::Instant::now(),
-            db,
+            Arc::clone(&db),
             "test-host-version",
         );
         assert_ne!(
             status(relay, "GET", "/api/pages").await,
             StatusCode::NOT_FOUND
+        );
+
+        // The directory profile mounts Pages when isolated origins are configured.
+        let page_auth = PageBrowserAuthConfig::new(
+            "https://pages.example.com/v2",
+            "https://auth.example.com/v2",
+        )
+        .unwrap();
+        let directory_with_pages = build_directory_router_with_pages(
+            Arc::new(MemoryAssetStore::new()),
+            std::time::Instant::now(),
+            db,
+            "test-host-version",
+            None,
+            Vec::new(),
+            page_auth,
+        );
+        assert_ne!(
+            status(directory_with_pages.clone(), "GET", "/api/pages").await,
+            StatusCode::NOT_FOUND
+        );
+        // Served Pages still enforce the isolated public Host header.
+        let wrong_host = directory_with_pages
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/p/alice/demo")
+                    .header("host", "super.example.com")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_host.status(), StatusCode::NOT_FOUND);
+        let health = get_json(directory_with_pages, "/health").await;
+        assert_eq!(
+            health["asset_store_max_bytes"],
+            DEFAULT_MEMORY_ASSET_STORE_MAX_BYTES
         );
     }
 
