@@ -1,6 +1,6 @@
 import { expect, open, test } from "nsh/test";
 import { markdownPreviewCut, markdownPreviewSlice } from "../src/format";
-import { createBackend, openSession, showAllSessions } from "./support";
+import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, openSession, showAllSessions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -596,6 +596,77 @@ test("the permission pill writes the session's mode", async () => {
   await app.press("composer-plus");
   await app.press("permission-mode-pill");
   await app.waitFor("label:permission-mode-popover-start");
+});
+
+test("a user message rolls back without resending", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Add the plan and fix the imports.");
+  await app.press("rollback-turn-2");
+  expect(app.shows("rerun-input")).toBe(false);
+  expect(backend.actions()).not.toContain("rollback_session_to_turn");
+  await app.press("Cancel");
+  expect(backend.actions()).not.toContain("rollback_session_to_turn");
+
+  await app.press("rollback-turn-2");
+  await app.press("text:Roll back to here");
+  await app.waitUntil(() => backend.actions().includes("rollback_session_to_turn"));
+  expect(backend.calls.find(call => call.action === "rollback_session_to_turn")?.request).toMatchObject({
+    sessionId: "session-1",
+    targetTurnId: "turn-2",
+    workspaceId: "workspace-1",
+    requireIdle: true,
+  });
+  await app.waitUntil(() => app.value("composer") === "Add the plan and fix the imports.");
+  expect(backend.actions()).not.toContain("submit_user_message");
+});
+
+test("a refused user-message rollback keeps the draft and reports the host error", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    if ((data as { action?: string }).action === "rollback_session_to_turn") {
+      return { ok: false, error: "Rollback is unsupported for this remote workspace" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.type("composer", "Keep this draft");
+  await app.press("rollback-turn-2");
+  await app.press("text:Roll back to here");
+  await app.waitFor("Rollback is unsupported for this remote workspace");
+  expect(app.value("composer")).toBe("Keep this draft");
+  expect(app.shows("Add the plan and fix the imports.")).toBe(true);
+  expect(backend.actions()).not.toContain("submit_user_message");
+});
+
+test("user-message rollback through the fleet runs on the session's device", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 1, full: true, removedDeviceIds: [],
+      totals: { running: 0, waiting: 0, unread: 0 },
+      devices: [
+        fleetDeviceRow("dev-b", "Linux builder", [{
+          workspaceId: "workspace-1", name: "openbitfun", rootPath: "/srv/repo",
+          sessions: [fleetSessionRow("dev-b", "workspace-1", "session-1", "NSH skeleton")],
+        }], { hostKind: "cli" }),
+      ],
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.press("rollback-turn-2");
+  await app.press("text:Roll back to here");
+  await app.waitUntil(() => app.value("composer") === "Add the plan and fix the imports.");
+  expect(host.fleetCalls.find(call => call.command === "rollback_session_to_turn")).toMatchObject({
+    target: "dev-b",
+    args: { request: { sessionId: "session-1", targetTurnId: "turn-2", workspaceId: "workspace-1", requireIdle: true } },
+  });
+  expect(backend.actions()).not.toContain("submit_user_message");
 });
 
 test("editing a user message rolls back to that turn and reruns it", async () => {

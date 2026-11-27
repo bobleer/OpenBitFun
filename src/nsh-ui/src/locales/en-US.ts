@@ -2172,6 +2172,8 @@ export const enUSMessages = {
   "chat.showMore": "Show more",
   "chat.showLess": "Show less",
   "chat.editAndRerun": "Edit and rerun from here",
+  "chat.rollbackAction": "Roll back to here",
+  "chat.rollbackConfirm": "This removes this turn and every turn after it, restores the files they changed, and puts this message back in the composer.",
   "chat.rerunConfirm": "This removes this turn and every turn after it, restores the files they changed, then sends the edited message.",
   "chat.rerunAction": "Roll back and rerun",
   "chat.thinking": "Thinking",

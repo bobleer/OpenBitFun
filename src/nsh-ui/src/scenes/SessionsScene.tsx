@@ -2199,7 +2199,7 @@ function ThreadMenuAction(props: {
 /** Which block's "Copy" button just confirmed; key is the turn + block text. */
 const copiedBlock = signal("");
 
-function CopyChip(props: { partKey: string; text: string }) {
+function CopyChip(props: { partKey: string; text: string; iconOnly?: boolean }) {
   const copied = computed(() => copiedBlock() === props.partKey);
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
   cleanup(() => {
@@ -2208,19 +2208,33 @@ function CopyChip(props: { partKey: string; text: string }) {
       copyTimer = null;
     }
   });
+  const copy = () => {
+    void Clipboard.writeText(props.text).then(() => {
+      copiedBlock.set(props.partKey);
+      if (copyTimer) clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => {
+        copyTimer = null;
+        if (copiedBlock() === props.partKey) copiedBlock.set("");
+      }, 1500);
+    });
+  };
+  if (props.iconOnly) {
+    return (
+      <IconButton
+        icon={copied() ? "check" : "copy"}
+        size="xs"
+        iconColor={copied() ? palette().success : palette().textMuted}
+        accessibilityLabel={`copy-user-message-${props.partKey}`}
+        tooltip={copied() ? tr("common.copied") : tr("common.copy")}
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+        onPress={copy}
+      />
+    );
+  }
   return (
     <View
       role="button"
-      onPress={() => {
-        void Clipboard.writeText(props.text).then(() => {
-          copiedBlock.set(props.partKey);
-          if (copyTimer) clearTimeout(copyTimer);
-          copyTimer = setTimeout(() => {
-            copyTimer = null;
-            if (copiedBlock() === props.partKey) copiedBlock.set("");
-          }, 1500);
-        });
-      }}
+      onPress={copy}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -2414,6 +2428,7 @@ function UserBubble(props: {
   text: string;
   timestamp?: number;
   showCopy?: boolean;
+  allowRollback?: boolean;
   turnId?: string;
   images?: UserImage[];
 }) {
@@ -2434,7 +2449,7 @@ function UserBubble(props: {
       compactLayout() ||
       hovered() ||
       copiedBlock() === props.partKey ||
-      Boolean(props.turnId && rerunTarget()?.turnId === props.turnId),
+      Boolean(props.turnId && messageActionTarget()?.turnId === props.turnId),
   );
   return (
     <View
@@ -2590,18 +2605,32 @@ function UserBubble(props: {
         </If>
         <If when={props.turnId && !runningTurnId() ? props.turnId : ""}>
           {turnId => (
-            <IconButton
-              icon="edit"
-              size="xs"
-              accessibilityLabel={`edit-rerun-${turnId()}`}
-              tooltip={tr("chat.editAndRerun")}
-              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-              onPress={() => beginRerun(turnId(), props.text, props.images)}
-            />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+              <If when={props.allowRollback !== false}>
+                <IconButton
+                  icon="undo"
+                  size="xs"
+                  accessibilityLabel={`rollback-${turnId()}`}
+                  tooltip={tr("chat.rollbackAction")}
+                  disabled={messageActionBusy()}
+                  style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+                  onPress={() => beginMessageAction(turnId(), props.text, props.images, "rollback")}
+                />
+              </If>
+              <IconButton
+                icon="edit"
+                size="xs"
+                accessibilityLabel={`edit-rerun-${turnId()}`}
+                tooltip={tr("chat.editAndRerun")}
+                disabled={messageActionBusy()}
+                style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+                onPress={() => beginMessageAction(turnId(), props.text, props.images)}
+              />
+            </View>
           )}
         </If>
         <If when={props.showCopy !== false}>
-          <CopyChip partKey={props.partKey} text={props.text} />
+          <CopyChip partKey={props.partKey} text={props.text} iconOnly={true} />
         </If>
       </View>
     </View>
@@ -2609,122 +2638,148 @@ function UserBubble(props: {
 }
 
 /**
- * Edit-and-rerun from a user message: `rollback_session_to_turn` drops that turn
- * and everything after it, then the edited text (and its preserved images) starts
- * a new turn — the order the desktop's `UserMessageItem` uses.
+ * Both user-message actions roll back through the host. Rollback restores the
+ * original message to the composer; editing sends the edited text and images.
+ * The session key fences completions when the user switches devices or sessions.
  */
-const rerunTarget = signal<{ turnId: string; text: string; images: ImageAttachment[] } | null>(null);
-const rerunBusy = signal(false);
+const messageActionTarget = signal<{
+  kind: "edit" | "rollback";
+  sessionKey: string | null;
+  turnId: string;
+  text: string;
+  images: ImageAttachment[];
+} | null>(null);
+const messageActionBusy = signal(false);
 
-function beginRerun(turnId: string, text: string, images?: UserImage[]): void {
-  rerunTarget.set({
+function beginMessageAction(
+  turnId: string,
+  text: string,
+  images?: UserImage[],
+  kind: "edit" | "rollback" = "edit",
+): void {
+  if (messageActionBusy()) return;
+  messageActionTarget.set({
+    kind,
+    sessionKey: activeSessionKey(),
     turnId,
     text,
     images: images && images.length > 0 ? userImagesToAttachments(images) : [],
   });
 }
 
-async function confirmRerun(): Promise<void> {
-  const target = rerunTarget();
+async function confirmMessageAction(): Promise<void> {
+  const target = messageActionTarget();
   const sessionId = activeSessionId();
   const workspaceId = activeWorkspaceId();
-  if (!target || !sessionId || !workspaceId || rerunBusy()) return;
+  if (!target || !sessionId || !workspaceId || messageActionBusy() || target.sessionKey !== activeSessionKey()) return;
   const text = target.text.trim();
-  if (!text && target.images.length === 0) return;
-  rerunBusy.set(true);
+  if (target.kind === "edit" && !text && target.images.length === 0) return;
+  messageActionBusy.set(true);
   try {
     clearPromptSuggestion(sessionId, activeSessionDevice());
     await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
-    rerunTarget.set(null);
+    if (target.sessionKey !== activeSessionKey()) return;
+    messageActionTarget.set(null);
     await loadTurns(sessionId);
+    if (target.sessionKey !== activeSessionKey()) return;
     jumpToTranscriptEnd();
-    await sendTurn(text, undefined, target.images.length > 0 ? { attachments: target.images } : undefined);
+    if (target.kind === "rollback") {
+      composerText.set(target.text);
+      imageAttachments.set(target.images);
+      fileAttachments.set([]);
+    } else {
+      await sendTurn(text, undefined, target.images.length > 0 ? { attachments: target.images } : undefined);
+    }
   } catch (error) {
-    turnError.set(error instanceof Error ? error.message : String(error));
+    if (target.sessionKey === activeSessionKey()) {
+      turnError.set(error instanceof Error ? error.message : String(error));
+    }
   } finally {
-    rerunBusy.set(false);
+    messageActionBusy.set(false);
   }
 }
 
-function RerunEditor() {
+function UserMessageActionEditor() {
   return (
-    <If when={rerunTarget()}>
+    <If when={messageActionTarget()}>
       {target => (
         <View style={{ gap: 8, alignSelf: "stretch" }}>
-          <If when={target().images.length > 0}>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
-              <Each of={target().images} key={image => image.id}>
-                {image => (
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: space.xs,
-                      paddingLeft: space.xs,
-                      paddingRight: space.chip,
-                      paddingVertical: space.hair + 1,
-                      borderRadius: radii.sm,
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceTertiary,
-                    }}
-                  >
-                    <If
-                      when={attachmentPreviewSrc(image())}
-                      else={<Icon name="image" size={12} color={palette().textSecondary} />}
-                    >
-                      {src => (
-                        <Image
-                          src={src()}
-                          style={{ width: 20, height: 20, borderRadius: radii.xs }}
-                        />
-                      )}
-                    </If>
-                    <Text
+          <If when={target().kind === "edit"}>
+            <If when={target().images.length > 0}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+                <Each of={target().images} key={image => image.id}>
+                  {image => (
+                    <View
                       style={{
-                        ...textStyle("caption", { color: palette().textSecondary }),
-                        maxWidth: 140,
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.xs,
+                        paddingLeft: space.xs,
+                        paddingRight: space.chip,
+                        paddingVertical: space.hair + 1,
+                        borderRadius: radii.sm,
+                        borderWidth: 1,
+                        borderColor: palette().borderSubtle,
+                        backgroundColor: palette().surfaceTertiary,
                       }}
                     >
-                      {image().name}
-                    </Text>
-                    <IconButton
-                      icon="close"
-                      size="xs"
-                      iconSize={10}
-                      accessibilityLabel={`rerun-remove-image-${image().id}`}
-                      onPress={() => {
-                        const current = rerunTarget();
-                        if (!current) return;
-                        rerunTarget.set({
-                          ...current,
-                          images: current.images.filter(entry => entry.id !== image().id),
-                        });
-                      }}
-                    />
-                  </View>
-                )}
-              </Each>
-            </View>
+                      <If
+                        when={attachmentPreviewSrc(image())}
+                        else={<Icon name="image" size={12} color={palette().textSecondary} />}
+                      >
+                        {src => (
+                          <Image
+                            src={src()}
+                            style={{ width: 20, height: 20, borderRadius: radii.xs }}
+                          />
+                        )}
+                      </If>
+                      <Text
+                        style={{
+                          ...textStyle("caption", { color: palette().textSecondary }),
+                          maxWidth: 140,
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {image().name}
+                      </Text>
+                      <IconButton
+                        icon="close"
+                        size="xs"
+                        iconSize={10}
+                        accessibilityLabel={`rerun-remove-image-${image().id}`}
+                        onPress={() => {
+                          const current = messageActionTarget();
+                          if (!current) return;
+                          messageActionTarget.set({
+                            ...current,
+                            images: current.images.filter(entry => entry.id !== image().id),
+                          });
+                        }}
+                      />
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </If>
+            <InputBox
+              value={target().text}
+              multiline={true}
+              accessibilityLabel="rerun-input"
+              onChange={value => {
+                const current = messageActionTarget();
+                if (current) messageActionTarget.set({ ...current, text: value });
+              }}
+            />
           </If>
-          <InputBox
-            value={target().text}
-            multiline={true}
-            accessibilityLabel="rerun-input"
-            onChange={value => {
-              const current = rerunTarget();
-              if (current) rerunTarget.set({ ...current, text: value });
-            }}
-          />
           <InlineConfirmBar
-            message={tr("chat.rerunConfirm")}
-            confirmLabel={tr("chat.rerunAction")}
+            message={target().kind === "rollback" ? tr("chat.rollbackConfirm") : tr("chat.rerunConfirm")}
+            confirmLabel={target().kind === "rollback" ? tr("chat.rollbackAction") : tr("chat.rerunAction")}
             danger={true}
-            onConfirm={() => void confirmRerun()}
+            onConfirm={() => void confirmMessageAction()}
             onCancel={() => {
-              rerunTarget.set(null);
+              messageActionTarget.set(null);
             }}
           />
         </View>
@@ -4482,16 +4537,17 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
               text={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).text}
               timestamp={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).timestamp}
               turnId={turnId()}
+              allowRollback={!isSecondary}
               images={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).images}
             />
             <If
               when={
                 !isSecondary &&
                 (props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).showRerunSlot &&
-                Boolean(rerunTarget() && rerunTarget()!.turnId === turnId())
+                Boolean(messageActionTarget() && messageActionTarget()!.turnId === turnId())
               }
             >
-              <RerunEditor />
+              <UserMessageActionEditor />
             </If>
           </View>
         </If>
@@ -5125,17 +5181,17 @@ function Transcript() {
     registerTranscriptBeforePrependListener(null);
     transcriptListRef = undefined;
   });
-  let lastSessionId = activeSessionId();
+  let lastSessionKey = activeSessionKey();
   let lastOptimisticText = optimisticUserText();
   const transcriptSwapKey = () =>
     activeSessionKey() ? `${activeSessionKey()}:${turnsLoading() ? "loading" : "ready"}` : "welcome";
 
   effect(() => {
-    const id = activeSessionId();
-    if (id !== lastSessionId) {
-      lastSessionId = id;
+    const id = activeSessionKey();
+    if (id !== lastSessionKey) {
+      lastSessionKey = id;
       resetTranscriptScrollTracking();
-      rerunTarget.set(null);
+      messageActionTarget.set(null);
       turnChangesReview.set(null);
       // The previous transcript's rows are disposed with their keys; drop the
       // per-row state they left behind so a long day of sessions does not grow it.

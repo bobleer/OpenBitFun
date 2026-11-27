@@ -2171,6 +2171,8 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "chat.showMore": "展開更多",
   "chat.showLess": "收起",
   "chat.editAndRerun": "編輯並重送",
+  "chat.rollbackAction": "回復到此處",
+  "chat.rollbackConfirm": "將撤銷本輪及之後的對話與檔案變更，並將這則訊息放回輸入框。",
   "chat.rerunConfirm": "將撤銷本輪及之後的對話與檔案變更，再傳送修改後的訊息。",
   "chat.rerunAction": "撤銷並重送",
   "chat.thinking": "思考",
