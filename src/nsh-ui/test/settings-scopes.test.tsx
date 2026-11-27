@@ -755,7 +755,8 @@ test("memory settings group advanced fields and send paired changes and settings
   await app.press("settings-scope-device-dev-b");
   await app.press("nav-settings-page-session-memory");
   await app.waitUntil(() => app.enabled("id:memory-enabled"));
-  expect(document).toMatchObject({ generate_memories: true, use_memories: false });
+  expect(document).toMatchObject({ generate_memories: true, use_memories: false, generate_for_btw_sessions: true });
+  expect(app.shows("id:memory-btw-sessions")).toBe(false);
   expect(app.enabled("id:memory-extract-model")).toBe(false);
   expect(app.shows("id:memory-idle-hours")).toBe(false);
   await app.type("settings-search", "A session must be idle");
@@ -770,6 +771,8 @@ test("memory settings group advanced fields and send paired changes and settings
 
   await app.press("id:memory-enabled");
   await app.waitUntil(() => app.enabled("id:memory-extract-model"));
+  expect(document.generate_for_btw_sessions).toBe(true);
+  expect(app.shows("id:memory-btw-sessions")).toBe(false);
   expect(app.enabled("memory-idle-hours-increase")).toBe(true);
   expect(app.value("id:memory-idle-hours")).toBe("12");
   await app.press("id:memory-enabled");

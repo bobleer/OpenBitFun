@@ -896,15 +896,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     page: "session-memory",
     fields: [
       {
-        id: "memory-btw-sessions",
-        label: "Learn from background sessions",
-        labelKey: "settings.field.memoryBtwSessions",
-        descriptionKey: "settings.field.memoryBtwSessionsDesc",
-        path: "memories.generate_for_btw_sessions",
-        kind: "boolean",
-        optional: true,
-      },
-      {
         id: "memory-external-context",
         label: "Sessions that used external context",
         labelKey: "settings.field.memoryExternalContext",

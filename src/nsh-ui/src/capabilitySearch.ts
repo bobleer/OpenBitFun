@@ -1,4 +1,4 @@
-import type { ControlDestination, ControlSurfaceTarget } from "./controlPresenter";
+import { isRetiredVoiceDestination, type ControlDestination, type ControlSurfaceTarget } from "./controlPresenter";
 import catalog from "./generated/interactiveCapabilities.json";
 import type { SearchItem } from "./globalSearchStore";
 import { currentLocale } from "./i18n";
@@ -29,12 +29,25 @@ function fieldsFor(values: string[]) {
 }
 
 function buildIndex() {
-  return (catalog.capabilities as CatalogEntry[]).map(entry => ({
-    entry,
-    fields: fieldsFor(entry.searchTerms),
-    titles: fieldsFor([entry.titleZh, entry.titleEn]),
-    items: entry.items.map(item => ({ item, fields: fieldsFor([item.titleZh, item.titleEn]) })),
-  }));
+  return (catalog.capabilities as CatalogEntry[]).flatMap(entry => {
+    const destination = isRetiredVoiceDestination(entry.destination) ? undefined : entry.destination;
+    const available = entry.items.filter(item => !isRetiredVoiceDestination(item.destination ?? entry.destination));
+    if (!destination && available.length === 0) return [];
+    // Input and Pet also contain supported options. Index those options and
+    // the page title without the shared catalog's voice-related terms or summary.
+    const hasRetiredOptions = !destination || available.length !== entry.items.length;
+    const titleTerms = [entry.titleZh, entry.titleEn];
+    return [{
+      entry,
+      destination,
+      hasRetiredOptions,
+      fields: fieldsFor(hasRetiredOptions
+        ? [...titleTerms, ...available.flatMap(item => [item.titleZh, item.titleEn])]
+        : entry.searchTerms),
+      titles: fieldsFor(titleTerms),
+      items: available.map(item => ({ item, fields: fieldsFor([item.titleZh, item.titleEn]) })),
+    }];
+  });
 }
 
 let index: ReturnType<typeof buildIndex> | undefined;
@@ -69,7 +82,7 @@ export function capabilitySearchItems(
   const title = (titles: Titles) => chinese ? titles.titleZh : titles.titleEn;
   const hits: Array<{ item: SearchItem; score: number; titleScore: number; itemScore: number }> = [];
 
-  for (const { entry, fields, titles, items } of index ??= buildIndex()) {
+  for (const { entry, destination: page, hasRetiredOptions, fields, titles, items } of index ??= buildIndex()) {
     const score = scoreFields(query, tokens, fields);
     if (!score) continue;
     const titleScore = scoreFields(query, tokens, titles);
@@ -81,12 +94,12 @@ export function capabilitySearchItems(
       best = item;
       itemScore = rank;
     }
-    let destination = best?.destination ?? entry.destination;
-    if (!resolve(destination)) {
-      if (titleScore < 80 || !resolve(entry.destination)) continue;
+    let destination = best?.destination ?? page;
+    if (!destination || !resolve(destination)) {
+      if (titleScore < 80 || !page || !resolve(page)) continue;
       best = undefined;
       itemScore = 0;
-      destination = entry.destination;
+      destination = page;
     }
     hits.push({
       score, titleScore, itemScore,
@@ -94,7 +107,7 @@ export function capabilitySearchItems(
         id: `capability:${entry.id}`,
         kind: entry.kind === "setting" ? "setting" : "capability",
         label: title(entry),
-        detail: best ? title(best) : chinese ? entry.summaryZh : entry.summaryEn,
+        detail: best ? title(best) : hasRetiredOptions ? "" : chinese ? entry.summaryZh : entry.summaryEn,
         target: entry.id,
         controlDestination: destination,
       },

@@ -74,7 +74,6 @@ const SETTINGS_PAGES: Record<string, { page: SettingsPageId; anchor?: string }> 
   "application.appearance": { page: "appearance" },
   "application.pet": { page: "pet" },
   "application.input": { page: "input", anchor: "input" },
-  "application.voice": { page: "input", anchor: "input" },
   "application.shortcuts": { page: "shortcuts", anchor: "shortcuts" },
   "application.editor": { page: "editor" },
   "development.editor": { page: "editor" },
@@ -114,7 +113,6 @@ const SETTINGS_ANCHORS: Record<string, string> = {
   "workspace-search": "workspace-search",
   git: "git",
   "text-selection": "input",
-  voice: "input",
   worktrees: "workspace",
   local: "acp",
   ssh: "acp",
@@ -167,8 +165,15 @@ export type ControlSurfaceTarget =
   | { kind: "scene"; scene: SceneId }
   | { kind: "action"; action: "project.open" | "project.new" | "session.new" };
 
+export function isRetiredVoiceDestination(destination: ControlDestination): boolean {
+  if (destination.kind !== "settings") return false;
+  const section = destination.sectionId ?? destination.viewId;
+  return destination.pageId === "application.voice" || section === "voice" || section === "voice-call";
+}
+
 /** Search requires a real section. Older host presentation requests retain their page fallback. */
 export function resolveControlDestination(destination: ControlDestination, requireSection = false): ControlSurfaceTarget | null {
+  if (isRetiredVoiceDestination(destination)) return null;
   switch (destination.kind) {
     case "settings": {
       const target = SETTINGS_PAGES[destination.pageId];

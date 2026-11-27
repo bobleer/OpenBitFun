@@ -52,3 +52,26 @@ test("documented capabilities reveal destinations in the global search Actions s
   await app.waitFor("text:Installed");
   expect(backend.settingsWrites).toHaveLength(0);
 });
+
+test("search omits retired voice controls and still opens supported input settings", async () => {
+  const backend = createBackend();
+  const app = await open("./fixtures/windowsCaptionApp.tsx", {
+    platform: "windows", width: 1440, height: 900, host: { handlers: backend.handlers },
+  });
+  await app.press("global-search-trigger");
+  for (const query of ["voice input", "realtime voice call", "microphone"]) {
+    await app.clear("global-search-input");
+    await app.type("global-search-input", `>${query}`);
+    expect(app.shows("id:global-search-item-capability:feature.voice-input")).toBe(false);
+    expect(app.shows("id:global-search-item-capability:setting.application.input")).toBe(false);
+    expect(app.shows("id:global-search-item-capability:setting.application.pet")).toBe(false);
+  }
+
+  await app.clear("global-search-input");
+  await app.type("global-search-input", ">messages sent during an active turn");
+  const input = "id:global-search-item-capability:setting.application.input";
+  await app.waitFor(input);
+  await app.press(input);
+  await app.waitFor("nav-settings-page-input");
+  await app.waitFor("global-search-dialog", { state: "gone" });
+});
