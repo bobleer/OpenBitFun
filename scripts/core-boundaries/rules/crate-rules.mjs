@@ -73,6 +73,7 @@ export const noCoreDependencyCrates = [
   'terminal',
   'tool-runtime',
   'office-documents',
+  'native-ui',
   'transport',
   'webdriver',
 ];

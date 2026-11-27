@@ -6,4 +6,5 @@
 
 import "./src/nativeTransport";
 import "./src/documentRenderers";
+import "./src/nativeCards";
 import "../../nsh-ui/App";

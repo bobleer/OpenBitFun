@@ -130,6 +130,9 @@ pub fn standard_harness_tools() -> Vec<String> {
         // for the interval.
         "Cron".to_string(),
         "PageManage".to_string(),
+        // `NativeUI` stays out until the desktop runner can show its cards:
+        // NSH 0.7.1 draws a second embedded engine in one process in the wrong
+        // place (`src/apps/desktop-nsh/native/src/runner/genui_card.rs`).
     ]
 }
 

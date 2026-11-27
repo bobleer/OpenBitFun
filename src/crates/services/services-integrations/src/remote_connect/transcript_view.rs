@@ -927,7 +927,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
         recovery: turn.recovery,
         background_delivery: turn.background_delivery,
         file_changes: Vec::new(),
-        published_figures: Vec::new(),
+        published_figures: turn.published_figures,
     }
 }
 

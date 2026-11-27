@@ -80,6 +80,7 @@ openbitfun-agent-tools = { path = "../../execution/tool-contracts", optional = t
 # Tool pack provider plan
 openbitfun-tool-packs = { path = "../../execution/tool-provider-groups", optional = true }
 openbitfun-office-documents = { path = "../../execution/office-documents", optional = true }
+openbitfun-native-ui = { path = "../../execution/native-ui", optional = true }
 
 # Core service owner crate
 openbitfun-services-core = { path = "../../services/services-core", features = ["json-io", "product-identity", "workspace-identity"] }
@@ -414,6 +415,7 @@ tools-creation = [
 tools-agent-control = [
     "openbitfun-tool-packs/agent-control",
     "scheduled-jobs",
+    "dep:openbitfun-native-ui",
 ]
 plugin-runtime = [
     "external-sources",

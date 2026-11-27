@@ -1383,6 +1383,23 @@ fn remote_chat_history_turn_from_core_turn(
             }),
         start_time_ms: turn.start_time,
         rounds,
+        published_figures: turn
+            .published_figures
+            .iter()
+            .map(|(uri, figure)| {
+                openbitfun_services_integrations::remote_connect::TranscriptPublishedFigure {
+                    uri: uri.clone(),
+                    content_bytes: figure.as_ref().map(|figure| figure.content_bytes),
+                    source: figure.as_ref().map(|figure| figure.source.clone()),
+                    inspection_deferred: figure
+                        .as_ref()
+                        .is_some_and(|figure| figure.inspection_deferred),
+                    bindings: figure.as_ref().and_then(|figure| figure.bindings.clone()),
+                    binding_refresh_supported: false,
+                    binding_refresh: None,
+                }
+            })
+            .collect(),
     }
 }
 

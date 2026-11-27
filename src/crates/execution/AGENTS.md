@@ -20,6 +20,7 @@ delivery form.
 | `runtime-services` | Typed runtime service assembly and service availability facts | [AGENTS.md](runtime-services/AGENTS.md) |
 | `tool-provider-groups` | Tool provider group facts and product-full tool group composition. Cargo package remains `openbitfun-tool-packs`. | [AGENTS.md](tool-provider-groups/AGENTS.md) |
 | `office-documents` | Portable OOXML (docx, xlsx, pptx) document models, atomic edit operations, and package writers behind the `GenOfficeFile` tool; no IO beyond in-memory bytes | [AGENTS.md](office-documents/AGENTS.md) |
+| `native-ui` | Compiler from a `NativeUI` card (a TSX module) to the card factory the NSH clients run; pure in memory | [AGENTS.md](native-ui/AGENTS.md) |
 | `tool-execution` | Low-level file/search/tool IO helpers, ExecCommand presentation facts, Computer Use loop/retry policies, prompt-safe tool context facts, and provider-neutral tool runtime policies. Cargo package remains `tool-runtime`. | [AGENTS.md](tool-execution/AGENTS.md) |
 
 ## Placement Rules

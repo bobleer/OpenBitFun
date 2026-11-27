@@ -2557,6 +2557,8 @@ pub struct RemoteChatHistoryTurn {
     pub recovery: Option<transcript_view::TranscriptTurnRecovery>,
     pub start_time_ms: u64,
     pub rounds: Vec<RemoteChatHistoryRound>,
+    /// Figures the turn's final reply published, sealed at completion.
+    pub published_figures: Vec<transcript_view::TranscriptPublishedFigure>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

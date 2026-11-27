@@ -3156,6 +3156,7 @@ dependencies = [
  "log",
  "nsh-base",
  "nsh-core",
+ "nsh-engine",
  "nsh-linux-app",
  "nsh-macos-app",
  "nsh-platform-linux",

@@ -422,7 +422,7 @@ import { toolCardHeaderHeight, toolCardMetrics } from "../ui/ToolCardFrame";
 import { isProminentToolCall } from "../toolPresentation";
 import { openImageLightbox } from "../ui/ImageLightbox";
 import { OpenBitFunLogoMark } from "../ui/studio";
-import { MERMAID_MARKDOWN_EXTENSIONS, renderMarkdownDiagram } from "../ui/markdownEditor";
+import { MERMAID_MARKDOWN_EXTENSIONS, renderMarkdownDiagram, documentWebViewsAvailable } from "../ui/markdownEditor";
 import {
   STATIC_MARKDOWN_OPTIONS,
   STREAMING_MARKDOWN_OPTIONS,
@@ -501,6 +501,10 @@ import {
 } from "../ui/TurnFileChanges";
 import { GenUIToolItem } from "../genui/GenUIView";
 import { isGenUICall } from "../genui/genuiSource";
+import { NativeUiToolItem } from "../nativeui/NativeUiCard";
+import { isNativeUiCall } from "../nativeui/nativeCardHost";
+import { FigureFrame } from "../visualize/FigureFrame";
+import type { FigureSession } from "../ui/figureSessionBinding";
 import {
   isReviewCommand,
   launchReviewFromCommand,
@@ -3088,12 +3092,73 @@ function handleMarkdownImagePress(event: { image: { src: string; alt?: string; t
 }
 
 /** Structured summary card for an inline visualization figure (`visualize{...}` or `publishedFigures`). */
+/** An inline visualization figure: draw sealed HTML where this client shows web views, else use its reference card. */
+function InlineFigure(props: {
+  figure: InlineFigureDirective;
+  turn?: TranscriptTurnView;
+  turnId?: string;
+  onOpenPath: (path: string) => void;
+  captureSession: () => FigureSession | undefined;
+}) {
+  const source = () => props.figure.source ?? figureSourceOf(props.turnId, props.figure.path);
+  const unavailable = signal(false);
+  return (
+    <If
+      when={Boolean(source()) && documentWebViewsAvailable() === true && !unavailable()}
+      else={
+        <InlineFigureCard
+          figure={props.figure}
+          turn={props.turn}
+          onOpenPath={props.onOpenPath}
+          captureSession={props.captureSession}
+        />
+      }
+    >
+      <FigureFrame
+        figureKey={`${props.turnId ?? ""}|${props.figure.path}`}
+        source={source()!}
+        onUnavailable={() => unavailable.set(true)}
+      />
+    </If>
+  );
+}
+
+/** Sealed figure sources by turn, for `visualize` references inside that turn's reply. */
+const turnFigureSources = new Map<string, Map<string, string>>();
+
+/** The sealed source of figure `path` in turn `turnId`, when the turn carried it. */
+function figureSourceOf(turnId: string | undefined, path: string): string | undefined {
+  return turnId ? turnFigureSources.get(turnId)?.get(path) : undefined;
+}
+
+/** `publishedFigures` as entries: the transcript sends an array; a map (older records) also reads. */
+function publishedFigureEntries(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, unknown>).map(([uri, value]) =>
+      value && typeof value === "object" ? { uri, ...(value as Record<string, unknown>) } : { uri },
+    );
+  }
+  return [];
+}
+
 /** Reads any backend-projected `publishedFigures` attached to a turn that weren't already emitted inline. */
 function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
   if (!turn || typeof turn !== "object") return [];
   const record = turn as Record<string, unknown>;
-  const raw = record.publishedFigures ?? record.published_figures;
-  if (!Array.isArray(raw)) return [];
+  const raw = publishedFigureEntries(record.publishedFigures ?? record.published_figures);
+  const turnId = typeof record.turnId === "string" ? record.turnId : "";
+  if (turnId) {
+    const sources = new Map<string, string>();
+    for (const entry of raw) {
+      const item = entry as Record<string, unknown> | null;
+      if (item && typeof item.uri === "string" && typeof item.source === "string" && item.source) {
+        sources.set(item.uri.trim(), item.source);
+      }
+    }
+    if (sources.size > 0) turnFigureSources.set(turnId, sources);
+    else turnFigureSources.delete(turnId);
+  }
   const inlinePaths = new Set<string>();
   for (const part of turnParts(turn)) {
     if (part.role === "assistant" && part.text.includes("\uE200")) {
@@ -3111,7 +3176,8 @@ function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
     inlinePaths.add(path);
     const base = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
     const slug = base.replace(/\.html?$/i, "") || "figure";
-    figures.push({ path, slug, ...(title ? { title } : {}) });
+    const source = typeof item.source === "string" && item.source ? item.source : undefined;
+    figures.push({ path, slug, ...(title ? { title } : {}), ...(source ? { source } : {}) });
   }
   return figures;
 }
@@ -3140,6 +3206,12 @@ function captureFigureSession(pane: 0 | 1, sessionKey: string | null | undefined
   };
 }
 
+/** Transcript item keys start with the turn id (`<turnId>|text|<n>`). */
+function turnIdOfItemKey(key: string | undefined): string | undefined {
+  const turnId = key?.split("|")[0];
+  return turnId || undefined;
+}
+
 /** Which oversized replies the reader opened in full, one signal per item key. */
 const fullReplySignals = new Map<string, Signal<boolean>>();
 /** Turn IDs that streamed live in the open session, so settling never collapses a reply the user just watched stream. */
@@ -3157,7 +3229,7 @@ function fullReplySignal(key: string): Signal<boolean> {
 const SESSION_MARKDOWN_EXTENSIONS = [MARKDOWN_MEDIA_EXTENSION];
 const COMPLETED_MARKDOWN_EXTENSIONS = [...SESSION_MARKDOWN_EXTENSIONS, ...MERMAID_MARKDOWN_EXTENSIONS];
 
-function MarkdownBody(props: { text: string; live?: boolean; turn?: TranscriptTurnView; fullText?: string; pane?: 0 | 1; sessionKey?: string | null }) {
+function MarkdownBody(props: { text: string; live?: boolean; itemKey?: string; turn?: TranscriptTurnView; fullText?: string; pane?: 0 | 1; sessionKey?: string | null }) {
   const parsed = computed(() => extractVisualizeDirectives(props.text, { streaming: props.live }));
   const columnWidth = signal<number>(layout.conversationWidth);
   const preparedText = () => (props.live ? parsed().text : transformEmbeddedMediaMarkdown(parsed().text));
@@ -3195,8 +3267,13 @@ function MarkdownBody(props: { text: string; live?: boolean; turn?: TranscriptTu
         <View style={{ gap: space.xs }}>
           <Each of={figures()} key={fig => fig.path}>
             {fig => (
-              <InlineFigureCard figure={fig()} turn={props.turn} onOpenPath={openFigurePath}
-                captureSession={() => captureFigureSession(props.pane ?? 0, props.sessionKey)} />
+              <InlineFigure
+                figure={fig()}
+                turn={props.turn}
+                turnId={props.turn?.turnId ?? turnIdOfItemKey(props.itemKey)}
+                onOpenPath={openFigurePath}
+                captureSession={() => captureFigureSession(props.pane ?? 0, props.sessionKey)}
+              />
             )}
           </Each>
         </View>
@@ -3220,9 +3297,9 @@ function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string;
     <View style={{ width: "100%", gap: 6 }}>
       <If
         when={collapsed()}
-        else={<MarkdownBody text={props.text} live={props.live} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />}
+        else={<MarkdownBody text={props.text} live={props.live} itemKey={props.itemKey} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />}
       >
-        <MarkdownBody text={markdownPreviewSlice(props.text, cut())} fullText={props.text} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />
+        <MarkdownBody text={markdownPreviewSlice(props.text, cut())} itemKey={props.itemKey} fullText={props.text} turn={props.turn} pane={props.pane} sessionKey={props.sessionKey} />
         <View style={{ alignSelf: "flex-start" }}>
           <Button
             label={tr("chat.polish.showFullReply", { count: formatCount(lineCountOf(props.text.slice(cut()))) })}
@@ -3340,6 +3417,7 @@ function TranscriptItemView(props: {
 }) {
   const kind = () => props.item.kind;
   const isGenUI = () => !props.ephemeral && kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
+  const isNativeUi = () => !props.ephemeral && kind() === "tool" && isNativeUiCall((props.item as ItemOf<"tool">).call);
   const pane = props.pane ?? 0;
   return (
     <View style={{ width: "100%" }}>
@@ -3379,7 +3457,21 @@ function TranscriptItemView(props: {
           turnId={props.turnId ?? ""}
         />
       </If>
-      <If when={kind() === "tool" && !isGenUI()}>
+      <If when={isNativeUi()}>
+        <NativeUiToolItem
+          call={(props.item as ItemOf<"tool">).call}
+          cardId={props.item.key}
+          status={persistedToolState((props.item as ItemOf<"tool">).call)}
+          fallback={
+            <ToolCard
+              call={(props.item as ItemOf<"tool">).call}
+              cardId={props.item.key}
+              status={persistedToolState((props.item as ItemOf<"tool">).call)}
+            />
+          }
+        />
+      </If>
+      <If when={kind() === "tool" && !isGenUI() && !isNativeUi()}>
         <SessionToolCard
           call={(props.item as ItemOf<"tool">).call}
           cardId={props.item.key}
@@ -3704,6 +3796,7 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
         {block => {
           const kind = () => block().kind;
           const isGenUI = () => !ephemeral && kind() === "tool" && isGenUICall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
+          const isNativeUi = () => !ephemeral && kind() === "tool" && isNativeUiCall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
           return (
             <View style={{ width: "100%" }}>
               <If when={kind() === "liveText"}>
@@ -3739,7 +3832,21 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
                   turnId={source()?.turnId ?? ""}
                 />
               </If>
-              <If when={kind() === "tool" && !isGenUI()}>
+              <If when={isNativeUi()}>
+                <NativeUiToolItem
+                  call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
+                  cardId={`${prefix}${block().key}`}
+                  status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
+                  fallback={
+                    <ToolCard
+                      call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
+                      cardId={`${prefix}${block().key}`}
+                      status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
+                    />
+                  }
+                />
+              </If>
+              <If when={kind() === "tool" && !isGenUI() && !isNativeUi()}>
                 <SessionToolCard
                   live={props.live !== false}
                   call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
@@ -4881,12 +4988,15 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
               key={fig => fig.path}
             >
               {fig => (
-                <InlineFigureCard figure={fig()}
+                <InlineFigure
+                  figure={fig()}
                   turn={(props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).transcriptTurn}
+                  turnId={(props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).turnId}
                   onOpenPath={openFigurePath}
                   captureSession={() => captureFigureSession(
                     props.pane ?? 0, (props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).sessionKey,
-                  )} />
+                  )}
+                />
               )}
             </Each>
           </View>

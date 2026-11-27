@@ -59,6 +59,7 @@ const PRODUCT_TOOL_REGISTRATION_ORDER: &[&str] = &[
     "Cron",
     "PortForward",
     "DesktopCard",
+    "NativeUI",
     "WebSearch",
     "WebFetch",
     "ListMCPResources",
@@ -154,6 +155,8 @@ impl StaticToolProviderFactory<dyn Tool> for ProductConcreteToolFactory {
             "PortForward" => Some(Arc::new(PortForwardTool::new())),
             #[cfg(feature = "tools-agent-control")]
             "DesktopCard" => Some(Arc::new(DesktopCardTool::new())),
+            #[cfg(feature = "tools-agent-control")]
+            "NativeUI" => Some(Arc::new(NativeUiTool::new())),
             #[cfg(feature = "tools-browser-web")]
             "WebSearch" => Some(Arc::new(WebSearchTool::new())),
             #[cfg(feature = "tools-browser-web")]
