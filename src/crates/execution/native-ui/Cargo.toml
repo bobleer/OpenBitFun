@@ -1,0 +1,17 @@
+[package]
+name = "openbitfun-native-ui"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license = "MIT"
+description = "Portable compiler from a NativeUI TSX module to the NSH card factory the clients run"
+
+[lib]
+name = "openbitfun_native_ui"
+crate-type = ["rlib"]
+
+[dependencies]
+oxc-parse = { workspace = true, features = ["ast_visit", "codegen", "semantic", "transformer"] }
+
+[lints]
+workspace = true

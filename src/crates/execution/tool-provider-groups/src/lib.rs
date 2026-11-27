@@ -123,9 +123,8 @@ pub fn tool_feature_group(tool_name: &str) -> Option<ToolPackFeatureGroup> {
         | "AgentWait" | "LaunchReviewAgent" | "Skill" | "AskUserQuestion" | "TodoWrite"
         | "get_goal" | "create_goal" | "update_goal" | "submit_code_review" | "GetToolSpec"
         | "CallDeferredTool" | "ListWorkspaces" | "SessionControl" | "SessionMessage"
-        | "SessionHistory" | "Cron" | "PortForward" | "DesktopCard" | "OpenBitFunControl" => {
-            Some(ToolPackFeatureGroup::AgentControl)
-        }
+        | "SessionHistory" | "Cron" | "PortForward" | "DesktopCard" | "NativeUI"
+        | "OpenBitFunControl" => Some(ToolPackFeatureGroup::AgentControl),
         _ => None,
     }
 }
@@ -235,6 +234,7 @@ const PRODUCT_TOOL_PROVIDER_GROUP_PLAN: &[ToolProviderGroupPlan] = &[
             "Cron",
             "PortForward",
             "DesktopCard",
+            "NativeUI",
         ],
     },
     ToolProviderGroupPlan {
@@ -592,6 +592,7 @@ mod tests {
                 "Cron",
                 "PortForward",
                 "DesktopCard",
+                "NativeUI",
                 "GetFileDiff",
                 "Worktree",
                 "ReviewPlatform",

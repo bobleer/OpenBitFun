@@ -620,6 +620,7 @@ mod tests {
             "Cron",
             "PortForward",
             "DesktopCard",
+            "NativeUI",
             "WebSearch",
             "WebFetch",
             "ListMCPResources",
@@ -802,6 +803,7 @@ mod tests {
         assert!(!registry.is_tool_deferred("GetToolSpec"));
         assert!(registry.is_tool_deferred("Worktree"));
         assert!(registry.is_tool_deferred("ReviewPlatform"));
+        assert!(registry.is_tool_deferred("NativeUI"));
         assert!(!registry.is_tool_deferred("InitMiniApp"));
         assert!(!registry.is_tool_deferred("FinalizeMiniApp"));
         assert!(!registry.is_tool_deferred("PublishMiniApp"));
@@ -823,6 +825,7 @@ mod tests {
                 "SessionHistory",
                 "Cron",
                 "PortForward",
+                "NativeUI",
                 "ListMCPResources",
                 "ReadMCPResource",
                 "ListMCPPrompts",
@@ -868,6 +871,7 @@ mod tests {
                 "GetFileDiff",
                 "ListWorkspaces",
                 "SessionHistory",
+                "NativeUI",
                 "WebSearch",
                 "WebFetch",
                 "ListMCPResources",

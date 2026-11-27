@@ -383,6 +383,25 @@ switcher in the main flow.
   on the live tool. State a user changes lives per card for the transcript's
   lifetime; nothing is persisted. Images, maps and HTML are shown without
   network or scripts and say so.
+- `src/visualize/`: visualize-skill figures. The transcript carries each
+  turn's sealed figure HTML (`publishedFigures`, read as an array or the older
+  map); `FigureFrame` shows it in an offline web view (`figureDocument.ts`:
+  strict CSP, the reader's palette as the CSS variables the skill names,
+  `window.openai` over `window.nsh.postMessage`, ECharts when the fragment uses
+  it, registered as `echartsScript` by each entry from `assets/vendor`). A
+  follow-up fills the composer; links open in the system browser; state lives
+  per figure while the window shows the transcript. Without web views, or
+  without a sealed source, the reference card shows. Atlas maps, street
+  basemaps, `viz-calendar` and data bindings are not ported.
+- `src/nativeui/` and `genui-kit/`: `NativeUI` cards (TSX the Agent writes,
+  compiled by `openbitfun-native-ui`). A host that runs them installs
+  `installNativeCardHost` (the desktop's `openbitfun.genui-card` native
+  component); otherwise the card shows its title, an explicit notice and its
+  source. `genui-kit/kit.tsx` is the card kit (`openbitfun/genui`), compiled into
+  the runner by `scripts/generate-genui-kit.mjs` (`--check` for freshness). The
+  desktop runner keeps cards off unless `OPENBITFUN_NATIVE_UI_CARDS=1`: NSH 0.7.1
+  draws a second embedded engine in one process in the wrong place, and the
+  tool is not in the default tool set until that is fixed.
 - Voice input and voice calls need microphone capture, which NSH does not give
   an app (longbridge/nsh#1059, not planned): the UI offers no dictation, voice
   call or voice settings. The host's speech service (`speech_*`) is unchanged;

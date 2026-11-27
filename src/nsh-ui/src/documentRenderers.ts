@@ -22,6 +22,8 @@ export interface DocumentRendererAssets {
   katexScript: string;
   /** `katex.css` with its fonts inlined. */
   katexStyle: string;
+  /** `echarts.min.js`, for visualize figures that draw with ECharts. */
+  echartsScript?: string;
   /** Browser-only script that reads the island's data under the host's CSP. */
   browserBootstrap?: string;
   /** The PDF.js engine, local worker and PDF reader, compiled into one script. */

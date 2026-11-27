@@ -22,6 +22,8 @@ mod backend_library;
 mod bridge;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod folder_picker;
+#[cfg(target_os = "macos")]
+mod genui_card;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod miniapp_launch;
 #[cfg(target_os = "macos")]
@@ -42,6 +44,17 @@ mod platform {
     pub(crate) fn run() -> std::process::ExitCode {
         nsh_macos_app::main()
     }
+    /// NativeUI cards run in engines nested in the transcript (`genui_card`).
+    /// Off unless `OPENBITFUN_NATIVE_UI_CARDS=1`: NSH 0.7.1 draws a second
+    /// embedded engine in one process in the wrong place, so a card would
+    /// show as an empty area. The UI then shows the card's source instead.
+    pub(crate) fn register_native_cards() -> bool {
+        if std::env::var_os("OPENBITFUN_NATIVE_UI_CARDS").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return false;
+        }
+        nsh_platform_macos::set_components(super::genui_card::register);
+        true
+    }
 }
 
 #[cfg(windows)]
@@ -52,6 +65,10 @@ mod platform {
     pub(crate) fn run() -> std::process::ExitCode {
         nsh_windows_app::main()
     }
+    /// NativeUI cards need a nested engine view; not implemented here yet.
+    pub(crate) fn register_native_cards() -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -61,6 +78,10 @@ mod platform {
     }
     pub(crate) fn run() -> std::process::ExitCode {
         nsh_linux_app::main()
+    }
+    /// NativeUI cards need a nested engine view; not implemented here yet.
+    pub(crate) fn register_native_cards() -> bool {
+        false
     }
 }
 
@@ -90,6 +111,7 @@ fn main() -> ExitCode {
     panel_drag::install();
 
     platform::set_ui_sets(vec![nsh_base::registry(), native_registry]);
+    openbitfun_nsh_native::set_native_cards_available(platform::register_native_cards());
     let exit = platform::run();
 
     // Fallback when the runner returned before the NSH engine started; after a

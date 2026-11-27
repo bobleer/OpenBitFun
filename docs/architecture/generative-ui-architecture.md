@@ -18,9 +18,15 @@
 
 桌面后台按产生工具调用的会话、回合和调用 ID 解析绑定。封存记录携带验图时的绑定快照。生产回合尚未加载或声明的绑定还未到齐时，后台延后验图。阅读端可从原回合补齐旧快照中缺失的值，同时保留已经验过的值。长会话回放从封存记录补齐主回复中缺少的图。空白或超限的最新修订使该图退出发布。
 
+NSH 桌面与浏览器控制端（`src/nsh-ui`）从转录视图读取每轮封存的图（`publishedFigures`，含源码），在离线 WebView 中显示：严格 CSP、阅读端调色板映射为技能约定的 CSS 变量、`window.openai` 经 `window.nsh.postMessage` 回到宿主，片段使用 ECharts 时内联随产品分发的 ECharts 6.0.0。追问写入输入框，由阅读者发送；链接用系统浏览器打开；`setWidgetState` 的状态在窗口打开期间按图保存。没有 WebView 或没有封存源码时显示引用卡片。地理底图、街道底图、`viz-calendar`、数据绑定和后台验图尚未移植到 NSH。
+
 通过手机或聊天机器人发起请求时，宿主按文件交付：在原工作区生成独立 SVG 或 HTML，最终回复附上 `computer://` 下载链接。桌面 FlowChat 与 Peer 桌面仍可使用内联图表。
 
 浏览器验收运行 `node scripts/test-visualize-host.mjs`。默认使用本地 Vite 测试页，`OPENBITFUN_VISUALIZE_OFFLINE=1` 拦截外部网络，`OPENBITFUN_REFERENCE_FRAGMENT` 可指定用于对照的原图。使用 `OPENBITFUN_VISUALIZE_TEST_SKIN` 可替换默认测试皮肤。
+
+## NativeUI 卡片（试验）
+
+`NativeUI` 工具接收一个 TSX 模块，由 `openbitfun-native-ui` 在执行端编译为 NSH 卡片工厂并写入工具结果，阅读端在独立的加固沙箱引擎中运行（只开放 `genui.*` 宿主函数，无网络、文件、剪贴板）。卡片组件库为 `openbitfun/genui`（`src/nsh-ui/genui-kit/kit.tsx`）。NSH 0.7.1 在同一进程中的第二个嵌入引擎绘制位置错误，因此桌面端默认关闭卡片（`OPENBITFUN_NATIVE_UI_CARDS=1` 可开启用于验证），工具不在默认工具集中；无法运行时卡片显示标题、说明和源码。
 
 ## 早期 visualize 会话产物
 

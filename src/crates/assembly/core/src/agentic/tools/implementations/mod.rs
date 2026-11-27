@@ -52,6 +52,8 @@ pub mod miniapp_finalize_tool;
 pub mod miniapp_init_tool;
 #[cfg(feature = "tools-miniapp")]
 pub mod miniapp_publish_tool;
+#[cfg(feature = "tools-agent-control")]
+pub mod native_ui_tool;
 pub mod openbitfun_control_tool;
 #[cfg(feature = "tools-pages")]
 pub mod page_deploy_tool;
@@ -133,6 +135,8 @@ pub use miniapp_finalize_tool::FinalizeMiniAppTool;
 pub use miniapp_init_tool::InitMiniAppTool;
 #[cfg(feature = "tools-miniapp")]
 pub use miniapp_publish_tool::PublishMiniAppTool;
+#[cfg(feature = "tools-agent-control")]
+pub use native_ui_tool::NativeUiTool;
 pub use openbitfun_control_tool::OpenBitFunControlTool;
 #[cfg(feature = "tools-pages")]
 pub use page_deploy_tool::PageDeployTool;

@@ -3,6 +3,7 @@ import { setRendererAssets } from "./documentRenderers";
 import mermaidScript from "../assets/vendor/mermaid-10.9.1/mermaid.min.js?url";
 import katexScript from "../assets/vendor/katex-0.16.11/katex.min.js?url";
 import katexStyle from "../assets/vendor/katex-0.16.11/katex.css?url";
+import echartsScript from "../assets/vendor/echarts-6.0.0/echarts.min.js?url";
 import browserBootstrap from "../assets/document-renderer.js?url";
 import pdfScript from "../assets/vendor/pdf-reader.js?url";
 import figureScript from "../assets/vendor/figure-renderer.js?url";
@@ -25,7 +26,7 @@ import regexShowcase from "../assets/vendor/space-showcases/regex-playground.web
 import { poolStrategyArtwork } from "./poolStrategyArtwork";
 
 setRendererAssets({
-  mermaidScript, katexScript, katexStyle, browserBootstrap, pdfScript, figureScript, figureImageLoader,
+  mermaidScript, katexScript, katexStyle, echartsScript, browserBootstrap, pdfScript, figureScript, figureImageLoader,
   figureAtlas: { stylesheet: atlasStyle, notices: atlasNotices, borders, lakes, land, places, provinces, rivers, seas },
   spaceShowcases: { "builtin-coding-selfie": codingShowcase, "builtin-daily-divination": divinationShowcase,
     "builtin-gomoku": gomokuShowcase, "builtin-ppt-live": pptShowcase, "builtin-regex-playground": regexShowcase },

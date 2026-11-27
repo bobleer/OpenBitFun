@@ -805,6 +805,8 @@ export interface InlineFigureDirective {
   path: string;
   slug: string;
   title?: string;
+  /** The sealed HTML, when the turn carried it (`publishedFigures`). */
+  source?: string;
 }
 
 function slugFromFigurePath(path: string): string {

@@ -98,6 +98,15 @@ fn readiness() -> &'static watch::Sender<Readiness> {
     READINESS.get_or_init(|| watch::channel(Readiness::Starting).0)
 }
 
+/// Whether the runner shows NativeUI cards (`Backend.nativeCards()`).
+static NATIVE_CARDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called by the runner once it registered (or could not register) the
+/// `openbitfun.genui-card` native component.
+pub fn set_native_cards_available(available: bool) {
+    NATIVE_CARDS.store(available, Ordering::Release);
+}
+
 /// The local UI's event cursor (`nextEvents()` without an explicit cursor).
 static UI_EVENT_CURSOR: AtomicU64 = AtomicU64::new(0);
 
@@ -214,6 +223,12 @@ impl Backend {
         let (bridge, _) = ready_bridge().await?;
         bridge.log(&level, &message);
         Ok(())
+    }
+
+    /// Whether this host shows NativeUI cards (the `openbitfun.genui-card`
+    /// native component). False where the runner has no nested engine view.
+    pub async fn native_cards() -> Result<bool, String> {
+        Ok(NATIVE_CARDS.load(Ordering::Acquire))
     }
 
     /// The local folder picker. `optionsJson` is

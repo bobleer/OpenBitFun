@@ -46,6 +46,7 @@ nsh-base = { version = "=0.7.1", default-features = false, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-macos-app = { version = "=0.7.1", default-features = false, optional = true }
 nsh-platform-macos = { version = "=0.7.1", default-features = false, optional = true }
+nsh-engine = { version = "=0.7.1", default-features = false, optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSURL"], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
@@ -74,6 +75,7 @@ runner = [
     "dep:nsh-base",
     "dep:nsh-macos-app",
     "dep:nsh-platform-macos",
+    "dep:nsh-engine",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
@@ -174,3 +176,7 @@ lto = false
 codegen-units = 16
 strip = false
 incremental = true
+
+[[example]]
+name = "genui_card_preview"
+required-features = ["runner"]

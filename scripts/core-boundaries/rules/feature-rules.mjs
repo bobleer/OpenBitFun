@@ -178,6 +178,7 @@ export const optionalDependencyFeatureOwnerRules = [
       { depName: 'openbitfun-agent-runtime', ownerFeatures: ['agent-runtime', 'ai-adapter-runtime'] },
       { depName: 'openbitfun-agent-workflows', ownerFeatures: ['deep-research'] },
       { depName: 'openbitfun-office-documents', ownerFeatures: ['tools-office-documents'] },
+      { depName: 'openbitfun-native-ui', ownerFeatures: ['tools-agent-control'] },
       { depName: 'openbitfun-agent-stream', ownerFeatures: ['agent-runtime'] },
       { depName: 'openbitfun-agent-tools', ownerFeatures: ['agent-runtime', 'local-storage', 'mcp-runtime'] },
       { depName: 'openbitfun-claude-code-adapter', ownerFeatures: ['external-sources'] },
@@ -1467,9 +1468,10 @@ export const coreClosedFeatureProfileRules = [
     requiredFeatureRefs: [
       'openbitfun-tool-packs/agent-control',
       'scheduled-jobs',
+      'dep:openbitfun-native-ui',
     ],
     exact: true,
-    reason: 'tools-agent-control must compose only session, subagent, planning, and scheduled-job tools',
+    reason: 'tools-agent-control must compose only session, subagent, planning, scheduled-job and NativeUI card tools',
   },
   {
     manifestPath: 'src/crates/assembly/core/Cargo.toml',
