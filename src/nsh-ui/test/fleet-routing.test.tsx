@@ -95,6 +95,7 @@ test("routing table: owner ids are read at the registry path; fleet verbs and co
   expect(isFleetPlainCommand("fleet_navigator")).toBe(true);
   expect(isFleetPlainCommand("fleet_call")).toBe(true);
   expect(isFleetPlainCommand("account_status")).toBe(true);
+  expect(isFleetPlainCommand("reveal_session_storage_directory")).toBe(true);
   expect(isFleetPlainCommand("peer_link_connect")).toBe(true);
   expect(isFleetPlainCommand("get_session_transcript_view")).toBe(false);
   expect(fleetOwnerKeyOf("get_session_transcript_view", { request: { session_id: "s-1" } })).toEqual({
@@ -230,6 +231,18 @@ test("controller-local commands and the entry's own fleet verbs go out plain", a
   expect(lastCall(connection, "fleet_navigator")).toEqual({ command: "fleet_navigator", args: { request: { sinceRevision: 3 } } });
   await invokeCommand("mesh_list_devices");
   expect(lastCall(connection, "mesh_list_devices").command).toBe("mesh_list_devices");
+  // A file-manager action needs the owner's connection even on a local-only
+  // fleet. Wrapping it as fleet_call downgrades it to account-device scope.
+  for (const request of [
+    { workspace_id: "ws-1" },
+    { workspace_id: "ws-1", session_id: "s-a1" },
+  ]) {
+    await invokeCommand("reveal_session_storage_directory", request);
+    expect(lastCall(connection, "reveal_session_storage_directory")).toEqual({
+      command: "reveal_session_storage_directory",
+      args: { request },
+    });
+  }
   const wrapped = connection.calls
     .filter(call => call.command === "fleet_call")
     .map(call => (call.args as { request: { command: string } }).request.command);

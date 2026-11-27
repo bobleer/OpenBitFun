@@ -718,7 +718,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     owner("reveal_external_source_location",                           Workspace, "request.workspaceId"),
     owner("reveal_in_explorer",                                        Workspace, "request.workspaceId"),
     target("reveal_models_dev_cache_directory"),
-    owner("reveal_session_storage_directory",                          Session,   "request.session_id"),
+    local("reveal_session_storage_directory"),
     target("review_platform_clear_auth_token"),
     owner("review_platform_get_issue",                                 Workspace, "request.workspaceId"),
     owner("review_platform_get_pull_request_ci_log",                   Workspace, "request.workspaceId"),
@@ -1098,6 +1098,11 @@ mod tests {
         ));
         assert_eq!(fleet_route("account_login"), FleetRoute::EntryLocal);
         assert_eq!(fleet_route("show_main_window"), FleetRoute::EntryLocal);
+        assert_eq!(
+            fleet_route("reveal_session_storage_directory"),
+            FleetRoute::EntryLocal,
+            "opening a local file manager must use the backend owner's connection"
+        );
         assert_eq!(
             fleet_route("get_workspace_info"),
             FleetRoute::ByTarget { reason: None },

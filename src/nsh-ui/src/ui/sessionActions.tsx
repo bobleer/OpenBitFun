@@ -13,7 +13,7 @@
 
 import { Clipboard, signal, Text, View, type JSX } from "nsh";
 import { revealInExplorer } from "../api";
-import { backendConnection, entryDeviceId, fleetActive, invokeCommand } from "../bridge";
+import { backendConnection, entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { forgetComposerDraft } from "../composerDraftStore";
 import { controllerPort } from "../controller/controllerPort";
 import { fleetDeviceById, refreshFleetNavigator } from "../fleetStore";
@@ -73,7 +73,7 @@ function afterRemoteChange(): void {
  * device's sessions qualify.
  */
 export function sessionIsOnThisMachine(target: Pick<SessionActionTarget, "deviceId">): boolean {
-  if (controllerPort()) return false;
+  if (controllerPort() || windowShellId() === "browser") return false;
   if (!fleetActive() || !target.deviceId) return true;
   return target.deviceId === entryDeviceId() || fleetDeviceById(target.deviceId)?.isClientDevice === true;
 }
@@ -156,7 +156,6 @@ async function revealSessionStorage(target: SessionActionTarget): Promise<void> 
     await invokeCommand<unknown>(
       "reveal_session_storage_directory",
       { workspace_id: target.workspaceId, session_id: target.sessionId },
-      routeOptions(target),
     );
   } catch (error) {
     pushToast(tr("shell.session.openStorageFailed", { error: errorText(error) }), "error");

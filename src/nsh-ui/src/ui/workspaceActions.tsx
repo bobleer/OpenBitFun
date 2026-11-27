@@ -50,6 +50,7 @@ import {
 import { Icon, type IconName } from "./icons";
 import { pressTransition, tactileActiveStyle } from "./motion";
 import { sessionIsOnThisMachine } from "./sessionActions";
+import { openWorkspaceSessionBatch, WorkspaceSessionBatchDialog } from "./workspaceSessionBatch";
 import { ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
 import { Button, focusRingStyle, IconButton, InlineBanner, SkeletonBlock, TextField } from "./primitives";
 
@@ -123,6 +124,17 @@ async function reveal(target: WorkspaceActionTarget): Promise<void> {
     await revealInExplorer(target.rootPath, target.workspaceId);
   } catch (error) {
     pushToast(tr("shell.ws.revealFailed", { error: errorText(error) }), "error");
+  }
+}
+
+async function revealStorage(target: WorkspaceActionTarget): Promise<void> {
+  try {
+    await invokeCommand<unknown>(
+      "reveal_session_storage_directory",
+      { workspace_id: target.workspaceId },
+    );
+  } catch (error) {
+    pushToast(tr("shell.session.openStorageFailed", { error: errorText(error) }), "error");
   }
 }
 
@@ -203,7 +215,7 @@ async function runAssistantAction(): Promise<void> {
 /**
  * The workspace ⋯ menu: start work here, then rename and the path, then the
  * SSH connection (workspaces of this machine's SSH connections), the assistant
- * reset/delete, and Close last.
+ * reset/delete, then batch session management and Close last.
  */
 export function workspaceMenuItems(
   target: WorkspaceActionTarget,
@@ -270,6 +282,15 @@ export function workspaceMenuItems(
       hint: local ? undefined : tr("workspace.revealOnlyHere"),
       accessibilityLabel: `workspace-menu-reveal-${key}`,
       onSelect: () => void reveal(target),
+    },
+    {
+      id: `workspace-storage-${key}`,
+      label: tr("shell.ws.openSessionStorage"),
+      icon: "folder-open",
+      disabled: !sessionIsOnThisMachine(target),
+      hint: sessionIsOnThisMachine(target) ? undefined : tr("workspace.revealOnlyHere"),
+      accessibilityLabel: `workspace-menu-storage-${key}`,
+      onSelect: () => void revealStorage(target),
     },
   ];
   const connectionId = record?.connectionId ?? target.connectionId;
@@ -362,15 +383,24 @@ export function workspaceMenuItems(
       },
     );
   }
-  items.push({
-    id: `workspace-close-${key}`,
-    label: tr("nav.closeWorkspace"),
-    icon: "close",
-    danger: !assistant,
-    separator: !assistant,
-    accessibilityLabel: `workspace-menu-close-${key}`,
-    onSelect: () => void close(target),
-  });
+  items.push(
+    {
+      id: `workspace-manage-sessions-${key}`,
+      label: tr("sessionBatch.manage"),
+      icon: "layers",
+      separator: true,
+      accessibilityLabel: `workspace-menu-manage-sessions-${key}`,
+      onSelect: () => void openWorkspaceSessionBatch(target),
+    },
+    {
+      id: `workspace-close-${key}`,
+      label: tr("nav.closeWorkspace"),
+      icon: "close",
+      danger: !assistant,
+      accessibilityLabel: `workspace-menu-close-${key}`,
+      onSelect: () => void close(target),
+    },
+  );
   return items;
 }
 
@@ -496,6 +526,7 @@ export function WorkspaceActionDialogs(): JSX.Element {
       </ModalDialog>
       <WorkspaceIconDialog />
       <TransferDialog />
+      <WorkspaceSessionBatchDialog />
     </>
   );
 }

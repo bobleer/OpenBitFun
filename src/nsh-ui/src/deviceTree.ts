@@ -142,7 +142,7 @@ export function loadWorkspaceSessions(deviceId: string, workspaceId: string, cou
   if (running) return running;
   const load = (async () => {
     try {
-      const page = await listSessions(workspaceId, count);
+      const page = await listSessions(workspaceId, count, undefined, deviceId ? { target: deviceId } : undefined);
       const rows = (page.sessions ?? []).filter(row => !isSessionArchived(row));
       const total = Math.max(rows.length, page.totalTopLevelCount ?? 0);
       workspacePages.update(all => ({ ...all, [key]: { rows, total } }));

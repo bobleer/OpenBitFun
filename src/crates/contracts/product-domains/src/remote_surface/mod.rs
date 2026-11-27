@@ -702,6 +702,7 @@ mod tests {
         let local: BTreeSet<&str> = controller_local_commands().collect();
         for anchor in [
             "show_main_window",
+            "reveal_session_storage_directory",
             "account_login",
             "account_github_start",
             "account_github_poll",

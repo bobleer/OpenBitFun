@@ -168,12 +168,13 @@ export const listSessions = async (
   workspaceId: string,
   limit: number,
   cursor?: string,
+  options?: { target: string },
 ): Promise<SessionPage> => {
   const page = await invokeCommand<SessionPage>("list_persisted_sessions_page", {
     workspace_id: workspaceId,
     limit,
     ...(cursor ? { cursor } : {}),
-  });
+  }, options);
   // The host derives each row's read state; an older host only has the raw
   // receipt on the row, which says the same thing without the split.
   const attention = new Map<string, { unread?: boolean; failed?: boolean }>();

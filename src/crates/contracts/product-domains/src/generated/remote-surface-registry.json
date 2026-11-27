@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:8e7fd25f6c43a7f3",
+  "digest": "fnv1a64:71a7d73c01f3eb0e",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -7502,7 +7502,7 @@
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "operator_only"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
@@ -13565,9 +13565,7 @@
     {
       "id": "reveal_session_storage_directory",
       "route": {
-        "kind": "by_owner",
-        "entity": "session",
-        "path": "request.session_id"
+        "kind": "entry_local"
       }
     },
     {
