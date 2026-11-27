@@ -81,6 +81,7 @@ import {
 } from "../composerStatusStore";
 import { permissionMode } from "../permissionPolicyStore";
 import { transcriptPlanArtifact } from "../planToolArtifact";
+import { TurnJumpRail, type TurnJumpPreviewData } from "../ui/TurnJumpRail";
 import { PlanArtifactCard, type PlanArtifactOwner } from "../ui/PlanArtifactCard";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import {
@@ -5042,12 +5043,6 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
   );
 }
 
-interface TurnJumpPreviewData {
-  prompt: string;
-  reply: string;
-  timestamp?: number;
-}
-
 function collapsedExcerpt(text: string, maxChars: number): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (compact.length <= maxChars) return compact;
@@ -5070,249 +5065,13 @@ function turnReplyExcerpt(turn: unknown): string {
   return collapsedExcerpt(combined, 220);
 }
 
-function turnJumpPreview(
-  rows: ReadonlyArray<{ key: string; turn: unknown }>,
-  key: string,
-): TurnJumpPreviewData | null {
-  const row = rows.find(item => item.key === key);
+function turnJumpPreviewFromRow(row: { key: string; turn: unknown } | undefined): TurnJumpPreviewData | null {
   if (!row) return null;
   return {
     prompt: turnPromptExcerpt(row.turn),
     reply: turnReplyExcerpt(row.turn),
     timestamp: turnTimestampOf(row.turn),
   };
-}
-
-/**
- * Subtle left-edge turn minimap shared by Primary, Secondary Split, and BTW panes:
- * thin horizontal hairlines (one per turn) that thicken on hover with an anchored
- * preview card, and scroll directly to that turn on click.
- */
-function TurnJumpRail(props: {
-  rows: () => ReadonlyArray<{ key: string }>;
-  previewOf: (key: string) => TurnJumpPreviewData | null;
-  activeKey: () => string;
-  onJump: (key: string) => void;
-  accessibilityLabel?: string;
-  tickPrefix?: string;
-}) {
-  const localHoveredKey = signal("");
-  const localHoveredAnchor = signal<ViewRef | null>(null);
-  const visible = computed(() => !compactLayout() && props.rows().length >= 2);
-  const dense = computed(() => props.rows().length > 24);
-  const resolvedActiveKey = computed(() => {
-    const current = props.activeKey();
-    const list = props.rows();
-    if (current && list.some(row => row.key === current)) return current;
-    return list[list.length - 1]?.key ?? "";
-  });
-  const hoveredEntry = computed(() => {
-    const key = localHoveredKey();
-    if (!key) return null;
-    const list = props.rows();
-    const index = list.findIndex(row => row.key === key);
-    if (index < 0) return null;
-    const preview = props.previewOf(key);
-    if (!preview) return null;
-    return { key, ...preview, index, total: list.length };
-  });
-
-  const tickPrefix = props.tickPrefix ?? "turn-jump-";
-
-  const renderTicks = () => (
-    <View style={{ alignItems: "flex-start" }}>
-      <Each of={props.rows()} key={row => row.key}>
-        {(row, index) => {
-          let tickRef: ViewRef | null = null;
-          const key = () => row().key;
-          const isHovered = () => localHoveredKey() === key();
-          const isActive = () => resolvedActiveKey() === key();
-          return (
-            <View
-              ref={el => {
-                tickRef = el;
-              }}
-              role="button"
-              accessibilityLabel={`${tickPrefix}${index() + 1}`}
-              accessibilityState={{ selected: isActive() }}
-              onMouseEnter={() => {
-                localHoveredKey.set(key());
-                localHoveredAnchor.set(tickRef);
-              }}
-              onMouseLeave={() => {
-                if (localHoveredKey() === key()) {
-                  localHoveredKey.set("");
-                  localHoveredAnchor.set(null);
-                }
-              }}
-              onPress={() => props.onJump(key())}
-              style={{
-                width: 24,
-                height: dense() ? 8 : 12,
-                justifyContent: "center",
-                alignItems: "flex-start",
-                cursor: "pointer",
-                userSelect: "none",
-              }}
-              focusVisibleStyle={focusRingStyle(-1)}
-            >
-              <View
-                style={{
-                  width: 9,
-                  height: 2,
-                  borderRadius: radii.pill,
-                  transformOrigin: "left center",
-                  pointerEvents: "none",
-                  backgroundColor: isHovered() || isActive() ? palette().text : palette().borderStrong,
-                  opacity: isHovered() ? 1 : isActive() ? 0.9 : 0.55,
-                  transform: isHovered()
-                    ? [{ scaleX: 2.0 }, { scaleY: 1.75 }]
-                    : isActive()
-                      ? [{ scaleX: 1.45 }, { scaleY: 1.25 }]
-                      : [{ scaleX: 1 }, { scaleY: 1 }],
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-              />
-            </View>
-          );
-        }}
-      </Each>
-    </View>
-  );
-
-  return (
-    <If when={visible()}>
-      <View
-        accessibilityLabel={props.accessibilityLabel ?? "turn-jump-rail"}
-        style={{
-          position: "absolute",
-          left: 8,
-          top: space.xl,
-          bottom: space.xl,
-          justifyContent: "center",
-          pointerEvents: "box-none",
-        }}
-      >
-        <View
-          style={{
-            paddingVertical: space.xs,
-            paddingRight: space.xs,
-            pointerEvents: "auto",
-          }}
-        >
-          <If when={props.rows().length > 32} else={renderTicks()}>
-            <Scroll smoothWheel style={{ maxHeight: 360 }} scrollbar={false}>
-              {renderTicks()}
-            </Scroll>
-          </If>
-        </View>
-
-        <If when={Boolean(hoveredEntry() && localHoveredAnchor())}>
-          <Overlay
-            anchor={localHoveredAnchor()}
-            placement="right"
-            align="center"
-            offset={10}
-            margin={12}
-          >
-            <TurnJumpPreview entry={hoveredEntry} />
-          </Overlay>
-        </If>
-      </View>
-    </If>
-  );
-}
-
-function TurnJumpPreview(props: {
-  entry: () => (TurnJumpPreviewData & { key: string; index: number; total: number }) | null;
-}) {
-  const motion = enterMotion("fadeIn", MOTION_DURATION.fast);
-  return (
-    <If when={props.entry()}>
-      {current => (
-        <View
-          accessibilityLabel="turn-jump-preview"
-          style={[
-            {
-              width: 312,
-              paddingHorizontal: space.lg,
-              paddingVertical: space.md,
-              borderRadius: radii.lg,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderStrong,
-              backgroundColor: palette().glassOverlayBg,
-              backdropFilter: "blur(16px)",
-              boxShadow: palette().shadowOverlay,
-              gap: space.xs,
-              pointerEvents: "none",
-            },
-            motion.style,
-          ]}
-        >
-          <If when={current().prompt}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(13),
-                lineHeight: textLineHeight(13, 1.4),
-                fontWeight: "600",
-                numberOfLines: 2,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {current().prompt}
-            </Text>
-          </If>
-          <If when={current().reply}>
-            <Text
-              style={{
-                color: palette().textSecondary,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.45),
-                numberOfLines: 3,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {current().reply}
-            </Text>
-          </If>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: space.sm,
-              paddingTop: space.hair,
-            }}
-          >
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-              }}
-            >
-              {tr("sessions.turnPosition", { current: current().index + 1, total: current().total })}
-            </Text>
-            <If when={current().timestamp ? formatTimestamp(current().timestamp) : ""}>
-              {formatted => (
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.3),
-                  }}
-                >
-                  {formatted()}
-                </Text>
-              )}
-            </If>
-          </View>
-        </View>
-      )}
-    </If>
-  );
 }
 
 interface SessionTranscriptListProps {
@@ -5370,6 +5129,11 @@ interface SessionTranscriptListProps {
 function SessionTranscriptList(props: SessionTranscriptListProps) {
   const prefix = props.cardPrefix ?? "";
   const fallbackItems = () => props.liveFallbackItems?.() ?? [];
+  const turnRowsByKey = computed(() => {
+    const map = new Map<string, TurnRow>();
+    for (const row of props.visibleTurnRows()) map.set(row.key, row);
+    return map;
+  });
   let deferredEarlierLoad: ReturnType<typeof setTimeout> | null = null;
   cleanup(() => {
     if (deferredEarlierLoad) clearTimeout(deferredEarlierLoad);
@@ -5570,7 +5334,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
 
       <TurnJumpRail
         rows={props.visibleTurnRows}
-        previewOf={key => turnJumpPreview(props.visibleTurnRows(), key)}
+        previewOf={key => turnJumpPreviewFromRow(turnRowsByKey().get(key))}
         activeKey={props.activeRailKey}
         onJump={props.onJumpTurn}
         accessibilityLabel={props.railAccessibilityLabel}
@@ -11792,8 +11556,13 @@ function BtwSessionPane(props?: { compact?: boolean }) {
     return first ? collapsedExcerpt(first, 40) : "";
   });
   const btwJumpRows = computed(() => history().map(item => ({ key: item.requestId })));
+  const btwHistoryByKey = computed(() => {
+    const map = new Map<string, (ReturnType<typeof history>)[number]>();
+    for (const entry of history()) map.set(entry.requestId, entry);
+    return map;
+  });
   const btwPreviewOf = (key: string): TurnJumpPreviewData | null => {
-    const item = history().find(entry => entry.requestId === key);
+    const item = btwHistoryByKey().get(key);
     if (!item) return null;
     return {
       prompt: collapsedExcerpt(item.question, 140),

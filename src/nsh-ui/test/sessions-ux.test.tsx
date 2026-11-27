@@ -1003,11 +1003,17 @@ test("a long history opens on its newest turns and loads earlier ones on request
     transcriptCalls.filter(call => typeof call.before_turn_index === "number").length > beforeCount,
   );
   // Earlier turns prepend without jumping the viewport away from Answer 24,
-  // and the jump rail reflects all 20 loaded turns (5..24) so jumping to
-  // turn 1 reveals Answer 5 cleanly.
+  // and the jump rail reflects the loaded turns (folding earliest turns when > 20)
+  // so jumping to the earliest turn reveals Answer 5 cleanly.
   expect(app.texts().join("\n")).toContain("Answer 24");
   await app.waitFor("turn-jump-20");
-  await app.press("turn-jump-1");
+  if (app.shows("turn-jump-group-1-5")) {
+    await app.press("turn-jump-group-1-5");
+    await app.waitFor("turn-jump-item-1");
+    await app.press("turn-jump-item-1");
+  } else {
+    await app.press("turn-jump-1");
+  }
   await app.waitFor("Answer 5");
   // Never re-fetched a full 24-turn window.
   expect(transcriptCalls.every(call => Number(call.limit ?? 0) <= 10)).toBe(true);
@@ -1083,8 +1089,11 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   await app.press(fullReply!);
   await app.waitFor("Paragraph 599: the long reply keeps going.");
 
-  // Jumping to Turn 1 mounts it on demand; its settled tool card stays collapsed until pressed.
-  await app.press("turn-jump-1");
+  // Jumping to Turn 1 through the folded [1–100] rail bucket mounts it on demand;
+  // its settled tool card stays collapsed until pressed.
+  await app.press("turn-jump-group-1-100");
+  await app.waitFor("turn-jump-item-1");
+  await app.press("turn-jump-item-1");
   await app.waitFor("Question 1");
   const outputShown = () => app.texts().some(text => text.includes("step 1 done"));
   expect(outputShown()).toBe(false);
@@ -1112,7 +1121,9 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   await send("agentic://session-history-changed", { settledTurnId: "perf-live" });
   await app.waitFor("Streaming response…", { state: "gone", timeout: 10_000 });
   // Jumping back to Turn 1 confirms the settled card the reader opened stays open across reload.
-  await app.press("turn-jump-1");
+  await app.press("turn-jump-group-1-100");
+  await app.waitFor("turn-jump-item-1");
+  await app.press("turn-jump-item-1");
   await app.waitUntil(outputShown);
 }, 120_000);
 
