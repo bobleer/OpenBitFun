@@ -409,7 +409,7 @@ import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import { Icon, type IconName } from "../ui/icons";
-import { ChatComposer, chatComposerMetrics } from "../ui/ChatComposer";
+import { CHAT_COMPOSER_MAX_LINES, ChatComposer, chatComposerMetrics } from "../ui/ChatComposer";
 import { SessionReferenceChip } from "../ui/SessionReferenceChip";
 import { PromptReferenceText } from "../ui/PromptReferenceText";
 import { PromptReferenceEditor, promptReferenceEditorAvailable, type ComposerInputHandle } from "../ui/PromptReferenceEditor";
@@ -6776,9 +6776,9 @@ function ComposerAttachmentStrip(props: {
     <If when={props.images().length > 0 || props.files().length > 0 || (props.references?.().length ?? 0) > 0 || noticeText().length > 0}>
       <View
         style={{
-          paddingHorizontal: space.md,
-          paddingTop: space.sm,
-          paddingBottom: 0,
+          paddingHorizontal: 0,
+          paddingTop: 0,
+          paddingBottom: space.sm,
           flexDirection: "row",
           flexWrap: "wrap",
           alignItems: "center",
@@ -7263,7 +7263,6 @@ interface SessionComposerProps {
   disabled?: () => boolean;
   running: () => boolean;
   canSend: () => boolean;
-  newSession?: () => boolean;
   compact?: () => boolean;
   images: () => ImageAttachment[];
   files: () => FileAttachment[];
@@ -7329,8 +7328,8 @@ function SessionComposer(props: SessionComposerProps) {
   const isDisabled = () => Boolean(props.disabled?.());
   const touch = () => isCompact() || compactLayout();
   const editorFontSize = () => touch() ? Math.max(16, textSize(chatComposerMetrics.textSize)) : textSize(chatComposerMetrics.textSize);
-  const forceExpanded = () => touch() || richDraft() || Boolean(props.newSession?.()) || props.images().length > 0 ||
-    props.files().length > 0 || (props.references?.().length ?? 0) > 0 || Boolean(props.attachmentNotice?.());
+  const editorLineHeight = () => Math.round(editorFontSize() * 1.5);
+  const editorMaxHeight = () => editorLineHeight() * CHAT_COMPOSER_MAX_LINES;
   const btwMode = props.pane === "btw";
   let localInputRef: InputRef | undefined;
   let richInputRef: ComposerInputHandle | undefined;
@@ -7472,9 +7471,6 @@ function SessionComposer(props: SessionComposerProps) {
         belowCard={props.belowCard}
       >
         <ChatComposer
-          value={props.draft}
-          forceExpanded={forceExpanded}
-          editorFontSize={editorFontSize}
           cardRef={props.cardRef}
           dragging={localDrag()}
           attachmentStrip={
@@ -7489,7 +7485,7 @@ function SessionComposer(props: SessionComposerProps) {
               onRemoveReference={props.onRemoveReference}
             />
           }
-          editor={expanded => (
+          editor={
             <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
               <If when={richDraft()} else={<Input
                 ref={el => {
@@ -7506,12 +7502,12 @@ function SessionComposer(props: SessionComposerProps) {
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  minHeight: expanded() ? chatComposerMetrics.editorMinHeight : chatComposerMetrics.compactTrackHeight,
-                  maxHeight: expanded() ? textLineHeight(chatComposerMetrics.textSize, 1.5) * 5 : chatComposerMetrics.compactTrackHeight,
+                  minHeight: editorLineHeight(),
+                  maxHeight: editorMaxHeight(),
                   padding: 0,
                   fontFamily: inputFontSans(),
                   fontSize: editorFontSize(),
-                  lineHeight: touch() ? textLineHeight(16, 1.5) : textLineHeight(chatComposerMetrics.textSize, 1.5),
+                  lineHeight: editorLineHeight(),
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
@@ -7557,9 +7553,9 @@ function SessionComposer(props: SessionComposerProps) {
                   placeholder={props.placeholder()}
                   disabled={isDisabled()}
                   fontSize={editorFontSize()}
-                  lineHeight={touch() ? textLineHeight(16, 1.5) : textLineHeight(chatComposerMetrics.textSize, 1.5)}
-                  minHeight={expanded() ? chatComposerMetrics.editorMinHeight : chatComposerMetrics.compactTrackHeight}
-                  maxHeight={textLineHeight(chatComposerMetrics.textSize, 1.5) * 5}
+                  lineHeight={editorLineHeight()}
+                  minHeight={editorLineHeight()}
+                  maxHeight={editorMaxHeight()}
                   pickerOpen={() => mentionOpen() && mentionInline() &&
                     mentionPane() === (props.pane === 1 ? "secondary" : "primary")}
                   onChange={applyDraftValue}
@@ -7604,9 +7600,8 @@ function SessionComposer(props: SessionComposerProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
-                    marginTop: 2,
                     width: compactLayout() ? layout.touchTarget : 32,
-                    height: compactLayout() ? layout.touchTarget : 22,
+                    height: compactLayout() ? layout.touchTarget : editorLineHeight(),
                     borderRadius: radii.pill,
                     borderWidth: 1,
                     borderColor: palette().borderSubtle,
@@ -7636,7 +7631,7 @@ function SessionComposer(props: SessionComposerProps) {
                 </View>
               </If>
             </View>
-          )}
+          }
           startActions={
             <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.xs }}>
               <View
@@ -7979,8 +7974,6 @@ function ComposerDock() {
       }
       disabled={composerDisabled}
       running={() => Boolean(runningTurnId())}
-      newSession={() => !!activeSessionId() && !runningTurnId() && !turnsLoading() &&
-        sessionTurns().length === 0 && (activeSession()?.messageCount ?? 0) === 0}
       canSend={hasPayload}
       compact={sessionsCompact}
       images={imageAttachments}
@@ -11274,8 +11267,6 @@ function SecondaryComposerDock() {
           : tr("session.placeholder")
       }
       running={() => Boolean(secondaryRunningTurnId())}
-      newSession={() => !!secondarySessionId() && !secondaryRunningTurnId() && !secondaryTurnsLoading() &&
-        secondaryTurns().length === 0 && (secondarySessionSummary()?.messageCount ?? 0) === 0}
       canSend={canSend}
       images={secondaryImageAttachments}
       files={secondaryFileAttachments}

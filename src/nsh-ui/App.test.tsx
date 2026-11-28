@@ -498,25 +498,56 @@ test("editing or cancelling a queued message never wipes the currently running t
   expect(app.texts()).toContain("Searching now...");
 });
 
-test("the session composer expands for wrapped drafts and keeps the same input and send behavior", async () => {
+test("the session composer defaults to one input row above its controls and grows up to five lines", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  const height = () => app.layout("id:chat-composer-surface")?.height ?? 0;
+  const surfaceHeight = () => app.layout("id:chat-composer-surface")?.height ?? 0;
+  const inputHeight = () => app.layout("composer")?.height ?? 0;
   await app.waitFor("composer");
-  await app.waitUntil(() => height() === 42);
-  const short = app.layout("composer")!;
-  expect(app.layout("composer-plus")!.x).toBeLessThan(short.x);
-  expect(app.layout("bot-capsule-trigger")!.x).toBeGreaterThan(short.x);
 
-  await app.type("composer", "A draft long enough to wrap in the text track. ".repeat(14));
-  await app.waitUntil(() => height() >= 120);
-  expect(app.layout("composer")!.y).toBeLessThan(app.layout("composer-plus")!.y);
+  // Default state: 1-line text input above the action button row.
+  const baseInputHeight = inputHeight();
+  const baseSurfaceHeight = surfaceHeight();
+  expect(baseInputHeight).toBe(20);
+  expect(baseSurfaceHeight).toBeGreaterThan(baseInputHeight);
+  expect(baseSurfaceHeight).toBeLessThan(100);
+  expect(app.layout("composer")!.y + baseInputHeight).toBeLessThan(app.layout("composer-plus")!.y);
+  expect(app.layout("composer")!.y + baseInputHeight).toBeLessThan(app.layout("bot-capsule-trigger")!.y);
+
+  // Typing explicit newlines grows the text input line-by-line up to 5 lines and caps there.
+  await app.type("composer", "Line 1");
+  await app.keyboard.press("shift+enter");
+  await app.type("composer", "Line 2");
+  await app.waitUntil(() => inputHeight() === baseInputHeight * 2);
+  expect(surfaceHeight()).toBe(baseSurfaceHeight + baseInputHeight);
+
+  await app.keyboard.press("shift+enter");
+  await app.type("composer", "Line 3");
+  await app.waitUntil(() => inputHeight() === baseInputHeight * 3);
+
+  for (let line = 4; line <= 7; line += 1) {
+    await app.keyboard.press("shift+enter");
+    await app.type("composer", `Line ${line}`);
+  }
+  await app.waitUntil(() => inputHeight() === baseInputHeight * 5);
+  const cappedSurfaceHeight = surfaceHeight();
+  expect(cappedSurfaceHeight).toBe(baseSurfaceHeight + baseInputHeight * 4);
+
+  // Clearing shrinks back to the 1-line default.
   await app.clear("composer");
-  await app.waitUntil(() => height() === 42);
+  await app.waitUntil(() => inputHeight() === baseInputHeight && surfaceHeight() === baseSurfaceHeight);
 
+  // Long wrapped prose also grows and caps at 5 lines.
+  await app.type("composer", "A draft long enough to wrap past five lines inside the composer input. ".repeat(14));
+  await app.waitUntil(() => inputHeight() === baseInputHeight * 5);
+  expect(surfaceHeight()).toBe(cappedSurfaceHeight);
+  await app.clear("composer");
+  await app.waitUntil(() => inputHeight() === baseInputHeight && surfaceHeight() === baseSurfaceHeight);
+
+  // Shift+Enter inserts a newline without sending; Return submits.
   await app.type("composer", "First line");
   await app.keyboard.press("shift+enter");
-  await app.waitUntil(() => height() >= 120);
+  await app.waitUntil(() => inputHeight() === baseInputHeight * 2);
   expect(app.value("composer")).toBe("First line\n");
   expect(backend.userMessages).toHaveLength(0);
   await app.submit("composer");
