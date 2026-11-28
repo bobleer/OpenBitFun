@@ -1,10 +1,18 @@
 #[cfg(not(mobile))]
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 #[cfg(any(target_os = "windows", test))]
-use std::sync::{Arc, RwLock};
-#[cfg(any(target_os = "windows", test))]
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
+
+/// OpenBitFun: RFC 2544 benchmarking range (`198.18.0.0/15`), commonly bound by
+/// local proxy fake-IP TUN adapters (Clash/Mihomo, Surge, Sing-box). It is
+/// never a real physical LAN interface address.
+pub(crate) fn is_proxy_fake_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 198 && (b & 0xfe) == 18
+}
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
@@ -253,12 +261,12 @@ impl InterfaceFilter {
         );
         !self.state.is_point_to_point
             && !self.state.is_loopback
-            && self
-                .iface
-                .addr
-                .iter()
-                .map(|ip| ip.ip())
-                .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
+            && self.iface.addr.iter().map(|ip| ip.ip()).any(|ip| {
+                !ip.is_loopback()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && !matches!(ip, IpAddr::V4(v4) if is_proxy_fake_ipv4(v4))
+            })
             && has_nonzero_mac(&self.iface)
     }
 }
@@ -473,7 +481,8 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
         for ip in iface.addr {
             let ip: std::net::IpAddr = ip.ip();
             if let std::net::IpAddr::V4(v4) = ip {
-                if ip.is_loopback() || ip.is_multicast() {
+                // OpenBitFun: exclude proxy fake-IP TUN addresses (198.18.0.0/15).
+                if ip.is_loopback() || ip.is_multicast() || is_proxy_fake_ipv4(v4) {
                     continue;
                 }
                 ret.interface_ipv4s.push(v4.into());
@@ -496,7 +505,9 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
 
     if let Ok(v4_addr) = local_ipv4().await {
         tracing::trace!("got local ipv4: {}", v4_addr);
-        if !ret.interface_ipv4s.contains(&v4_addr.into()) {
+        // OpenBitFun: do not re-inject a proxy fake-IP TUN (198.18.0.0/15) into
+        // `interface_ipv4s` when `local_ipv4()` routes through Clash/Mihomo TUN.
+        if !is_proxy_fake_ipv4(v4_addr) && !ret.interface_ipv4s.contains(&v4_addr.into()) {
             ret.interface_ipv4s.push(v4_addr.into());
         }
     }
@@ -509,6 +520,347 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
     }
 
     ret
+}
+
+/// OpenBitFun: returns the underlying physical default-route IPv4 interface
+/// name when a local proxy fake-IP TUN (`198.18.0.0/15`) hijacks the OS IPv4
+/// default route; returns `None` when the default route is already direct.
+#[cfg(not(mobile))]
+pub(crate) fn proxy_tun_bypass_interface(net_ns: &NetNS) -> Option<String> {
+    const CACHE_TTL: Duration = Duration::from_secs(5);
+    static CACHE: RwLock<Option<(Instant, Option<String>)>> = RwLock::new(None);
+
+    if net_ns.name().is_none()
+        && let Some((at, iface)) = CACHE.read().ok().and_then(|guard| guard.clone())
+        && at.elapsed() < CACHE_TTL
+    {
+        return iface;
+    }
+
+    let resolved = {
+        let _g = net_ns.guard();
+        detect_proxy_tun_bypass_interface_in_current_namespace()
+    };
+
+    if net_ns.name().is_none()
+        && let Ok(mut guard) = CACHE.write()
+    {
+        *guard = Some((Instant::now(), resolved.clone()));
+    }
+    resolved
+}
+
+#[cfg(mobile)]
+pub(crate) fn proxy_tun_bypass_interface(_net_ns: &NetNS) -> Option<String> {
+    None
+}
+
+#[cfg(not(mobile))]
+fn default_route_local_ipv4_sync() -> Option<Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) => Some(ip),
+        IpAddr::V6(_) => None,
+    }
+}
+
+#[cfg(not(mobile))]
+fn is_valid_physical_bypass_iface(
+    iface: &NetworkInterface,
+    states: &HashMap<String, InterfaceState>,
+) -> bool {
+    let state = interface_state(iface, states);
+    if state.is_loopback || state.is_point_to_point || !state.is_up {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if !state.is_lower_up {
+            return false;
+        }
+        let tun_path = format!("/sys/class/net/{}/tun_flags", iface.name);
+        if std::fs::metadata(tun_path).is_ok() {
+            return false;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if !has_nonzero_mac(iface) {
+            return false;
+        }
+    }
+    iface.addr.iter().any(|addr| match addr.ip() {
+        IpAddr::V4(v4) => {
+            !v4.is_loopback()
+                && !v4.is_unspecified()
+                && !v4.is_multicast()
+                && !v4.is_link_local()
+                && !is_proxy_fake_ipv4(v4)
+        }
+        IpAddr::V6(_) => false,
+    })
+}
+
+#[cfg(not(mobile))]
+fn detect_proxy_tun_bypass_interface_in_current_namespace() -> Option<String> {
+    let default_ip = default_route_local_ipv4_sync()?;
+    if !is_proxy_fake_ipv4(default_ip) {
+        return None;
+    }
+    find_physical_default_ipv4_interface()
+}
+
+#[cfg(not(mobile))]
+fn find_physical_default_ipv4_interface() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let ifaces = get_interfaces_cached()?;
+    #[cfg(not(target_os = "windows"))]
+    let ifaces = NetworkInterface::show().ok()?;
+
+    let states = collect_interface_states();
+    let valid_names: std::collections::HashSet<&str> = ifaces
+        .iter()
+        .filter(|iface| is_valid_physical_bypass_iface(iface, &states))
+        .map(|iface| iface.name.as_str())
+        .collect();
+    if valid_names.is_empty() {
+        return None;
+    }
+
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+    {
+        for name in macos_default_ipv4_route_interfaces() {
+            if valid_names.contains(name.as_str()) {
+                return Some(name);
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    {
+        if let Ok(table) = std::fs::read_to_string("/proc/net/route") {
+            for name in parse_linux_default_ipv4_routes(&table) {
+                if valid_names.contains(name.as_str()) {
+                    return Some(name);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for if_index in windows_default_ipv4_route_if_indices() {
+            if let Some(iface) = ifaces
+                .iter()
+                .find(|iface| iface.index == if_index && valid_names.contains(iface.name.as_str()))
+            {
+                return Some(iface.name.clone());
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+fn macos_default_ipv4_route_interfaces() -> Vec<String> {
+    use nix::libc;
+
+    // BSD <net/route.h> sockaddr alignment on macOS (uint32_t / 4 bytes).
+    fn roundup_sa(sa_len: usize) -> usize {
+        if sa_len == 0 { 4 } else { (sa_len + 3) & !3 }
+    }
+
+    fn is_zero_ipv4_sockaddr(slice: &[u8], allow_compact_zero_mask: bool) -> bool {
+        let Some(&sa_len) = slice.first() else {
+            return false;
+        };
+        let sa_len = usize::from(sa_len);
+        if allow_compact_zero_mask && sa_len <= 4 {
+            return true;
+        }
+        if sa_len < 8 || slice.len() < 8 {
+            return false;
+        }
+        let sa_family = slice[1];
+        if !allow_compact_zero_mask && i32::from(sa_family) != libc::AF_INET {
+            return false;
+        }
+        slice[4..8] == [0, 0, 0, 0]
+    }
+
+    const RTF_IFSCOPE: libc::c_int = 0x0100_0000;
+    let mut mib = [
+        libc::CTL_NET,
+        libc::PF_ROUTE,
+        0,
+        libc::AF_INET,
+        libc::NET_RT_DUMP,
+        0,
+    ];
+    let mut buf = Vec::new();
+    for _ in 0..2 {
+        let mut needed: libc::size_t = 0;
+        let ret = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                std::ptr::null_mut(),
+                &mut needed,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret != 0 || needed == 0 {
+            return Vec::new();
+        }
+        buf.resize(needed, 0u8);
+        let ret = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                buf.as_mut_ptr().cast(),
+                &mut needed,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret == 0 {
+            buf.truncate(needed);
+            break;
+        }
+        buf.clear();
+    }
+
+    let hdr_size = std::mem::size_of::<libc::rt_msghdr>();
+    let mut candidates: Vec<(bool, String)> = Vec::new();
+    let mut offset = 0usize;
+    while offset + hdr_size <= buf.len() {
+        let hdr =
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const libc::rt_msghdr) };
+        let msglen = usize::from(hdr.rtm_msglen);
+        if msglen < hdr_size || offset + msglen > buf.len() {
+            break;
+        }
+        let next_offset = offset + msglen;
+
+        let is_up_gateway = (hdr.rtm_flags & libc::RTF_UP) != 0
+            && (hdr.rtm_flags & libc::RTF_GATEWAY) != 0
+            && hdr.rtm_index != 0
+            && (hdr.rtm_addrs & libc::RTA_DST) != 0
+            && (hdr.rtm_addrs & libc::RTA_NETMASK) != 0;
+
+        if is_up_gateway {
+            let mut pos = offset + hdr_size;
+            let mut dst_is_default = false;
+            let mut mask_is_default = false;
+            for bit in 0..=2 {
+                let flag = 1 << bit;
+                if (hdr.rtm_addrs & flag) == 0 {
+                    continue;
+                }
+                if pos >= next_offset {
+                    break;
+                }
+                let slice = &buf[pos..next_offset];
+                let sa_len = usize::from(slice[0]);
+                if flag == libc::RTA_DST {
+                    dst_is_default = is_zero_ipv4_sockaddr(slice, false);
+                } else if flag == libc::RTA_NETMASK {
+                    mask_is_default = is_zero_ipv4_sockaddr(slice, true);
+                }
+                pos = pos.saturating_add(roundup_sa(sa_len));
+            }
+            if dst_is_default && mask_is_default {
+                let mut name_buf = [0 as libc::c_char; libc::IFNAMSIZ];
+                let name_ptr = unsafe {
+                    libc::if_indextoname(u32::from(hdr.rtm_index), name_buf.as_mut_ptr())
+                };
+                if !name_ptr.is_null()
+                    && let Ok(name) = unsafe { std::ffi::CStr::from_ptr(name_ptr) }.to_str()
+                {
+                    let is_ifscope = (hdr.rtm_flags & RTF_IFSCOPE) != 0;
+                    candidates.push((is_ifscope, name.to_owned()));
+                }
+            }
+        }
+        offset = next_offset;
+    }
+
+    // Prefer global default routes before interface-scoped default routes.
+    candidates.sort_by_key(|(is_ifscope, _)| *is_ifscope);
+    let mut out = Vec::new();
+    for (_, name) in candidates {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+#[cfg(any(all(target_os = "linux", not(target_env = "ohos")), test))]
+fn parse_linux_default_ipv4_routes(proc_net_route: &str) -> Vec<String> {
+    let mut entries: Vec<(u32, String)> = Vec::new();
+    for line in proc_net_route.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 8 {
+            continue;
+        }
+        let iface = cols[0];
+        let dest = cols[1];
+        let flags = u32::from_str_radix(cols[3], 16).unwrap_or(0);
+        let metric = cols[6].parse::<u32>().unwrap_or(u32::MAX);
+        let mask = cols[7];
+        // RTF_UP (0x1) | default 0.0.0.0/0
+        if (flags & 0x1) != 0 && dest == "00000000" && mask == "00000000" {
+            entries.push((metric, iface.to_owned()));
+        }
+    }
+    entries.sort_by_key(|(metric, _)| *metric);
+    let mut out = Vec::new();
+    for (_, iface) in entries {
+        if !out.contains(&iface) {
+            out.push(iface);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "windows")]
+fn windows_default_ipv4_route_if_indices() -> Vec<u32> {
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
+    use windows::Win32::NetworkManagement::IpHelper::{GetIpForwardTable, MIB_IPFORWARDTABLE};
+
+    let mut size: u32 = 0;
+    let status = unsafe { GetIpForwardTable(None, &mut size, false) };
+    if status != ERROR_INSUFFICIENT_BUFFER.0 && status != NO_ERROR.0 || size == 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; size as usize];
+    let status = unsafe { GetIpForwardTable(Some(buf.as_mut_ptr().cast()), &mut size, false) };
+    if status != NO_ERROR.0 {
+        return Vec::new();
+    }
+    if (size as usize) < std::mem::size_of::<MIB_IPFORWARDTABLE>() {
+        return Vec::new();
+    }
+    let table = unsafe { &*(buf.as_ptr() as *const MIB_IPFORWARDTABLE) };
+    let count = table.dwNumEntries as usize;
+    let rows = unsafe { std::slice::from_raw_parts(table.table.as_ptr(), count) };
+    let mut entries: Vec<(u32, u32)> = rows
+        .iter()
+        .filter(|row| row.dwForwardDest == 0 && row.dwForwardMask == 0)
+        .map(|row| (row.dwForwardMetric1, row.dwForwardIfIndex))
+        .collect();
+    entries.sort_by_key(|(metric, _)| *metric);
+    let mut out = Vec::new();
+    for (_, idx) in entries {
+        if !out.contains(&idx) {
+            out.push(idx);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -529,6 +881,46 @@ mod tests {
             ip_mask_to_prefix(IpAddr::V4("255.0.255.0".parse().unwrap())),
             Err(())
         );
+    }
+
+    #[test]
+    fn recognizes_proxy_fake_ipv4_range() {
+        assert!(is_proxy_fake_ipv4(Ipv4Addr::new(198, 18, 0, 0)));
+        assert!(is_proxy_fake_ipv4(Ipv4Addr::new(198, 18, 0, 1)));
+        assert!(is_proxy_fake_ipv4(Ipv4Addr::new(198, 19, 255, 255)));
+        assert!(!is_proxy_fake_ipv4(Ipv4Addr::new(198, 17, 255, 255)));
+        assert!(!is_proxy_fake_ipv4(Ipv4Addr::new(198, 20, 0, 1)));
+        assert!(!is_proxy_fake_ipv4(Ipv4Addr::new(192, 168, 1, 79)));
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[test]
+    fn parses_linux_default_ipv4_routes_by_metric() {
+        let table = "\
+Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT
+utun0\t00000000\t010012C6\t0003\t0\t0\t5\t00000000\t0\t0\t0
+wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+";
+        assert_eq!(
+            parse_linux_default_ipv4_routes(table),
+            vec!["utun0".to_string(), "eth0".to_string(), "wlan0".to_string()]
+        );
+    }
+
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+    #[test]
+    fn macos_default_ipv4_route_lookup_succeeds_without_panicking() {
+        let ifaces = macos_default_ipv4_route_interfaces();
+        for name in &ifaces {
+            assert!(!name.is_empty());
+        }
+        // When a proxy fake-IP TUN owns the default route, bypass must pick a
+        // non-utun physical interface (or None if offline).
+        if let Some(bypass) = proxy_tun_bypass_interface(&NetNS::new(None)) {
+            assert!(!bypass.starts_with("utun"), "bypass chose TUN: {bypass}");
+        }
     }
 
     #[cfg(target_os = "linux")]

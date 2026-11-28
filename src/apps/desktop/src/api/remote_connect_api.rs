@@ -397,39 +397,80 @@ async fn account_context_matches(generation: u64, token: &str) -> bool {
 }
 
 /// This desktop's claim on serving the machine's device identity on Link
-/// (the primary tier; a CLI host on the same machine stands by while it is
-/// held). Held while signed in with remote control allowed.
+/// (the primary tier; a CLI host or another desktop instance on the same
+/// machine stands by while it is held). Held while signed in to the account
+/// directory (2.0) or legacy account context.
 static DEVICE_ROUTING_CLAIM: std::sync::Mutex<Option<DeviceRoutingLease>> =
     std::sync::Mutex::new(None);
+static DEVICE_ROUTING_STANDBY_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-async fn sync_device_routing_claim() {
-    let wanted =
-        device::remote_control_allowed().unwrap_or(false) && read_account_context().await.is_ok();
+fn try_acquire_primary_device_routing_once() -> Result<bool, String> {
     let mut claim = DEVICE_ROUTING_CLAIM
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !wanted {
-        if claim.take().is_some() {
-            log::info!("Released the device routing claim");
-        }
-        return;
-    }
     if claim.is_none() {
-        match DeviceRoutingLease::for_device(DeviceRoutingPriority::Primary) {
-            Ok(lease) => *claim = Some(lease),
+        let lease = DeviceRoutingLease::for_device(DeviceRoutingPriority::Primary)
+            .map_err(|error| format!("Device routing claim unavailable: {error}"))?;
+        *claim = Some(lease);
+    }
+    let Some(lease) = claim.as_mut() else {
+        return Ok(false);
+    };
+    lease
+        .may_serve()
+        .map_err(|error| format!("Device routing claim failed: {error}"))
+}
+
+pub(crate) fn release_device_routing_claim() {
+    let mut claim = DEVICE_ROUTING_CLAIM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if claim.take().is_some() {
+        log::info!("Released the device routing claim");
+    }
+    DEVICE_ROUTING_STANDBY_LOGGED.store(false, Ordering::Relaxed);
+}
+
+/// Ensures this desktop holds the primary device-routing lock before joining
+/// Link, so a CLI daemon or a second desktop instance on the same machine does
+/// not join with a duplicate `peer_id` for the same `device_id`.
+pub(crate) async fn claim_primary_device_routing_for_link() -> bool {
+    // Retry briefly in case a standing-by CLI daemon holds a momentary shared
+    // probe lock on `primary.lock` while checking `primary_is_free`.
+    for attempt in 0..3 {
+        match try_acquire_primary_device_routing_once() {
+            Ok(true) => {
+                DEVICE_ROUTING_STANDBY_LOGGED.store(false, Ordering::Relaxed);
+                return true;
+            }
+            Ok(false) => {
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
             Err(error) => {
-                log::warn!("Device routing claim unavailable: {error}");
-                return;
+                log::warn!("{error}");
+                return true;
             }
         }
     }
-    if let Some(lease) = claim.as_mut() {
-        match lease.may_serve() {
-            Ok(true) => {}
-            Ok(false) => log::info!("Another OpenBitFun desktop serves this device"),
-            Err(error) => log::warn!("Device routing claim failed: {error}"),
-        }
+    if !DEVICE_ROUTING_STANDBY_LOGGED.swap(true, Ordering::Relaxed) {
+        log::info!(
+            "Another OpenBitFun desktop serves this device on Link; standing by to avoid duplicate peer IDs"
+        );
     }
+    false
+}
+
+pub(crate) async fn sync_device_routing_claim() {
+    let signed_in = super::account_directory::has_cached_directory_session().await
+        || read_account_context().await.is_ok();
+    if !signed_in {
+        release_device_routing_claim();
+        return;
+    }
+    let _ = claim_primary_device_routing_for_link().await;
 }
 
 fn normalize_relay_url(relay_url: &str) -> Result<String, String> {
@@ -740,6 +781,7 @@ pub fn init_on_startup() {
 
 /// Synchronous cleanup called when the application exits.
 pub fn cleanup_on_exit() {
+    release_device_routing_claim();
     log::info!("Remote connect cleanup completed on exit");
 }
 

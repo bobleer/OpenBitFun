@@ -179,6 +179,9 @@ where
     options: DirectConnectorOptions,
     listener_blacklist: ExpiringSet<ListenerBlacklistKey>,
     peer_blacklist: ExpiringSet<PeerId>,
+    /// OpenBitFun: rate-limits one-shot same-subnet LAN upgrade attempts for
+    /// peers that already connected over a WAN/hairpin direct tunnel.
+    lan_upgrade_blacklist: ExpiringSet<PeerId>,
 }
 
 impl<H> std::fmt::Debug for DirectConnectorData<H>
@@ -229,6 +232,7 @@ where
             options,
             listener_blacklist: ExpiringSet::default(),
             peer_blacklist: ExpiringSet::default(),
+            lan_upgrade_blacklist: ExpiringSet::default(),
         });
         let client = PeerTaskManager::new_with_external_signal(
             DirectConnectorLauncher(data.clone()),
@@ -326,35 +330,46 @@ where
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
         let data = &self.0;
         data.peer_blacklist.cleanup();
+        data.lan_upgrade_blacklist.cleanup();
         let my_peer_id = data.peer_manager.my_peer_id();
         let policy = data.peer_manager.p2p_policy_flags();
         let now = Instant::now();
-        data.peer_manager
-            .get_route()
-            .list_routes()
-            .await
-            .into_iter()
-            .filter(|route| {
-                let static_allowed = should_background_p2p_with_peer(
-                    route.feature_flag.as_ref(),
-                    data.options.allow_public_server,
-                    policy.lazy_p2p,
-                    policy.disable_p2p,
-                    policy.need_p2p,
-                );
-                let dynamic_allowed = should_try_p2p_with_peer(
-                    route.feature_flag.as_ref(),
-                    data.options.allow_public_server,
-                    policy.disable_p2p,
-                    policy.need_p2p,
-                ) && data.peer_manager.has_recent_traffic(route.peer_id, now);
-                route.peer_id != my_peer_id
-                    && (static_allowed || dynamic_allowed)
-                    && !data.peer_manager.has_directly_connected_conn(route.peer_id)
-                    && !data.peer_blacklist.contains(&route.peer_id)
-            })
-            .map(|route| route.peer_id)
-            .collect()
+        let local_addrs = data.host.interface_addrs().await.ok();
+        let routes = data.peer_manager.get_route().list_routes().await;
+        let mut pending = Vec::new();
+        for route in routes {
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                data.options.allow_public_server,
+                policy.lazy_p2p,
+                policy.disable_p2p,
+                policy.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                data.options.allow_public_server,
+                policy.disable_p2p,
+                policy.need_p2p,
+            ) && data.peer_manager.has_recent_traffic(route.peer_id, now);
+            if route.peer_id == my_peer_id
+                || !(static_allowed || dynamic_allowed)
+                || data.peer_blacklist.contains(&route.peer_id)
+            {
+                continue;
+            }
+            if !data.peer_manager.has_directly_connected_conn(route.peer_id) {
+                pending.push(route.peer_id);
+            } else if !data.lan_upgrade_blacklist.contains(&route.peer_id)
+                && !data
+                    .peer_has_lan_direct_conn(route.peer_id, local_addrs.as_ref())
+                    .await
+            {
+                // OpenBitFun: peer already has a WAN/hairpin direct connection;
+                // schedule a one-shot same-subnet LAN upgrade check.
+                pending.push(route.peer_id);
+            }
+        }
+        pending
     }
 
     async fn launch_task(&self, peer_id: PeerId) -> tokio::task::JoinHandle<anyhow::Result<()>> {
@@ -371,7 +386,144 @@ impl<H> DirectConnectorData<H>
 where
     H: DirectConnectorHost,
 {
+    async fn peer_has_lan_direct_conn(
+        &self,
+        peer_id: PeerId,
+        local_addrs: Option<&ManualInterfaceAddrs>,
+    ) -> bool {
+        let urls = self.peer_manager.peer_direct_remote_urls(peer_id).await;
+        urls.iter().any(|raw| {
+            Url::parse(raw)
+                .ok()
+                .and_then(|url| match url.host() {
+                    Some(Host::Ipv4(ip)) => Some(IpAddr::V4(ip)),
+                    Some(Host::Ipv6(ip)) => Some(IpAddr::V6(ip)),
+                    _ => None,
+                })
+                .is_some_and(|ip| is_lan_direct_ip(ip, local_addrs))
+        })
+    }
+
+    async fn try_lan_upgrade(self: &Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        self.lan_upgrade_blacklist
+            .insert(dst_peer_id, DIRECT_CONNECTOR_BLACKLIST_TIMEOUT);
+        let local_addrs = self.host.interface_addrs().await.ok();
+        if self
+            .peer_has_lan_direct_conn(dst_peer_id, local_addrs.as_ref())
+            .await
+        {
+            return Ok(());
+        }
+        let rpc_stub = self
+            .peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_client()
+            .scoped_client::<DirectConnectorRpcClientFactory<BaseController>>(
+            self.peer_manager.my_peer_id(),
+            dst_peer_id,
+            self.peer_manager.network_name().to_owned(),
+        );
+        let ip_list = match rpc_stub
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+        {
+            Ok(ip_list) => ip_list,
+            Err(error @ rpc_types::error::Error::InvalidServiceKey(_, _)) => {
+                self.peer_blacklist
+                    .insert(dst_peer_id, INVALID_SERVICE_BLACKLIST_TIMEOUT);
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        let mut available_listeners = ip_list
+            .listeners
+            .clone()
+            .into_iter()
+            .map(Into::<Url>::into)
+            .filter(|listener| listener.scheme() != "ring")
+            .filter(|listener| {
+                mapped_listener_port(listener).is_some() && listener.host().is_some()
+            })
+            .filter(|listener| {
+                self.options.enable_ipv6 || !matches!(listener.host(), Some(Host::Ipv6(_)))
+            })
+            .collect::<Vec<_>>();
+        available_listeners.sort_by_key(|listener| {
+            if listener.scheme() == self.options.default_protocol {
+                3
+            } else if listener.scheme() == "udp" {
+                2
+            } else {
+                1
+            }
+        });
+
+        while !available_listeners.is_empty() {
+            let current_scheme = available_listeners
+                .last()
+                .expect("non-empty listener list")
+                .scheme()
+                .to_owned();
+            let mut lan_urls = Vec::new();
+            let mut wan_urls = Vec::new();
+            let mut seen_urls = HashSet::new();
+            while available_listeners
+                .last()
+                .is_some_and(|listener| listener.scheme() == current_scheme)
+            {
+                let listener = available_listeners.pop().expect("listener should exist");
+                self.collect_direct_connect_urls(
+                    &ip_list,
+                    &listener,
+                    local_addrs.as_ref(),
+                    &mut seen_urls,
+                    &mut lan_urls,
+                    &mut wan_urls,
+                )
+                .await;
+            }
+            // Only dial addresses actually on one of our local subnets so we
+            // never probe unrelated Docker/VM private IPs of remote WAN peers.
+            let same_subnet_urls: Vec<String> = lan_urls
+                .into_iter()
+                .filter(|raw| {
+                    Url::parse(raw)
+                        .ok()
+                        .and_then(|url| match url.host() {
+                            Some(Host::Ipv4(ip)) => Some(IpAddr::V4(ip)),
+                            Some(Host::Ipv6(ip)) => Some(IpAddr::V6(ip)),
+                            _ => None,
+                        })
+                        .is_some_and(|ip| is_same_subnet_lan_ip(ip, local_addrs.as_ref()))
+                })
+                .collect();
+            if same_subnet_urls.is_empty() {
+                continue;
+            }
+            let mut tasks = JoinSet::new();
+            for url in same_subnet_urls {
+                let this = self.clone();
+                tasks.spawn(async move { this.connect_to_url_once(dst_peer_id, &url).await });
+            }
+            while tasks.join_next().await.is_some() {
+                if self
+                    .peer_has_lan_direct_conn(dst_peer_id, local_addrs.as_ref())
+                    .await
+                {
+                    tasks.abort_all();
+                    tracing::info!(dst_peer_id, "upgraded direct peer connection to LAN");
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn try_direct_connect(self: Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            return self.try_lan_upgrade(dst_peer_id).await;
+        }
         let backoffs_ms = [1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000];
         let mut backoff_index = 0usize;
         let mut attempt = 0usize;
@@ -1292,6 +1444,44 @@ fn is_lan_direct_ip(ip: IpAddr, local: Option<&ManualInterfaceAddrs>) -> bool {
     }
 }
 
+/// OpenBitFun: stricter local-subnet check used when upgrading an already
+/// WAN-connected peer to LAN, avoiding probing unrelated private ranges (such
+/// as a remote server's Docker `172.17.0.1` or `192.168.0.x`).
+fn is_same_subnet_lan_ip(ip: IpAddr, local: Option<&ManualInterfaceAddrs>) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if is_benchmark_fake_ipv4(v4) {
+                return false;
+            }
+            if v4.is_link_local() || v4.is_loopback() {
+                return true;
+            }
+            local.is_some_and(|addrs| {
+                addrs.interface_ipv4s.iter().any(|local_v4| {
+                    !is_benchmark_fake_ipv4(*local_v4)
+                        && !local_v4.is_loopback()
+                        && local_v4.octets()[..3] == v4.octets()[..3]
+                })
+            })
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_same_subnet_lan_ip(IpAddr::V4(v4), local);
+            }
+            if v6.is_unicast_link_local() || v6.is_unique_local() || v6.is_loopback() {
+                return true;
+            }
+            local.is_some_and(|addrs| {
+                addrs.interface_ipv6s.iter().any(|local_v6| {
+                    !local_v6.is_loopback()
+                        && !local_v6.is_unspecified()
+                        && local_v6.segments()[..4] == v6.segments()[..4]
+                })
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1393,5 +1583,53 @@ mod tests {
         ));
         assert!(is_lan_direct_ip("fe80::1".parse().unwrap(), Some(&local)));
         assert!(is_lan_direct_ip("fd00::1".parse().unwrap(), Some(&local)));
+    }
+
+    #[test]
+    fn lan_upgrade_restricts_to_shared_local_subnets() {
+        let local = ManualInterfaceAddrs {
+            interface_ipv4s: vec![
+                "192.168.1.38".parse().unwrap(),
+                "198.18.0.0".parse().unwrap(),
+                "7.249.253.33".parse().unwrap(),
+            ],
+            interface_ipv6s: vec!["2408:8206:4824:92b0:426:effa:71e:f37d".parse().unwrap()],
+            public_ipv6: None,
+        };
+
+        assert!(is_same_subnet_lan_ip(
+            "192.168.1.79".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_same_subnet_lan_ip(
+            "7.249.253.138".parse().unwrap(),
+            Some(&local)
+        ));
+        // Unrelated remote private subnets (e.g. cloud Docker bridge or remote LAN)
+        // must not be probed during LAN upgrade.
+        assert!(!is_same_subnet_lan_ip(
+            "172.17.0.1".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_same_subnet_lan_ip(
+            "192.168.0.158".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_same_subnet_lan_ip(
+            "198.18.0.1".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_same_subnet_lan_ip(
+            "2408:8206:4824:92b0:4d1:ef4f:ddb6:e041".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_same_subnet_lan_ip(
+            "2408:8206:4824:92b1:4d1:ef4f:ddb6:e041".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_same_subnet_lan_ip(
+            "fe80::1".parse().unwrap(),
+            Some(&local)
+        ));
     }
 }

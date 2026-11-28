@@ -161,6 +161,22 @@ impl RuntimeUdpSocketFactory {
 
         BindDev::Disabled
     }
+
+    /// OpenBitFun: whether a wildcard IPv4 socket (`0.0.0.0:*`) should bind to
+    /// the physical default-route interface to bypass a local proxy fake-IP TUN
+    /// (`198.18.0.0/15`, e.g. Clash/Mihomo).
+    fn should_bypass_proxy_tun(options: &UdpBindOptions, bind_addr: SocketAddr) -> bool {
+        options.context.bypass_proxy_tun
+            && options.bind_device.is_none()
+            && matches!(bind_addr, SocketAddr::V4(v4) if v4.ip().is_unspecified())
+            && matches!(
+                options.purpose,
+                UdpSocketPurpose::StunProbe
+                    | UdpSocketPurpose::HolePunchControl
+                    | UdpSocketPurpose::HolePunchCandidate
+                    | UdpSocketPurpose::DirectConnect
+            )
+    }
 }
 
 /// Creates a host-owned UDP socket, including any required protection, before
@@ -170,10 +186,40 @@ pub(crate) async fn create_udp_socket(options: &UdpBindOptions) -> anyhow::Resul
     let bind_addr = options
         .local_addr
         .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+    let net_ns = NetNS::from_socket_context(&options.context);
+    let default_dev = factory.bind_device_for(options);
+
+    if RuntimeUdpSocketFactory::should_bypass_proxy_tun(options, bind_addr)
+        && let Some(bypass_iface) = crate::common::network::proxy_tun_bypass_interface(&net_ns)
+    {
+        match bind::<UdpSocket>()
+            .addr(bind_addr)
+            .dev(BindDev::Custom(bypass_iface.clone()))
+            .net_ns(net_ns.clone())
+            .only_v6(options.only_v6)
+            .reuse_addr(options.reuse_addr)
+            .reuse_port(options.reuse_port)
+            .maybe_socket_mark(options.context.socket_mark)
+            .need_protect(options.need_protect)
+            .call()
+            .await
+        {
+            Ok(socket) => return Ok(socket),
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    iface = %bypass_iface,
+                    purpose = ?options.purpose,
+                    "proxy-TUN bypass UDP bind failed; falling back to default bind"
+                );
+            }
+        }
+    }
+
     Ok(bind::<UdpSocket>()
         .addr(bind_addr)
-        .dev(factory.bind_device_for(options))
-        .net_ns(NetNS::from_socket_context(&options.context))
+        .dev(default_dev)
+        .net_ns(net_ns)
         .only_v6(options.only_v6)
         // Independent UDP receivers must not share a bound endpoint, including
         // kernel-assigned ports. Only an explicit request may enable reuse.
@@ -468,6 +514,47 @@ mod tests {
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
             BindDev::Disabled
+        ));
+    }
+
+    #[test]
+    fn proxy_tun_bypass_targets_only_unbound_wildcard_ipv4_p2p_sockets() {
+        let v4_any = SocketAddr::from(([0, 0, 0, 0], 0));
+        let v4_loopback = SocketAddr::from(([127, 0, 0, 1], 0));
+        let v6_any: SocketAddr = "[::]:0".parse().unwrap();
+        let ctx_on = SocketContext::default().with_bypass_proxy_tun(true);
+        let ctx_off = SocketContext::default();
+
+        for base in [
+            UdpBindOptions::stun_probe(),
+            UdpBindOptions::hole_punch_control(),
+            UdpBindOptions::hole_punch_candidate(),
+            UdpBindOptions::direct_connect(),
+        ] {
+            let enabled = base.clone().with_context(ctx_on.clone());
+            assert!(RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+                &enabled, v4_any
+            ));
+            assert!(!RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+                &enabled,
+                v4_loopback
+            ));
+            assert!(!RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+                &enabled, v6_any
+            ));
+            assert!(!RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+                &enabled.clone().with_bind_device(Some("en0".to_owned())),
+                v4_any
+            ));
+            assert!(!RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+                &base.with_context(ctx_off.clone()),
+                v4_any
+            ));
+        }
+
+        let listener = UdpBindOptions::port_bound_listener(v4_any).with_context(ctx_on);
+        assert!(!RuntimeUdpSocketFactory::should_bypass_proxy_tun(
+            &listener, v4_any
         ));
     }
 }

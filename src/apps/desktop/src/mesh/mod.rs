@@ -280,9 +280,16 @@ impl MeshRuntime {
     }
 
     async fn account() -> Option<AccountKey> {
-        let (session, _) = crate::api::account_directory::read_directory_context()
-            .await
-            .ok()?;
+        let (session, _) = match crate::api::account_directory::read_directory_context().await {
+            Ok(context) => context,
+            Err(_) => {
+                crate::api::remote_connect_api::sync_device_routing_claim().await;
+                return None;
+            }
+        };
+        if !crate::api::remote_connect_api::claim_primary_device_routing_for_link().await {
+            return None;
+        }
         let device_id = crate::api::remote_connect_api::current_device_id_for_peer().ok()?;
         Some(AccountKey {
             user_id: session.user_id,
@@ -738,6 +745,7 @@ pub async fn shutdown_global() {
         server.stop_mesh();
     }
     let _ = tokio::time::timeout(Duration::from_secs(8), runtime.link.shutdown()).await;
+    crate::api::remote_connect_api::release_device_routing_claim();
 }
 
 /// Opens an authenticated OBP connection to another device of the signed-in

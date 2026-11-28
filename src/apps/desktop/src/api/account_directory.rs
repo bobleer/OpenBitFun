@@ -85,6 +85,11 @@ where
     }
 }
 
+/// Whether this process currently holds a cached 2.0 account directory session.
+pub(crate) async fn has_cached_directory_session() -> bool {
+    sessions().cached().await.is_some()
+}
+
 /// After the account identity signed in: retire any earlier session (it may
 /// belong to another account), sign in to the directory and wake the device
 /// network. Never blocks the caller.
@@ -96,11 +101,15 @@ pub(crate) fn signed_in() {
         sessions().sign_out().await;
         match read_directory_context().await {
             Ok(_) => {
+                super::remote_connect_api::sync_device_routing_claim().await;
                 if let Some(mesh) = crate::mesh::global() {
                     mesh.wake();
                 }
             }
-            Err(error) => log::warn!("Account directory sign-in failed: {error}"),
+            Err(error) => {
+                super::remote_connect_api::sync_device_routing_claim().await;
+                log::warn!("Account directory sign-in failed: {error}");
+            }
         }
         // Account settings sync follows the account's replica.
         crate::api::account_settings_sync_api::signed_in();
@@ -117,6 +126,7 @@ pub(crate) async fn retire_other_account(account_id: &str) {
 /// network notice.
 pub(crate) async fn sign_out() {
     sessions().sign_out().await;
+    super::remote_connect_api::sync_device_routing_claim().await;
     crate::api::account_settings_sync_api::signed_out();
     if let Some(mesh) = crate::mesh::global() {
         mesh.wake();

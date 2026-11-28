@@ -228,7 +228,13 @@ impl Peer {
 
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
-        self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+        {
+            let _update_guard = self.default_conn_update_lock.lock();
+            self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+            // OpenBitFun: re-evaluate the preferred connection promptly when a
+            // newly established direct path (e.g. a LAN upgrade) arrives.
+            self.default_conn.store(None);
+        }
 
         let close_event_sender = self.close_event_sender.clone();
         tokio::spawn(async move {

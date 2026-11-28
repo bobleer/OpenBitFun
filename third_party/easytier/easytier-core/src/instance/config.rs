@@ -206,7 +206,11 @@ impl CoreInstanceConfig {
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
-            .with_netns(config.get_netns().map(NetNamespace::new));
+            .with_netns(config.get_netns().map(NetNamespace::new))
+            // OpenBitFun: bypass local fake-IP proxy TUNs (`198.18.0.0/15`) for
+            // STUN and UDP hole-punch sockets when physical interface binding is
+            // enabled (`bind_device = false` for loopback relays and tests).
+            .with_bypass_proxy_tun(flags.bind_device);
         let hostname = match config.get_hostname() {
             hostname if !hostname.is_empty() => hostname,
             _ => host.hostname_fallback.clone().unwrap_or_default(),

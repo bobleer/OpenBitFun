@@ -183,6 +183,37 @@ network namespaces).
     addresses together, letting NAT-hairpin or cross-network endpoints win
     between two devices on the same network.
 
+14. **Bypass proxy fake-IP TUN (`198.18.0.0/15`) for STUN and P2P UDP**
+    (`easytier-core/src/socket/mod.rs`, `instance/config.rs`,
+    `connectivity/stun/client.rs`, `easytier/src/common/network.rs`,
+    `easytier/src/socket/udp.rs`, `easytier/src/tunnel/common.rs`).
+    Excludes `198.18.0.0/15` (Clash/Mihomo fake-IP TUN) from local interface
+    collection (including the `local_ipv4()` fallback) and STUN DNS resolution;
+    when `flags.bind_device` is enabled and the OS IPv4 default route lands on
+    `198.18.0.0/15`, wildcard IPv4 sockets for `StunProbe`, `HolePunchControl`,
+    `HolePunchCandidate`, and `DirectConnect` bind to the underlying physical
+    default-route interface (macOS `sysctl` `NET_RT_DUMP`, Linux `/proc/net/route`,
+    Windows `GetIpForwardTable`), with automatic fallback if binding fails. Also
+    downgrades the macOS `bind device` log in `tunnel/common.rs` from `warn` to
+    `debug`. Why: with Clash/Mihomo TUN active, upstream bound direct-connect
+    sockets to `198.18.0.0` (`utun`) and routed STUN/UDP hole punching through
+    overseas proxy nodes, creating 400 ms+ double-proxied P2P tunnels instead of
+    ~27 ms direct links.
+
+15. **Same-subnet LAN upgrade pass and UDP hole-punch head start**
+    (`connectivity/direct/mod.rs`, `connectivity/hole_punch/udp/connector.rs`,
+    `peers/peer_manager.rs`, `peers/conn/peer.rs`).
+    Raises initial UDP hole-punch backoff from 1 s to 2.5 s so direct LAN
+    connect attempts finish first; adds a throttled one-shot same-subnet LAN
+    upgrade pass in `DirectConnector` (`try_lan_upgrade`) for already-connected
+    direct peers lacking a LAN tunnel (restricted strictly to shared local `/24`
+    IPv4 or `/64` IPv6 subnets so remote private/Docker ranges are never
+    probed); clears cached `default_conn` in `Peer::add_peer_conn` so a newly
+    added lower-latency LAN tunnel takes effect immediately instead of waiting
+    up to 5 s. Why: UDP hole punching could establish a NAT-hairpin WAN tunnel
+    before `DirectConnector`'s 5 s poll ran, after which upstream never tried
+    the LAN address.
+
 The data plane (`DataPlaneTcpStream`/`DataPlaneTcpListener`,
 `CoreInstance::data_plane_tcp_connect/bind`) is used unchanged: it is
 upstream's in-process virtual TCP over the node's smoltcp stack.

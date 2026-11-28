@@ -72,11 +72,20 @@ impl NetNamespace {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SocketContext {
     pub ip_version: IpVersion,
     pub socket_mark: Option<u32>,
     pub netns: Option<NetNamespace>,
+    /// OpenBitFun: bind wildcard IPv4 STUN / UDP hole-punch sockets to the
+    /// underlying physical default-route interface when a local proxy fake-IP
+    /// TUN (`198.18.0.0/15`) hijacks the OS routing table.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bypass_proxy_tun: bool,
 }
 
 impl SocketContext {
@@ -98,6 +107,11 @@ impl SocketContext {
         self.netns = netns;
         self
     }
+
+    pub fn with_bypass_proxy_tun(mut self, bypass_proxy_tun: bool) -> Self {
+        self.bypass_proxy_tun = bypass_proxy_tun;
+        self
+    }
 }
 
 impl Default for SocketContext {
@@ -106,6 +120,7 @@ impl Default for SocketContext {
             ip_version: IpVersion::Both,
             socket_mark: None,
             netns: None,
+            bypass_proxy_tun: false,
         }
     }
 }

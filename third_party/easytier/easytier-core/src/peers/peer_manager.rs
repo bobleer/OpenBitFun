@@ -1601,6 +1601,22 @@ impl PeerManagerCore {
         }
     }
 
+    /// OpenBitFun: remote tunnel URLs of non-closed direct connections to `peer_id`.
+    pub async fn peer_direct_remote_urls(&self, peer_id: PeerId) -> Vec<String> {
+        let Some(conns) = self.peers.list_peer_conns(peer_id).await else {
+            return Vec::new();
+        };
+        conns
+            .into_iter()
+            .filter(|conn| !conn.is_closed)
+            .filter_map(|conn| {
+                conn.tunnel
+                    .and_then(|tunnel| tunnel.remote_addr)
+                    .map(|url| url.url)
+            })
+            .collect()
+    }
+
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,

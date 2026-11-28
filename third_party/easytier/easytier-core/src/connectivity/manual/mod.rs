@@ -21,17 +21,17 @@ use url::Url;
 use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
     connectivity::{
-        protocol::{protocol_transport, ClientProtocolUpgrader, ProtocolTransport},
+        protocol::{ClientProtocolUpgrader, ProtocolTransport, protocol_transport},
         transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
     events::{CoreEvent, CoreEventSink},
     host::dns::{DnsQuery, DnsResolver},
-    peers::{peer_manager::PeerManagerCore, PeerConnectionOrigin},
+    peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
     socket::{
+        IpVersion, SocketContext,
         tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, VirtualUdpSocketFactory},
-        IpVersion, SocketContext,
     },
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
@@ -1404,6 +1404,7 @@ mod tests {
                     ip_version: IpVersion::V6,
                     socket_mark: Some(7),
                     netns: None,
+                    bypass_proxy_tun: false,
                 }
             )]
         );

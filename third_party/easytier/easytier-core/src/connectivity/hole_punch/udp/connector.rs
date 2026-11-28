@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::Error;
@@ -21,11 +21,10 @@ use crate::{
 use crate::connectivity::hole_punch::policy::BackOff;
 
 use super::{
+    BLACKLIST_TIMEOUT_SEC, UdpBothEasySymPunchClient, UdpHolePunchClientError,
+    UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink,
+    UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo, UdpSymToConePunchClient,
     collect_udp_punch_tasks, punch_cone_to_cone, should_blacklist_signal_error,
-    UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchPeerSource,
-    UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpNatType,
-    UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo, UdpSymToConePunchClient,
-    BLACKLIST_TIMEOUT_SEC,
 };
 
 #[derive(Clone, Default)]
@@ -228,7 +227,10 @@ where
 
     #[tracing::instrument(skip(self))]
     async fn cone_to_cone(self: Arc<Self>, task_info: UdpPunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
+        // OpenBitFun: wait 2.5s before the first WAN hole-punch attempt so
+        // DirectConnector can establish a same-LAN connection before NAT
+        // hairpin UDP punching wins the race.
+        let mut backoff = BackOff::new(vec![2500, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
 
         loop {
             backoff.sleep_for_next_backoff().await;
@@ -258,8 +260,9 @@ where
 
     #[tracing::instrument(skip(self))]
     async fn sym_to_cone(self: Arc<Self>, task_info: UdpPunchTaskInfo) -> Result<(), Error> {
+        // OpenBitFun: brief head start for LAN direct connect (see `cone_to_cone`).
         let mut backoff =
-            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+            BackOff::new(vec![2500, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
         let mut round = 0;
         let mut port_idx = rand::random();
 
@@ -312,8 +315,9 @@ where
 
     #[tracing::instrument(skip(self))]
     async fn both_easy_sym(self: Arc<Self>, task_info: UdpPunchTaskInfo) -> Result<(), Error> {
+        // OpenBitFun: brief head start for LAN direct connect (see `cone_to_cone`).
         let mut backoff =
-            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+            BackOff::new(vec![2500, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
 
         loop {
             backoff.sleep_for_next_backoff().await;

@@ -116,13 +116,13 @@ fn setup_socket2_ext(
                 "network interface not found: {dev_name}"
             )));
         };
-        tracing::warn!(?dev_idx, ?dev_name, "bind device");
+        tracing::debug!(?dev_idx, ?dev_name, "bind device");
         if bind_addr.is_ipv4() {
             socket2_socket.bind_device_by_index_v4(Some(dev_idx))?;
         } else {
             socket2_socket.bind_device_by_index_v6(Some(dev_idx))?;
         }
-        tracing::warn!(?dev_idx, ?dev_name, "bind device done");
+        tracing::debug!(?dev_idx, ?dev_name, "bind device done");
     }
 
     #[cfg(any(

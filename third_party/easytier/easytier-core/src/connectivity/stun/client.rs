@@ -14,7 +14,7 @@ use rand::seq::IteratorRandom as _;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _},
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
     task::JoinSet,
 };
 use tracing::{Instrument as _, Level};
@@ -23,13 +23,13 @@ use crate::{
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver},
     proto::common::NatType,
     socket::{
+        IpVersion, SocketContext,
         tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
-        IpVersion, SocketContext,
     },
 };
 
-use crate::packet::stun::{tid_to_u32, u32_to_tid, Attribute, ChangeRequest};
+use crate::packet::stun::{Attribute, ChangeRequest, tid_to_u32, u32_to_tid};
 use stun_codec::rfc5389::methods::BINDING;
 
 pub trait StunSocketRuntime: VirtualUdpSocketFactory + VirtualTcpSocketFactory {}
@@ -129,7 +129,7 @@ where
                 Ok(ips) => {
                     self.ips = ips
                         .into_iter()
-                        .filter(|ip| ip.is_ipv6() == self.use_ipv6)
+                        .filter(|ip| ip.is_ipv6() == self.use_ipv6 && !is_proxy_fake_ip(*ip))
                         .map(|ip| SocketAddr::new(ip, port))
                         .choose_multiple(&mut rand::thread_rng(), self.max_ip_per_domain as usize);
                 }
@@ -138,6 +138,23 @@ where
                 }
             }
         }
+    }
+}
+
+/// OpenBitFun: RFC 2544 benchmarking space (`198.18.0.0/15`) used by local
+/// proxy fake-IP DNS/TUN stacks (e.g. Clash/Mihomo, Surge, Sing-box). Querying
+/// a STUN server via a fake-IP routes through the proxy and poisons NAT/public
+/// IP discovery with the proxy exit node.
+fn is_proxy_fake_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 198 && (b & 0xfe) == 18
+        }
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().is_some_and(|v4| {
+            let [a, b, ..] = v4.octets();
+            a == 198 && (b & 0xfe) == 18
+        }),
     }
 }
 
@@ -1030,5 +1047,15 @@ mod tests {
             options.purpose,
             crate::socket::udp::UdpSocketPurpose::StunProbe
         );
+    }
+
+    #[test]
+    fn rejects_proxy_fake_ips_for_stun_servers() {
+        assert!(is_proxy_fake_ip("198.18.0.1".parse().unwrap()));
+        assert!(is_proxy_fake_ip("198.19.12.34".parse().unwrap()));
+        assert!(is_proxy_fake_ip("::ffff:198.18.0.5".parse().unwrap()));
+        assert!(!is_proxy_fake_ip("198.20.0.1".parse().unwrap()));
+        assert!(!is_proxy_fake_ip("119.29.29.29".parse().unwrap()));
+        assert!(!is_proxy_fake_ip("2408:8206::1".parse().unwrap()));
     }
 }

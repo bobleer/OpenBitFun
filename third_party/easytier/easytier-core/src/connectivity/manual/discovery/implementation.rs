@@ -3,9 +3,9 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use anyhow::Context as _;
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Empty};
-use hyper::{header, Request};
+use hyper::{Request, header};
 use hyper_util::rt::TokioIo;
-use rand::{seq::SliceRandom, Rng as _};
+use rand::{Rng as _, seq::SliceRandom};
 use rustls::pki_types::ServerName;
 #[cfg(feature = "system-certificates")]
 use rustls_platform_verifier::BuilderVerifierExt as _;
@@ -18,12 +18,12 @@ use crate::{
     connectivity::transport,
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     socket::{
-        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
         IpVersion, SocketContext,
+        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
     },
 };
 
-use super::super::{resolve_url_addrs, validate_manual_url, ManualEndpointResolver};
+use super::super::{ManualEndpointResolver, resolve_url_addrs, validate_manual_url};
 use super::ManualEndpointDiscoveryConfig;
 
 const HTTP_DEFAULT_PORT: u16 = 80;
@@ -696,6 +696,7 @@ mod tests {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(9),
                     netns: None,
+                    bypass_proxy_tun: false,
                 }
             )]
         );
@@ -980,6 +981,7 @@ mod tests {
             ip_version: IpVersion::V6,
             socket_mark: Some(17),
             netns: None,
+            bypass_proxy_tun: false,
         };
         let resolver = CoreManualEndpointResolver::new(
             host,
@@ -1086,6 +1088,7 @@ mod tests {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(23),
                     netns: None,
+                    bypass_proxy_tun: false,
                 }
             )]
         );

@@ -34,6 +34,9 @@ const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const FAST_REFRESH_WINDOW: Duration = Duration::from_secs(15);
 /// Coalesce bursts of EasyTier events into at most one immediate refresh per gap.
 const MIN_EVENT_REFRESH_GAP: Duration = Duration::from_millis(100);
+/// Minimum interval between recycling stale `DirectIpv4` tunnels after a local
+/// STUN public IPv4 transition (e.g. proxy TUN toggle or ISP IP change).
+const PUBLIC_IP_RECYCLE_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// How a node presents itself to the account's other members.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,6 +80,7 @@ struct Inner {
     seen: Mutex<HashMap<String, MeshPeer>>,
     obp_port: Mutex<Option<u16>>,
     subnets: Mutex<Option<(std::time::Instant, LocalSubnets)>>,
+    last_public_ipv4: Mutex<Option<(Ipv4Addr, std::time::Instant)>>,
     refresh_wake: Notify,
 }
 
@@ -165,6 +169,7 @@ impl LinkNode {
             seen: Mutex::new(HashMap::new()),
             obp_port: Mutex::new(None),
             subnets: Mutex::new(None),
+            last_public_ipv4: Mutex::new(None),
             refresh_wake: Notify::new(),
         });
         let poll_inner = Arc::clone(&inner);
@@ -322,20 +327,61 @@ impl LinkNode {
     }
 
     /// The virtual address and role of the member named `device_id`.
+    ///
+    /// When duplicate peer IDs exist transiently for the same `device_id`
+    /// (for example right after a restart), picks the highest-ranked live
+    /// route using the same preference order as [`MeshStatus::peers`].
     pub async fn resolve_member(&self, device_id: &str) -> Option<(Ipv4Addr, NodeRole)> {
-        let route = self
-            .inner
-            .instance
-            .route_snapshots()
-            .await
+        let routes = self.inner.instance.route_snapshots().await;
+        let direct = self.inner.instance.peer_snapshots().await;
+        let subnets = self.inner.cached_subnets();
+        let direct_by_peer = collect_direct_by_peer(&direct, &subnets);
+        let relay_ids: std::collections::HashSet<u32> = routes
+            .iter()
+            .filter(|route| {
+                is_relay_route(
+                    route
+                        .feature_flag
+                        .is_some_and(|flags| flags.is_public_server),
+                    route.ipv4_addr.and_then(|inet| inet.address).is_some(),
+                )
+            })
+            .map(|route| route.peer_id)
+            .collect();
+
+        let route = routes
             .into_iter()
-            .find(|route| route.hostname == device_id)?;
-        let ip = route
-            .ipv4_addr
-            .and_then(|inet| inet.address)
-            .map(Ipv4Addr::from)?;
-        let role = role_from_flag(route.feature_flag.is_some_and(|flags| flags.obf_controller));
-        Some((ip, role))
+            .filter(|route| route.hostname == device_id)
+            .filter_map(|route| {
+                let ip = route
+                    .ipv4_addr
+                    .and_then(|inet| inet.address)
+                    .map(Ipv4Addr::from)?;
+                let (route_kind, latency_ms) = match direct_by_peer.get(&route.peer_id) {
+                    Some((route_kind, latency, _, _)) => (*route_kind, *latency),
+                    None => (
+                        if relay_ids.contains(&route.next_hop_peer_id) {
+                            MeshRoute::RelayedServer
+                        } else {
+                            MeshRoute::RelayedPeer
+                        },
+                        (route.path_latency > 0).then_some(f64::from(route.path_latency)),
+                    ),
+                };
+                let (unmeasured, latency_us) = latency_rank_us(latency_ms);
+                let role =
+                    role_from_flag(route.feature_flag.is_some_and(|flags| flags.obf_controller));
+                let rank = (
+                    route_preference_tier(Some(route_kind)),
+                    unmeasured,
+                    latency_us,
+                    route.cost.max(1) as u32,
+                    route.peer_id,
+                );
+                Some((rank, ip, role))
+            })
+            .min_by_key(|(rank, _, _)| *rank)?;
+        Some((route.1, route.2))
     }
 
     /// The device whose virtual address is `ip`.
@@ -423,20 +469,21 @@ impl LinkNode {
     /// attempted again as usual. Returns how many connections closed. For
     /// diagnostics and for hosts that know a network path just changed.
     pub async fn close_direct_paths(&self, device_id: &str) -> usize {
-        let Some(peer_id) = self
+        let peer_ids: std::collections::HashSet<u32> = self
             .inner
             .instance
             .route_snapshots()
             .await
             .into_iter()
-            .find(|route| route.hostname == device_id)
+            .filter(|route| route.hostname == device_id)
             .map(|route| route.peer_id)
-        else {
+            .collect();
+        if peer_ids.is_empty() {
             return 0;
-        };
+        }
         let mut closed = 0;
         for peer in self.inner.instance.peer_snapshots().await {
-            if peer.peer_id != peer_id {
+            if !peer_ids.contains(&peer.peer_id) {
                 continue;
             }
             for conn in peer.conns.iter().filter(|conn| !conn.is_closed) {
@@ -446,7 +493,7 @@ impl LinkNode {
                 if self
                     .inner
                     .instance
-                    .close_peer_conn(peer_id, &conn_id)
+                    .close_peer_conn(peer.peer_id, &conn_id)
                     .await
                     .is_ok()
                 {
@@ -541,7 +588,229 @@ async fn recv_topology_event(events: &mut Option<EventBusSubscriber>) -> Topolog
     }
 }
 
+type DirectPeerSummary = (MeshRoute, Option<f64>, f64, Option<String>);
+
+fn is_proxy_fake_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
+fn extract_stable_public_ipv4(public_ips: &[String]) -> Option<Ipv4Addr> {
+    let mut unique = std::collections::HashSet::new();
+    for raw in public_ips {
+        let Ok(ip) = raw.parse::<Ipv4Addr>() else {
+            continue;
+        };
+        if ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || is_proxy_fake_ipv4(ip)
+        {
+            continue;
+        }
+        unique.insert(ip);
+    }
+    if unique.len() == 1 {
+        unique.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn route_preference_tier(route: Option<MeshRoute>) -> u8 {
+    match route {
+        Some(MeshRoute::DirectLan) => 0,
+        Some(MeshRoute::DirectIpv6) => 1,
+        Some(MeshRoute::DirectIpv4) => 2,
+        Some(MeshRoute::RelayedPeer) => 3,
+        Some(MeshRoute::RelayedServer) => 4,
+        None => 5,
+    }
+}
+
+fn role_sort_key(role: NodeRole) -> u8 {
+    match role {
+        NodeRole::Device => 0,
+        NodeRole::Controller => 1,
+    }
+}
+
+fn latency_rank_us(latency_ms: Option<f64>) -> (bool, u64) {
+    match latency_ms {
+        Some(ms) if ms.is_finite() && ms > 0.0 => (false, (ms * 1000.0).round() as u64),
+        _ => (true, u64::MAX),
+    }
+}
+
+fn peer_preference_key(peer: &MeshPeer) -> (bool, u8, bool, u64, u32, u32) {
+    let (unmeasured, latency_us) = latency_rank_us(peer.latency_ms);
+    (
+        peer.virtual_ip.is_empty(),
+        route_preference_tier(peer.route),
+        unmeasured,
+        latency_us,
+        peer.hops,
+        peer.peer_id.parse::<u32>().unwrap_or(u32::MAX),
+    )
+}
+
+fn dedup_peers(peers: Vec<MeshPeer>) -> Vec<MeshPeer> {
+    let mut best_by_member: HashMap<(String, u8), MeshPeer> = HashMap::with_capacity(peers.len());
+    for peer in peers {
+        let key = (peer.hostname.clone(), role_sort_key(peer.role));
+        match best_by_member.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(peer);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if peer_preference_key(&peer) < peer_preference_key(slot.get()) {
+                    slot.insert(peer);
+                }
+            }
+        }
+    }
+    let mut deduped: Vec<MeshPeer> = best_by_member.into_values().collect();
+    deduped.sort_by(|a, b| {
+        a.hostname
+            .cmp(&b.hostname)
+            .then_with(|| role_sort_key(a.role).cmp(&role_sort_key(b.role)))
+    });
+    deduped
+}
+
+fn is_relay_route(is_public_server: bool, has_ipv4: bool) -> bool {
+    is_public_server || !has_ipv4
+}
+
+fn collect_direct_by_peer(
+    direct: &[easytier_core::peers::peer_manager::PeerSnapshot],
+    subnets: &LocalSubnets,
+) -> HashMap<u32, DirectPeerSummary> {
+    // Direct connections by peer id: (route, latency ms, loss, tunnel).
+    // Prefer measured connections over unmeasured (0 us) ones, then LAN
+    // over WAN direct tunnels, then lowest latency.
+    let mut direct_by_peer = HashMap::new();
+    for peer in direct {
+        let best = peer
+            .conns
+            .iter()
+            .filter(|conn| !conn.is_closed)
+            .map(|conn| {
+                let remote = conn
+                    .tunnel
+                    .as_ref()
+                    .and_then(|tunnel| tunnel.remote_addr.as_ref())
+                    .map(|url| url.url.clone())
+                    .unwrap_or_default();
+                let route_kind = direct_route_for(&remote, subnets);
+                let latency_us = conn.stats.map(|stats| stats.latency_us).unwrap_or(0);
+                let rank = (
+                    latency_us == 0,
+                    route_kind != MeshRoute::DirectLan,
+                    if latency_us > 0 { latency_us } else { u64::MAX },
+                );
+                (rank, conn, route_kind)
+            })
+            .min_by_key(|(rank, _, _)| *rank);
+        if let Some((_, conn, route_kind)) = best {
+            let tunnel = conn
+                .tunnel
+                .as_ref()
+                .map(|tunnel| tunnel.tunnel_type.clone())
+                .filter(|kind| !kind.is_empty());
+            direct_by_peer.insert(
+                peer.peer_id,
+                (
+                    route_kind,
+                    conn.stats.map(|stats| stats.latency_us as f64 / 1000.0),
+                    f64::from(conn.loss_rate),
+                    tunnel,
+                ),
+            );
+        }
+    }
+    direct_by_peer
+}
+
 impl Inner {
+    fn cached_subnets(&self) -> LocalSubnets {
+        let mut cache = lock(&self.subnets);
+        match cache.as_ref() {
+            Some((at, subnets)) if at.elapsed() < Duration::from_secs(30) => subnets.clone(),
+            _ => {
+                let subnets = local_subnets();
+                *cache = Some((std::time::Instant::now(), subnets.clone()));
+                subnets
+            }
+        }
+    }
+
+    async fn recycle_stale_wan_paths_if_public_ip_changed(
+        &self,
+        public_ips: &[String],
+        direct: &[easytier_core::peers::peer_manager::PeerSnapshot],
+        relay_ids: &std::collections::HashSet<u32>,
+        subnets: &LocalSubnets,
+    ) {
+        let Some(current_ip) = extract_stable_public_ipv4(public_ips) else {
+            return;
+        };
+        let previous_ip = {
+            let mut slot = lock(&self.last_public_ipv4);
+            match *slot {
+                None => {
+                    *slot = Some((current_ip, std::time::Instant::now()));
+                    None
+                }
+                Some((prev_ip, _)) if prev_ip == current_ip => None,
+                Some((prev_ip, last_at)) if last_at.elapsed() >= PUBLIC_IP_RECYCLE_COOLDOWN => {
+                    *slot = Some((current_ip, std::time::Instant::now()));
+                    Some(prev_ip)
+                }
+                Some(_) => None,
+            }
+        };
+        let Some(prev_ip) = previous_ip else {
+            return;
+        };
+
+        let mut closed = 0usize;
+        for peer in direct {
+            if relay_ids.contains(&peer.peer_id) {
+                continue;
+            }
+            for conn in peer.conns.iter().filter(|conn| !conn.is_closed) {
+                let remote = conn
+                    .tunnel
+                    .as_ref()
+                    .and_then(|tunnel| tunnel.remote_addr.as_ref())
+                    .map(|url| url.url.as_str())
+                    .unwrap_or_default();
+                if direct_route_for(remote, subnets) != MeshRoute::DirectIpv4 {
+                    continue;
+                }
+                let Ok(conn_id) = conn.conn_id.parse() else {
+                    continue;
+                };
+                if self
+                    .instance
+                    .close_peer_conn(peer.peer_id, &conn_id)
+                    .await
+                    .is_ok()
+                {
+                    closed += 1;
+                }
+            }
+        }
+        if closed > 0 {
+            log::info!(
+                "Local STUN public IPv4 changed ({prev_ip} -> {current_ip}); recycled {closed} stale DirectIpv4 tunnel(s)"
+            );
+        }
+    }
+
     async fn refresh(&self) {
         self.refresh_with_policy(true).await;
     }
@@ -551,72 +820,27 @@ impl Inner {
         let node = self.instance.node_snapshot().await;
         let routes = self.instance.route_snapshots().await;
         let direct = self.instance.peer_snapshots().await;
-        let subnets = {
-            let mut cache = lock(&self.subnets);
-            match cache.as_ref() {
-                Some((at, subnets)) if at.elapsed() < Duration::from_secs(30) => subnets.clone(),
-                _ => {
-                    let subnets = local_subnets();
-                    *cache = Some((std::time::Instant::now(), subnets.clone()));
-                    subnets
-                }
-            }
-        };
-
-        // Direct connections by peer id: (route, latency ms, loss, tunnel).
-        // Prefer measured connections over unmeasured (0 us) ones, then LAN
-        // over WAN direct tunnels, then lowest latency.
-        let mut direct_by_peer = HashMap::new();
-        for peer in &direct {
-            let best = peer
-                .conns
-                .iter()
-                .filter(|conn| !conn.is_closed)
-                .map(|conn| {
-                    let remote = conn
-                        .tunnel
-                        .as_ref()
-                        .and_then(|tunnel| tunnel.remote_addr.as_ref())
-                        .map(|url| url.url.clone())
-                        .unwrap_or_default();
-                    let route_kind = direct_route_for(&remote, &subnets);
-                    let latency_us = conn.stats.map(|stats| stats.latency_us).unwrap_or(0);
-                    let rank = (
-                        latency_us == 0,
-                        route_kind != MeshRoute::DirectLan,
-                        if latency_us > 0 { latency_us } else { u64::MAX },
-                    );
-                    (rank, conn, route_kind)
-                })
-                .min_by_key(|(rank, _, _)| *rank);
-            if let Some((_, conn, route_kind)) = best {
-                let tunnel = conn
-                    .tunnel
-                    .as_ref()
-                    .map(|tunnel| tunnel.tunnel_type.clone())
-                    .filter(|kind| !kind.is_empty());
-                direct_by_peer.insert(
-                    peer.peer_id,
-                    (
-                        route_kind,
-                        conn.stats.map(|stats| stats.latency_us as f64 / 1000.0),
-                        f64::from(conn.loss_rate),
-                        tunnel,
-                    ),
-                );
-            }
-        }
-
+        let subnets = self.cached_subnets();
         let relay_ids: std::collections::HashSet<u32> = routes
             .iter()
             .filter(|route| {
-                route
-                    .feature_flag
-                    .is_some_and(|flags| flags.is_public_server)
-                    || route.ipv4_addr.and_then(|inet| inet.address).is_none()
+                is_relay_route(
+                    route
+                        .feature_flag
+                        .is_some_and(|flags| flags.is_public_server),
+                    route.ipv4_addr.and_then(|inet| inet.address).is_some(),
+                )
             })
             .map(|route| route.peer_id)
             .collect();
+        self.recycle_stale_wan_paths_if_public_ip_changed(
+            &node.stun_info.public_ip,
+            &direct,
+            &relay_ids,
+            &subnets,
+        )
+        .await;
+        let direct_by_peer = collect_direct_by_peer(&direct, &subnets);
 
         let hostname_by_peer: HashMap<u32, String> = routes
             .iter()
@@ -687,7 +911,7 @@ impl Inner {
                 last_seen_ms: Some(now),
             });
         }
-        peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+        let peers = dedup_peers(peers);
 
         let recent_peers = {
             let mut seen = lock(&self.seen);
@@ -729,5 +953,111 @@ impl Inner {
                 changed
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(
+        peer_id: &str,
+        hostname: &str,
+        virtual_ip: &str,
+        route: MeshRoute,
+        latency_ms: Option<f64>,
+        hops: u32,
+    ) -> MeshPeer {
+        MeshPeer {
+            peer_id: peer_id.into(),
+            hostname: hostname.into(),
+            virtual_ip: virtual_ip.into(),
+            path: route.path(),
+            route: Some(route),
+            relay_via: None,
+            hops,
+            role: NodeRole::Device,
+            display_name: None,
+            latency_ms,
+            loss_rate: Some(0.0),
+            tunnel: Some("udp".into()),
+            nat_type: None,
+            easytier_version: None,
+            last_seen_ms: Some(1),
+        }
+    }
+
+    #[test]
+    fn dedup_peers_prefers_lan_then_lower_latency_and_valid_ip() {
+        let peers = vec![
+            peer(
+                "300",
+                "dev-a",
+                "10.126.126.2",
+                MeshRoute::DirectIpv4,
+                Some(39.0),
+                1,
+            ),
+            peer(
+                "200",
+                "dev-a",
+                "10.126.126.3",
+                MeshRoute::DirectLan,
+                Some(21.0),
+                1,
+            ),
+            peer("100", "dev-a", "", MeshRoute::DirectLan, Some(1.0), 1),
+            peer(
+                "500",
+                "dev-b",
+                "10.126.126.4",
+                MeshRoute::DirectIpv4,
+                Some(399.0),
+                1,
+            ),
+            peer(
+                "400",
+                "dev-b",
+                "10.126.126.5",
+                MeshRoute::DirectIpv4,
+                Some(27.3),
+                1,
+            ),
+            peer(
+                "600",
+                "dev-b",
+                "10.126.126.6",
+                MeshRoute::RelayedServer,
+                Some(140.0),
+                2,
+            ),
+        ];
+
+        let deduped = dedup_peers(peers);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].hostname, "dev-a");
+        assert_eq!(deduped[0].peer_id, "200");
+        assert_eq!(deduped[0].route, Some(MeshRoute::DirectLan));
+        assert_eq!(deduped[1].hostname, "dev-b");
+        assert_eq!(deduped[1].peer_id, "400");
+        assert_eq!(deduped[1].latency_ms, Some(27.3));
+    }
+
+    #[test]
+    fn stable_public_ipv4_rejects_fake_ip_private_and_ambiguous_sets() {
+        assert_eq!(
+            extract_stable_public_ipv4(&["121.36.124.31".into()]),
+            Some(Ipv4Addr::new(121, 36, 124, 31))
+        );
+        assert_eq!(
+            extract_stable_public_ipv4(&["121.36.124.31".into(), "121.36.124.31".into()]),
+            Some(Ipv4Addr::new(121, 36, 124, 31))
+        );
+        assert_eq!(extract_stable_public_ipv4(&["198.18.0.1".into()]), None);
+        assert_eq!(extract_stable_public_ipv4(&["192.168.1.79".into()]), None);
+        assert_eq!(
+            extract_stable_public_ipv4(&["38.181.82.190".into(), "121.36.124.31".into()]),
+            None
+        );
     }
 }
