@@ -125,6 +125,7 @@ export interface FleetWorkspace {
   linkState?: string;
   isHostCurrent: boolean;
   isPrimaryAssistant?: boolean;
+  iconGlyph?: string;
   sessions: FleetSession[];
   sessionTotal: number;
   hasMore: boolean;

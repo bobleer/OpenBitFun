@@ -595,3 +595,113 @@ test("desktop sidebar buttons use compact nav item height with a 1px gap between
   expect(gapBetween(wsEmpty!, ws2!)).toBe(layout.navItemGap);
   expect(gapBetween(ws2!, s5!)).toBe(layout.navItemGap);
 });
+
+test("assistant workspaces support changing icons and render the chosen glyph in the sidebar", async () => {
+  let glyph: string | undefined;
+  let revision = 0;
+  const nav = {
+    revision: 10,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-asst",
+            name: "哥伦比亚",
+            rootPath: "/Users/me/.openbitfun/assistants/columbia",
+            kind: "assistant",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "ws-asst", "s-asst-1", "Hello")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+    ],
+  };
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"]!;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (req.action === "get_workspace_icon") {
+      return {
+        ok: true,
+        value: {
+          workspaceId: req.request?.workspaceId,
+          icon: {
+            version: 1,
+            revision,
+            mode: "default",
+            color: "default",
+            ...(glyph ? { glyph } : {}),
+          },
+          imageUnavailable: false,
+          supportedGlyphs: ["default", "pets", "code"],
+        },
+        transport: "dev",
+      };
+    }
+    if (req.action === "set_workspace_icon") {
+      const input = (req.request?.icon ?? {}) as { glyph?: string };
+      glyph = input.glyph && input.glyph !== "default" ? input.glyph : undefined;
+      revision += 1;
+      nav.revision += 1;
+      const ws = (nav.devices[0] as { workspaces: Array<Record<string, unknown>> }).workspaces[0]!;
+      if (glyph) ws.iconGlyph = glyph;
+      else delete ws.iconGlyph;
+      return {
+        ok: true,
+        value: {
+          workspaceId: req.request?.workspaceId,
+          icon: {
+            version: 1,
+            revision,
+            mode: "default",
+            color: "default",
+            ...(glyph ? { glyph } : {}),
+          },
+          imageUnavailable: false,
+          supportedGlyphs: ["default", "pets", "code"],
+        },
+        transport: "dev",
+      };
+    }
+    return baseInvoke(data);
+  };
+  const host = fleetObpHost(backend, { fleet: ENTRY, navigator: nav });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await showDevices(app);
+  await app.waitFor("id:sidebar-workspace-icon-ws-asst-bot");
+
+  await app.hover("id:sidebar-workspace-row-ws-asst");
+  await app.press("sidebar-workspace-actions-ws-asst");
+  await app.press("text:Change icon…");
+  await app.waitFor("id:workspace-icon-glyph-icon-default-bot");
+  await app.press("workspace-icon-glyph-pets");
+  await app.press("workspace-icon-save");
+
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "set_workspace_icon"));
+  const setCall = host.fleetCalls.find(call => call.command === "set_workspace_icon");
+  expect(setCall?.target).toBe("dev-a");
+  expect(setCall?.args.request).toMatchObject({
+    workspaceId: "ws-asst",
+    expectedRevision: 0,
+    icon: { kind: "default", color: "default", glyph: "pets" },
+  });
+
+  await app.hover("label:nav-library");
+  await app.waitFor("id:sidebar-workspace-icon-ws-asst-sparkles");
+
+  // Switching back to the default tile restores the assistant's default bot icon.
+  await app.hover("id:sidebar-workspace-row-ws-asst");
+  await app.press("sidebar-workspace-actions-ws-asst");
+  await app.press("text:Change icon…");
+  await app.waitFor("id:workspace-icon-glyph-icon-default-bot");
+  await app.press("workspace-icon-glyph-default");
+  await app.press("workspace-icon-save");
+  await app.hover("label:nav-library");
+  await app.waitFor("id:sidebar-workspace-icon-ws-asst-bot");
+});

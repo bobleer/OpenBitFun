@@ -51,7 +51,7 @@ import { MOTION_DURATION, paintTransition, rotatingChevronStyle } from "./motion
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "./overlays";
 import { IconButton, focusRingStyle } from "./primitives";
 import { sessionMenuItems } from "./sessionActions";
-import { workspaceMenuItems } from "./workspaceActions";
+import { defaultWorkspaceIcon, workspaceGlyphIcon, workspaceMenuItems } from "./workspaceActions";
 
 type TreeWorkspace = DeviceTreeNode["workspaces"][number];
 type TreeSession = TreeWorkspace["sessions"][number];
@@ -122,12 +122,7 @@ function deviceExpanded(node: DeviceTreeNode): boolean {
 }
 
 function workspaceIcon(workspace: TreeWorkspace, open: boolean): IconName {
-  const kind = (workspace.kind ?? "").toLowerCase();
-  if (kind.includes("assistant")) return "bot";
-  if (kind.includes("ssh") || kind.includes("remote") || Boolean(remoteWorkspaceHost(workspace))) {
-    return "server";
-  }
-  return open ? "folder-open" : "folder";
+  return workspaceGlyphIcon(workspace.iconGlyph, defaultWorkspaceIcon(workspace, open));
 }
 
 // ── Building blocks ──────────────────────────────────────────────────────────
@@ -389,7 +384,14 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
         leading={
           <If
             when={hovered()}
-            else={<Icon name={workspaceIcon(props.workspace, open())} size={16} color={palette().chromeTextMuted} />}
+            else={
+              <Icon
+                testID={`sidebar-workspace-icon-${props.workspace.workspaceId}-${workspaceIcon(props.workspace, open())}`}
+                name={workspaceIcon(props.workspace, open())}
+                size={16}
+                color={palette().chromeTextMuted}
+              />
+            }
           >
             <View style={rotatingChevronStyle(open())}>
               <Icon name="chevron-right" size={12} color={palette().chromeTextMuted} />
@@ -760,7 +762,13 @@ function RecentlyClosed(props: { node: DeviceTreeNode; indent: number }) {
                   accessibilityLabel={`recent-workspace-reopen-${record().id}`}
                   onHover={value => hovered.set(value)}
                   onPress={() => void openRecentWorkspace(record())}
-                  leading={<Icon name="folder" size={14} color={palette().chromeTextMuted} />}
+                  leading={
+                    <Icon
+                      name={workspaceGlyphIcon(record().iconGlyph, defaultWorkspaceIcon(record(), false))}
+                      size={14}
+                      color={palette().chromeTextMuted}
+                    />
+                  }
                   trailing={
                     <HoverActions visible={hovered() || menuOpen() || touchFirst}>
                       <RowMenuButton

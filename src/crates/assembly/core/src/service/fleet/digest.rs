@@ -599,6 +599,9 @@ pub fn workspace_summary_with_primary(
         is_host_current: current_id == Some(info.id.as_str()),
         is_primary_assistant: info.workspace_kind == WorkspaceKind::Assistant
             && primary_assistant_id == Some(info.id.as_str()),
+        icon_glyph: openbitfun_core_types::workspace_icon::workspace_icon_glyph_from_metadata(
+            &info.metadata,
+        ),
         sessions: Vec::new(),
         session_total: 0,
         has_more: false,

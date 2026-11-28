@@ -66,7 +66,7 @@ import { capabilitySearchItems } from "./src/capabilitySearch";
 import { installServedBackend } from "./src/servedBackend";
 import { controllerPort } from "./src/controller/controllerPort";
 import { SessionActionDialogs } from "./src/ui/sessionActions";
-import { WorkspaceActionDialogs } from "./src/ui/workspaceActions";
+import { WorkspaceActionDialogs, workspaceGlyphIcon } from "./src/ui/workspaceActions";
 import {
   applyControllerUiUpdate,
   controllerUiUpdate,
@@ -2141,6 +2141,9 @@ const COMMAND_ICONS: Readonly<Record<string, IconName>> = {
 };
 
 function searchItemIcon(item: SearchItem, fallback: IconName): IconName {
+  if (item.kind === "workspace" || item.kind === "assistant") {
+    return workspaceGlyphIcon(item.iconGlyph, fallback);
+  }
   if (item.kind !== "command") return fallback;
   if (item.id === "command:open-project") return "folder";
   if (item.id === "command:new-project") return "plus";

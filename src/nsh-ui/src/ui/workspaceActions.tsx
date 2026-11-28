@@ -580,8 +580,38 @@ const GLYPH_ICONS: Record<string, IconName> = {
   movies: "play",
 };
 
-export function workspaceGlyphIcon(glyph: string | undefined | null): IconName {
-  return GLYPH_ICONS[glyph ?? ""] ?? "folder";
+export function defaultWorkspaceIcon(
+  workspace: {
+    kind?: string;
+    workspaceKind?: string;
+    sshHost?: string;
+    connectionId?: string;
+    remoteConnectionId?: string;
+    connectionName?: string;
+  },
+  open = false,
+): IconName {
+  const kind = (workspace.kind ?? workspace.workspaceKind ?? "").toLowerCase();
+  if (kind.includes("assistant")) return "bot";
+  if (
+    kind === "remote" ||
+    kind.includes("ssh") ||
+    kind.includes("remote") ||
+    kind.includes("docker") ||
+    kind.includes("container") ||
+    kind.includes("wsl") ||
+    Boolean(workspace.connectionId?.trim()) ||
+    Boolean(workspace.remoteConnectionId?.trim()) ||
+    Boolean(remoteWorkspaceAliasOf(workspace))
+  ) {
+    return "server";
+  }
+  return open ? "folder-open" : "folder";
+}
+
+export function workspaceGlyphIcon(glyph: string | undefined | null, fallback: IconName = "folder"): IconName {
+  if (!glyph || glyph === "default") return fallback;
+  return GLYPH_ICONS[glyph] ?? fallback;
 }
 
 function readIconSnapshot(raw: unknown): WorkspaceIconView | null {
@@ -628,6 +658,7 @@ async function saveWorkspaceIcon(): Promise<void> {
   const view = iconView();
   if (!target || !view || iconBusy()) return;
   iconBusy.set(true);
+  iconNotice.set("");
   try {
     await invokeCommand<unknown>(
       "set_workspace_icon",
@@ -642,6 +673,7 @@ async function saveWorkspaceIcon(): Promise<void> {
     pushToast(tr("workspaceIcon.saved", { name: target.name }), "success");
     iconTarget.set(null);
     if (fleetActive()) void refreshFleetNavigator();
+    else void loadWorkspaces();
   } catch (error) {
     // A stale revision means another client changed it: show the current icon.
     iconNotice.set(errorText(error));
@@ -653,6 +685,10 @@ async function saveWorkspaceIcon(): Promise<void> {
 
 function GlyphTile(props: { glyph: string }) {
   const selected = () => iconChoice() === props.glyph;
+  const iconName = (): IconName => {
+    const target = iconTarget();
+    return workspaceGlyphIcon(props.glyph, target ? defaultWorkspaceIcon(target, false) : "folder");
+  };
   return (
     <View
       role="button"
@@ -677,7 +713,12 @@ function GlyphTile(props: { glyph: string }) {
       activeStyle={tactileActiveStyle(0.95)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <Icon name={workspaceGlyphIcon(props.glyph)} size={20} color={selected() ? palette().text : palette().textSecondary} />
+      <Icon
+        testID={`workspace-icon-glyph-icon-${props.glyph}-${iconName()}`}
+        name={iconName()}
+        size={20}
+        color={selected() ? palette().text : palette().textSecondary}
+      />
     </View>
   );
 }

@@ -92,6 +92,8 @@ pub struct WorkspaceInfoDto {
     pub connection_name: Option<String>,
     #[serde(rename = "sshHost", skip_serializing_if = "Option::is_none")]
     pub ssh_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_glyph: Option<String>,
 }
 
 impl WorkspaceInfoDto {
@@ -161,6 +163,9 @@ impl WorkspaceInfoDto {
             connection_id,
             connection_name,
             ssh_host,
+            icon_glyph: openbitfun_core_types::workspace_icon::workspace_icon_glyph_from_metadata(
+                &info.metadata,
+            ),
         }
     }
 }

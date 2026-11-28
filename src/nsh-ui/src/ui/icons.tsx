@@ -532,6 +532,7 @@ export interface IconProps {
   size?: number;
   color?: string;
   strokeWidth?: number;
+  testID?: string;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -549,6 +550,7 @@ function lucidePath(d: string): Path2D {
 export function Icon(props: IconProps) {
   return (
     <Canvas
+      testID={props.testID}
       style={[
         {
           width: props.size ?? 18,

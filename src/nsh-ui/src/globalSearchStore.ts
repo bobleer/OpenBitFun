@@ -58,6 +58,8 @@ export interface SearchItem {
   workspaceId?: string;
   /** The turn a message hit was found in. */
   turnId?: string;
+  /** Custom workspace icon glyph when set on a workspace or assistant row. */
+  iconGlyph?: string;
   /** Settings hits can reveal a destination inside their page. */
   settingsAnchor?: string;
   /** Capability hits use the same destination vocabulary as product control. */
@@ -134,6 +136,7 @@ export function searchWorkspaceItems(query: string): SearchItem[] {
       label: workspaceName(ws),
       detail: isRecent ? tr("search.recentDetail", { path: ws.rootPath }) : ws.rootPath,
       target: ws.id,
+      ...(ws.iconGlyph ? { iconGlyph: ws.iconGlyph } : {}),
     }));
 }
 

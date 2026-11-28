@@ -11,7 +11,7 @@ fn icon_owner(manager: &WorkspaceManager, id: &str) -> Result<String, String> {
         .get(id)
         .ok_or("Workspace not found")?;
     if workspace.workspace_kind == WorkspaceKind::Assistant {
-        return Err("Assistant workspaces use assistant avatars".into());
+        return Ok(workspace.id.clone());
     }
     let owner = workspace.project_workspace_id()?;
     if !manager.get_workspaces().contains_key(owner) {
@@ -620,5 +620,70 @@ mod tests {
             saved.workspaces["project"].metadata[WORKSPACE_ICON_METADATA_KEY]["glyph"],
             "travel"
         );
+    }
+
+    #[tokio::test]
+    async fn assistant_workspaces_support_custom_icons_reload_and_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new_isolated_for_tests(root.path().to_path_buf()).await;
+        let assistant = record("assistant-1", "assistant");
+        service
+            .manager
+            .write()
+            .await
+            .get_workspaces_mut()
+            .insert(assistant.id.clone(), assistant.clone());
+
+        let initial = service.get_workspace_icon("assistant-1").await.unwrap();
+        assert_eq!(initial.workspace_id, "assistant-1");
+        assert_eq!(initial.icon, WorkspaceIcon::default());
+        assert!(initial.supported_glyphs.iter().any(|glyph| glyph == "pets"));
+
+        let updated = service
+            .set_workspace_icon(request(
+                "assistant-1",
+                0,
+                "assistant-glyph",
+                WorkspaceIconInput::Default {
+                    color: "default".into(),
+                    glyph: Some("pets".into()),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(updated.workspace_id, "assistant-1");
+        assert_eq!(updated.icon.revision, 1);
+        assert_eq!(updated.icon.glyph.as_deref(), Some("pets"));
+
+        let saved: WorkspacePersistenceData = service
+            .persistence
+            .load_json("workspace_data")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            workspace_icon_glyph_from_metadata(&saved.workspaces["assistant-1"].metadata)
+                .as_deref(),
+            Some("pets")
+        );
+        assert_eq!(
+            saved.workspaces["assistant-1"].metadata["legacy"],
+            assistant.metadata["legacy"]
+        );
+
+        let back_to_default = service
+            .set_workspace_icon(request(
+                "assistant-1",
+                1,
+                "assistant-default",
+                WorkspaceIconInput::Default {
+                    color: "default".into(),
+                    glyph: Some("default".into()),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(back_to_default.icon.revision, 2);
+        assert!(back_to_default.icon.glyph.is_none());
     }
 }

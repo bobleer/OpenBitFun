@@ -22,6 +22,7 @@ export interface WorkspaceRecord {
   connectionId?: string;
   connectionName?: string;
   sshHost?: string;
+  iconGlyph?: string;
   lastAccessed?: number;
 }
 

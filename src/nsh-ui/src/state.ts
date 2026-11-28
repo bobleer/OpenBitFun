@@ -2216,6 +2216,7 @@ function workspaceRecordOf(row: FleetWorkspace): WorkspaceRecord {
     ...(row.sshHost ? { sshHost: row.sshHost } : {}),
     ...(row.connectionId ? { connectionId: row.connectionId } : {}),
     ...(row.connectionName ? { connectionName: row.connectionName } : {}),
+    ...(row.iconGlyph ? { iconGlyph: row.iconGlyph } : {}),
   };
 }
 

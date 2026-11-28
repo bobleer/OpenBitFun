@@ -352,6 +352,9 @@ pub struct FleetWorkspace {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub is_primary_assistant: bool,
+    /// Active custom workspace icon glyph (omitted when unset or default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_glyph: Option<String>,
     #[serde(deserialize_with = "null_default")]
     pub sessions: Vec<FleetSession>,
     /// Top-level sessions the owner holds for this workspace.
@@ -837,6 +840,7 @@ mod tests {
                     link_state: Some("connected".into()),
                     is_host_current: true,
                     is_primary_assistant: false,
+                    icon_glyph: Some("code".into()),
                     sessions: vec![FleetSession {
                         device_id: "d1".into(),
                         workspace_id: "w1".into(),
@@ -865,6 +869,33 @@ mod tests {
             },
         };
         let wire = serde_json::to_value(&navigator).unwrap();
+        let expected_workspace = json!({
+            "deviceId": "d1",
+            "workspaceId": "w1",
+            "name": "proj",
+            "rootPath": "/home/u/proj",
+            "kind": "remote_ssh",
+            "sshHost": "box",
+            "connectionId": "conn-box",
+            "connectionName": "Box",
+            "linkState": "connected",
+            "isHostCurrent": true,
+            "iconGlyph": "code",
+            "sessions": [{
+                "deviceId": "d1",
+                "workspaceId": "w1",
+                "sessionId": "s1",
+                "title": "t",
+                "agentType": "agentic",
+                "status": "waiting",
+                "unread": true,
+                "needsAttention": true,
+                "lastActivityMs": 5,
+                "origin": "dispatch"
+            }],
+            "sessionTotal": 1,
+            "hasMore": false
+        });
         assert_eq!(
             wire,
             json!({
@@ -882,32 +913,7 @@ mod tests {
                     "hostCapabilities": ["user_question_response"],
                     "route": {"kind": "relayed_peer", "latencyMs": 42, "relayVia": "d2"},
                     "actions": {"createWorkspace": {"allowed": true}},
-                    "workspaces": [{
-                        "deviceId": "d1",
-                        "workspaceId": "w1",
-                        "name": "proj",
-                        "rootPath": "/home/u/proj",
-                        "kind": "remote_ssh",
-                        "sshHost": "box",
-                        "connectionId": "conn-box",
-                        "connectionName": "Box",
-                        "linkState": "connected",
-                        "isHostCurrent": true,
-                        "sessions": [{
-                            "deviceId": "d1",
-                            "workspaceId": "w1",
-                            "sessionId": "s1",
-                            "title": "t",
-                            "agentType": "agentic",
-                            "status": "waiting",
-                            "unread": true,
-                            "needsAttention": true,
-                            "lastActivityMs": 5,
-                            "origin": "dispatch"
-                        }],
-                        "sessionTotal": 1,
-                        "hasMore": false
-                    }],
+                    "workspaces": [expected_workspace],
                     "sessionsTruncated": false
                 }],
                 "removedDeviceIds": [],
@@ -979,21 +985,23 @@ mod tests {
             workspace_id: "asst-1".into(),
             kind: FleetWorkspaceKind::Assistant,
             is_primary_assistant: true,
+            icon_glyph: Some("learning".into()),
             ..FleetWorkspace::default()
         };
         let wire = serde_json::to_value(&primary).unwrap();
         assert_eq!(wire["isPrimaryAssistant"], true);
+        assert_eq!(wire["iconGlyph"], "learning");
         let back: FleetWorkspace = serde_json::from_value(wire).unwrap();
         assert!(back.is_primary_assistant);
+        assert_eq!(back.icon_glyph.as_deref(), Some("learning"));
         let non_primary = FleetWorkspace {
             workspace_id: "asst-2".into(),
             kind: FleetWorkspaceKind::Assistant,
             ..FleetWorkspace::default()
         };
-        assert!(serde_json::to_value(&non_primary)
-            .unwrap()
-            .get("isPrimaryAssistant")
-            .is_none());
+        let non_primary_wire = serde_json::to_value(&non_primary).unwrap();
+        assert!(non_primary_wire.get("isPrimaryAssistant").is_none());
+        assert!(non_primary_wire.get("iconGlyph").is_none());
     }
 
     #[test]

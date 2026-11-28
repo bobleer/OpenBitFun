@@ -73,6 +73,11 @@ pub(crate) fn workspace_info_to_json(info: &WorkspaceInfo) -> Value {
     if let Some(host) = ssh_host {
         obj["sshHost"] = json!(host);
     }
+    if let Some(glyph) =
+        openbitfun_core_types::workspace_icon::workspace_icon_glyph_from_metadata(&info.metadata)
+    {
+        obj["iconGlyph"] = json!(glyph);
+    }
 
     obj
 }

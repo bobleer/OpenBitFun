@@ -496,11 +496,22 @@ fn workspace_summary_preserves_remote_connection_metadata() {
     assert_eq!(projected_local.connection_name, None);
     assert!(!projected_local.is_primary_assistant);
 
+    let mut assistant_primary_meta = HashMap::new();
+    assistant_primary_meta.insert(
+        openbitfun_core_types::workspace_icon::WORKSPACE_ICON_METADATA_KEY.to_string(),
+        serde_json::json!({
+            "version": 1,
+            "revision": 1,
+            "mode": "default",
+            "color": "default",
+            "glyph": "pets"
+        }),
+    );
     let assistant_primary = make(
         "asst_1",
         "/Users/dev/.openbitfun/assistants/default",
         WorkspaceKind::Assistant,
-        HashMap::new(),
+        assistant_primary_meta,
     );
     let assistant_secondary = make(
         "asst_2",
@@ -512,6 +523,7 @@ fn workspace_summary_preserves_remote_connection_metadata() {
         workspace_summary_with_primary(&assistant_primary, None, Some(&assistant_primary.id));
     assert_eq!(projected_primary.kind, FleetWorkspaceKind::Assistant);
     assert!(projected_primary.is_primary_assistant);
+    assert_eq!(projected_primary.icon_glyph.as_deref(), Some("pets"));
     let projected_secondary = workspace_summary_with_primary(
         &assistant_secondary,
         Some(&assistant_secondary.id),
@@ -520,6 +532,7 @@ fn workspace_summary_preserves_remote_connection_metadata() {
     assert_eq!(projected_secondary.kind, FleetWorkspaceKind::Assistant);
     assert!(!projected_secondary.is_primary_assistant);
     assert!(projected_secondary.is_host_current);
+    assert_eq!(projected_secondary.icon_glyph, None);
     // Non-assistant workspaces are never marked primary assistant even if IDs matched.
     let projected_non_asst = workspace_summary_with_primary(&local, None, Some(&local.id));
     assert!(!projected_non_asst.is_primary_assistant);

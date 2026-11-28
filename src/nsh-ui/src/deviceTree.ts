@@ -57,6 +57,7 @@ export interface DeviceTreeWorkspace {
   sshHost?: string;
   connectionId?: string;
   connectionName?: string;
+  iconGlyph?: string;
   sessions: DeviceTreeSession[];
   /** Sessions the workspace holds in all; more than `sessions` when the rest is a page away. */
   total: number;
@@ -270,6 +271,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
               sshHost: workspace.sshHost,
               connectionId: workspace.connectionId,
               connectionName: workspace.connectionName,
+              iconGlyph: workspace.iconGlyph,
               total: Math.max(workspace.sessionTotal, page?.total ?? 0),
               sessions: withPage(preview, page, untitled, status, device.deviceId),
             };
@@ -301,6 +303,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
           sshHost: workspace.sshHost,
           connectionId: workspace.connectionId ?? (workspace as { remoteConnectionId?: string }).remoteConnectionId,
           connectionName: workspace.connectionName,
+          iconGlyph: workspace.iconGlyph,
           total: Math.max(rows.length, page?.total ?? 0),
           sessions: open ? withPage(preview, page, untitled, status, "") : preview,
         };

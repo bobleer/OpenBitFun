@@ -88,6 +88,25 @@ pub fn valid_workspace_icon_color(color: &str) -> bool {
             && color[1..].bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// Extracts the active custom icon glyph from persisted workspace metadata.
+///
+/// Returns `None` when unset, set to `"default"`, in image mode, or unreadable,
+/// so unknown future versions and legacy records degrade cleanly to default icons.
+pub fn workspace_icon_glyph_from_metadata(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<String> {
+    let raw = metadata.get(WORKSPACE_ICON_METADATA_KEY)?;
+    let icon: WorkspaceIcon = serde_json::from_value(raw.clone()).ok()?;
+    if icon.version != WORKSPACE_ICON_VERSION || icon.mode != WorkspaceIconMode::Default {
+        return None;
+    }
+    icon.glyph
+        .as_deref()
+        .map(str::trim)
+        .filter(|glyph| !glyph.is_empty() && *glyph != "default")
+        .map(str::to_string)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceIconRequest {
@@ -190,5 +209,44 @@ mod tests {
         future["icon"]["glyph"] = "future-category".into();
         let decoded: WorkspaceIconSnapshot = serde_json::from_value(future.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), future);
+    }
+
+    #[test]
+    fn metadata_glyph_extraction_handles_default_custom_image_and_unknown_versions() {
+        let mut meta = std::collections::HashMap::new();
+        assert_eq!(workspace_icon_glyph_from_metadata(&meta), None);
+
+        meta.insert(
+            WORKSPACE_ICON_METADATA_KEY.into(),
+            serde_json::json!({ "version": 1, "revision": 1, "mode": "default", "color": "default", "glyph": "default" }),
+        );
+        assert_eq!(workspace_icon_glyph_from_metadata(&meta), None);
+
+        meta.insert(
+            WORKSPACE_ICON_METADATA_KEY.into(),
+            serde_json::json!({ "version": 1, "revision": 2, "mode": "default", "color": "blue", "glyph": "learning" }),
+        );
+        assert_eq!(
+            workspace_icon_glyph_from_metadata(&meta).as_deref(),
+            Some("learning")
+        );
+
+        meta.insert(
+            WORKSPACE_ICON_METADATA_KEY.into(),
+            serde_json::json!({ "version": 1, "revision": 3, "mode": "image", "color": "default", "glyph": "learning" }),
+        );
+        assert_eq!(workspace_icon_glyph_from_metadata(&meta), None);
+
+        meta.insert(
+            WORKSPACE_ICON_METADATA_KEY.into(),
+            serde_json::json!({ "version": 9, "revision": 4, "mode": "default", "color": "default", "glyph": "learning" }),
+        );
+        assert_eq!(workspace_icon_glyph_from_metadata(&meta), None);
+
+        meta.insert(
+            WORKSPACE_ICON_METADATA_KEY.into(),
+            serde_json::json!("corrupt"),
+        );
+        assert_eq!(workspace_icon_glyph_from_metadata(&meta), None);
     }
 }

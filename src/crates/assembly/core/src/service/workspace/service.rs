@@ -1701,6 +1701,15 @@ impl WorkspaceService {
 
             workspace.identity = updated_identity.clone();
             workspace.name = updated_name.clone();
+            if let Some(value) = workspace
+                .metadata
+                .get(openbitfun_core_types::workspace_icon::WORKSPACE_ICON_METADATA_KEY)
+            {
+                renamed.metadata.insert(
+                    openbitfun_core_types::workspace_icon::WORKSPACE_ICON_METADATA_KEY.into(),
+                    value.clone(),
+                );
+            }
             workspace.metadata = renamed.metadata;
         }
 

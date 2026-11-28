@@ -6541,7 +6541,9 @@ pub async fn set_workspace_icon(
     state: State<'_, AppState>,
     request: openbitfun_core::service::workspace::SetWorkspaceIconRequest,
 ) -> Result<openbitfun_core::service::workspace::WorkspaceIconSnapshot, String> {
-    state.workspace_service.set_workspace_icon(request).await
+    let snapshot = state.workspace_service.set_workspace_icon(request).await?;
+    crate::fleet::refresh_local_now().await;
+    Ok(snapshot)
 }
 
 /// Detect Magpie on the selected inference host without running inference.
