@@ -58,6 +58,57 @@ pub fn model_summary(model: &AIModelConfig) -> ModelSummary {
     }
 }
 
+/// Resolves the concrete text-chat model ID that a new normal session on this
+/// device will default to: the user's last explicitly used model when still
+/// enabled/online in `effective_ai`, otherwise this device's primary model.
+pub fn effective_new_session_model_id(
+    config: &GlobalConfig,
+    effective_ai: &AIConfig,
+) -> Option<String> {
+    if let Some(last) = config.app.flow_chat.last_model_selection.as_ref() {
+        if last
+            .model_pool_id
+            .as_deref()
+            .is_some_and(|pool_id| !pool_id.trim().is_empty())
+        {
+            return None;
+        }
+        if let Some(model_ref) = last
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            if let Some(resolved) = resolve_model_selector(effective_ai, model_ref).filter(|id| {
+                effective_ai.models.iter().any(|model| {
+                    model.enabled
+                        && model.id == *id
+                        && model.supports_capability(
+                            crate::service::config::types::ModelCapability::TextChat,
+                        )
+                })
+            }) {
+                return Some(resolved);
+            }
+        }
+    }
+    if matches!(
+        effective_ai
+            .effective_model_selections()
+            .ok()
+            .map(|s| s.mode),
+        Some(openbitfun_core_types::model_pool::ModelSelection::Pool { .. })
+    ) {
+        return None;
+    }
+    resolve_selector(effective_ai, &effective_ai.default_models.primary).or_else(|| {
+        effective_ai
+            .mode_model_reference()
+            .ok()
+            .and_then(|reference| resolve_model_selector(effective_ai, &reference))
+    })
+}
+
 pub fn model_list_projection(
     models: &[AIModelConfig],
     config: &GlobalConfig,
@@ -66,11 +117,7 @@ pub fn model_list_projection(
         models: models.iter().map(model_summary).collect(),
         primary_model_id: resolve_selector(&config.ai, &config.ai.default_models.primary),
         fast_model_id: resolve_selector(&config.ai, &config.ai.default_models.fast),
-        mode_default_model_id: config
-            .ai
-            .mode_model_reference()
-            .ok()
-            .and_then(|reference| resolve_model_selector(&config.ai, &reference)),
+        mode_default_model_id: effective_new_session_model_id(config, &config.ai),
     }
 }
 

@@ -587,7 +587,7 @@ mod tests {
             peer_host_verdict, PeerHostKind, PeerHostVerdict,
         };
         for command in [
-            "worktree_list",
+            "create_miniapp",
             "account_logout",
             "lsp_open_workspace",
             "no_such_cmd",
@@ -713,7 +713,7 @@ mod tests {
         // A registry command the CLI host does not run: the registry's own
         // refusal, typed `unsupported`.
         let refused = connection
-            .call("worktree_list", json!({}))
+            .call("create_miniapp", json!({}))
             .await
             .unwrap_err();
         assert_eq!(refused.code, -32000);
@@ -721,7 +721,7 @@ mod tests {
         assert!(
             refused
                 .message
-                .starts_with("command 'worktree_list' is not supported on CLI peer host"),
+                .starts_with("command 'create_miniapp' is not supported on CLI peer host"),
             "{}",
             refused.message
         );

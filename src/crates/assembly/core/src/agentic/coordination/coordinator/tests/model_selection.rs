@@ -596,3 +596,85 @@ fn subagent_model_resolution_prioritizes_explicit_fixed_and_inherited_values() {
         resolve_subagent_model_selection(None, &SubagentModelSelection::Inherit, None,).is_err()
     );
 }
+
+#[test]
+fn new_session_follows_last_used_model_or_falls_back_to_primary() {
+    use openbitfun_config_contracts::LastSessionModelSelection;
+    let stale_legacy_defaults = AgentModelSelections {
+        mode: ModelSelection::Model {
+            model_ref: "stale-legacy-mode-model".into(),
+        },
+        ..Default::default()
+    };
+
+    // Without a last-used selection, production creation ignores stale legacy non-pool
+    // `mode` overrides and defaults directly to the workspace device's `"primary"` model.
+    let mut primary_fallback = SessionConfig::default();
+    super::super::snapshot_normal_session_model_with_last(
+        &mut primary_fallback,
+        &stale_legacy_defaults,
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(primary_fallback.model_id.as_deref(), Some("primary"));
+    assert_eq!(primary_fallback.model_pool_id, None);
+
+    // With a last-used selection (including cross-device `fleet:` ref, reasoning & context),
+    // the new session inherits all three cleanly.
+    let last_used = LastSessionModelSelection {
+        model_id: Some("fleet:peer-b/claude-sonnet".into()),
+        model_pool_id: None,
+        reasoning_preset: Some("high".into()),
+        context_window_override: Some(300_000),
+    };
+    let mut followed = SessionConfig::default();
+    super::super::snapshot_normal_session_model_with_last(
+        &mut followed,
+        &stale_legacy_defaults,
+        Some(&last_used),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        followed.model_id.as_deref(),
+        Some("fleet:peer-b/claude-sonnet")
+    );
+    assert_eq!(followed.reasoning_preset.as_deref(), Some("high"));
+    assert_eq!(followed.context_window_override, Some(300_000));
+
+    // An explicit caller model always beats last-used.
+    let mut explicit = SessionConfig {
+        model_id: Some("explicit-model".into()),
+        ..Default::default()
+    };
+    super::super::snapshot_normal_session_model_with_last(
+        &mut explicit,
+        &stale_legacy_defaults,
+        Some(&last_used),
+        true,
+    )
+    .unwrap();
+    assert_eq!(explicit.model_id.as_deref(), Some("explicit-model"));
+    assert_eq!(explicit.reasoning_preset, None);
+    assert_eq!(explicit.context_window_override, None);
+
+    // A last-used model pool is inherited as a pool selection.
+    let last_pool = LastSessionModelSelection {
+        model_id: None,
+        model_pool_id: Some("pool-a".into()),
+        reasoning_preset: None,
+        context_window_override: Some(256_000),
+    };
+    let mut followed_pool = SessionConfig::default();
+    super::super::snapshot_normal_session_model_with_last(
+        &mut followed_pool,
+        &stale_legacy_defaults,
+        Some(&last_pool),
+        true,
+    )
+    .unwrap();
+    assert_eq!(followed_pool.model_pool_id.as_deref(), Some("pool-a"));
+    assert_eq!(followed_pool.model_id, None);
+    assert_eq!(followed_pool.context_window_override, Some(256_000));
+}

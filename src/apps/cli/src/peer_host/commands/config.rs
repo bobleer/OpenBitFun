@@ -239,3 +239,65 @@ pub(crate) async fn import_config(args: &Value) -> Result<Value, String> {
     serde_json::to_value(result)
         .map_err(|error| format!("Failed to serialize import result: {error}"))
 }
+
+pub(crate) async fn get_global_config_status() -> Result<Value, String> {
+    Ok(json!(
+        openbitfun_core::service::config::GlobalConfigManager::is_initialized()
+    ))
+}
+
+pub(crate) async fn get_global_config_health() -> Result<Value, String> {
+    Ok(json!(
+        openbitfun_core::service::config::GlobalConfigManager::is_initialized()
+    ))
+}
+
+pub(crate) async fn validate_config() -> Result<Value, String> {
+    let config_service = get_global_config_service()
+        .await
+        .map_err(|error| format!("Failed to get config service: {error}"))?;
+    let report = config_service
+        .validate_config()
+        .await
+        .map_err(|error| format!("Failed to validate config: {error}"))?;
+    serde_json::to_value(report)
+        .map_err(|error| format!("Failed to serialize validation report: {error}"))
+}
+
+pub(crate) async fn reset_config(args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let path = request
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
+    let config_service = get_global_config_service()
+        .await
+        .map_err(|error| format!("Failed to get config service: {error}"))?;
+    config_service
+        .reset_config(path.as_deref())
+        .await
+        .map_err(|error| format!("Failed to reset config: {error}"))?;
+    let should_invalidate = path.as_deref().is_none_or(|p| p.starts_with("ai"));
+    if should_invalidate {
+        if let Ok(factory) =
+            openbitfun_core::infrastructure::ai::AIClientFactory::get_global().await
+        {
+            factory.invalidate_cache();
+        }
+    }
+    let message = match path {
+        Some(path) => format!("Configuration '{path}' reset successfully"),
+        None => "All configurations reset successfully".to_string(),
+    };
+    Ok(Value::String(message))
+}
+
+pub(crate) async fn canonicalize_agent_profile_configs() -> Result<Value, String> {
+    let report =
+        openbitfun_core::service::config::mode_config_canonicalizer::canonicalize_agent_profile_configs()
+            .await
+            .map_err(|error| format!("Failed to canonicalize agent profile configs: {error}"))?;
+    serde_json::to_value(report)
+        .map_err(|error| format!("Failed to serialize canonicalization report: {error}"))
+}

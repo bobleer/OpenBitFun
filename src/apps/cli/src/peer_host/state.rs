@@ -1,11 +1,14 @@
 //! Shared Peer Host service handles and bounded Peer-owned turn state.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use openbitfun_agent_runtime::sdk::{AgentRuntime, SessionEventJournal};
 use openbitfun_core::product_runtime::CoreAgentRuntimeCompatibility;
 use openbitfun_core::service::filesystem::FileSystemService;
+use openbitfun_core::service::search::WorkspaceSearchService;
 use openbitfun_core::service::token_usage::TokenUsageService;
 use openbitfun_core::service::workspace::WorkspaceService;
 use openbitfun_runtime_ports::{AgentSubmissionSource, AgentTurnCancellationRequest};
@@ -902,7 +905,10 @@ pub(crate) struct PeerHostState {
     pub(crate) turns: PeerTurnTracker,
     pub(crate) workspace_service: Arc<WorkspaceService>,
     pub(crate) filesystem_service: Arc<FileSystemService>,
+    pub(crate) workspace_search_service: Arc<WorkspaceSearchService>,
+    pub(crate) active_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub(crate) token_usage_service: Arc<TokenUsageService>,
+    pub(crate) start_time: Instant,
 }
 
 impl PeerHostState {

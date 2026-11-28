@@ -5,11 +5,32 @@ import { tr } from "../i18n";
 import { promptReferenceParts, type PromptReference } from "../promptReferences";
 import type { PullRequestContext } from "../pullRequestReference";
 import { palette, radii, space, textStyle } from "../theme";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 import { TooltipBubble } from "./primitives";
 
+function promptReferenceIcon(kind: PromptReference["kind"]): IconName {
+  switch (kind) {
+    case "pull-request":
+      return "git-pull-request";
+    case "mcp":
+      return "plug";
+    case "skill":
+      return "sparkles";
+    case "workspace":
+      return "folder-open";
+    case "device":
+      return "laptop";
+    case "model":
+      return "cpu";
+    case "acp":
+      return "bot";
+    default:
+      return "code";
+  }
+}
+
 export function PromptReferenceCapsule(props: {
-  reference: Pick<PromptReference, "kind" | "label"> & { context?: CodeSnippetContext | MermaidContext | PullRequestContext };
+  reference: Pick<PromptReference, "kind" | "label" | "detail"> & { context?: CodeSnippetContext | MermaidContext | PullRequestContext };
   labelPrefix: string;
   selected?: boolean;
 }) {
@@ -19,7 +40,9 @@ export function PromptReferenceCapsule(props: {
     const context = props.reference.context;
     if (context?.type === "code-snippet") return codeSnippetLocation(context);
     if (context?.type === "pull-request") return context.pullRequestTitle ?? label();
-    return context?.diagramTitle ?? label();
+    if (context?.diagramTitle) return context.diagramTitle;
+    const detail = props.reference.detail?.trim();
+    return detail && detail !== label() ? `${label()} · ${detail}` : label();
   };
   return (
     <View
@@ -33,7 +56,7 @@ export function PromptReferenceCapsule(props: {
         backgroundColor: palette().panelHover, userSelect: "none",
       }}
     >
-      <Icon name={props.reference.kind === "pull-request" ? "git-pull-request" : props.reference.kind === "mcp" ? "plug" : props.reference.kind === "skill" ? "sparkles" : "code"}
+      <Icon name={promptReferenceIcon(props.reference.kind)}
         size={12} color={palette().textSecondary} />
       <Text style={{
         ...textStyle("caption", { color: palette().textSecondary }), minWidth: 0, flexShrink: 1,

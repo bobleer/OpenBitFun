@@ -1,6 +1,41 @@
 //! Input budgets and emergency history trimming for model requests.
 use openbitfun_core_types::model_pool::ModelPoolContextBudget;
-use openbitfun_core_types::token_estimate::INPUT_SAFETY_RESERVE;
+use openbitfun_core_types::token_estimate::input_safety_reserve;
+
+const COMPRESSION_CURVE_MIN_WINDOW: f64 = 128_000.0;
+const COMPRESSION_CURVE_MAX_WINDOW: f64 = 1_000_000.0;
+const COMPRESSION_CURVE_MAX_RATIO: f64 = 0.80;
+const COMPRESSION_CURVE_MIN_RATIO: f64 = 0.50;
+
+/// Target automatic-compression trigger ratio for a given context window.
+///
+/// Larger windows suffer from attention dilution, latency, and cost growth long
+/// before the hard provider limit is reached, while smaller windows need high
+/// utilization before compacting. Interpolates smoothly on a logarithmic scale
+/// from 80% at 128k down to 50% at 1M (~10% drop per context doubling), while
+/// keeping absolute trigger tokens strictly monotonically increasing.
+pub fn target_compression_ratio(context_window: usize) -> f64 {
+    if context_window == 0 {
+        return COMPRESSION_CURVE_MAX_RATIO;
+    }
+    let window = context_window as f64;
+    if window <= COMPRESSION_CURVE_MIN_WINDOW {
+        return COMPRESSION_CURVE_MAX_RATIO;
+    }
+    if window >= COMPRESSION_CURVE_MAX_WINDOW {
+        return COMPRESSION_CURVE_MIN_RATIO;
+    }
+    let progress = (window / COMPRESSION_CURVE_MIN_WINDOW).ln()
+        / (COMPRESSION_CURVE_MAX_WINDOW / COMPRESSION_CURVE_MIN_WINDOW).ln();
+    COMPRESSION_CURVE_MAX_RATIO
+        - (COMPRESSION_CURVE_MAX_RATIO - COMPRESSION_CURVE_MIN_RATIO) * progress
+}
+
+/// Target automatic-compression token threshold before applying hard window reserves.
+pub fn target_compression_input_limit(context_window: usize) -> usize {
+    let ratio = target_compression_ratio(context_window);
+    (((context_window as f64) * ratio).round() as usize).min(context_window)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompressionTriggerBudget {
@@ -12,11 +47,13 @@ pub struct CompressionTriggerBudget {
 
 impl CompressionTriggerBudget {
     pub fn for_model(context_window: usize, output_reserve_tokens: usize) -> Self {
-        let safety_reserve_tokens = INPUT_SAFETY_RESERVE;
+        let safety_reserve_tokens = input_safety_reserve(context_window);
+        let hard_input_limit = context_window
+            .saturating_sub(output_reserve_tokens.saturating_add(safety_reserve_tokens));
+        let target_input_limit = target_compression_input_limit(context_window);
         Self {
             context_window,
-            input_limit: context_window
-                .saturating_sub(output_reserve_tokens + safety_reserve_tokens),
+            input_limit: hard_input_limit.min(target_input_limit),
             output_reserve_tokens,
             safety_reserve_tokens,
         }
@@ -24,15 +61,16 @@ impl CompressionTriggerBudget {
 
     pub fn for_pool(budget: ModelPoolContextBudget) -> Self {
         let context_window = budget.context_window as usize;
-        let input_limit = budget.input_limit as usize;
-        let safety_reserve_tokens = INPUT_SAFETY_RESERVE.min(context_window);
+        let input_limit =
+            (budget.input_limit as usize).min(target_compression_input_limit(context_window));
+        let safety_reserve_tokens = input_safety_reserve(context_window);
         Self {
             context_window,
             input_limit,
             // This is an equivalent reserve for the common window, not a new
             // max_tokens setting for any member's provider request.
             output_reserve_tokens: context_window
-                .saturating_sub(input_limit + safety_reserve_tokens),
+                .saturating_sub(input_limit.saturating_add(safety_reserve_tokens)),
             safety_reserve_tokens,
         }
     }
@@ -116,7 +154,98 @@ pub fn trim_history<M>(
 
 #[cfg(test)]
 mod tests {
-    use super::trim_history;
+    use super::{
+        target_compression_input_limit, target_compression_ratio, trim_history,
+        CompressionTriggerBudget,
+    };
+    use openbitfun_core_types::model_pool::ModelPoolContextBudget;
+    use openbitfun_core_types::token_estimate::automatic_max_output_tokens;
+
+    #[test]
+    fn compression_curve_maps_128k_to_80_percent_and_1m_to_50_percent() {
+        assert_eq!(target_compression_input_limit(128_000), 102_400);
+        assert_eq!(target_compression_input_limit(1_000_000), 500_000);
+        assert_eq!(target_compression_input_limit(1_048_576), 524_288);
+        assert_eq!(target_compression_input_limit(64_000), 51_200);
+
+        let b128 = CompressionTriggerBudget::for_model(
+            128_000,
+            automatic_max_output_tokens(128_000) as usize,
+        );
+        assert_eq!(b128.input_limit, 102_400);
+        assert_eq!(b128.output_reserve_tokens, 16_000);
+        assert_eq!(b128.safety_reserve_tokens, 6_400);
+
+        let b1m = CompressionTriggerBudget::for_model(
+            1_000_000,
+            automatic_max_output_tokens(1_000_000) as usize,
+        );
+        assert_eq!(b1m.input_limit, 500_000);
+        assert_eq!(b1m.output_reserve_tokens, 64_000);
+        assert_eq!(b1m.safety_reserve_tokens, 10_000);
+    }
+
+    #[test]
+    fn compression_curve_decreases_ratio_and_increases_tokens_monotonically() {
+        let windows = [
+            32_000, 64_000, 128_000, 150_000, 200_000, 256_000, 300_000, 400_000, 500_000, 750_000,
+            1_000_000, 1_048_576, 2_000_000,
+        ];
+        let mut prev_ratio = f64::INFINITY;
+        let mut prev_tokens = 0usize;
+        for window in windows {
+            let ratio = target_compression_ratio(window);
+            let output = automatic_max_output_tokens(window as u32) as usize;
+            let budget = CompressionTriggerBudget::for_model(window, output);
+            assert!(
+                ratio <= prev_ratio + f64::EPSILON,
+                "ratio should not increase at window={window}: {ratio} > {prev_ratio}"
+            );
+            assert!(
+                budget.input_limit > prev_tokens,
+                "input_limit should strictly increase at window={window}: {} <= {prev_tokens}",
+                budget.input_limit
+            );
+            assert!(
+                budget.input_limit + budget.output_reserve_tokens + budget.safety_reserve_tokens
+                    <= window,
+                "hard safety invariant violated at window={window}"
+            );
+            if window >= 128_000 {
+                assert_eq!(budget.input_limit, target_compression_input_limit(window));
+            }
+            prev_ratio = ratio;
+            prev_tokens = budget.input_limit;
+        }
+    }
+
+    #[test]
+    fn explicit_large_output_reserve_still_caps_hard_input_limit() {
+        let budget = CompressionTriggerBudget::for_model(128_000, 48_000);
+        assert_eq!(budget.safety_reserve_tokens, 6_400);
+        assert_eq!(budget.input_limit, 73_600);
+    }
+
+    #[test]
+    fn pool_budget_applies_curve_to_legacy_high_input_limits_and_keeps_tight_members() {
+        let legacy_1m = CompressionTriggerBudget::for_pool(ModelPoolContextBudget {
+            context_window: 1_000_000,
+            input_limit: 926_000,
+        });
+        assert_eq!(legacy_1m.input_limit, 500_000);
+        assert_eq!(legacy_1m.safety_reserve_tokens, 10_000);
+
+        let tight = CompressionTriggerBudget::for_pool(ModelPoolContextBudget {
+            context_window: 128_000,
+            input_limit: 88_000,
+        });
+        assert_eq!(tight.input_limit, 88_000);
+        assert_eq!(tight.safety_reserve_tokens, 6_400);
+        assert_eq!(
+            tight.input_limit + tight.output_reserve_tokens + tight.safety_reserve_tokens,
+            128_000
+        );
+    }
 
     #[test]
     fn truncation_keeps_the_first_user_message_and_never_orphans_a_tool_result() {

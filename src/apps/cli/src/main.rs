@@ -143,6 +143,58 @@ pub(crate) fn ensure_cli_mcp_service(
     Some(service)
 }
 
+// ======================== Global ACP Client Service ========================
+
+static ACP_CLIENT_SERVICE: OnceLock<std::sync::Arc<openbitfun_acp::AcpClientService>> =
+    OnceLock::new();
+
+/// Get the global ACP client service instance (if initialized).
+pub(crate) fn get_acp_client_service() -> Option<Arc<openbitfun_acp::AcpClientService>> {
+    ACP_CLIENT_SERVICE.get().cloned()
+}
+
+/// Ensure the process-wide ACP client service exists and kick off background
+/// client/tool initialization so enabled ACP harnesses (`acp__<id>__prompt`)
+/// are registered for CLI sessions and Peer Host controllers alike.
+pub(crate) fn ensure_cli_acp_service(
+    config_service: Arc<openbitfun_core::service::config::ConfigService>,
+) -> Option<Arc<openbitfun_acp::AcpClientService>> {
+    if let Some(service) = get_acp_client_service() {
+        return Some(service);
+    }
+
+    let path_manager = match openbitfun_core::infrastructure::try_get_path_manager_arc() {
+        Ok(pm) => pm,
+        Err(error) => {
+            tracing::warn!("Failed to get path manager for ACP client service: {error}");
+            return None;
+        }
+    };
+
+    let service = match openbitfun_acp::AcpClientService::new(config_service, path_manager) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::warn!("Failed to create ACP client service: {error}");
+            return None;
+        }
+    };
+
+    if ACP_CLIENT_SERVICE.set(service.clone()).is_err() {
+        return get_acp_client_service();
+    }
+
+    let initializing = service.clone();
+    tokio::spawn(async move {
+        if let Err(error) = initializing.initialize_all().await {
+            tracing::warn!("Failed to initialize ACP clients: {error}");
+        } else {
+            tracing::info!("ACP clients initialized successfully");
+        }
+    });
+
+    Some(service)
+}
+
 #[derive(Parser)]
 #[command(name = "openbitfun")]
 #[command(about = "OpenBitFun CLI - AI agent-driven command-line programming assistant", long_about = None)]
@@ -1095,10 +1147,11 @@ async fn initialize_core_services_for_deployment(
         }
     }
 
-    // Initialize MCP service in background (non-blocking).
+    // Initialize MCP and ACP services in background (non-blocking).
     if bootstrap_profile.starts_mcp() {
         if let Some(config_service) = config_service {
-            ensure_cli_mcp_service(config_service);
+            ensure_cli_mcp_service(config_service.clone());
+            ensure_cli_acp_service(config_service);
         }
     }
 
@@ -1110,11 +1163,26 @@ async fn initialize_core_services_for_deployment(
     Ok(runtime)
 }
 
-/// Shutdown MCP servers gracefully
+/// Shutdown MCP servers and ACP clients gracefully
 async fn shutdown_mcp_servers() {
     // Process exit: leave the account's Link network as well (no-op when this
     // process never joined it).
     obp_host::shutdown().await;
+    if let Some(acp_service) = get_acp_client_service() {
+        if let Ok(clients) = acp_service.list_clients().await {
+            for client in clients {
+                if matches!(
+                    client.status,
+                    openbitfun_acp::client::AcpClientStatus::Running
+                        | openbitfun_acp::client::AcpClientStatus::Starting
+                ) {
+                    if let Err(e) = acp_service.stop_client(&client.id).await {
+                        tracing::warn!("Failed to stop ACP client '{}': {}", client.id, e);
+                    }
+                }
+            }
+        }
+    }
     if let Some(mcp_service) = get_mcp_service() {
         if let Err(e) = mcp_service.server_manager().shutdown().await {
             tracing::warn!("Failed to shutdown MCP servers: {}", e);

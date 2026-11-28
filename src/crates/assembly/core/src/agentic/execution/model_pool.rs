@@ -887,7 +887,7 @@ mod tests {
             common,
             ModelPoolContextBudget {
                 context_window: 128_000,
-                input_limit: 86_000
+                input_limit: 88_000
             }
         );
         let candidates =
@@ -905,7 +905,7 @@ mod tests {
             assert!(common.input_limit <= member.input_limit);
         }
         let trigger = CompressionTriggerBudget::for_pool(common);
-        assert_eq!(trigger.input_limit, 86_000);
+        assert_eq!(trigger.input_limit, 88_000);
         assert_eq!(
             trigger.input_limit + trigger.output_reserve_tokens + trigger.safety_reserve_tokens,
             128_000
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(common.context_window, resolved.context_window);
         assert_eq!(
             common.input_limit,
-            resolved.context_window - resolved.max_tokens.unwrap() - 10_000
+            model_budget(resolved.context_window as usize, resolved.max_tokens).input_limit as u32
         );
         config.models[1].enabled = true;
         let updated = ModelPoolRuntime::configured_context_budget(&config, &ids).unwrap();
@@ -941,7 +941,7 @@ mod tests {
             updated,
             ModelPoolContextBudget {
                 context_window: 32_000,
-                input_limit: 14_000
+                input_limit: 25_280
             }
         );
         config.models.clear();

@@ -424,3 +424,53 @@ test("mobile composer keeps model selector outside the + menu and opens inline c
     ),
   );
 });
+
+test("split-pane new session routes create_session to its workspace device and resolves primary to that device's model", async () => {
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = data as { action?: string; request?: { sessionId?: string } };
+    if (req.action === "create_session") {
+      const answer = baseInvoke(data) as { ok: boolean; value?: Record<string, unknown> };
+      if (answer.ok && answer.value) {
+        return { ...answer, value: { ...answer.value, modelId: "primary" } };
+      }
+      return answer;
+    }
+    if (req.action === "get_session_model_target" && req.request?.sessionId === "session-new") {
+      return {
+        ok: true,
+        value: {
+          sessionId: "session-new",
+          selection: { kind: "model", model_ref: "primary" },
+        },
+        transport: "dev",
+      };
+    }
+    return baseInvoke(data);
+  };
+  const host = fleetObpHost(backend, { fleet: ENTRY, navigator: navigator(), fleetModels: CATALOG });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("nav-library");
+
+  await openSession(app, "Fix flaky test");
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await openSession(app, "Build release");
+  await app.waitFor("secondary-composer-plus");
+
+  // Create a new session in the secondary pane (dev-b / workspace-2) via the "+" menu.
+  await app.press("secondary-composer-plus");
+  await app.waitFor("secondary-composer-plus-new-session");
+  await app.press("secondary-composer-plus-new-session");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "create_session"));
+
+  const createCall = host.fleetCalls.filter(call => call.command === "create_session").pop()!;
+  expect(createCall).toMatchObject({
+    target: "dev-b",
+    args: { request: { workspaceId: "workspace-2" } },
+  });
+  // Before any explicit override on dev-b, its new session's symbolic `"primary"` resolves to
+  // dev-b's own primary model ("Big model"), not dev-a's ("Primary model").
+  await app.waitFor("label:secondary-bot-capsule-trigger >> text:Big model");
+});

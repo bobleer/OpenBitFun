@@ -2,10 +2,20 @@
 
 use serde_json::{json, Value};
 
-use openbitfun_core::service::git::{trust, GitError, GitService};
+use openbitfun_core::service::git::compound::{
+    self, GitCommitAndCheckoutParams, GitPushPlan, LocalGitRunner,
+};
+use openbitfun_core::service::git::{
+    trust, GitAddParams, GitCommitParams, GitError, GitOperationResult, GitPullParams,
+    GitPushParams, GitService,
+};
+use openbitfun_core::service::workspace::WorktreeTopologyFreshness;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use crate::peer_host::args::{get_string, optional_string, request_value};
+use crate::peer_host::args::{
+    get_string, get_string_vec, optional_bool, optional_string, request_value,
+};
+use crate::peer_host::state::PeerHostState;
 
 async fn repository_path_for_workspace(request: &Value) -> Result<String, String> {
     let service = openbitfun_core::service::workspace::get_global_workspace_service()
@@ -139,8 +149,200 @@ async fn read_at_path(command: &str, path: &str, request: &Value) -> Result<Valu
             let revision = get_string(request, "revision")?;
             git_result(command, GitService::resolve_revision(path, &revision).await)
         }
+        "git_get_file_content" => {
+            let file_path = get_string(request, "filePath")?;
+            let commit = optional_string(request, "commit");
+            git_result(
+                command,
+                GitService::get_file_content(path, &file_path, commit.as_deref()).await,
+            )
+        }
         other => Err(format!("Unknown CLI peer Git read command '{other}'")),
     }
+}
+
+/// Local-only Git mutations and worktree operations. Remote workspaces are
+/// refused before any Git invocation so local filesystem fallback never occurs.
+pub(crate) async fn mutate(
+    command: &str,
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let path = repository_path_for_workspace(request).await?;
+    match command {
+        "git_add_files" => {
+            let params: GitAddParams = required_params(request)?;
+            git_result(command, GitService::add_files(&path, params).await)
+        }
+        "git_reset_files" => {
+            let files = get_string_vec(request, "files")?;
+            let staged = optional_bool(request, "staged").unwrap_or(false);
+            let output = GitService::reset_files(&path, &files, staged)
+                .await
+                .map_err(|error| match error.untrusted_repository_path() {
+                    Some(untrusted) => trust::untrusted_repository_error_message(untrusted),
+                    None => format!("{command} failed: {error}"),
+                })?;
+            serde_json::to_value(GitOperationResult {
+                success: true,
+                data: None,
+                error: None,
+                output: Some(output),
+                duration: None,
+            })
+            .map_err(|error| format!("Invalid {command} response: {error}"))
+        }
+        "git_commit" => {
+            let params: GitCommitParams = required_params(request)?;
+            git_result(command, GitService::commit(&path, params).await)
+        }
+        "git_push" => {
+            let params: GitPushParams = required_params(request)?;
+            let publish_if_no_upstream =
+                optional_bool(request, "publishIfNoUpstream").unwrap_or(false);
+            if publish_if_no_upstream {
+                let runner = LocalGitRunner::new(&path);
+                let plan = GitPushPlan {
+                    remote: params.remote,
+                    branch: params.branch,
+                    force: params.force.unwrap_or(false),
+                    set_upstream: params.set_upstream.unwrap_or(false),
+                    publish_if_no_upstream: true,
+                    timeout: Some(std::time::Duration::from_secs(30)),
+                };
+                return git_result(command, compound::push(&runner, plan).await);
+            }
+            git_result(command, GitService::push(&path, params).await)
+        }
+        "git_pull" => {
+            let params: GitPullParams = required_params(request)?;
+            git_result(command, GitService::pull(&path, params).await)
+        }
+        "git_checkout_branch" => {
+            let branch_name = get_string(request, "branchName")?;
+            git_result(
+                command,
+                GitService::checkout_branch(&path, &branch_name).await,
+            )
+        }
+        "git_create_branch" => {
+            let branch_name = get_string(request, "branchName")?;
+            let start_point = optional_string(request, "startPoint");
+            git_result(
+                command,
+                GitService::create_branch(&path, &branch_name, start_point.as_deref()).await,
+            )
+        }
+        "git_delete_branch" => {
+            let branch_name = get_string(request, "branchName")?;
+            let force = optional_bool(request, "force").unwrap_or(false);
+            git_result(
+                command,
+                GitService::delete_branch(&path, &branch_name, force).await,
+            )
+        }
+        "git_discard_files" => {
+            let files = get_string_vec(request, "files")?;
+            let include_untracked = optional_bool(request, "includeUntracked").unwrap_or(false);
+            let runner = LocalGitRunner::new(&path);
+            git_result(
+                command,
+                compound::discard_files(&runner, &files, include_untracked).await,
+            )
+        }
+        "git_reset_to_commit" => {
+            let commit_hash = get_string(request, "commitHash")?;
+            let mode = get_string(request, "mode")?;
+            git_result(
+                command,
+                GitService::reset_to_commit(&path, &commit_hash, &mode).await,
+            )
+        }
+        "git_commit_and_checkout" => {
+            let params: GitCommitAndCheckoutParams = serde_json::from_value(request.clone())
+                .map_err(|error| format!("Invalid Git commit_and_checkout params: {error}"))?;
+            let runner = LocalGitRunner::new(&path);
+            git_result(
+                command,
+                compound::commit_and_checkout(&runner, params).await,
+            )
+        }
+        "git_cherry_pick" => {
+            let commit_hash = get_string(request, "commitHash")?;
+            let no_commit = optional_bool(request, "noCommit").unwrap_or(false);
+            git_result(
+                command,
+                GitService::cherry_pick(&path, &commit_hash, no_commit).await,
+            )
+        }
+        "git_cherry_pick_abort" => git_result(command, GitService::cherry_pick_abort(&path).await),
+        "git_cherry_pick_continue" => {
+            git_result(command, GitService::cherry_pick_continue(&path).await)
+        }
+        "git_list_worktrees" => {
+            let worktrees = state
+                .workspace_service
+                .list_worktrees(
+                    std::path::Path::new(&path),
+                    WorktreeTopologyFreshness::ForceRefresh,
+                )
+                .await
+                .map_err(|error| match error.untrusted_repository_path() {
+                    Some(untrusted) => trust::untrusted_repository_error_message(untrusted),
+                    None => format!("{command} failed: {error}"),
+                })?;
+            serde_json::to_value(worktrees).map_err(|e| format!("Invalid {command} response: {e}"))
+        }
+        "git_add_worktree" => {
+            let branch = get_string(request, "branch")?;
+            let create_branch = optional_bool(request, "createBranch").unwrap_or(false);
+            let worktree = GitService::add_worktree(&path, &branch, create_branch)
+                .await
+                .map_err(|error| match error.untrusted_repository_path() {
+                    Some(untrusted) => trust::untrusted_repository_error_message(untrusted),
+                    None => format!("{command} failed: {error}"),
+                })?;
+            state
+                .workspace_service
+                .invalidate_worktree_topology(std::path::Path::new(&path))
+                .await;
+            serde_json::to_value(worktree).map_err(|e| format!("Invalid {command} response: {e}"))
+        }
+        "git_remove_worktree" => {
+            let worktree_path = get_string(request, "worktreePath")?;
+            let force = optional_bool(request, "force").unwrap_or(false);
+            let result = GitService::remove_worktree(&path, &worktree_path, force)
+                .await
+                .map_err(|error| match error.untrusted_repository_path() {
+                    Some(untrusted) => trust::untrusted_repository_error_message(untrusted),
+                    None => format!("{command} failed: {error}"),
+                })?;
+            state
+                .workspace_service
+                .invalidate_worktree_topology(std::path::Path::new(&path))
+                .await;
+            serde_json::to_value(result).map_err(|e| format!("Invalid {command} response: {e}"))
+        }
+        other => Err(format!("Unknown CLI peer Git mutation command '{other}'")),
+    }
+}
+
+pub(crate) async fn git_get_graph(args: &Value) -> Result<Value, String> {
+    // Desktop accepts positional top-level args (`repositoryPath`, `workspaceId`,
+    // `maxCount`, `branchName`) as well as wrapped `request`.
+    let request = request_value(args);
+    let path = repository_path_for_workspace(request).await?;
+    let max_count = request
+        .get("maxCount")
+        .or_else(|| request.get("max_count"))
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok());
+    let branch_name = optional_string(request, "branchName");
+    git_result(
+        "git_get_graph",
+        GitService::get_git_graph_for_branch(&path, max_count, branch_name).await,
+    )
 }
 
 pub(crate) async fn git_is_repository(args: &Value) -> Result<Value, String> {

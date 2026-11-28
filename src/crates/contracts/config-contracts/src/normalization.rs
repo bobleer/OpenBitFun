@@ -471,6 +471,51 @@ pub fn reconcile_model_references(config: &mut GlobalConfig) -> ModelReferenceRe
         MissingSlotPolicy::Preserve,
     );
 
+    if let Some(last) = config.app.flow_chat.last_model_selection.as_ref() {
+        let mut clear_reason: Option<Option<String>> = None;
+        if let Some(pool_id) = last
+            .model_pool_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let valid_pool = config
+                .ai
+                .model_pools
+                .get(pool_id)
+                .is_ok_and(|pool| !pool.member_model_ids.is_empty());
+            if !valid_pool {
+                clear_reason = Some(Some(pool_id.to_string()));
+            }
+        } else if let Some(model_ref) = last
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            // Keep cross-device `fleet:` references on disk; they are validated against
+            // currently online peers at session creation time so sleeping peers don't
+            // wipe the preference while still falling back safely to local primary.
+            if !model_ref.starts_with("fleet:") && !direct_text_reference_is_valid(model_ref) {
+                invalidated.insert(model_ref.to_string());
+                clear_reason = Some(Some(model_ref.to_string()));
+            }
+        } else {
+            clear_reason = Some(None);
+        }
+
+        if let Some(previous) = clear_reason {
+            config.app.flow_chat.last_model_selection = None;
+            result.agent_model_defaults_changed = true;
+            diagnose_reference_repair(
+                &mut result.diagnostics,
+                "app.flow_chat.last_model_selection",
+                previous.as_deref(),
+                None,
+            );
+        }
+    }
+
     result.invalidated_model_ids = invalidated.into_iter().collect();
     result.invalidated_model_ids.sort();
     result
@@ -755,5 +800,38 @@ mod tests {
                 .get("ResearchSpecialist"),
             Some(&SubagentModelSelection::fixed("fast"))
         );
+    }
+
+    #[test]
+    fn last_model_selection_reconciles_deleted_local_models_and_keeps_fleet_refs() {
+        let mut config = GlobalConfig::default();
+        config.ai.models = vec![AIModelConfig {
+            id: "text-a".to_string(),
+            enabled: true,
+            category: ModelCategory::GeneralChat,
+            capabilities: vec![ModelCapability::TextChat],
+            ..AIModelConfig::default()
+        }];
+        config.ai.default_models.primary = Some("text-a".to_string());
+
+        // Deleted/disabled local model is cleared.
+        config.app.flow_chat.last_model_selection = Some(crate::types::LastSessionModelSelection {
+            model_id: Some("deleted-local".to_string()),
+            ..Default::default()
+        });
+        let cleared = reconcile_model_references(&mut config);
+        assert!(cleared.agent_model_defaults_changed);
+        assert_eq!(config.app.flow_chat.last_model_selection, None);
+
+        // Cross-device `fleet:` model reference stays preserved on disk.
+        let fleet_pref = crate::types::LastSessionModelSelection {
+            model_id: Some("fleet:peer-b/claude".to_string()),
+            reasoning_preset: Some("high".to_string()),
+            ..Default::default()
+        };
+        config.app.flow_chat.last_model_selection = Some(fleet_pref.clone());
+        let kept = reconcile_model_references(&mut config);
+        assert!(!kept.agent_model_defaults_changed);
+        assert_eq!(config.app.flow_chat.last_model_selection, Some(fleet_pref));
     }
 }

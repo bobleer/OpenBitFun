@@ -10,12 +10,3 @@ pub(crate) async fn list_miniapps() -> Result<Value, String> {
 pub(crate) async fn miniapp_worker_list_running() -> Result<Value, String> {
     Ok(json!([]))
 }
-
-/// ACP client list for Desktop settings UI; CLI peer returns none for now.
-pub(crate) async fn get_acp_clients() -> Result<Value, String> {
-    Ok(json!([]))
-}
-
-pub(crate) async fn list_background_command_activities() -> Result<Value, String> {
-    Ok(json!({ "activities": [] }))
-}

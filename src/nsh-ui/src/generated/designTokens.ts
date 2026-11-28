@@ -324,7 +324,7 @@ export const designTokens = {
       "radius": 16,
       "borderWidth": 1,
       "dividerHeight": 16,
-      "modelNameWidth": 100,
+      "modelNameWidth": 192,
       "textSize": 13
     },
     "toolCard": {

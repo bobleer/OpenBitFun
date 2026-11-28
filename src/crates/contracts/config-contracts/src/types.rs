@@ -501,6 +501,11 @@ pub struct AppFlowChatConfig {
         deserialize_with = "openbitfun_core_types::agent_identity::deserialize_optional_agent_id"
     )]
     pub last_mode_id: Option<String>,
+    /// Most recent session model selection explicitly chosen on this device.
+    /// Used as the default when creating the next normal session; omitted when
+    /// unset so older builds deserialize cleanly and fall back to primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_model_selection: Option<LastSessionModelSelection>,
     /// Whether the chat input exposes the global permission-mode shortcut.
     ///
     /// The default is visible, but that value is omitted from persisted config
@@ -516,6 +521,19 @@ pub struct AppFlowChatConfig {
     /// How the shared composer submits follow-ups to a running native session.
     #[serde(skip_serializing_if = "ChatInputSendDuringTurn::is_queue")]
     pub send_during_turn: ChatInputSendDuringTurn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct LastSessionModelSelection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_preset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -558,6 +576,7 @@ impl Default for AppFlowChatConfig {
             default_mode_strategy: None,
             default_mode_id: None,
             last_mode_id: None,
+            last_model_selection: None,
             show_permission_mode_control: default_show_permission_mode_control(),
             auto_show_selection_toolbar: default_auto_show_selection_toolbar(),
             send_during_turn: ChatInputSendDuringTurn::default(),
@@ -3915,6 +3934,57 @@ mod tests {
         );
         assert_eq!(follow_last.default_mode_id, None);
         assert_eq!(follow_last.last_mode_id.as_deref(), Some("Creative"));
+    }
+
+    #[test]
+    fn app_flow_chat_last_model_selection_is_upgrade_tolerant() {
+        let legacy: GlobalConfig =
+            serde_json::from_value(current_global_config_with(serde_json::json!({
+                "app": {
+                    "flow_chat": {}
+                }
+            })))
+            .expect("legacy config without last_model_selection should deserialize");
+        assert_eq!(legacy.app.flow_chat.last_model_selection, None);
+        let serialized_legacy = serde_json::to_value(&legacy).expect("serialize legacy");
+        assert!(serialized_legacy["app"]["flow_chat"]
+            .get("last_model_selection")
+            .is_none());
+
+        let populated: GlobalConfig =
+            serde_json::from_value(current_global_config_with(serde_json::json!({
+                "app": {
+                    "flow_chat": {
+                        "last_model_selection": {
+                            "model_id": "fleet:peer-a/claude-sonnet",
+                            "reasoning_preset": "high",
+                            "context_window_override": 300000
+                        }
+                    }
+                }
+            })))
+            .expect("config with last_model_selection should deserialize");
+        let saved = populated
+            .app
+            .flow_chat
+            .last_model_selection
+            .as_ref()
+            .expect("last_model_selection should be present");
+        assert_eq!(
+            saved.model_id.as_deref(),
+            Some("fleet:peer-a/claude-sonnet")
+        );
+        assert_eq!(saved.model_pool_id, None);
+        assert_eq!(saved.reasoning_preset.as_deref(), Some("high"));
+        assert_eq!(saved.context_window_override, Some(300_000));
+
+        let round_trip: GlobalConfig =
+            serde_json::from_value(serde_json::to_value(&populated).expect("serialize"))
+                .expect("round-trip deserialize");
+        assert_eq!(
+            round_trip.app.flow_chat.last_model_selection,
+            populated.app.flow_chat.last_model_selection
+        );
     }
 
     #[test]

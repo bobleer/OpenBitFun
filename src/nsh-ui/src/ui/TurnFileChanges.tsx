@@ -12,11 +12,11 @@ import { basename, formatCount } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
   MOTION_DURATION,
+  SmoothDisclosure,
   paintTransition,
   pressTransition,
   rotatingChevronStyle,
   Spinner,
-  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "./motion";
 import {
@@ -115,258 +115,252 @@ export function TurnFileChangesCard(props: {
         overflow: "hidden",
       }}
     >
-      {/* Header row — default collapsed; click left region to expand/collapse */}
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: space.sm,
-          paddingLeft: space.md,
-          paddingRight: space.sm,
-          paddingVertical: space.xs,
-          minHeight: compactLayout() ? layout.touchTarget : 40,
-        }}
-      >
-        <View
-          role="button"
-          accessibilityLabel={`turn-changes-toggle-${props.turnId}`}
-          accessibilityState={{ expanded: expanded() }}
-          onPress={() => {
-            expanded.update(v => !v);
-          }}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.sm,
-            minHeight: compactLayout() ? layout.touchTarget : 30,
-            borderRadius: radii.sm,
-            cursor: "pointer",
-            userSelect: "none",
-            ...pressTransition(MOTION_DURATION.fast),
-          }}
-          activeStyle={tactileActiveStyle(0.99)}
-          focusVisibleStyle={focusRingStyle()}
-        >
-          <Text
+      <SmoothDisclosure
+        open={expanded}
+        content={() => (
+          <View
             style={{
-              color: palette().text,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.35),
-              fontWeight: "500",
-              flexShrink: 1,
-              minWidth: 0,
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
+              borderTopWidth: 1,
+              borderColor: palette().borderSubtle,
+              paddingVertical: space.xs,
             }}
           >
-            {summaryLabel()}
-          </Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-            <Text
-              style={{
-                color: palette().success,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-                fontFamily: fontMono(),
-                fontWeight: "500",
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {`+${formatCount(totalAdded())}`}
-            </Text>
-            <Text
-              style={{
-                color: palette().danger,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-                fontFamily: fontMono(),
-                fontWeight: "500",
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {`-${formatCount(totalRemoved())}`}
-            </Text>
-          </View>
-          <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
-            <Icon name="chevron-right" size={13} color={palette().textMuted} />
-          </View>
-        </View>
-
-        <View
-          role="button"
-          accessibilityLabel={`turn-changes-review-${props.turnId}`}
-          onPress={() => props.onReview(props.changes[0]?.filePath)}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.xs,
-            paddingHorizontal: space.sm,
-            height: compactLayout() ? layout.touchTarget : 28,
-            borderRadius: radii.sm,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().border,
-            backgroundColor: palette().panelRaised,
-            flexShrink: 0,
-            cursor: "pointer",
-            userSelect: "none",
-            ...pressTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{
-            backgroundColor: palette().panelHover,
-            borderColor: palette().borderStrong,
-          }}
-          activeStyle={tactileActiveStyle(0.97)}
-          focusVisibleStyle={focusRingStyle()}
-        >
-          <Icon name="file-code" size={13} color={palette().textSecondary} />
-          <Text
-            style={{
-              color: palette().text,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-              fontWeight: "500",
-            }}
-          >
-            {tr("sessions.turnFilesReview")}
-          </Text>
-        </View>
-      </View>
-
-      {/* Expanded changed-file list */}
-      <If when={expanded()}>
-        {() => {
-          const reveal = subtleCrossfadeMotion();
-          return (
-            <View
-              style={[
-                {
-                  borderTopWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  paddingVertical: space.xs,
-                },
-                reveal.style,
-              ]}
-            >
-              <Each of={props.changes} key={item => item.filePath}>
-            {item => {
-              const parts = computed(() => splitFilePath(item().filePath));
-              const badge = computed(() => fileBadge(parts().name));
-              return (
-                <View
-                  role="button"
-                  accessibilityLabel={`turn-change-file-${props.turnId}-${parts().name}`}
-                  onPress={() => props.onReview(item().filePath)}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.sm,
-                    minHeight: compactLayout() ? layout.touchTarget : 34,
-                    paddingHorizontal: space.md,
-                    paddingVertical: space.xs,
-                    cursor: "pointer",
-                    userSelect: "none",
-                    ...paintTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
-                  activeStyle={tactileActiveStyle(0.995)}
-                  focusVisibleStyle={focusRingStyle()}
-                >
-                  <Text
-                    style={{
-                      width: 28,
-                      flexShrink: 0,
-                      color: badge().color(),
-                      fontSize: textSize(10),
-                      lineHeight: textLineHeight(10, 1.2),
-                      fontFamily: fontMono(),
-                      fontWeight: "700",
-                      textAlign: "left",
-                    }}
-                  >
-                    {badge().label}
-                  </Text>
+            <Each of={props.changes} key={item => item.filePath}>
+              {item => {
+                const parts = computed(() => splitFilePath(item().filePath));
+                const badge = computed(() => fileBadge(parts().name));
+                return (
                   <View
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      flexDirection: "row",
-                      alignItems: "baseline",
-                      gap: space.sm,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: item().changeKind === "delete" ? palette().textMuted : palette().text,
-                        fontSize: textSize(13),
-                        lineHeight: textLineHeight(13, 1.35),
-                        fontWeight: "500",
-                        flexShrink: 0,
-                        numberOfLines: 1,
-                      }}
-                    >
-                      {parts().name}
-                    </Text>
-                    <If when={parts().dir.length > 0}>
-                      <Text
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          color: palette().textMuted,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.35),
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis-middle",
-                        }}
-                      >
-                        {parts().dir}
-                      </Text>
-                    </If>
-                  </View>
-                  <View
+                    role="button"
+                    accessibilityLabel={`turn-change-file-${props.turnId}-${parts().name}`}
+                    onPress={() => props.onReview(item().filePath)}
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: space.xs,
-                      flexShrink: 0,
+                      gap: space.sm,
+                      minHeight: compactLayout() ? layout.touchTarget : 34,
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.xs,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...paintTransition(MOTION_DURATION.fast),
                     }}
+                    hoverStyle={{ backgroundColor: palette().panelHover }}
+                    activeStyle={tactileActiveStyle(0.995)}
+                    focusVisibleStyle={focusRingStyle()}
                   >
                     <Text
                       style={{
-                        color: palette().success,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.3),
+                        width: 28,
+                        flexShrink: 0,
+                        color: badge().color(),
+                        fontSize: textSize(10),
+                        lineHeight: textLineHeight(10, 1.2),
                         fontFamily: fontMono(),
-                        fontWeight: "500",
-                        fontVariant: ["tabular-nums"],
+                        fontWeight: "700",
+                        textAlign: "left",
                       }}
                     >
-                      {`+${formatCount(item().linesAdded)}`}
+                      {badge().label}
                     </Text>
-                    <Text
+                    <View
                       style={{
-                        color: palette().danger,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.3),
-                        fontFamily: fontMono(),
-                        fontWeight: "500",
-                        fontVariant: ["tabular-nums"],
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: "row",
+                        alignItems: "baseline",
+                        gap: space.sm,
                       }}
                     >
-                      {`-${formatCount(item().linesRemoved)}`}
-                    </Text>
+                      <Text
+                        style={{
+                          color: item().changeKind === "delete" ? palette().textMuted : palette().text,
+                          fontSize: textSize(13),
+                          lineHeight: textLineHeight(13, 1.35),
+                          fontWeight: "500",
+                          flexShrink: 0,
+                          numberOfLines: 1,
+                        }}
+                      >
+                        {parts().name}
+                      </Text>
+                      <If when={parts().dir.length > 0}>
+                        <Text
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            color: palette().textMuted,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.35),
+                            numberOfLines: 1,
+                            textOverflow: "ellipsis-middle",
+                          }}
+                        >
+                          {parts().dir}
+                        </Text>
+                      </If>
+                    </View>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.xs,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: palette().success,
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
+                          fontFamily: fontMono(),
+                          fontWeight: "500",
+                          fontVariant: ["tabular-nums"],
+                        }}
+                      >
+                        {`+${formatCount(item().linesAdded)}`}
+                      </Text>
+                      <Text
+                        style={{
+                          color: palette().danger,
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
+                          fontFamily: fontMono(),
+                          fontWeight: "500",
+                          fontVariant: ["tabular-nums"],
+                        }}
+                      >
+                        {`-${formatCount(item().linesRemoved)}`}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-              );
+                );
+              }}
+            </Each>
+          </View>
+        )}
+      >
+        {/* Header row — default collapsed; click left region to expand/collapse */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: space.sm,
+            paddingLeft: space.md,
+            paddingRight: space.sm,
+            paddingVertical: space.xs,
+            minHeight: compactLayout() ? layout.touchTarget : 40,
+          }}
+        >
+          <View
+            role="button"
+            accessibilityLabel={`turn-changes-toggle-${props.turnId}`}
+            accessibilityState={{ expanded: expanded() }}
+            onPress={() => {
+              expanded.update(v => !v);
             }}
-              </Each>
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.sm,
+              minHeight: compactLayout() ? layout.touchTarget : 30,
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            activeStyle={tactileActiveStyle(0.99)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Text
+              style={{
+                color: palette().text,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.35),
+                fontWeight: "500",
+                flexShrink: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {summaryLabel()}
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+              <Text
+                style={{
+                  color: palette().success,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.3),
+                  fontFamily: fontMono(),
+                  fontWeight: "500",
+                  fontVariant: ["tabular-nums"],
+                }}
+              >
+                {`+${formatCount(totalAdded())}`}
+              </Text>
+              <Text
+                style={{
+                  color: palette().danger,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.3),
+                  fontFamily: fontMono(),
+                  fontWeight: "500",
+                  fontVariant: ["tabular-nums"],
+                }}
+              >
+                {`-${formatCount(totalRemoved())}`}
+              </Text>
             </View>
-          );
-        }}
-      </If>
+            <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+              <Icon name="chevron-right" size={13} color={palette().textMuted} />
+            </View>
+          </View>
+
+          <View
+            role="button"
+            accessibilityLabel={`turn-changes-review-${props.turnId}`}
+            onPress={() => props.onReview(props.changes[0]?.filePath)}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              paddingHorizontal: space.sm,
+              height: compactLayout() ? layout.touchTarget : 28,
+              borderRadius: radii.sm,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor: palette().border,
+              backgroundColor: palette().panelRaised,
+              flexShrink: 0,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{
+              backgroundColor: palette().panelHover,
+              borderColor: palette().borderStrong,
+            }}
+            activeStyle={tactileActiveStyle(0.97)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Icon name="file-code" size={13} color={palette().textSecondary} />
+            <Text
+              style={{
+                color: palette().text,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
+                fontWeight: "500",
+              }}
+            >
+              {tr("sessions.turnFilesReview")}
+            </Text>
+          </View>
+        </View>
+      </SmoothDisclosure>
     </View>
   );
 }

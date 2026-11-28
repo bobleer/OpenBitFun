@@ -353,6 +353,13 @@ pub(crate) async fn cancel_dialog_turn(
     let request = request_value(args);
     let session_id = get_string(request, "sessionId")?;
     let dialog_turn_id = get_string(request, "dialogTurnId")?;
+    if let Some(acp_service) = crate::get_acp_client_service() {
+        match acp_service.cancel_openbitfun_session(&session_id).await {
+            Ok(true) => return Ok(json!({ "success": true })),
+            Ok(false) => {}
+            Err(error) => return Err(format!("Failed to cancel ACP dialog turn: {error}")),
+        }
+    }
     // Cancellation follows visibility: a controller renders every Turn in the
     // Session, including ones this host started, so it must be able to stop
     // them. A Desktop Peer Host reaches the same handler the local UI does and
@@ -1046,7 +1053,25 @@ pub(crate) async fn stop_dialog_turn(state: &PeerHostState, args: &Value) -> Res
                 .dialog_scheduler()
                 .active_dialog_turn_id(&session_id)
         })
+        .or_else(|| {
+            crate::get_acp_client_service()
+                .and_then(|service| service.execution_snapshot(&session_id))
+                .and_then(|snapshot| snapshot.projection.active_turn_id)
+        })
         .ok_or_else(|| format!("No running turn to stop for session: {session_id}"))?;
+
+    if let Some(acp_service) = crate::get_acp_client_service() {
+        match acp_service.cancel_openbitfun_session(&session_id).await {
+            Ok(true) => {
+                return Ok(json!({
+                    "turnId": turn_id,
+                    "method": "cancelled",
+                }));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(format!("Failed to cancel ACP dialog turn: {error}")),
+        }
+    }
 
     let interruption = state
         .agent_runtime
@@ -1142,4 +1167,233 @@ pub(crate) async fn execute_session_command(
         payload["turnId"] = json!(turn_id);
     }
     Ok(payload)
+}
+
+pub(crate) async fn run_init_agents_md(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    if coordinator
+        .get_session_manager()
+        .get_session(&session_id)
+        .is_none()
+    {
+        super::session::ensure_coordinator_session(state, args).await?;
+    }
+    let workspace_path = if optional_string(request, "workspaceId").is_some() {
+        None
+    } else {
+        optional_string(request, "workspacePath")
+    };
+    state
+        .compatibility
+        .dialog_scheduler()
+        .submit_init_agents_md(
+            session_id,
+            workspace_path,
+            optional_string(request, "remoteConnectionId"),
+            optional_string(request, "remoteSshHost"),
+            DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi),
+        )
+        .await
+        .map_err(|error| format!("Failed to run /init: {error}"))?;
+    Ok(json!({ "success": true, "message": "Init dialog turn started" }))
+}
+
+pub(crate) async fn set_subagent_timeout(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::coordination::SubagentTimeoutAction;
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", content = "payload")]
+    enum SetSubagentTimeoutActionDto {
+        Disable,
+        Restore,
+        Extend { seconds: u64 },
+    }
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let action_val = request
+        .get("action")
+        .cloned()
+        .ok_or_else(|| "Missing 'action' field".to_string())?;
+    let dto: SetSubagentTimeoutActionDto = serde_json::from_value(action_val)
+        .map_err(|error| format!("Invalid subagent timeout action: {error}"))?;
+    let action = match dto {
+        SetSubagentTimeoutActionDto::Disable => SubagentTimeoutAction::Disable,
+        SetSubagentTimeoutActionDto::Restore => SubagentTimeoutAction::Restore,
+        SetSubagentTimeoutActionDto::Extend { seconds } => {
+            SubagentTimeoutAction::Extend { seconds }
+        }
+    };
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    coordinator
+        .set_subagent_timeout(&session_id, action)
+        .await
+        .map_err(|error| format!("Failed to set subagent timeout: {error}"))?;
+    Ok(Value::Null)
+}
+
+pub(crate) async fn list_background_command_activities(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::tools::implementations::exec_command::{
+        background_command_output_capture, ListBackgroundCommandOutputRequest,
+    };
+    let request = request_value(args);
+    let agent_session_id = optional_string(request, "agentSessionId");
+    let response = background_command_output_capture()
+        .list(ListBackgroundCommandOutputRequest { agent_session_id })
+        .await;
+    serde_json::to_value(response)
+        .map_err(|error| format!("Failed to serialize background command activities: {error}"))
+}
+
+pub(crate) async fn read_background_command_output(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::tools::implementations::exec_command::{
+        background_command_output_capture,
+        ReadBackgroundCommandOutputRequest as CoreReadBackgroundCommandOutputRequest,
+    };
+    let request = request_value(args);
+    let exec_session_id = request
+        .get("execSessionId")
+        .or_else(|| request.get("exec_session_id"))
+        .and_then(Value::as_i64)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| "Missing or invalid 'execSessionId' field".to_string())?;
+    let remote = optional_bool(request, "remote").unwrap_or(false);
+    let cursor = request.get("cursor").and_then(Value::as_u64);
+    let response = background_command_output_capture()
+        .read(CoreReadBackgroundCommandOutputRequest {
+            exec_session_id,
+            remote,
+            cursor,
+        })
+        .await
+        .ok_or_else(|| {
+            format!(
+                "Background command output not found: exec_session_id={exec_session_id}, remote={remote}"
+            )
+        })?;
+    serde_json::to_value(response)
+        .map_err(|error| format!("Failed to serialize background command output: {error}"))
+}
+
+pub(crate) async fn control_background_command(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::tools::implementations::exec_command::{
+        background_command_output_capture, control_exec_command_session,
+        BackgroundCommandOutputStatus, ExecCommandCompletionStatus, ExecCommandControlAction,
+        ExecCommandControlOrigin, ExecCommandControlRequest,
+    };
+    let request = request_value(args);
+    let session_id = request
+        .get("execSessionId")
+        .or_else(|| request.get("exec_session_id"))
+        .and_then(Value::as_i64)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| "Missing or invalid 'execSessionId' field".to_string())?;
+    let remote = optional_bool(request, "remote").unwrap_or(false);
+    let action_str = get_string(request, "action")?;
+    let action = match action_str.to_ascii_lowercase().as_str() {
+        "interrupt" => ExecCommandControlAction::Interrupt,
+        "kill" => ExecCommandControlAction::Kill,
+        other => return Err(format!("Unsupported background command action: {other}")),
+    };
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    let terminal_port = if remote {
+        None
+    } else {
+        coordinator.terminal_port()
+    };
+    let remote_exec_port = if remote {
+        coordinator.remote_exec_port()
+    } else {
+        None
+    };
+    let response = control_exec_command_session(
+        ExecCommandControlRequest {
+            session_id,
+            action,
+            origin: ExecCommandControlOrigin::OutOfBand,
+            remote,
+            yield_time_ms: Some(250),
+        },
+        terminal_port.as_ref(),
+        remote_exec_port.as_ref(),
+    )
+    .await
+    .map_err(|error| format!("Failed to control background command: {error}"))?;
+    if response.session_id.is_none() {
+        let status = match response.completion.map(|completion| completion.status) {
+            Some(ExecCommandCompletionStatus::Interrupted) => {
+                BackgroundCommandOutputStatus::Interrupted
+            }
+            Some(ExecCommandCompletionStatus::Killed) => BackgroundCommandOutputStatus::Killed,
+            Some(ExecCommandCompletionStatus::Pruned) => BackgroundCommandOutputStatus::Pruned,
+            _ => BackgroundCommandOutputStatus::Exited,
+        };
+        let capture = background_command_output_capture();
+        tokio::spawn(async move {
+            capture
+                .finish_by_session(remote, session_id, status, response.exit_code)
+                .await;
+        });
+    }
+    Ok(Value::Null)
+}
+
+pub(crate) async fn send_background_command_input(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::tools::implementations::exec_command::{
+        send_exec_command_input, ExecCommandInputRequest,
+    };
+    let request = request_value(args);
+    let session_id = request
+        .get("execSessionId")
+        .or_else(|| request.get("exec_session_id"))
+        .and_then(Value::as_i64)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| "Missing or invalid 'execSessionId' field".to_string())?;
+    let remote = optional_bool(request, "remote").unwrap_or(false);
+    let chars = request
+        .get("chars")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let append_enter = optional_bool(request, "appendEnter").unwrap_or(false);
+    if chars.is_empty() && !append_enter {
+        return Err("chars or append_enter is required".to_string());
+    }
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    let terminal_port = if remote {
+        None
+    } else {
+        coordinator.terminal_port()
+    };
+    let remote_exec_port = if remote {
+        coordinator.remote_exec_port()
+    } else {
+        None
+    };
+    send_exec_command_input(
+        ExecCommandInputRequest {
+            session_id,
+            chars,
+            append_enter,
+            remote,
+        },
+        terminal_port.as_ref(),
+        remote_exec_port.as_ref(),
+    )
+    .await
+    .map_err(|error| format!("Failed to send input to background command: {error}"))?;
+    Ok(Value::Null)
 }

@@ -244,3 +244,45 @@ pub(crate) async fn probe_magpie_gateway(args: &Value) -> Result<Value, String> 
     )
     .map_err(|error| error.to_string())
 }
+
+pub(crate) async fn refresh_model_client(args: &Value) -> Result<Value, String> {
+    let model_id = args
+        .get("modelId")
+        .or_else(|| args.get("model_id"))
+        .or_else(|| {
+            crate::peer_host::args::request_value(args)
+                .get("modelId")
+                .or_else(|| crate::peer_host::args::request_value(args).get("model_id"))
+        })
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Missing 'modelId' field".to_string())?;
+    if let Ok(factory) = openbitfun_core::infrastructure::ai::AIClientFactory::get_global().await {
+        factory.invalidate_model(model_id);
+    }
+    Ok(Value::String(format!(
+        "Model '{model_id}' has been refreshed"
+    )))
+}
+
+pub(crate) async fn test_ai_connection() -> Result<Value, String> {
+    let config: openbitfun_core::service::config::GlobalConfig =
+        openbitfun_core::service::config::get_global_config_service()
+            .await
+            .map_err(|e| e.to_string())?
+            .get_config(None)
+            .await
+            .map_err(|e| format!("Failed to get configuration: {e}"))?;
+    let ready = config
+        .ai
+        .default_models
+        .primary
+        .as_deref()
+        .is_some_and(|primary_id| {
+            config
+                .ai
+                .models
+                .iter()
+                .any(|m| m.id == primary_id && m.enabled)
+        });
+    Ok(serde_json::json!(ready))
+}

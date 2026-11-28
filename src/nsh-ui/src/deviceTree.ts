@@ -21,6 +21,7 @@ import {
   activeSessionDevice,
   activeSessionId,
   activeWorkspaceId,
+  collapsedWorkspaces,
   createSessionInWorkspace,
   focusPane,
   focusedPane,
@@ -365,6 +366,15 @@ export function openSessionRow(sessionId: string, deviceId: string, workspaceId:
 
 /** Starts a session in a workspace of the tree (in the focused pane while the split view is open). */
 export async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
+  const branchDeviceId = fleetActive() ? deviceId : (deviceId || localDeviceId() || "");
+  const branchKey = `${branchDeviceId}/${workspaceId}`;
+  if (collapsedWorkspaces()[branchKey] === true) {
+    collapsedWorkspaces.update(current => {
+      const next = { ...current };
+      delete next[branchKey];
+      return next;
+    });
+  }
   if (splitPaneOpen() && focusedPane() === 1) {
     const defaultMode = await loadAgentModes(workspaceId);
     await createSecondarySession(workspaceId, fleetActive() ? deviceId : null, defaultMode ?? undefined);

@@ -766,6 +766,23 @@ pub(crate) async fn restore_session_view(
         .filter(|n| *n > 0)
         .map(|n| n.min(16));
 
+    if let Some(acp_service) = crate::get_acp_client_service() {
+        if let Ok(storage_path) =
+            resolved_session_storage_scope(state, storage_request.clone()).await
+        {
+            if let Err(error) = acp_service
+                .recover_stored_dialog_turn(&storage_path, &session_id)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to recover stored ACP dialog turn: session_id={}, error={}",
+                    session_id,
+                    error
+                );
+            }
+        }
+    }
+
     let (mut session, turns, total_turn_count, turn_catalog, timings) = state
         .compatibility
         .restore_session_view_for_workspace(
@@ -789,10 +806,37 @@ pub(crate) async fn restore_session_view(
     let interaction_snapshot = state
         .agent_runtime
         .session_interaction_snapshot(&session_id);
-    let runtime_event_snapshot = state
+    let mut runtime_event_snapshot = state
         .agent_runtime
         .session_event_projection_snapshot(&session_id)
         .map(runtime_event_snapshot_to_json);
+    if session.agent_type.starts_with("acp:") {
+        if let Some(acp_service) = crate::get_acp_client_service() {
+            if let Some(acp) = acp_service.execution_snapshot(&session_id) {
+                let projection = acp.projection;
+                session.state = if acp.running {
+                    openbitfun_core::agentic::core::SessionState::Processing {
+                        current_turn_id: projection.active_turn_id.clone().unwrap_or_default(),
+                        phase: openbitfun_core::agentic::core::ProcessingPhase::Streaming,
+                    }
+                } else {
+                    openbitfun_core::agentic::core::SessionState::Idle
+                };
+                runtime_event_snapshot = Some(runtime_event_snapshot_to_json(
+                    SessionEventProjectionSnapshot {
+                        session_id: projection.session_id,
+                        stream_id: projection.stream_id,
+                        cursor: projection.cursor,
+                        active_turn_id: projection.active_turn_id,
+                        events: projection.events,
+                    },
+                ));
+            } else {
+                session.state = openbitfun_core::agentic::core::SessionState::Idle;
+                runtime_event_snapshot = None;
+            }
+        }
+    }
 
     let loaded_turn_count = turns.len();
     let is_partial = loaded_turn_count < total_turn_count;
@@ -1003,12 +1047,16 @@ pub(crate) async fn delete_session(state: &PeerHostState, args: &Value) -> Resul
         .delete_session(AgentSessionDeleteRequest {
             workspace_id: optional_string(request, "workspaceId"),
             workspace_path,
-            session_id,
+            session_id: session_id.clone(),
             remote_connection_id: optional_string(request, "remoteConnectionId"),
             remote_ssh_host: optional_string(request, "remoteSshHost"),
         })
         .await
         .map_err(|error| format!("Failed to delete session: {}", error.into_message()))?;
+    if let Some(acp_service) = crate::get_acp_client_service() {
+        acp_service.forget_session_recovery(&session_id);
+        acp_service.release_openbitfun_session(&session_id).await;
+    }
     crate::fleet_host::refresh_local_now().await;
     Ok(Value::Null)
 }
@@ -2369,4 +2417,341 @@ pub(crate) async fn create_control_conversation(
         .await
         .map_err(|error| error.to_string())?;
     serde_json::to_value(result).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn search_referenceable_sessions(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::agentic::core::SessionKind;
+    use openbitfun_core::service::session::SessionStatus;
+    use openbitfun_core::service::workspace::WorkspaceKind;
+
+    let request = request_value(args);
+    let query = request
+        .get("query")
+        .and_then(Value::as_str)
+        .map(|q| q.trim().to_lowercase());
+    if query.as_deref() == Some("") {
+        return Ok(json!([]));
+    }
+    let limit = request
+        .get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(20)
+        .clamp(1, 30);
+
+    let scheduler = state.compatibility.dialog_scheduler();
+    let mut workspaces = state.workspace_service.get_opened_workspaces().await;
+    workspaces.sort_by_key(|workspace| std::cmp::Reverse(workspace.last_accessed));
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Candidate {
+        session_id: String,
+        session_name: String,
+        workspace_id: String,
+        workspace_path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remote_connection_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remote_ssh_host: Option<String>,
+        workspace_label: String,
+        last_activity_at: u64,
+    }
+
+    let mut candidates = Vec::new();
+    for workspace in workspaces {
+        let remote_connection_id = workspace.remote_ssh_connection_id().map(ToOwned::to_owned);
+        let remote_ssh_host = workspace
+            .metadata
+            .get("sshHost")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let workspace_path = if workspace.workspace_kind == WorkspaceKind::Remote {
+            openbitfun_core::service::remote_ssh::workspace_state::normalize_remote_workspace_path(
+                &workspace.root_path.to_string_lossy(),
+            )
+        } else {
+            workspace.root_path.to_string_lossy().to_string()
+        };
+        let storage_req = SessionStoragePathRequest {
+            workspace_path: PathBuf::from(&workspace_path),
+            remote_connection_id: remote_connection_id.clone(),
+            remote_ssh_host: remote_ssh_host.clone(),
+        };
+        let storage_path = match resolved_session_storage_scope(state, storage_req).await {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        let metadata = match state
+            .compatibility
+            .list_persisted_sessions(&storage_path)
+            .await
+        {
+            Ok(list) => list,
+            Err(_) => continue,
+        };
+        for session in metadata {
+            if session.status == SessionStatus::Archived
+                || !matches!(session.session_kind, SessionKind::Standard)
+                || scheduler.is_session_busy_or_queued(&session.session_id)
+                || query
+                    .as_ref()
+                    .is_some_and(|q| !session.session_name.to_lowercase().contains(q))
+            {
+                continue;
+            }
+            candidates.push(Candidate {
+                session_id: session.session_id,
+                session_name: session.session_name,
+                workspace_id: workspace.id.clone(),
+                workspace_path: workspace_path.clone(),
+                remote_connection_id: remote_connection_id.clone(),
+                remote_ssh_host: remote_ssh_host.clone(),
+                workspace_label: workspace.name.clone(),
+                last_activity_at: session.last_active_at,
+            });
+        }
+    }
+    candidates.sort_by(|left, right| right.last_activity_at.cmp(&left.last_activity_at));
+    candidates.truncate(limit);
+    serde_json::to_value(candidates).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn archive_all_sessions(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::agentic::core::SessionKind;
+    use openbitfun_core::service::session::SessionStatus;
+
+    let request = request_value(args);
+    let workspace_id = optional_string(request, "workspaceId");
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope.clone()).await?;
+    let sessions = state
+        .compatibility
+        .list_persisted_sessions(&storage_path)
+        .await
+        .map_err(|error| format!("Failed to list sessions: {error}"))?;
+    let mut archived_count: u32 = 0;
+    for metadata in sessions {
+        if metadata.status != SessionStatus::Archived
+            && metadata.session_kind == SessionKind::Standard
+        {
+            state
+                .agent_runtime
+                .set_session_archived(AgentSessionArchiveStateRequest {
+                    workspace_id: workspace_id.clone(),
+                    workspace_path: scope.workspace_path.to_string_lossy().to_string(),
+                    session_id: metadata.session_id,
+                    archived: true,
+                    remote_connection_id: scope.remote_connection_id.clone(),
+                    remote_ssh_host: scope.remote_ssh_host.clone(),
+                })
+                .await
+                .map_err(|error| {
+                    format!("Failed to save session metadata: {}", error.into_message())
+                })?;
+            archived_count += 1;
+        }
+    }
+    if archived_count > 0 {
+        crate::fleet_host::refresh_local_now().await;
+    }
+    Ok(json!(archived_count))
+}
+
+pub(crate) async fn list_sessions(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let scope = session_storage_request(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    let summaries = coordinator
+        .list_sessions(&storage_path)
+        .await
+        .map_err(|error| format!("Failed to list sessions: {error}"))?;
+    let responses: Vec<Value> = summaries
+        .into_iter()
+        .map(|summary| {
+            let created_at = summary
+                .created_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            json!({
+                "sessionId": summary.session_id,
+                "sessionName": summary.session_name,
+                "agentType": summary.agent_type,
+                "modelName": null,
+                "reasoningPreset": null,
+                "lastUserDialogAgentType": summary.last_user_dialog_agent_type,
+                "lastSubmittedAgentType": summary.last_submitted_agent_type,
+                "state": format!("{:?}", summary.state),
+                "turnCount": summary.turn_count,
+                "createdAt": created_at,
+            })
+        })
+        .collect();
+    Ok(Value::Array(responses))
+}
+
+pub(crate) async fn set_session_memory_mode(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::service::session::SessionMemoryMode;
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    let mode_raw = get_string(request, "mode")?;
+    let mode = match mode_raw.trim().to_ascii_lowercase().as_str() {
+        "enabled" => SessionMemoryMode::Enabled,
+        "disabled" => SessionMemoryMode::Disabled,
+        "polluted" => {
+            return Err("polluted memory mode is internal and cannot be set directly".to_string())
+        }
+        other => return Err(format!("unsupported memory mode: {other}")),
+    };
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    if coordinator
+        .get_session_manager()
+        .get_session(session_id)
+        .is_some()
+    {
+        coordinator
+            .ensure_session_runtime_ownership(session_id, None)
+            .map_err(|error| error.to_string())?;
+    }
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    coordinator
+        .get_session_manager()
+        .set_session_memory_mode(&storage_path, session_id, mode)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "success": true, "mode": mode }))
+}
+
+pub(crate) async fn reload_session_context(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: openbitfun_runtime_ports::AgentContextReloadRequest =
+        serde_json::from_value(request_value(args).clone())
+            .map_err(|error| format!("Invalid reload_session_context request: {error}"))?;
+    state
+        .compatibility
+        .reload_session_context(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Value::Null)
+}
+
+pub(crate) async fn generate_session_title(args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let user_message = get_string(request, "userMessage")?;
+    let max_length = request
+        .get("maxLength")
+        .or_else(|| request.get("max_length"))
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok());
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    let title = coordinator
+        .generate_session_title(&session_id, &user_message, max_length)
+        .await
+        .map_err(|error| format!("Failed to generate session title: {error}"))?;
+    Ok(Value::String(title))
+}
+
+pub(crate) async fn ensure_assistant_bootstrap(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::service::workspace::WorkspaceKind;
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let workspace = if let Some(id) = optional_string(request, "workspaceId") {
+        state
+            .workspace_service
+            .require_workspace(&id)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        let path = get_string(request, "workspacePath")?;
+        state
+            .workspace_service
+            .resolve_legacy_workspace_reference(None, &path, None, None)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Assistant workspace ID is unavailable".to_string())?
+    };
+    if workspace.workspace_kind != WorkspaceKind::Assistant {
+        return Err(format!(
+            "Workspace {} is not an assistant workspace",
+            workspace.id
+        ));
+    }
+    let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .ok_or("Conversation coordinator is unavailable")?;
+    use openbitfun_core::agentic::coordination::{
+        AssistantBootstrapBlockReason, AssistantBootstrapEnsureOutcome,
+        AssistantBootstrapSkipReason,
+    };
+    let outcome = coordinator
+        .ensure_assistant_bootstrap(
+            session_id,
+            workspace.root_path.to_string_lossy().into_owned(),
+        )
+        .await
+        .map_err(|error| format!("Failed to ensure assistant bootstrap: {error}"))?;
+    Ok(match outcome {
+        AssistantBootstrapEnsureOutcome::Started {
+            session_id,
+            turn_id,
+        } => json!({
+            "status": "started",
+            "reason": "bootstrap_started",
+            "sessionId": session_id,
+            "turnId": turn_id,
+            "detail": null,
+        }),
+        AssistantBootstrapEnsureOutcome::Skipped { session_id, reason } => json!({
+            "status": "skipped",
+            "reason": match reason {
+                AssistantBootstrapSkipReason::BootstrapNotRequired => "bootstrap_not_required",
+                AssistantBootstrapSkipReason::SessionHasExistingTurns => "session_has_existing_turns",
+                AssistantBootstrapSkipReason::SessionNotIdle => "session_not_idle",
+            },
+            "sessionId": session_id,
+            "turnId": null,
+            "detail": null,
+        }),
+        AssistantBootstrapEnsureOutcome::Blocked {
+            session_id,
+            reason,
+            detail,
+        } => json!({
+            "status": "blocked",
+            "reason": match reason {
+                AssistantBootstrapBlockReason::ModelUnavailable => "model_unavailable",
+            },
+            "sessionId": session_id,
+            "turnId": null,
+            "detail": detail,
+        }),
+    })
 }

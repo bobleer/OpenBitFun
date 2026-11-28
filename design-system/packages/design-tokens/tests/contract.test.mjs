@@ -232,7 +232,7 @@ test("shared conversation geometry preserves the application's existing dimensio
   assert.equal(tokens['control.flowChat.userMessageRadius'], `calc(${tokens['control.flowChat.cardRadius']} + 2px)`);
   assert.equal(tokens['control.flowChat.userMessagePaddingBlock'], '0.46rem');
   assert.equal(tokens['control.flowChat.userMessageMarginBlockStart'], '0.06rem');
-  assert.equal(tokens['control.flowChat.modelNameMaxWidth'], '100px');
+  assert.equal(tokens['control.flowChat.modelNameMaxWidth'], '192px');
   assert.equal(tokens['control.flowChat.modelIdleOpacity'], 0.72);
 });
 

@@ -103,3 +103,171 @@ pub(crate) async fn list_subagents(command: &str, args: &Value) -> Result<Value,
     }
     serde_json::to_value(agents).map_err(|error| error.to_string())
 }
+
+pub(crate) async fn get_available_tools() -> Result<Value, String> {
+    let tools = openbitfun_core::agentic::tools::get_all_tools().await;
+    let names: Vec<String> = tools.into_iter().map(|t| t.name().to_string()).collect();
+    serde_json::to_value(names).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_readonly_tools_info() -> Result<Value, String> {
+    let tools = openbitfun_core::agentic::tools::get_readonly_tools()
+        .await
+        .map_err(|error| format!("Failed to get readonly tools: {error}"))?;
+    let mut infos = Vec::with_capacity(tools.len());
+    for tool in tools {
+        infos.push(openbitfun_core::agentic::tools::product_runtime::build_tool_info(&tool).await);
+    }
+    serde_json::to_value(infos).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_tool_info(args: &Value) -> Result<Value, String> {
+    let tool_name = crate::peer_host::args::get_string(
+        crate::peer_host::args::request_value(args),
+        "toolName",
+    )?;
+    let tools = openbitfun_core::agentic::tools::get_all_tools().await;
+    for tool in tools {
+        if tool.name() == tool_name {
+            let info =
+                openbitfun_core::agentic::tools::product_runtime::build_tool_info(&tool).await;
+            return serde_json::to_value(Some(info)).map_err(|error| error.to_string());
+        }
+    }
+    Ok(Value::Null)
+}
+
+async fn build_cli_tool_context(
+    workspace_id: Option<&str>,
+    legacy_path: Option<&str>,
+) -> Result<openbitfun_core::agentic::tools::framework::ToolUseContext, String> {
+    use openbitfun_core::agentic::tools::framework::ToolUseContext;
+    use openbitfun_core::agentic::workspace::{local_workspace_services, WorkspaceBinding};
+
+    let id = if let Some(id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id.to_owned())
+    } else if let Some(path) = legacy_path.map(str::trim).filter(|s| !s.is_empty()) {
+        let service = openbitfun_core::service::workspace::get_global_workspace_service()
+            .ok_or_else(|| "Workspace service is unavailable".to_string())?;
+        let record = service
+            .resolve_legacy_workspace_reference(None, path, None, None)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Legacy workspace reference is unavailable".to_string())?;
+        Some(record.id)
+    } else {
+        None
+    };
+    let workspace = match id {
+        Some(id) => Some(
+            WorkspaceBinding::resolve(&id)
+                .await
+                .map_err(|error| error.to_string())?,
+        ),
+        None => None,
+    };
+    if let Some(binding) = workspace.as_ref().filter(|b| b.is_remote()) {
+        return Err(format!(
+            "CLI peer direct tool execution does not support remote workspace {}; no controller-local fallback was attempted",
+            binding.root_path_string()
+        ));
+    }
+    let workspace_services = workspace
+        .as_ref()
+        .map(|binding| local_workspace_services(binding.root_path_string()));
+    Ok(ToolUseContext::for_tool_listing_with_remote_exec_port(
+        workspace,
+        workspace_services,
+        None,
+    ))
+}
+
+pub(crate) async fn validate_tool_input(args: &Value) -> Result<Value, String> {
+    let request = crate::peer_host::args::request_value(args);
+    let tool_name = crate::peer_host::args::get_string(request, "toolName")?;
+    let input = request.get("input").cloned().unwrap_or(Value::Null);
+    let workspace_id = crate::peer_host::args::optional_string(request, "workspaceId");
+    let workspace_path = crate::peer_host::args::optional_string(request, "workspacePath");
+    let tools = openbitfun_core::agentic::tools::get_all_tools().await;
+    for tool in tools {
+        if tool.name() == tool_name {
+            let context =
+                build_cli_tool_context(workspace_id.as_deref(), workspace_path.as_deref()).await?;
+            let result = tool.validate_input(&input, Some(&context)).await;
+            return Ok(serde_json::json!({
+                "tool_name": tool_name,
+                "valid": result.result,
+                "message": result.message,
+                "error_code": result.error_code,
+                "meta": result.meta,
+            }));
+        }
+    }
+    Err(format!("Tool '{tool_name}' not found"))
+}
+
+pub(crate) async fn execute_tool(args: &Value) -> Result<Value, String> {
+    use openbitfun_core::agentic::tools::framework::ToolResult;
+    use openbitfun_core::util::elapsed_ms_u64;
+
+    let start = std::time::Instant::now();
+    let request = crate::peer_host::args::request_value(args);
+    let tool_name = crate::peer_host::args::get_string(request, "toolName")?;
+    let input = request.get("input").cloned().unwrap_or(Value::Null);
+    let workspace_id = crate::peer_host::args::optional_string(request, "workspaceId");
+    let workspace_path = crate::peer_host::args::optional_string(request, "workspacePath");
+    let tools = openbitfun_core::agentic::tools::get_all_tools().await;
+    for tool in tools {
+        if tool.name() == tool_name {
+            let context =
+                build_cli_tool_context(workspace_id.as_deref(), workspace_path.as_deref()).await?;
+            let validation = tool.validate_input(&input, Some(&context)).await;
+            if !validation.result {
+                return Ok(serde_json::json!({
+                    "tool_name": tool_name,
+                    "success": false,
+                    "result": null,
+                    "error": null,
+                    "validation_error": validation.message,
+                    "duration_ms": elapsed_ms_u64(start),
+                }));
+            }
+            return match tool.call(&input, &context).await {
+                Ok(results) => {
+                    let combined = if results.len() == 1 {
+                        match &results[0] {
+                            ToolResult::Result { data, .. } => Some(data.clone()),
+                            ToolResult::Progress { content, .. } => Some(content.clone()),
+                            ToolResult::StreamChunk { data, .. } => Some(data.clone()),
+                        }
+                    } else {
+                        Some(serde_json::json!({
+                            "results": results.iter().map(|r| match r {
+                                ToolResult::Result { data, .. } => data.clone(),
+                                ToolResult::Progress { content, .. } => content.clone(),
+                                ToolResult::StreamChunk { data, .. } => data.clone(),
+                            }).collect::<Vec<_>>()
+                        }))
+                    };
+                    Ok(serde_json::json!({
+                        "tool_name": tool_name,
+                        "success": true,
+                        "result": combined,
+                        "error": null,
+                        "validation_error": null,
+                        "duration_ms": elapsed_ms_u64(start),
+                    }))
+                }
+                Err(error) => Ok(serde_json::json!({
+                    "tool_name": tool_name,
+                    "success": false,
+                    "result": null,
+                    "error": format!("Tool execution failed: {error}"),
+                    "validation_error": null,
+                    "duration_ms": elapsed_ms_u64(start),
+                })),
+            };
+        }
+    }
+    Err(format!("Tool '{tool_name}' not found"))
+}

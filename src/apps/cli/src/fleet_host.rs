@@ -988,14 +988,14 @@ mod tests {
         let refused = connection
             .call(
                 "fleet_call",
-                json!({ "request": { "target": "cli-fleet-host", "command": "worktree_list", "args": {} } }),
+                json!({ "request": { "target": "cli-fleet-host", "command": "create_miniapp", "args": {} } }),
             )
             .await
             .unwrap_err();
         assert!(
             refused
                 .message
-                .starts_with("command 'worktree_list' is not supported on CLI peer host"),
+                .starts_with("command 'create_miniapp' is not supported on CLI peer host"),
             "{refused}"
         );
 

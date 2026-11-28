@@ -3,10 +3,19 @@
 use crate::{Message, ToolDefinition};
 
 pub const INPUT_SAFETY_RESERVE: usize = 10_000;
+const INPUT_SAFETY_RESERVE_RATIO_PERCENT: usize = 5;
 /// Size reserved for path-only history, opaque URLs or unreadable headers.
 pub const UNKNOWN_IMAGE_DIMENSIONS: (u32, u32) = (2048, 2048);
 const AUTOMATIC_MAX_OUTPUT_TOKEN_TIERS: [u32; 5] = [8_000, 16_000, 24_000, 32_000, 64_000];
-const MAX_OUTPUT_64K_MIN_CONTEXT_WINDOW: u32 = 400_000;
+const AUTOMATIC_MAX_OUTPUT_RATIO_PERCENT: u32 = 16;
+
+/// Estimation and framing margin reserved before hitting the hard context
+/// window. Scales at 5% for smaller windows and caps at [`INPUT_SAFETY_RESERVE`].
+pub fn input_safety_reserve(context_window: usize) -> usize {
+    let scaled =
+        ((context_window as u128) * (INPUT_SAFETY_RESERVE_RATIO_PERCENT as u128) / 100) as usize;
+    INPUT_SAFETY_RESERVE.min(scaled)
+}
 
 /// Model-neutral estimate used before the runtime selects a provider.
 pub fn estimate_image_tokens(width: u32, height: u32) -> usize {
@@ -213,18 +222,17 @@ fn parse_image_dimensions(kind: ImageHeaderKind, bytes: &[u8]) -> Option<(u32, u
     (size.0 > 0 && size.1 > 0).then_some(size)
 }
 
-/// Chooses the largest supported output tier that does not exceed one quarter
-/// of the model context window. The 64k tier requires a context window of at
-/// least 400k.
+/// Chooses the largest supported output tier that does not exceed 16% of the
+/// model context window (e.g. 16k at 128k, 32k at 200k-399k, 64k at 400k+).
 pub fn automatic_max_output_tokens(context_window: u32) -> u32 {
-    let quarter_context = context_window / 4;
+    let max_output =
+        (u64::from(context_window) * u64::from(AUTOMATIC_MAX_OUTPUT_RATIO_PERCENT) / 100) as u32;
     AUTOMATIC_MAX_OUTPUT_TOKEN_TIERS
         .iter()
         .rev()
         .copied()
-        .filter(|tier| *tier != 64_000 || context_window >= MAX_OUTPUT_64K_MIN_CONTEXT_WINDOW)
-        .find(|tier| *tier <= quarter_context)
-        .unwrap_or(quarter_context)
+        .find(|tier| *tier <= max_output)
+        .unwrap_or(max_output)
 }
 
 /// Heuristic: ASCII chars 0.3 token, non-ASCII chars 0.6 token
@@ -322,7 +330,32 @@ impl TokenCounter {
 
 #[cfg(test)]
 mod tests {
-    use super::{estimate_image_tokens, inline_image_dimensions};
+    use super::{
+        automatic_max_output_tokens, estimate_image_tokens, inline_image_dimensions,
+        input_safety_reserve, INPUT_SAFETY_RESERVE,
+    };
+
+    #[test]
+    fn scales_input_safety_reserve_and_caps_at_default_constant() {
+        assert_eq!(input_safety_reserve(0), 0);
+        assert_eq!(input_safety_reserve(32_000), 1_600);
+        assert_eq!(input_safety_reserve(64_000), 3_200);
+        assert_eq!(input_safety_reserve(128_000), 6_400);
+        assert_eq!(input_safety_reserve(200_000), INPUT_SAFETY_RESERVE);
+        assert_eq!(input_safety_reserve(1_000_000), INPUT_SAFETY_RESERVE);
+    }
+
+    #[test]
+    fn automatic_output_tiers_stay_within_sixteen_percent_of_context() {
+        assert_eq!(automatic_max_output_tokens(32_000), 5_120);
+        assert_eq!(automatic_max_output_tokens(64_000), 8_000);
+        assert_eq!(automatic_max_output_tokens(128_000), 16_000);
+        assert_eq!(automatic_max_output_tokens(150_000), 24_000);
+        assert_eq!(automatic_max_output_tokens(200_000), 32_000);
+        assert_eq!(automatic_max_output_tokens(399_999), 32_000);
+        assert_eq!(automatic_max_output_tokens(400_000), 64_000);
+        assert_eq!(automatic_max_output_tokens(1_000_000), 64_000);
+    }
 
     fn encode_base64(bytes: &[u8]) -> String {
         const TABLE: &[u8; 64] =

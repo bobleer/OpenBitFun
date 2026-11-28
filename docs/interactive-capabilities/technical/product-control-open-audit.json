@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "0baa7e0a981143fcddb900c7e0a7162ce6f567fc78d247927ac722e24cd6095e",
+  "catalogDigest": "7cfd8ddea6a8c5423dad971493534947a10e63183583cfd2c56bef00bd828038",
   "count": 162,
   "reasonCounts": {
     "externalAuth": 4,
@@ -93,11 +93,11 @@
     {
       "capabilityId": "feature.ai-assistant",
       "itemId": "composer-context-slash",
-      "titleZh": "在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令",
-      "titleEn": "Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $",
+      "titleZh": "在输入框用 @ 挂载文件、工作区、设备、模型、ACP、会话与技能，并用 / 或 $ 触发斜杠指令",
+      "titleEn": "Attach files, workspaces, devices, models, ACP, sessions, and Skills with @, and run slash commands with / or $",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令」是在撰写消息时的实时上下文拼装与命令补全交互，由你在当前聊天输入框中点选确认后一并发送。",
-      "reasonEn": "“Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $” is an interactive composer workflow where you pick context chips and slash commands while drafting your prompt.",
+      "reasonZh": "「在输入框用 @ 挂载文件、工作区、设备、模型、ACP、会话与技能，并用 / 或 $ 触发斜杠指令」是在撰写消息时的实时上下文拼装与命令补全交互，由你在当前聊天输入框中点选确认后一并发送。",
+      "reasonEn": "“Attach files, workspaces, devices, models, ACP, sessions, and Skills with @, and run slash commands with / or $” is an interactive composer workflow where you pick context chips and slash commands while drafting your prompt.",
       "presentationTarget": {
         "kind": "scene",
         "sceneId": "session"

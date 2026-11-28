@@ -8,18 +8,28 @@
 // - Instant primary scene switching (100+/day navigation never blocks behind ShaderTransition).
 
 import {
+  Animated,
   Canvas,
+  Easing,
   LayoutAnimation,
   ShaderTransition,
   Text,
   View,
+  cleanup,
   computed,
+  createAnimatedValue,
   createMotion,
+  effect,
+  lifecycle,
+  platform,
   reduceMotion,
   shadersAvailable,
+  signal,
   untracked,
   type Align,
-  type Easing,
+  type AnimatedNode,
+  type CompositeAnimation,
+  type Easing as EasingType,
   type JSX,
   type LayoutAnimationConfig,
   type Motion,
@@ -30,6 +40,9 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "nsh";
+import { Collapsible } from "nsh/base";
+import { backendConnection, windowShellId } from "../bridge";
+import { formatDuration } from "../format";
 import { palette, radii } from "../theme";
 
 /** Standard strong ease-out cubic-bezier tuple for NSH `createMotion` / `Animated`. */
@@ -66,6 +79,27 @@ export const MOTION_SPRING_SNAPPY = {
   damping: 41,
   mass: 1,
 } as const;
+
+/** Critically damped spring for accordion / thinking / tool-card height disclosures (~200ms settle, zero overshoot). */
+export const MOTION_SPRING_DISCLOSURE = {
+  stiffness: 460,
+  damping: 42,
+  mass: 1,
+} as const;
+
+/**
+ * True inside the deterministic headless `nsh test` host (non-web OS + dev
+ * fixture connection + host-page shell). Used to skip infinite UI-thread loops
+ * and settle height-reveal unmount transitions synchronously in tests, while
+ * keeping full native & web animations on desktop, mobile, and browser targets.
+ */
+export function isHeadlessMotionSync(): boolean {
+  return (
+    platform.os !== "web" &&
+    windowShellId() === "host-page" &&
+    backendConnection().kind === "dev"
+  );
+}
 
 /** Shared duration scale in milliseconds (all regular UI stays under 300ms). */
 export const MOTION_DURATION = {
@@ -175,7 +209,7 @@ function buildEnterSpec(
   kind: EnterMotionKind,
   duration: number,
   delay: number,
-  easing: Easing = MOTION_EASE_STANDARD_BEZIER,
+  easing: EasingType = MOTION_EASE_STANDARD_BEZIER,
 ): MotionSpec {
   if (reduceMotion()) {
     return {
@@ -510,23 +544,95 @@ export interface BrandSpinnerProps {
   variant?: "bars" | "matrix";
 }
 
-/** The working pulse's period (theme `motionTiming.pulse`). */
-const MATRIX_PULSE_MS = 1600;
-/** Ring cells in clockwise order from the top left, 140 ms apart; the center stays. */
-const MATRIX_RING_DELAYS: ReadonlyArray<number> = [
-  0, 140, 280,
-  980, 0, 420,
-  840, 700, 560,
+/** The working pulse's period (theme `motionTiming.pulse`, tuned for crisp orbital flow). */
+const MATRIX_ORBIT_MS = 1400;
+/** Clockwise ring index (0..7) for each cell of the 3×3 Bit Matrix; center cell (4) is -1. */
+const MATRIX_CELL_RING_STEP: ReadonlyArray<number> = [
+  0, 1, 2,
+  7, -1, 3,
+  6, 5, 4,
 ];
+const MATRIX_SAMPLES = 16;
+const MATRIX_INPUT_RANGE: number[] = Array.from({ length: MATRIX_SAMPLES + 1 }, (_, i) => i / MATRIX_SAMPLES);
+
+function matrixCellWaveRanges(ringStep: number): { opacity: number[]; scale: number[] } {
+  const opacity: number[] = [];
+  const scale: number[] = [];
+  if (ringStep < 0) {
+    // Center anchor cell: soft breathing heartbeat twice per orbit.
+    for (let i = 0; i <= MATRIX_SAMPLES; i += 1) {
+      const t = i / MATRIX_SAMPLES;
+      const wave = 0.5 - 0.5 * Math.cos(t * Math.PI * 4);
+      opacity.push(Number((0.76 + 0.24 * wave).toFixed(3)));
+      scale.push(Number((0.92 + 0.08 * wave).toFixed(3)));
+    }
+    return { opacity, scale };
+  }
+  const peak = ringStep / 8;
+  for (let i = 0; i <= MATRIX_SAMPLES; i += 1) {
+    const t = i / MATRIX_SAMPLES;
+    // Directional clockwise wake: sharp leading edge, soft trailing tail.
+    let delta = t - peak;
+    if (delta < 0) delta += 1;
+    // Leading head sits right at delta=0, trailing glow fades over delta in [0, 0.52].
+    const trail = delta <= 0.52
+      ? Math.pow(Math.cos((delta / 0.52) * (Math.PI / 2)), 1.6)
+      : delta >= 0.9
+        ? Math.pow(Math.cos(((1 - delta) / 0.1) * (Math.PI / 2)), 2)
+        : 0;
+    opacity.push(Number((0.22 + 0.78 * trail).toFixed(3)));
+    scale.push(Number((0.74 + 0.32 * trail).toFixed(3)));
+  }
+  return { opacity, scale };
+}
+
+const MATRIX_WAVE_TABLES = MATRIX_CELL_RING_STEP.map(matrixCellWaveRanges);
 
 /**
- * OpenBitFun brand loading indicator (`bars` 3-bar equalizer pulse or `matrix` 3x3
- * rhythmic mark), matching `src/web-ui`'s ambient runtime spinner.
+ * OpenBitFun brand loading indicator (`bars` 3-bar equalizer pulse or `matrix` 3×3
+ * fluid clockwise orbital light wave). Runs natively on the UI thread with one
+ * shared `AnimatedValue`, automatically pausing when hidden or under `reduceMotion()`.
  */
 export function BrandSpinner(props: BrandSpinnerProps) {
+  const isMatrix = () => (props.variant ?? "bars") === "matrix";
+  const phase = createAnimatedValue(0);
+  let activeLoop: CompositeAnimation | null = null;
+  const shouldRunMatrix = computed(
+    () => isMatrix() && !reduceMotion() && lifecycle() !== "background" && !isHeadlessMotionSync(),
+  );
+
+  effect(() => {
+    if (shouldRunMatrix()) {
+      phase.set(0);
+      activeLoop = Animated.loop(
+        Animated.timing(phase, {
+          toValue: 1,
+          duration: MATRIX_ORBIT_MS,
+          easing: Easing.linear,
+        }),
+      );
+      void activeLoop.start();
+    } else if (activeLoop) {
+      activeLoop.stop();
+      activeLoop = null;
+      phase.set(0);
+    }
+  });
+  cleanup(() => {
+    if (activeLoop) {
+      activeLoop.stop();
+      activeLoop = null;
+    }
+  });
+
+  const cellNodes = MATRIX_WAVE_TABLES.map(table => ({
+    opacity: phase.interpolate({ inputRange: MATRIX_INPUT_RANGE, outputRange: table.opacity }),
+    scale: phase.interpolate({ inputRange: MATRIX_INPUT_RANGE, outputRange: table.scale }),
+  }));
+
   return (
     <If
-      when={(props.variant ?? "bars") === "matrix"}
+      when={isMatrix()}
       else={
         <View
           style={{
@@ -549,7 +655,7 @@ export function BrandSpinner(props: BrandSpinnerProps) {
                       : Math.max(5, Math.round((props.size ?? 14) * 0.56)),
                   borderRadius: radii.pill,
                   backgroundColor: props.color ?? palette().accent,
-                  animationName: reduceMotion() ? "none" : "pulse",
+                  animationName: reduceMotion() || lifecycle() === "background" ? "none" : "pulse",
                   animationDuration: MOTION_DURATION.loop,
                   animationDelay: reduceMotion() ? 0 : idx() * 140,
                   animationTimingFunction: "ease-in-out",
@@ -574,25 +680,385 @@ export function BrandSpinner(props: BrandSpinnerProps) {
         }}
       >
         <Each of={[0, 1, 2, 3, 4, 5, 6, 7, 8]} key={cell => cell}>
-          {cell => (
-            <View
-              style={{
-                width: "100%",
-                height: "100%",
-                borderRadius: Math.max(1, Math.round((props.size ?? 16) * 0.08)),
-                backgroundColor: props.color ?? palette().accent,
-                // The ring pulses around the steady center (OpenBitFun among your devices).
-                animationName: reduceMotion() || cell() === 4 ? "none" : "pulse",
-                animationDuration: MATRIX_PULSE_MS,
-                animationDelay: reduceMotion() ? 0 : MATRIX_RING_DELAYS[cell()],
-                animationTimingFunction: "ease-in-out",
-                animationIterationCount: "infinite",
-              }}
-            />
-          )}
+          {cell => {
+            const index = untracked(cell);
+            const node = cellNodes[index]!;
+            return (
+              <View
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: Math.max(1, Math.round((props.size ?? 16) * 0.12)),
+                  backgroundColor: props.color ?? palette().accent,
+                  opacity: shouldRunMatrix() ? node.opacity : index === 4 ? 1 : 0.62,
+                  scale: shouldRunMatrix() ? node.scale : 1,
+                }}
+              />
+            );
+          }}
         </Each>
       </View>
     </If>
+  );
+}
+
+/**
+ * Native UI-thread luminous flow for active streaming status labels ("Thinking…",
+ * "Running", "Delegating", "Exploring"). Smoothly breathes text luminance between
+ * `mutedColor` and `brightColor` while `active` is true, and settles cleanly to a
+ * static palette color when inactive, hidden, or under `reduceMotion()`.
+ */
+export function ActiveFlowText(props: {
+  active: boolean | (() => boolean);
+  text: string | (() => string);
+  mutedColor?: () => string;
+  brightColor?: () => string;
+  staticColor?: () => string;
+  style?: StyleProp<TextStyle>;
+}) {
+  const pulse = createAnimatedValue(0);
+  let activeLoop: CompositeAnimation | null = null;
+  const isActive = computed(() => (typeof props.active === "function" ? props.active() : props.active));
+  const animated = computed(
+    () => isActive() && !reduceMotion() && lifecycle() !== "background" && !isHeadlessMotionSync(),
+  );
+
+  effect(() => {
+    if (animated()) {
+      pulse.set(0);
+      activeLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulse, {
+            toValue: 1,
+            duration: 920,
+            easing: Easing.inOut(Easing.sin),
+          }),
+          Animated.timing(pulse, {
+            toValue: 0,
+            duration: 920,
+            easing: Easing.inOut(Easing.sin),
+          }),
+        ]),
+      );
+      void activeLoop.start();
+    } else if (activeLoop) {
+      activeLoop.stop();
+      activeLoop = null;
+      pulse.set(0);
+    }
+  });
+  cleanup(() => {
+    if (activeLoop) {
+      activeLoop.stop();
+      activeLoop = null;
+    }
+  });
+
+  const animatedColor = computed<string | AnimatedNode>(() => {
+    if (!animated()) {
+      return props.staticColor ? props.staticColor() : (props.mutedColor ? props.mutedColor() : palette().textMuted);
+    }
+    const low = props.mutedColor ? props.mutedColor() : palette().textMuted;
+    const high = props.brightColor ? props.brightColor() : palette().text;
+    return pulse.interpolate({
+      inputRange: [0, 1],
+      outputRange: [low, high],
+    });
+  });
+
+  const resolvedText = () => (typeof props.text === "function" ? props.text() : props.text);
+
+  return (
+    <Text style={[props.style, { color: animatedColor() }]}>
+      {resolvedText()}
+    </Text>
+  );
+}
+
+/**
+ * Shared live elapsed duration caption (` · 2s`, ` · 3s`, …) anchored to a turn
+ * or tool start timestamp so phase transitions (waiting → thinking → tool) keep
+ * one continuous clock without resetting or vanishing.
+ */
+export function ElapsedDurationText(props: {
+  startedAt?: () => number | undefined;
+  active?: () => boolean;
+  minSeconds?: number;
+  prefix?: string;
+  style?: StyleProp<TextStyle>;
+}) {
+  const mountedAt = Date.now();
+  const minSeconds = props.minSeconds ?? 2;
+  const originMs = () => {
+    const reported = props.startedAt?.();
+    return typeof reported === "number" && reported > 0 ? Math.min(reported, mountedAt) : mountedAt;
+  };
+  const elapsedSec = signal(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stopTimer = () => {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+  effect(() => {
+    const running = props.active ? props.active() : true;
+    if (!running) {
+      stopTimer();
+      return;
+    }
+    elapsedSec.set(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
+    if (timer === null) {
+      timer = setInterval(() => {
+        elapsedSec.set(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
+      }, 1000);
+    }
+  });
+  cleanup(stopTimer);
+
+  const visibleText = computed(() => {
+    const running = props.active ? props.active() : true;
+    if (!running || elapsedSec() < minSeconds) return "";
+    const formatted = formatDuration(elapsedSec() * 1000);
+    return formatted ? `${props.prefix ?? " · "}${formatted}` : "";
+  });
+
+  return (
+    <If when={visibleText()}>
+      {text => {
+        const reveal = subtleCrossfadeMotion();
+        return (
+          <Text
+            style={[
+              {
+                fontVariant: ["tabular-nums"],
+              },
+              props.style,
+              reveal.style,
+            ]}
+          >
+            {text()}
+          </Text>
+        );
+      }}
+    </If>
+  );
+}
+
+/**
+ * Crisp upward settle for a newly sent user bubble lifting out of the composer
+ * (`opacity: 0 → 1`, `translateY: 8 → 0`, `scale: 0.985 → 1`, 200ms ease-out).
+ */
+export function userBubbleEnterMotion(): Motion {
+  if (reduceMotion()) {
+    return createMotion({
+      enter: {
+        keyframes: { opacity: [0.4, 1] },
+        duration: 100,
+        easing: MOTION_EASE_STANDARD_BEZIER,
+        ignoreReduceMotion: true,
+      },
+    });
+  }
+  return createMotion({
+    enter: {
+      keyframes: { opacity: [0, 1], translateY: [8, 0], scale: [0.985, 1] },
+      duration: MOTION_DURATION.base,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+    },
+  });
+}
+
+/**
+ * Cohesive entrance for a newly arriving live conversation block (thinking row,
+ * tool card, explore group, answer text segment, waiting row, or turn notice).
+ */
+export function liveBlockEnterMotion(opts?: {
+  travel?: number;
+  delay?: number;
+  duration?: number;
+}): Motion {
+  const duration = opts?.duration ?? 185;
+  const delay = opts?.delay ?? 0;
+  const travel = opts?.travel ?? 5;
+  if (reduceMotion()) {
+    return createMotion({
+      enter: {
+        keyframes: { opacity: [0.45, 1] },
+        duration: Math.min(duration, 90),
+        delay: 0,
+        easing: MOTION_EASE_STANDARD_BEZIER,
+        ignoreReduceMotion: true,
+      },
+    });
+  }
+  return createMotion({
+    enter: {
+      keyframes: { opacity: [0, 1], translateY: [travel, 0] },
+      duration,
+      delay,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+    },
+  });
+}
+
+/** Gentle scale + opacity entrance for compact inline status badges & affordances. */
+export function inlineStateEnterMotion(delay = 0): Motion {
+  if (reduceMotion()) {
+    return createMotion({
+      enter: {
+        keyframes: { opacity: [0.5, 1] },
+        duration: 80,
+        delay: 0,
+        easing: MOTION_EASE_STANDARD_BEZIER,
+        ignoreReduceMotion: true,
+      },
+    });
+  }
+  return createMotion({
+    enter: {
+      keyframes: { opacity: [0, 1], scale: [0.94, 1] },
+      duration: MOTION_DURATION.popover,
+      delay,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+    },
+  });
+}
+
+/**
+ * In-place morph transition without remounting children: plays a subtle GPU
+ * settle whenever `morphKey()` changes after initial mount (`skipInitial`
+ * default true). Ideal for icon swaps (spinner → settled icon), verb changes
+ * ("Running" → "Ran"), generated session titles, and Send ↔ Stop glyph swaps.
+ */
+export function MorphSlot(props: {
+  morphKey: () => string;
+  mode?: "rise" | "scale" | "fade";
+  duration?: number;
+  skipInitial?: boolean;
+  style?: StyleProp<ViewStyle>;
+  children?: JSX.Element;
+}) {
+  const motion = createMotion();
+  const initialSentinel = Symbol("morph-init");
+  let previous: string | symbol = props.skipInitial === false ? initialSentinel : untracked(() => props.morphKey());
+
+  effect(() => {
+    const next = props.morphKey();
+    if (next === previous) return;
+    previous = next;
+    if (isHeadlessMotionSync()) return;
+    const duration = props.duration ?? 150;
+    if (reduceMotion()) {
+      void motion.play({
+        keyframes: { opacity: [0.45, 1] },
+        duration: Math.min(duration, 90),
+        easing: MOTION_EASE_STANDARD_BEZIER,
+        ignoreReduceMotion: true,
+      });
+      return;
+    }
+    const mode = props.mode ?? "rise";
+    const keyframes =
+      mode === "scale"
+        ? { opacity: [0.3, 1], scale: [0.86, 1] }
+        : mode === "fade"
+          ? { opacity: [0.3, 1] }
+          : { opacity: [0.28, 1], translateY: [2.5, 0] };
+    void motion.play({
+      keyframes,
+      duration,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+    });
+  });
+
+  return (
+    <View style={[props.style, motion.style]}>
+      {props.children}
+    </View>
+  );
+}
+
+/**
+ * Spring-animated height disclosure backed by NSH's native `<Collapsible reveal>`.
+ * Lazily mounts `content` only on the first open so collapsed transcript cards
+ * never build heavy diff/markdown trees or fire detail loads ahead of time, while
+ * keeping content mounted across smooth spring collapses on desktop/mobile/web.
+ */
+export function SmoothDisclosure(props: {
+  open: () => boolean;
+  style?: StyleProp<ViewStyle>;
+  contentGap?: number;
+  contentStyle?: StyleProp<ViewStyle>;
+  children: JSX.Element;
+  content: () => JSX.Element;
+}) {
+  const openedOnce = signal(untracked(() => props.open()));
+  const contentMotion = createMotion();
+  let wasOpen = untracked(() => props.open());
+
+  effect(() => {
+    const isOpen = props.open();
+    if (isOpen && !untracked(openedOnce)) {
+      openedOnce.set(true);
+    }
+    if (isOpen !== wasOpen) {
+      wasOpen = isOpen;
+      if (!isHeadlessMotionSync()) {
+        if (isOpen) {
+          if (reduceMotion()) {
+            void contentMotion.play({
+              keyframes: { opacity: [0.5, 1] },
+              duration: 90,
+              easing: MOTION_EASE_STANDARD_BEZIER,
+              ignoreReduceMotion: true,
+            });
+          } else {
+            void contentMotion.play({
+              keyframes: { opacity: [0, 1], translateY: [-3, 0] },
+              duration: 170,
+              easing: MOTION_EASE_STANDARD_BEZIER,
+            });
+          }
+        } else if (!reduceMotion()) {
+          // Dissolve inner content & rail slightly faster than the height spring
+          // settles so no stray vertical border peeks out at the end of collapse.
+          void contentMotion.play({
+            keyframes: { opacity: [1, 0] },
+            duration: 110,
+            easing: MOTION_EASE_STANDARD_BEZIER,
+          });
+        }
+      }
+    }
+  });
+
+  const shouldReveal = () => !reduceMotion() && !isHeadlessMotionSync();
+
+  return (
+    <Collapsible
+      open={props.open()}
+      reveal={shouldReveal()}
+      revealSpring={MOTION_SPRING_DISCLOSURE}
+      style={props.style}
+      content={
+        <If when={openedOnce()}>
+          {() => (
+            <View
+              style={[
+                props.contentGap ? { paddingTop: props.contentGap } : undefined,
+                props.contentStyle,
+                contentMotion.style,
+              ]}
+            >
+              {props.content()}
+            </View>
+          )}
+        </If>
+      }
+    >
+      {props.children}
+    </Collapsible>
   );
 }
 

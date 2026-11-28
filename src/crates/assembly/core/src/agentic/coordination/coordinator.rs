@@ -362,20 +362,71 @@ fn apply_session_model_target(config: &mut SessionConfig, selection: ModelSelect
     }
 }
 
+#[cfg(test)]
 fn snapshot_normal_session_model(
     config: &mut SessionConfig,
     defaults: &AgentModelSelections,
+) -> OpenBitFunResult<()> {
+    snapshot_normal_session_model_with_last(config, defaults, None, false)
+}
+
+fn snapshot_normal_session_model_with_last(
+    config: &mut SessionConfig,
+    defaults: &AgentModelSelections,
+    last_used: Option<&openbitfun_config_contracts::LastSessionModelSelection>,
+    prefer_primary_over_legacy_mode: bool,
 ) -> OpenBitFunResult<()> {
     if config.model_pool_id.is_some() {
         return Ok(());
     }
     let explicit = trimmed_model_id(config.model_id.as_deref())
         .filter(|id| !id.eq_ignore_ascii_case("auto") && !id.eq_ignore_ascii_case("default"));
-    let selection = match explicit {
-        Some(model_ref) => ModelSelection::Model { model_ref },
-        None => defaults.mode.clone(),
+    if let Some(model_ref) = explicit {
+        apply_session_model_target(config, ModelSelection::Model { model_ref });
+        return Ok(());
+    }
+    if let Some(last) = last_used {
+        if let Some(pool_id) = last
+            .model_pool_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            apply_session_model_target(
+                config,
+                ModelSelection::Pool {
+                    pool_id: pool_id.to_string(),
+                },
+            );
+            if config.context_window_override.is_none() {
+                config.context_window_override = last.context_window_override;
+            }
+            return Ok(());
+        }
+        if let Some(model_ref) = trimmed_model_id(last.model_id.as_deref()) {
+            apply_session_model_target(config, ModelSelection::Model { model_ref });
+            if config.reasoning_preset.is_none() {
+                config.reasoning_preset = last
+                    .reasoning_preset
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|preset| !preset.is_empty() && !preset.eq_ignore_ascii_case("auto"))
+                    .map(ToOwned::to_owned);
+            }
+            if config.context_window_override.is_none() {
+                config.context_window_override = last.context_window_override;
+            }
+            return Ok(());
+        }
+    }
+    let fallback = match &defaults.mode {
+        ModelSelection::Pool { .. } => defaults.mode.clone(),
+        ModelSelection::Model { .. } if prefer_primary_over_legacy_mode => ModelSelection::Model {
+            model_ref: "primary".to_string(),
+        },
+        ModelSelection::Model { .. } => defaults.mode.clone(),
     };
-    apply_session_model_target(config, selection);
+    apply_session_model_target(config, fallback);
     Ok(())
 }
 
@@ -407,6 +458,7 @@ fn apply_primary_agent_model_default(
 #[cfg(test)]
 tokio::task_local! {
     static TEST_AGENT_MODEL_DEFAULTS: AgentModelSelections;
+    static TEST_LAST_SESSION_MODEL: Option<openbitfun_config_contracts::LastSessionModelSelection>;
     static TEST_BTW_AI_CONFIG: crate::service::config::types::AIConfig;
 }
 
@@ -2977,6 +3029,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             )
             .await?;
 
+        if !self.session_manager.is_transient_session(session_id) {
+            if let Some(session) = self.session_manager.get_session(session_id) {
+                Self::remember_last_session_model_best_effort(&session).await;
+            }
+        }
+
         info!(
             "Coordinator updated session model: session_id={}, model_id={}, reasoning_preset={:?}, context_window_override={:?}",
             session_id, normalized_model_id, reasoning_preset, context_window_override
@@ -3040,7 +3098,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         include_internal: bool,
     ) -> OpenBitFunResult<Session> {
         let model_id = normalize_model_selection(model_id).await?;
-        self.session_manager
+        let session = self
+            .session_manager
             .update_session_model_selection_in_storage_with_options(
                 Some(storage_path),
                 session_id,
@@ -3062,7 +3121,14 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     )
                 },
             )
-            .await
+            .await?;
+        if !self
+            .session_manager
+            .is_transient_session(&session.session_id)
+        {
+            Self::remember_last_session_model_best_effort(&session).await;
+        }
+        Ok(session)
     }
 
     /// Re-enable (or disable) the tool loop of an already persisted session.
@@ -3169,8 +3235,28 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             &mut config,
             primary_agent_binding.model_binding.as_ref(),
         );
+        let has_test_defaults = {
+            #[cfg(test)]
+            {
+                TEST_AGENT_MODEL_DEFAULTS.try_with(|_| ()).is_ok()
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
         let defaults = Self::agent_model_defaults().await?;
-        snapshot_normal_session_model(&mut config, &defaults)?;
+        let last_used = if !transient {
+            Self::resolve_last_session_model_for_creation().await
+        } else {
+            None
+        };
+        snapshot_normal_session_model_with_last(
+            &mut config,
+            &defaults,
+            last_used.as_ref(),
+            !has_test_defaults,
+        )?;
         let session = if transient {
             self.session_manager
                 .create_transient_session_with_id_and_details(
@@ -12531,6 +12617,90 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .await
     }
 
+    async fn resolve_last_session_model_for_creation(
+    ) -> Option<openbitfun_config_contracts::LastSessionModelSelection> {
+        #[cfg(test)]
+        if let Ok(selection) = TEST_LAST_SESSION_MODEL.try_with(Clone::clone) {
+            return selection;
+        }
+        #[cfg(test)]
+        if TEST_AGENT_MODEL_DEFAULTS.try_with(|_| ()).is_ok() {
+            return None;
+        }
+
+        let config_service = GlobalConfigManager::get_service().await.ok()?;
+        let stored: Option<openbitfun_config_contracts::LastSessionModelSelection> = config_service
+            .get_config(Some("app.flow_chat.last_model_selection"))
+            .await
+            .ok()?;
+        let last = stored?;
+        if let Some(pool_id) = last
+            .model_pool_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let pool = config_service
+                .model_pool_store()
+                .await
+                .get(pool_id)
+                .await
+                .ok()?;
+            return (!pool.member_model_ids.is_empty()).then_some(last);
+        }
+        let model_ref = trimmed_model_id(last.model_id.as_deref())?;
+        let effective_ai = config_service.get_effective_ai_config().await.ok()?;
+        let resolved_id = effective_ai.resolve_model_selection(&model_ref)?;
+        let available = effective_ai.models.iter().any(|model| {
+            model.enabled
+                && model.id == resolved_id
+                && model
+                    .supports_capability(crate::service::config::types::ModelCapability::TextChat)
+        });
+        available.then_some(last)
+    }
+
+    async fn remember_last_session_model_best_effort(session: &Session) {
+        if session.kind != SessionKind::Standard {
+            return;
+        }
+        let selection = if let Some(pool_id) = session
+            .config
+            .model_pool_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            openbitfun_config_contracts::LastSessionModelSelection {
+                model_id: None,
+                model_pool_id: Some(pool_id.to_string()),
+                reasoning_preset: None,
+                context_window_override: session.config.context_window_override,
+            }
+        } else if let Some(model_id) = trimmed_model_id(session.config.model_id.as_deref()) {
+            openbitfun_config_contracts::LastSessionModelSelection {
+                model_id: Some(model_id),
+                model_pool_id: None,
+                reasoning_preset: session.config.reasoning_preset.clone(),
+                context_window_override: session.config.context_window_override,
+            }
+        } else {
+            return;
+        };
+        let Ok(config_service) = GlobalConfigManager::get_service().await else {
+            return;
+        };
+        if let Err(error) = config_service
+            .set_config("app.flow_chat.last_model_selection", Some(selection))
+            .await
+        {
+            warn!(
+                "Failed to persist last session model selection: error={}",
+                error
+            );
+        }
+    }
+
     fn parent_model_selection(
         &self,
         parent_session_id: &str,
@@ -15565,6 +15735,12 @@ impl openbitfun_runtime_ports::AgentSessionModelPort for ConversationCoordinator
             .update_session_model_target(session_id, &selection)
             .await
             .map_err(runtime_port_error_preserving_message)?;
+        if !self
+            .session_manager
+            .is_transient_session(&session.session_id)
+        {
+            Self::remember_last_session_model_best_effort(&session).await;
+        }
         // The running Turn retains its captured choice. New Turns use this
         // explicit selection; stale binding publication is fenced by the owner.
         Ok(openbitfun_core_types::model_pool::SessionModelTarget {

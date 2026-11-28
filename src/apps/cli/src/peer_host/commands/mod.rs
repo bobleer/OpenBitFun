@@ -1,5 +1,6 @@
 //! Product HostInvoke command handlers for CLI Peer Host.
 
+mod acp;
 mod agents;
 mod btw;
 mod config;
@@ -14,6 +15,7 @@ mod model_pools;
 mod models;
 mod permission;
 mod product_control;
+mod search;
 mod session;
 mod settings_mutations;
 mod skills;
@@ -25,6 +27,7 @@ mod terminal_profiles;
 mod tools;
 mod view_models;
 mod workspace;
+mod worktree;
 
 use serde_json::Value;
 
@@ -58,6 +61,8 @@ pub(crate) fn dispatch<'a>(
         "get_models_dev_catalog_status" => Box::pin(models::get_models_dev_catalog_status()),
         "refresh_models_dev_catalog_now" => Box::pin(models::refresh_models_dev_catalog_now()),
         "test_ai_config_connection" => Box::pin(models::test_ai_config_connection(args)),
+        "refresh_model_client" => Box::pin(models::refresh_model_client(args)),
+        "test_ai_connection" => Box::pin(models::test_ai_connection()),
         // Workspace / assistant / config
         "initialize_workspace_startup_state" => {
             Box::pin(workspace::initialize_workspace_startup_state(state))
@@ -96,6 +101,11 @@ pub(crate) fn dispatch<'a>(
         "set_config" => Box::pin(config::set_config(state, args)),
         "export_config" => Box::pin(config::export_config()),
         "import_config" => Box::pin(config::import_config(args)),
+        "get_global_config_status" => Box::pin(config::get_global_config_status()),
+        "get_global_config_health" => Box::pin(config::get_global_config_health()),
+        "validate_config" => Box::pin(config::validate_config()),
+        "reset_config" => Box::pin(config::reset_config(args)),
+        "canonicalize_agent_profile_configs" => Box::pin(config::canonicalize_agent_profile_configs()),
         // Custom agents, subagents, and profiles
         "list_agent_tool_names" => Box::pin(agents::list_agent_tool_names()),
         "get_custom_agent_detail" => Box::pin(agents::get_custom_agent_detail(state, args)),
@@ -164,7 +174,67 @@ pub(crate) fn dispatch<'a>(
         "restore_removed_external_session" => {
             Box::pin(external_sources::restore_removed_external_session(args))
         }
+        "get_instruction_source_catalog" => {
+            Box::pin(external_sources::get_instruction_source_catalog(state, args))
+        }
+        "get_workspace_reference_snapshot" => {
+            Box::pin(external_sources::get_workspace_reference_snapshot(state, args))
+        }
+        "get_external_ecosystem_awareness_command" => {
+            Box::pin(external_sources::get_external_ecosystem_awareness_command(state, args))
+        }
+        "acknowledge_external_ecosystems_command" => {
+            Box::pin(external_sources::acknowledge_external_ecosystems_command(state, args))
+        }
+        "get_native_prompt_command_conflicts_command" => {
+            Box::pin(external_sources::get_native_prompt_command_conflicts_command(state, args))
+        }
+        "set_native_prompt_command_conflict_choice_command" => {
+            Box::pin(external_sources::set_native_prompt_command_conflict_choice_command(state, args))
+        }
+        "expand_external_prompt_command_command" => {
+            Box::pin(external_sources::expand_external_prompt_command_command(state, args))
+        }
+        "get_external_hook_catalog" => {
+            Box::pin(external_sources::get_external_hook_catalog(state, args))
+        }
+        "get_external_hook_import_snapshot" => {
+            Box::pin(external_sources::get_external_hook_import_snapshot(state, args))
+        }
+        "plan_external_hook_import_command" => {
+            Box::pin(external_sources::plan_external_hook_import_command(state, args))
+        }
+        "apply_external_hook_import_command" => {
+            Box::pin(external_sources::apply_external_hook_import_command(state, args))
+        }
+        "mutate_external_hook_import_command" => {
+            Box::pin(external_sources::mutate_external_hook_import_command(state, args))
+        }
+        // ACP client management and ACP flow sessions
+        "initialize_acp_clients" => Box::pin(acp::initialize_acp_clients()),
+        "get_acp_clients" => Box::pin(acp::get_acp_clients()),
+        "probe_acp_client_requirements" => Box::pin(acp::probe_acp_client_requirements(args)),
+        "predownload_acp_client_adapter" => Box::pin(acp::predownload_acp_client_adapter(args)),
+        "install_acp_client_cli" => Box::pin(acp::install_acp_client_cli(args)),
+        "stop_acp_client" => Box::pin(acp::stop_acp_client(args)),
+        "set_acp_client_permission_mode" => Box::pin(acp::set_acp_client_permission_mode(args)),
+        "load_acp_json_config" => Box::pin(acp::load_acp_json_config()),
+        "save_acp_json_config" => Box::pin(acp::save_acp_json_config(args)),
+        "create_acp_flow_session" => Box::pin(acp::create_acp_flow_session(state, args)),
+        "start_acp_dialog_turn" => Box::pin(acp::start_acp_dialog_turn(state, args)),
+        "cancel_acp_dialog_turn" => Box::pin(acp::cancel_acp_dialog_turn(state, args)),
+        "get_acp_session_options" => Box::pin(acp::get_acp_session_options(state, args)),
+        "get_acp_session_commands" => Box::pin(acp::get_acp_session_commands(state, args)),
+        "set_acp_session_model" => Box::pin(acp::set_acp_session_model(state, args)),
+        "set_acp_session_config_option" => {
+            Box::pin(acp::set_acp_session_config_option(state, args))
+        }
+        "submit_acp_permission_response" => Box::pin(acp::submit_acp_permission_response(args)),
         // MCP servers, prompts, resources, and remote auth
+        "initialize_mcp_servers" => Box::pin(mcp::initialize_mcp_servers()),
+        "initialize_mcp_servers_non_destructive" => {
+            Box::pin(mcp::initialize_mcp_servers_non_destructive())
+        }
         "get_mcp_servers" => Box::pin(mcp::get_mcp_servers()),
         "start_mcp_server" => Box::pin(mcp::start_mcp_server(args)),
         "stop_mcp_server" => Box::pin(mcp::stop_mcp_server(args)),
@@ -233,14 +303,23 @@ pub(crate) fn dispatch<'a>(
         "delete_file" => Box::pin(filesystem::delete_path(state, args, false)),
         "delete_directory" => Box::pin(filesystem::delete_path(state, args, true)),
         "list_directory_files" => Box::pin(filesystem::list_directory_files(state, args)),
+        "get_file_watch_status" => Box::pin(system::get_file_watch_status()),
+        // Workspace search
+        "search_files" => Box::pin(search::search_files(state, args)),
+        "search_filenames" => Box::pin(search::search_filenames(state, args)),
+        "search_file_contents" => Box::pin(search::search_file_contents(state, args)),
+        "cancel_search" => Box::pin(std::future::ready(search::cancel_search(state, args))),
+        "search_get_repo_status" => Box::pin(search::search_get_repo_status(state, args)),
+        "search_build_index" => Box::pin(search::search_build_index(state, args)),
+        "search_rebuild_index" => Box::pin(search::search_rebuild_index(state, args)),
 
-        // Tools catalog — read-only tool listing for Agents / Assistant
-        // Defaults UI. CLI Host assembles the same Core tool registry as
-        // Desktop and returns the identical DTO shape, so a controller cannot
-        // tell "CLI Host doesn't support catalog query" from "the runtime
-        // really has no tools". Without this the call fell into the unsupported
-        // dispatch branch and the UI silently rendered an empty tool list.
+        // Tools catalog and direct tool execution
         "get_all_tools_info" => Box::pin(tools::get_all_tools_info()),
+        "get_available_tools" => Box::pin(tools::get_available_tools()),
+        "get_readonly_tools_info" => Box::pin(tools::get_readonly_tools_info()),
+        "get_tool_info" => Box::pin(tools::get_tool_info(args)),
+        "validate_tool_input" => Box::pin(tools::validate_tool_input(args)),
+        "execute_tool" => Box::pin(tools::execute_tool(args)),
         "get_chat_mcp_catalog" => Box::pin(tools::get_chat_mcp_catalog(args)),
 
         "get_model_routing_status" => Box::pin(session::get_model_routing_status(state, args)),
@@ -297,14 +376,40 @@ pub(crate) fn dispatch<'a>(
         "get_session_stats" => Box::pin(session::get_session_stats(state, args)),
         "get_session_usage_report" => Box::pin(session::get_session_usage_report(state, args)),
         "save_session_turn" => Box::pin(session::save_session_turn(state, args)),
+        "search_referenceable_sessions" => {
+            Box::pin(session::search_referenceable_sessions(state, args))
+        }
+        "archive_all_sessions" => Box::pin(session::archive_all_sessions(state, args)),
+        "list_sessions" => Box::pin(session::list_sessions(state, args)),
+        "set_session_memory_mode" => Box::pin(session::set_session_memory_mode(state, args)),
+        "reload_session_context" => Box::pin(session::reload_session_context(state, args)),
+        "generate_session_title" => Box::pin(session::generate_session_title(args)),
+        "ensure_assistant_bootstrap" => Box::pin(session::ensure_assistant_bootstrap(state, args)),
 
         // Snapshot / rollback
         "rollback_session_to_turn" => Box::pin(snapshot::rollback_session_to_turn(state, args)),
+        "rollback_session" => Box::pin(snapshot::rollback_session(state, args)),
+        "accept_session" => Box::pin(snapshot::accept_session(state, args)),
+        "accept_file" => Box::pin(snapshot::accept_file(state, args)),
+        "reject_file" => Box::pin(snapshot::reject_file(state, args)),
+        "accept_operation" => Box::pin(snapshot::accept_operation(state, args)),
+        "reject_operation" => Box::pin(snapshot::reject_operation(state, args)),
         "get_session_files" => Box::pin(snapshot::get_session_files(state, args)),
+        "get_session_turns" => Box::pin(snapshot::get_session_turns(state, args)),
+        "get_turn_files" => Box::pin(snapshot::get_turn_files(state, args)),
+        "get_file_diff" => Box::pin(snapshot::get_file_diff(state, args)),
         "get_session_file_diff_stats" => {
             Box::pin(snapshot::get_session_file_diff_stats(state, args))
         }
         "get_operation_diff" => Box::pin(snapshot::get_operation_diff(state, args)),
+        "get_operation_summary" => Box::pin(snapshot::get_operation_summary(state, args)),
+        "get_session_operations" => Box::pin(snapshot::get_session_operations(state, args)),
+        "get_snapshot_system_stats" => Box::pin(snapshot::get_snapshot_system_stats(state, args)),
+        "get_snapshot_sessions" => Box::pin(snapshot::get_snapshot_sessions(state, args)),
+        "check_git_isolation" => Box::pin(snapshot::check_git_isolation(state, args)),
+        "get_file_change_history" => Box::pin(snapshot::get_file_change_history(state, args)),
+        "get_all_modified_files" => Box::pin(snapshot::get_all_modified_files(state, args)),
+        "get_baseline_snapshot_diff" => Box::pin(snapshot::get_baseline_snapshot_diff(state, args)),
 
         // Dialog / tools
         "manage_dialog_queue" => Box::pin(dialog::manage_dialog_queue(state, args)),
@@ -329,6 +434,14 @@ pub(crate) fn dispatch<'a>(
         // coordinator via the compatibility surface both CLI and Desktop Peer
         // Hosts share.
         "cancel_tool" => Box::pin(dialog::cancel_tool(state, args)),
+        "run_init_agents_md" => Box::pin(dialog::run_init_agents_md(state, args)),
+        "set_subagent_timeout" => Box::pin(dialog::set_subagent_timeout(args)),
+        "list_background_command_activities" => {
+            Box::pin(dialog::list_background_command_activities(args))
+        }
+        "read_background_command_output" => Box::pin(dialog::read_background_command_output(args)),
+        "control_background_command" => Box::pin(dialog::control_background_command(args)),
+        "send_background_command_input" => Box::pin(dialog::send_background_command_input(args)),
         "btw_ask_stream" => Box::pin(btw::btw_ask_stream(state, args)),
         "btw_cancel" => Box::pin(btw::btw_cancel(args)),
         "get_session_interaction_mailbox" => Box::pin(std::future::ready(permission::get_session_interaction_mailbox(state, args))),
@@ -336,6 +449,12 @@ pub(crate) fn dispatch<'a>(
         "subscribe_permission_requests" => Box::pin(std::future::ready(permission::subscribe_permission_requests())),
         "respond_permission" => Box::pin(permission::respond_permission(state, args)),
         "respond_permission_batch" => Box::pin(permission::respond_permission_batch(state, args)),
+        "get_project_permission_rules" => {
+            Box::pin(permission::get_project_permission_rules(state, args))
+        }
+        "save_project_permission_rules" => {
+            Box::pin(permission::save_project_permission_rules(state, args))
+        }
         "list_project_permission_grants" => {
             Box::pin(permission::list_project_permission_grants(state, args))
         }
@@ -361,7 +480,35 @@ pub(crate) fn dispatch<'a>(
         | "git_get_commits"
         | "git_get_diff"
         | "git_get_changed_files"
-        | "git_resolve_revision" => Box::pin(git::read(command, args)),
+        | "git_resolve_revision"
+        | "git_get_file_content" => Box::pin(git::read(command, args)),
+        "git_get_graph" => Box::pin(git::git_get_graph(args)),
+        "git_add_files"
+        | "git_reset_files"
+        | "git_commit"
+        | "git_push"
+        | "git_pull"
+        | "git_checkout_branch"
+        | "git_create_branch"
+        | "git_delete_branch"
+        | "git_discard_files"
+        | "git_reset_to_commit"
+        | "git_commit_and_checkout"
+        | "git_cherry_pick"
+        | "git_cherry_pick_abort"
+        | "git_cherry_pick_continue"
+        | "git_list_worktrees"
+        | "git_add_worktree"
+        | "git_remove_worktree" => Box::pin(git::mutate(command, state, args)),
+        // Managed worktrees
+        "worktree_list"
+        | "worktree_list_projects"
+        | "worktree_create"
+        | "worktree_create_branch"
+        | "worktree_promote"
+        | "worktree_remove"
+        | "worktree_bind_session"
+        | "worktree_recreate" => Box::pin(worktree::dispatch(command, args)),
 
         // Scheduled jobs (routines)
         "list_cron_jobs" => Box::pin(cron::list_cron_jobs(state, args)),
@@ -375,14 +522,13 @@ pub(crate) fn dispatch<'a>(
         // Soft empty / no-op for Desktop-only subsystems
         "list_miniapps" => Box::pin(soft::list_miniapps()),
         "miniapp_worker_list_running" => Box::pin(soft::miniapp_worker_list_running()),
-        "get_acp_clients" => Box::pin(soft::get_acp_clients()),
-        "list_background_command_activities" => Box::pin(soft::list_background_command_activities()),
 
         // Skills
         "get_skill_configs" => Box::pin(skills::get_skill_configs(args)),
         "get_mode_skill_configs" => Box::pin(skills::get_mode_skill_configs(args)),
         "get_global_skill_settings" => Box::pin(skills::get_global_skill_settings(args)),
         "set_global_skill_disabled" => Box::pin(skills::set_global_skill_disabled(args)),
+        "set_mode_skill_disabled" => Box::pin(skills::set_mode_skill_disabled(args)),
         "validate_skill_path" => Box::pin(skills::validate_skill_path(args)),
         "add_skill" => Box::pin(skills::add_skill(args)),
         "delete_skill" => Box::pin(skills::delete_skill(args)),
@@ -394,6 +540,10 @@ pub(crate) fn dispatch<'a>(
         "get_memory_paths" => Box::pin(system::get_memory_paths(state)),
         "reset_memory" => Box::pin(system::reset_memory(state)),
         "get_system_info" => Box::pin(system::get_system_info()),
+        "get_runtime_capabilities" => Box::pin(system::get_runtime_capabilities()),
+        "get_health_status" => Box::pin(system::get_health_status(state)),
+        "check_command_exists" => Box::pin(system::check_command_exists(args)),
+        "check_commands_exist" => Box::pin(system::check_commands_exist(args)),
         "get_runtime_logging_info" => Box::pin(system::get_runtime_logging_info()),
         "get_token_usage_statistics" => Box::pin(system::get_token_usage_statistics(state, args)),
         // View models (wave 4)
@@ -706,16 +856,134 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "import_config",
     "get_app_version",
     "retry_file_watch",
+    // ACP client management and ACP flow sessions
+    "initialize_acp_clients",
+    "get_acp_clients",
+    "probe_acp_client_requirements",
+    "predownload_acp_client_adapter",
+    "install_acp_client_cli",
+    "stop_acp_client",
+    "set_acp_client_permission_mode",
+    "load_acp_json_config",
+    "save_acp_json_config",
+    "create_acp_flow_session",
+    "start_acp_dialog_turn",
+    "cancel_acp_dialog_turn",
+    "get_acp_session_options",
+    "get_acp_session_commands",
+    "set_acp_session_model",
+    "set_acp_session_config_option",
+    "submit_acp_permission_response",
+    // Workspace search and referenceable session search
+    "search_files",
+    "search_filenames",
+    "search_file_contents",
+    "cancel_search",
+    "search_get_repo_status",
+    "search_build_index",
+    "search_rebuild_index",
+    "search_referenceable_sessions",
+    // Local Git mutations, graph, and managed worktrees
+    "git_get_file_content",
+    "git_get_graph",
+    "git_add_files",
+    "git_reset_files",
+    "git_commit",
+    "git_push",
+    "git_pull",
+    "git_checkout_branch",
+    "git_create_branch",
+    "git_delete_branch",
+    "git_discard_files",
+    "git_reset_to_commit",
+    "git_commit_and_checkout",
+    "git_cherry_pick",
+    "git_cherry_pick_abort",
+    "git_cherry_pick_continue",
+    "git_list_worktrees",
+    "git_add_worktree",
+    "git_remove_worktree",
+    "worktree_list",
+    "worktree_list_projects",
+    "worktree_create",
+    "worktree_create_branch",
+    "worktree_promote",
+    "worktree_remove",
+    "worktree_bind_session",
+    "worktree_recreate",
+    // Snapshot review and rollback
+    "rollback_session",
+    "accept_session",
+    "accept_file",
+    "reject_file",
+    "accept_operation",
+    "reject_operation",
+    "get_session_turns",
+    "get_turn_files",
+    "get_file_diff",
+    "get_operation_summary",
+    "get_session_operations",
+    "get_snapshot_system_stats",
+    "get_snapshot_sessions",
+    "check_git_isolation",
+    "get_file_change_history",
+    "get_all_modified_files",
+    "get_baseline_snapshot_diff",
+    // Background command control and dialog lifecycle
+    "run_init_agents_md",
+    "set_subagent_timeout",
+    "list_background_command_activities",
+    "read_background_command_output",
+    "control_background_command",
+    "send_background_command_input",
+    // Session lifecycle & project permissions
+    "archive_all_sessions",
+    "list_sessions",
+    "set_session_memory_mode",
+    "reload_session_context",
+    "generate_session_title",
+    "ensure_assistant_bootstrap",
+    "get_project_permission_rules",
+    "save_project_permission_rules",
+    // MCP, skills, tools, config, models, system
+    "initialize_mcp_servers",
+    "initialize_mcp_servers_non_destructive",
+    "set_mode_skill_disabled",
+    "get_available_tools",
+    "get_readonly_tools_info",
+    "get_tool_info",
+    "validate_tool_input",
+    "execute_tool",
+    "get_global_config_status",
+    "get_global_config_health",
+    "validate_config",
+    "reset_config",
+    "canonicalize_agent_profile_configs",
+    "refresh_model_client",
+    "test_ai_connection",
+    "get_runtime_capabilities",
+    "get_health_status",
+    "check_command_exists",
+    "check_commands_exist",
+    "get_file_watch_status",
+    // External hooks, prompt commands, instruction catalog, workspace references
+    "get_instruction_source_catalog",
+    "get_workspace_reference_snapshot",
+    "get_external_ecosystem_awareness_command",
+    "acknowledge_external_ecosystems_command",
+    "get_native_prompt_command_conflicts_command",
+    "set_native_prompt_command_conflict_choice_command",
+    "expand_external_prompt_command_command",
+    "get_external_hook_catalog",
+    "get_external_hook_import_snapshot",
+    "plan_external_hook_import_command",
+    "apply_external_hook_import_command",
+    "mutate_external_hook_import_command",
 ];
 
 /// Commands answered by `soft.rs` with a declared empty or no-op success.
 #[cfg(test)]
-pub(crate) const SOFT_EMPTY_COMMANDS: &[&str] = &[
-    "get_acp_clients",
-    "list_background_command_activities",
-    "list_miniapps",
-    "miniapp_worker_list_running",
-];
+pub(crate) const SOFT_EMPTY_COMMANDS: &[&str] = &["list_miniapps", "miniapp_worker_list_running"];
 
 #[cfg(test)]
 mod tests {

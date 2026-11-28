@@ -37,7 +37,8 @@ mod tests {
     #[test]
     fn session_content_search_executes_on_the_peer_host() {
         assert!(!is_cli_unsupported_command("search_session_content"));
-        assert!(is_cli_unsupported_command("search_files"));
+        assert!(!is_cli_unsupported_command("search_files"));
+        assert!(is_cli_unsupported_command("create_miniapp"));
     }
 
     #[test]

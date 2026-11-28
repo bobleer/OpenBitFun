@@ -982,15 +982,15 @@
         },
         {
           "id": "composer-context-slash",
-          "titleZh": "在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令",
-          "titleEn": "Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $",
-          "descriptionZh": "输入 @ 可一处搜索项目文件、文件夹、其他历史会话（把过往结论带进新对话）、可用 Skills、MCP 与图片；行首输入 / 可调用 /goal、/btw、/compact、/usage、/init 或外部命令（含 Shell 预览确认），句中输入 $ 或 / 可直接点名某个 Skill。",
-          "descriptionEn": "Type @ to attach workspace files, folders, other sessions, Skills, MCP servers, or images; type / at the start for /goal, /btw, /compact, /usage, or /init, and $ or / inline to invoke a Skill.",
+          "titleZh": "在输入框用 @ 挂载文件、工作区、设备、模型、ACP、会话与技能，并用 / 或 $ 触发斜杠指令",
+          "titleEn": "Attach files, workspaces, devices, models, ACP, sessions, and Skills with @, and run slash commands with / or $",
+          "descriptionZh": "输入 @ 可一处搜索项目文件、文件夹、工作区、设备、对话模型、已启用的 ACP 代理、其他历史会话（把过往结论带进新对话）、可用 Skills、MCP 与图片；行首输入 / 可调用 /goal、/btw、/compact、/usage、/init 或外部命令（含 Shell 预览确认），句中输入 $ 或 / 可直接点名某个 Skill。",
+          "descriptionEn": "Type @ to reference workspace files, folders, workspaces, devices, chat models, enabled ACP agents, other sessions, Skills, MCP servers, or images; type / at the start for /goal, /btw, /compact, /usage, or /init, and $ or / inline to invoke a Skill.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令」是在撰写消息时的实时上下文拼装与命令补全交互，由你在当前聊天输入框中点选确认后一并发送。",
-            "reasonEn": "“Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $” is an interactive composer workflow where you pick context chips and slash commands while drafting your prompt."
+            "reasonZh": "「在输入框用 @ 挂载文件、工作区、设备、模型、ACP、会话与技能，并用 / 或 $ 触发斜杠指令」是在撰写消息时的实时上下文拼装与命令补全交互，由你在当前聊天输入框中点选确认后一并发送。",
+            "reasonEn": "“Attach files, workspaces, devices, models, ACP, sessions, and Skills with @, and run slash commands with / or $” is an interactive composer workflow where you pick context chips and slash commands while drafting your prompt."
           },
           "evidence": [
             "source:src/nsh-ui/src/mentionStore.ts#@",

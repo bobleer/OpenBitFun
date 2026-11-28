@@ -749,8 +749,16 @@ mod tests {
             peer_host_verdict("terminal_list", PeerHostKind::Cli),
             PeerHostVerdict::Execute
         );
-        assert!(matches!(
+        assert_eq!(
             peer_host_verdict("worktree_list", PeerHostKind::Cli),
+            PeerHostVerdict::Execute
+        );
+        assert_eq!(
+            peer_host_verdict("get_acp_clients", PeerHostKind::Cli),
+            PeerHostVerdict::Execute
+        );
+        assert!(matches!(
+            peer_host_verdict("create_miniapp", PeerHostKind::Cli),
             PeerHostVerdict::Refuse(PeerRefusal::HostUnsupported {
                 host: PeerHostKind::Cli,
                 ..

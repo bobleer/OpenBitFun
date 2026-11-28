@@ -128,6 +128,8 @@ interface RoundStreamChannel {
   displayedText: string;
   /** Fractional character carry across animation frames. */
   carry: number;
+  /** Smoothed reveal rate (chars/sec) for surge-free liquid token pacing. */
+  velocity: number;
   /** UTF-16 offset of the latest tool boundary in this round, for coarse trailing-text checks. */
   tailOffset: number;
   /** Reactive displayed text signal bound by UI views. */
@@ -163,16 +165,17 @@ const FRAME_BUDGET_MS = 16.67;
 const MAX_FRAME_DT_MS = 64;
 const DRAIN_SAFETY_FALLBACK_MS = 48;
 
-const TEXT_BASE_CHARS_PER_SEC = 120;
-const TEXT_ACCEL_PER_BACKLOG = 3.5;
+const TEXT_BASE_CHARS_PER_SEC = 96;
+const TEXT_ACCEL_PER_BACKLOG = 3.2;
 const TEXT_MAX_CHARS_PER_SEC = 2200;
 
-const THINKING_BASE_CHARS_PER_SEC = 180;
-const THINKING_ACCEL_PER_BACKLOG = 4.5;
+const THINKING_BASE_CHARS_PER_SEC = 160;
+const THINKING_ACCEL_PER_BACKLOG = 4.2;
 const THINKING_MAX_CHARS_PER_SEC = 2600;
 
+const RATE_SMOOTHING_TAU_MS = 90;
 const NORMAL_BACKLOG_THRESHOLD = 260;
-const NORMAL_MAX_CHARS_PER_FRAME = 24;
+const NORMAL_MAX_CHARS_PER_FRAME = 20;
 const HEAVY_MAX_CHARS_PER_FRAME = 96;
 
 /** Structured live rounds & tools for the active session's in-flight/settling turn. */
@@ -395,6 +398,7 @@ function createChannel(): RoundStreamChannel {
     revealed: 0,
     displayedText: "",
     carry: 0,
+    velocity: 0,
     tailOffset: 0,
     displayed: signal<string>(""),
     hasAny: signal<boolean>(false),
@@ -476,6 +480,7 @@ function resetChannel(channel: RoundStreamChannel): void {
   channel.target = "";
   channel.revealed = 0;
   channel.carry = 0;
+  channel.velocity = 0;
   channel.tailOffset = 0;
   if (channel.displayedText !== "") {
     channel.displayedText = "";
@@ -487,6 +492,7 @@ function resetChannel(channel: RoundStreamChannel): void {
 function commitChannelImmediate(channel: RoundStreamChannel): boolean {
   const target = channel.target;
   channel.carry = 0;
+  channel.velocity = 0;
   if (channel.revealed === target.length && channel.displayedText === target) {
     return false;
   }
@@ -507,6 +513,7 @@ function advanceChannel(
   const targetLen = target.length;
   if (channel.revealed >= targetLen) {
     channel.carry = 0;
+    channel.velocity = 0;
     if (channel.displayedText !== target) {
       channel.revealed = targetLen;
       channel.displayedText = target;
@@ -525,7 +532,17 @@ function advanceChannel(
   const baseRate = isThinking ? THINKING_BASE_CHARS_PER_SEC : TEXT_BASE_CHARS_PER_SEC;
   const accel = isThinking ? THINKING_ACCEL_PER_BACKLOG : TEXT_ACCEL_PER_BACKLOG;
   const maxRate = isThinking ? THINKING_MAX_CHARS_PER_SEC : TEXT_MAX_CHARS_PER_SEC;
-  const charsPerSec = Math.min(maxRate, baseRate + backlog * accel);
+  const targetRate = Math.min(maxRate, baseRate + backlog * accel);
+
+  // Exponentially ease reveal velocity so bursty SSE packets ramp smoothly
+  // instead of alternating hard surges and stalls.
+  if (channel.velocity <= 0) {
+    channel.velocity = Math.min(targetRate, baseRate * 1.15);
+  } else {
+    const alpha = 1 - Math.exp(-dtMs / RATE_SMOOTHING_TAU_MS);
+    channel.velocity += (targetRate - channel.velocity) * alpha;
+  }
+  const charsPerSec = Math.max(baseRate * 0.75, Math.min(maxRate, channel.velocity));
 
   const maxStep =
     backlog > NORMAL_BACKLOG_THRESHOLD

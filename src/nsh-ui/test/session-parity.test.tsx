@@ -250,6 +250,12 @@ test("background commands show their output, take input and can be interrupted",
   await app.waitFor("background-commands-strip");
   expect(sent.list_background_command_activities?.[0]).toEqual({ agentSessionId: "session-1" });
   expect(app.texts()).toContain("1 command running");
+  const stripBox = app.layout("background-commands-strip");
+  const composerBox = app.layout("id:chat-composer-surface");
+  expect(stripBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(stripBox!.x).toBe(composerBox!.x);
+  expect(stripBox!.width).toBe(composerBox!.width);
 
   await app.press("background-commands-strip");
   await app.press("background-command-7");

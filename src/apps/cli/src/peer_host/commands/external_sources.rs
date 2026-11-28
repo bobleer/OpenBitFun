@@ -428,6 +428,355 @@ pub(crate) async fn restore_removed_external_session(args: &Value) -> Result<Val
     Ok(Value::Null)
 }
 
+pub(crate) async fn get_instruction_source_catalog(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let root = if let Some(id) = id.as_deref() {
+        Some(
+            state
+                .workspace_service
+                .require_workspace(id)
+                .await
+                .map_err(|error| {
+                    ExternalSourceOperationError::invalid_request(error.to_string()).encode()
+                })?
+                .root_path,
+        )
+    } else {
+        None
+    };
+    let catalog =
+        openbitfun_core::external_sources::instruction_source_catalog(root.as_deref()).await;
+    serde_json::to_value(catalog).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_workspace_reference_snapshot(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let force_refresh = optional_bool_field(request, "forceRefresh")
+        .map_err(|error| error.encode())?
+        .unwrap_or(false);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?
+        .ok_or_else(|| {
+            ExternalSourceOperationError::invalid_request("Workspace ID is required").encode()
+        })?;
+    let workspace = state
+        .workspace_service
+        .require_workspace(&id)
+        .await
+        .map_err(|error| {
+            ExternalSourceOperationError::invalid_request(error.to_string()).encode()
+        })?;
+    let snapshot = openbitfun_core::external_sources::workspace_reference_snapshot(
+        &workspace.id,
+        &workspace.related_paths,
+        force_refresh,
+    )
+    .await
+    .map_err(|error| {
+        openbitfun_core::external_sources::sanitize_external_source_operation_error(error).encode()
+    })?;
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_external_ecosystem_awareness_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let unacknowledged_ecosystem_ids =
+        openbitfun_core::external_sources::unacknowledged_external_ecosystems(id.as_deref())
+            .await
+            .map_err(|error| {
+                openbitfun_core::external_sources::sanitize_external_source_operation_error(error)
+                    .encode()
+            })?;
+    Ok(serde_json::json!({
+        "unacknowledgedEcosystemIds": unacknowledged_ecosystem_ids,
+    }))
+}
+
+pub(crate) async fn acknowledge_external_ecosystems_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let ecosystem_ids: Vec<String> = serde_json::from_value(
+        request
+            .get("ecosystemIds")
+            .or_else(|| request.get("ecosystem_ids"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid ecosystemIds: {error}"))
+            .encode()
+    })?;
+    openbitfun_core::external_sources::acknowledge_external_ecosystems(
+        id.as_deref(),
+        ecosystem_ids,
+    )
+    .await
+    .map_err(|error| {
+        openbitfun_core::external_sources::sanitize_external_source_operation_error(error).encode()
+    })?;
+    Ok(Value::Null)
+}
+
+pub(crate) async fn get_native_prompt_command_conflicts_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let native_commands = serde_json::from_value(
+        request
+            .get("nativeCommands")
+            .or_else(|| request.get("native_commands"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid nativeCommands: {error}"))
+            .encode()
+    })?;
+    let response = openbitfun_core::external_sources::native_prompt_command_conflicts(
+        id.as_deref(),
+        native_commands,
+    )
+    .await
+    .map_err(|error| {
+        openbitfun_core::external_sources::sanitize_external_source_operation_error(error).encode()
+    })?;
+    serde_json::to_value(response).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn set_native_prompt_command_conflict_choice_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let native_commands = serde_json::from_value(
+        request
+            .get("nativeCommands")
+            .or_else(|| request.get("native_commands"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid nativeCommands: {error}"))
+            .encode()
+    })?;
+    let selected_candidate_id =
+        required_string(request, "selectedCandidateId").map_err(|error| error.encode())?;
+    let expected_preference_revision =
+        required_u64(request, "expectedPreferenceRevision").map_err(|error| error.encode())?;
+    let response = openbitfun_core::external_sources::set_native_prompt_command_conflict_choice(
+        id.as_deref(),
+        native_commands,
+        &selected_candidate_id,
+        expected_preference_revision,
+    )
+    .await
+    .map_err(|error| {
+        openbitfun_core::external_sources::sanitize_external_source_operation_error(error).encode()
+    })?;
+    serde_json::to_value(response).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn expand_external_prompt_command_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let name = required_string(request, "name").map_err(|error| error.encode())?;
+    let arguments = request
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let native_commands = serde_json::from_value(
+        request
+            .get("nativeCommands")
+            .or_else(|| request.get("native_commands"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid nativeCommands: {error}"))
+            .encode()
+    })?;
+    let candidate_id = required_string(request, "candidateId").map_err(|error| error.encode())?;
+    let expected_content_version =
+        required_string(request, "expectedContentVersion").map_err(|error| error.encode())?;
+    let expected_native_conflict_key = optional_string_field(request, "expectedNativeConflictKey")
+        .map_err(|error| error.encode())?;
+    let expected_preference_revision = request
+        .get("expectedPreferenceRevision")
+        .and_then(Value::as_u64);
+    let shell_review_decision = request
+        .get("shellReviewDecision")
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| {
+            ExternalSourceOperationError::invalid_request(format!(
+                "Invalid shellReviewDecision: {error}"
+            ))
+            .encode()
+        })?;
+    let response = openbitfun_core::external_sources::expand_external_prompt_command(
+        id.as_deref(),
+        &name,
+        arguments,
+        native_commands,
+        Some(&candidate_id),
+        Some(&expected_content_version),
+        expected_native_conflict_key.as_deref(),
+        expected_preference_revision,
+        shell_review_decision.as_ref(),
+    )
+    .await
+    .map_err(|error| {
+        openbitfun_core::external_sources::sanitize_external_source_operation_error(error).encode()
+    })?;
+    serde_json::to_value(response).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_external_hook_catalog(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let force_refresh = optional_bool_field(request, "forceRefresh")
+        .map_err(|error| error.encode())?
+        .unwrap_or(false);
+    let snapshot = openbitfun_core::external_hooks::local_external_hook_catalog_snapshot(
+        id.as_deref(),
+        force_refresh,
+    )
+    .await
+    .map_err(|error| error.encode())?;
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn get_external_hook_import_snapshot(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let refresh_updates = optional_bool_field(request, "refreshUpdates")
+        .map_err(|error| error.encode())?
+        .unwrap_or(false);
+    let snapshot = openbitfun_core::external_hook_import::external_hook_import_snapshot(
+        id.as_deref(),
+        refresh_updates,
+    )
+    .await
+    .map_err(|error| error.encode())?;
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn plan_external_hook_import_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let source = serde_json::from_value(request.get("source").cloned().ok_or_else(|| {
+        ExternalSourceOperationError::invalid_request("Missing 'source'").encode()
+    })?)
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid source: {error}")).encode()
+    })?;
+    let plan =
+        openbitfun_core::external_hook_import::plan_external_hook_import(id.as_deref(), source)
+            .await
+            .map_err(|error| error.encode())?;
+    serde_json::to_value(plan).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn apply_external_hook_import_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let import_request = serde_json::from_value(
+        request
+            .get("importRequest")
+            .or_else(|| request.get("import_request"))
+            .cloned()
+            .ok_or_else(|| {
+                ExternalSourceOperationError::invalid_request("Missing 'importRequest'").encode()
+            })?,
+    )
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid importRequest: {error}"))
+            .encode()
+    })?;
+    let result = openbitfun_core::external_hook_import::apply_external_hook_import(
+        id.as_deref(),
+        import_request,
+    )
+    .await
+    .map_err(|error| error.encode())?;
+    serde_json::to_value(result).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn mutate_external_hook_import_command(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let id = workspace_id(state, request)
+        .await
+        .map_err(|error| error.encode())?;
+    let mutation = serde_json::from_value(request.get("mutation").cloned().ok_or_else(|| {
+        ExternalSourceOperationError::invalid_request("Missing 'mutation'").encode()
+    })?)
+    .map_err(|error| {
+        ExternalSourceOperationError::invalid_request(format!("Invalid mutation: {error}")).encode()
+    })?;
+    let snapshot =
+        openbitfun_core::external_hook_import::mutate_external_hook_import(id.as_deref(), mutation)
+            .await
+            .map_err(|error| error.encode())?;
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
+}
+
 fn control_request(
     request: &Value,
 ) -> ExternalSourceOperationResult<ExternalSourceControlRequestV1> {

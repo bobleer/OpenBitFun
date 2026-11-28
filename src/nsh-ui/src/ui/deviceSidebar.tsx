@@ -350,14 +350,6 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
   const current = () =>
     activeWorkspaceId() === props.workspace.workspaceId && (!fleetActive() || deviceContext() === props.node.deviceId);
   const newSession = () => {
-    const k = key();
-    if (collapsedWorkspaces()[k] === true) {
-      collapsedWorkspaces.update(current => {
-        const next = { ...current };
-        delete next[k];
-        return next;
-      });
-    }
     void newSessionHere(props.workspace.workspaceId, props.node.deviceId);
     props.onNavigate?.();
   };

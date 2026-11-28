@@ -38,10 +38,10 @@ Collaborate in durable project sessions: switch between Standard, Ultimate, Deep
   - Switch the model, reasoning effort, work mode, memory toggle, and approval mode per session
   - 说明：在聊天输入框底部随时切换「标准 / 极致 / 极简 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，调整推理强度（Reasoning Effort），或把当前会话临时设为自动审批。
   - Why & how: Use the composer bar to switch between Standard, Ultimate, Minimal, Deep Research, Paper Writing, Computer Use, or Creative modes, tune reasoning effort, or adjust session approval behavior on the fly.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令
-  - Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $
-  - 说明：输入 @ 可一处搜索项目文件、文件夹、其他历史会话（把过往结论带进新对话）、可用 Skills、MCP 与图片；行首输入 / 可调用 /goal、/btw、/compact、/usage、/init 或外部命令（含 Shell 预览确认），句中输入 $ 或 / 可直接点名某个 Skill。
-  - Why & how: Type @ to attach workspace files, folders, other sessions, Skills, MCP servers, or images; type / at the start for /goal, /btw, /compact, /usage, or /init, and $ or / inline to invoke a Skill.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在输入框用 @ 挂载文件、工作区、设备、模型、ACP、会话与技能，并用 / 或 $ 触发斜杠指令
+  - Attach files, workspaces, devices, models, ACP, sessions, and Skills with @, and run slash commands with / or $
+  - 说明：输入 @ 可一处搜索项目文件、文件夹、工作区、设备、对话模型、已启用的 ACP 代理、其他历史会话（把过往结论带进新对话）、可用 Skills、MCP 与图片；行首输入 / 可调用 /goal、/btw、/compact、/usage、/init 或外部命令（含 Shell 预览确认），句中输入 $ 或 / 可直接点名某个 Skill。
+  - Why & how: Type @ to reference workspace files, folders, workspaces, devices, chat models, enabled ACP agents, other sessions, Skills, MCP servers, or images; type / at the start for /goal, /btw, /compact, /usage, or /init, and $ or / inline to invoke a Skill.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在对话中通过 @ 选择当前模式可用的 MCP 服务
   - Use @ in chat to select MCP servers available to the current mode
   - 说明：输入 @ 进入 MCP 列表，也可以直接搜某个工具名反查它所属的 MCP 服务；注意「极简（Minimal）」模式默认精简隐藏 MCP，切到「标准 / 极致 / 创造」即可使用。

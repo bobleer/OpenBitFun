@@ -47,12 +47,15 @@ import { Icon, type IconName } from "./icons";
 import { openImageLightbox } from "./ImageLightbox";
 import { createDiffViewStyles, extractVisualizeDirectives, inferCodeLanguage, stripVisualizeDirectives } from "./markdown";
 import {
+  ActiveFlowText,
   BrandSpinner,
+  ElapsedDurationText,
   MOTION_DURATION,
+  MorphSlot,
   RollingCount,
+  SmoothDisclosure,
   pressTransition,
   rotatingChevronStyle,
-  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "./motion";
 import { Button, IconButton, InlineBanner, InputBox, StatusDot, focusRingStyle } from "./primitives";
@@ -386,7 +389,7 @@ export function toolTargetOf(call: ToolCallView, kind: ToolKind = toolKindOf(cal
   const input = inputRecord(call);
   switch (kind) {
     case "exec":
-      return execCommandOf(call);
+      return execCommandOf(call) || (call.input === undefined ? call.detail : "");
     case "read":
     case "write":
     case "edit":
@@ -400,7 +403,7 @@ export function toolTargetOf(call: ToolCallView, kind: ToolKind = toolKindOf(cal
       return firstStringOf(input, ["pattern", "glob_pattern", "file_pattern"]) || call.detail;
     case "ls": {
       const path = firstStringOf(input, ["path", "target_directory", "directory"]);
-      return path || ".";
+      return path || (call.input === undefined ? call.detail : "") || ".";
     }
     case "websearch":
       return firstStringOf(input, ["query", "search_term"]) || call.detail;
@@ -1628,9 +1631,14 @@ export function ToolCard(props: {
     numberOfLines: 1, textOverflow: "ellipsis" as const,
   });
 
+  const activelyRunning = computed(() => state() === "running" && !waiting());
+  const titleLabel = computed(() => toolTitleOf(props.call, state(), kind()));
+  const targetLabel = computed(() => toolTargetOf(props.call, kind()));
+
   return <ToolCardFrame
     name={props.call.name} prominent={prominent()} expanded={expanded()} canExpand={expandable()}
     headerMinHeight={props.live ? transcriptRowMinHeight() : undefined}
+    leadingKey={activelyRunning() ? "running" : waiting() ? "waiting" : `settled:${kind()}`}
     muted={muted()} confirmation={state() === "confirmation"} hint={hoverHint() || undefined}
     onToggle={() => toggleCard(props.cardId)}
     actions={<If when={filePath() ?? ""}>
@@ -1641,7 +1649,7 @@ export function ToolCard(props: {
         onPress={() => openInAuxPane("files", path())} />}
     </If>}
     leading={
-      <If when={state() === "running" && !waiting()} else={
+      <If when={activelyRunning()} else={
           <Icon name={waiting() ? "clock" : ICON_BY_KIND[kind()]}
             size={toolCardMetrics.iconSize} color={palette().textSecondary} />
         }>
@@ -1649,13 +1657,32 @@ export function ToolCard(props: {
       </If>
     }
     summary={engaged => <>
-      <Text style={{ ...textStyle(), flexShrink: 0, maxWidth: "50%",
-        color: muted() || (!prominent() && !engaged()) ? palette().textMuted : palette().text,
-        fontWeight: toolCardMetrics.titleWeight }}>{toolTitleOf(props.call, state(), kind())}</Text>
-      <Text style={{ ...textStyle(), flex: 1, minWidth: 0,
-        color: prominent() ? palette().textSecondary : engaged() ? palette().text : palette().textMuted,
-        fontFamily: kind() === "exec" ? fontMono() : undefined,
-        textOverflow: filePath() ? "ellipsis-middle" : "ellipsis" }}>{toolTargetOf(props.call, kind())}</Text>
+      <MorphSlot
+        morphKey={titleLabel}
+        mode="rise"
+        duration={150}
+        style={{ flexShrink: 0, maxWidth: "50%" }}
+      >
+        <ActiveFlowText
+          active={activelyRunning}
+          text={titleLabel}
+          mutedColor={() => (prominent() ? palette().textSecondary : palette().textMuted)}
+          brightColor={() => palette().text}
+          staticColor={() => (muted() || (!prominent() && !engaged()) ? palette().textMuted : palette().text)}
+          style={{ ...textStyle(), fontWeight: toolCardMetrics.titleWeight }}
+        />
+      </MorphSlot>
+      <MorphSlot
+        morphKey={() => (targetLabel() ? "filled" : "empty")}
+        mode="fade"
+        duration={150}
+        style={{ flex: 1, minWidth: 0 }}
+      >
+        <Text style={{ ...textStyle(), width: "100%",
+          color: prominent() ? palette().textSecondary : engaged() ? palette().text : palette().textMuted,
+          fontFamily: kind() === "exec" ? fontMono() : undefined,
+          textOverflow: filePath() ? "ellipsis-middle" : "ellipsis" }}>{targetLabel()}</Text>
+      </MorphSlot>
       <If when={kind() === "read" ? readRangeOf(props.call) : ""}>
         {range => <Text style={{ ...textStyle(), flexShrink: 0, color: palette().textMuted,
           fontVariant: ["tabular-nums"] }}>{range()}</Text>}
@@ -1673,6 +1700,21 @@ export function ToolCard(props: {
           <If when={failed()}><Icon name="close" size={12} color={statusColor()} /></If>
           <Text style={{ ...textStyle(), flexShrink: 1, color: statusColor() }}>{label()}</Text>
         </View>}
+      </If>
+      <If when={Boolean(props.live) && activelyRunning()}>
+        <ElapsedDurationText
+          startedAt={() => props.call.startedAt}
+          active={() => Boolean(props.live) && activelyRunning()}
+          minSeconds={2}
+          prefix=""
+          style={{
+            flexShrink: 0,
+            color: palette().textMuted,
+            opacity: 0.76,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
+          }}
+        />
       </If>
       <If when={prominent() && expandable()}><TranscriptRowChevron expanded={expanded} /></If>
     </>}
@@ -1806,7 +1848,41 @@ export function ExploreGroupCard(props: {
   });
 
   return (
-    <View style={{ gap: space.xs }}>
+    <SmoothDisclosure
+      open={() => expanded() && props.inlineSteps !== false}
+      contentGap={space.xs}
+      content={() => (
+        <View
+          style={{
+            marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
+            paddingLeft: space.lg,
+            borderLeftWidth: 1,
+            borderColor: palette().borderSubtle,
+            gap: space.hair,
+          }}
+        >
+          <Each
+            of={resolvedItems()}
+            key={(entry: FoldedProcessItem, index: number) => entry.key || `${entry.kind}-${index}`}
+          >
+            {(entry, index) => (
+              <If
+                when={entry().kind === "thinking"}
+                else={
+                  <ToolCard
+                    call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
+                    status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
+                    cardId={foldedStepCardId(props.cardId, entry(), index())}
+                  />
+                }
+              >
+                {props.renderThinking?.(entry() as Extract<FoldedProcessItem, { kind: "thinking" }>)}
+              </If>
+            )}
+          </Each>
+        </View>
+      )}
+    >
       <View
         role="button"
         accessibilityLabel={`explore-group-${props.cardId}`}
@@ -1816,22 +1892,31 @@ export function ExploreGroupCard(props: {
         activeStyle={tactileActiveStyle(0.985)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <TranscriptRowIconSlot>
-          <If when={running()} else={<Icon name={settledIcon()} size={14} color={palette().textMuted} />}>
-            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
-          </If>
-        </TranscriptRowIconSlot>
-        <Text
-          style={{
-            flexShrink: 0,
-            color: palette().text,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 18 / 13),
-            fontWeight: "500",
-          }}
+        <MorphSlot
+          morphKey={() => (running() ? "running" : settledIcon())}
+          mode="scale"
+          duration={MOTION_DURATION.fast}
         >
-          {headingLabel()}
-        </Text>
+          <TranscriptRowIconSlot>
+            <If when={running()} else={<Icon name={settledIcon()} size={14} color={palette().textMuted} />}>
+              <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
+            </If>
+          </TranscriptRowIconSlot>
+        </MorphSlot>
+        <MorphSlot morphKey={headingLabel} mode="rise" duration={150} style={{ flexShrink: 0 }}>
+          <ActiveFlowText
+            active={running}
+            text={headingLabel}
+            mutedColor={() => palette().textMuted}
+            brightColor={() => palette().text}
+            staticColor={() => palette().text}
+            style={{
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 18 / 13),
+              fontWeight: "500",
+            }}
+          />
+        </MorphSlot>
         <View
           style={{
             flex: 1,
@@ -1874,46 +1959,7 @@ export function ExploreGroupCard(props: {
         </View>
         <TranscriptRowChevron expanded={expanded} />
       </View>
-      <If when={expanded() && props.inlineSteps !== false}>
-        {() => {
-          const reveal = subtleCrossfadeMotion();
-          return (
-            <View
-              style={[
-                {
-                  marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
-                  paddingLeft: space.lg,
-                  borderLeftWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  gap: space.hair,
-                },
-                reveal.style,
-              ]}
-            >
-              <Each
-                of={resolvedItems()}
-                key={(entry: FoldedProcessItem, index: number) => entry.key || `${entry.kind}-${index}`}
-              >
-                {(entry, index) => (
-                  <If
-                    when={entry().kind === "thinking"}
-                    else={
-                      <ToolCard
-                        call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
-                        status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
-                        cardId={foldedStepCardId(props.cardId, entry(), index())}
-                      />
-                    }
-                  >
-                    {props.renderThinking?.(entry() as Extract<FoldedProcessItem, { kind: "thinking" }>)}
-                  </If>
-                )}
-              </Each>
-            </View>
-          );
-        }}
-      </If>
-    </View>
+    </SmoothDisclosure>
   );
 }
 

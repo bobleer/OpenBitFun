@@ -144,6 +144,13 @@ export function fleetChoiceOf(ref: string | null | undefined): { device: FleetMo
   return null;
 }
 
+function fleetPrimaryModelId(deviceId: string | null | undefined): string | null {
+  if (!deviceId) return null;
+  const group = fleetModelGroups()?.find(device => device.deviceId === deviceId);
+  if (!group || !group.models.length) return null;
+  return (group.models.find(model => model.primary) ?? group.models[0])?.modelId ?? null;
+}
+
 export interface ModelOption {
   /** Wire value sent to `update_session_model` (config ID on real Rust hosts). */
   id: string;
@@ -333,35 +340,54 @@ function canonicalModelRef(ref: string): string {
 
 /**
  * Resolves symbolic session roles (`"primary"`, `"fast"`, `"auto"`, `"default"`)
- * against `catalog.default_models` so the composer shows the real configured
- * model name instead of a raw internal role string.
+ * against the owning device's catalog (or `catalog.default_models` for the active
+ * device) so the composer shows the real configured model name instead of a raw
+ * internal role string.
  */
-export function resolveModelRef(raw: string | null | undefined): string | null {
+export function resolveModelRef(raw: string | null | undefined, deviceId?: string): string | null {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return defaultModelId();
+  const foreignDevice = Boolean(deviceId && deviceId !== deviceContext());
+  if (!trimmed) {
+    return foreignDevice ? (fleetPrimaryModelId(deviceId) ?? defaultModelId()) : defaultModelId();
+  }
 
   // Keep fleet-projected refs intact so local/remote fleet rows match session bindings.
   const fleet = fleetChoiceOf(trimmed);
   if (fleet) return fleet.choice.modelRef;
 
+  if (foreignDevice) {
+    const group = fleetModelGroups()?.find(device => device.deviceId === deviceId);
+    const remoteDirect = group?.models.find(
+      model => model.modelId === trimmed || model.modelName === trimmed,
+    );
+    if (remoteDirect) return remoteDirect.modelId;
+  }
+
   // An explicit configured model whose ID literally equals a role name wins first.
   const direct = findOption(trimmed);
-  if (direct) return direct.id;
+  if (direct && !foreignDevice) return direct.id;
 
   const lower = trimmed.toLowerCase();
-  const defaults = defaultModels();
   if (SYMBOLIC_PRIMARY_ROLES.has(lower)) {
+    if (foreignDevice) {
+      const remotePrimary = fleetPrimaryModelId(deviceId);
+      if (remotePrimary) return remotePrimary;
+    }
+    const defaults = defaultModels();
     const primaryRef = defaults.primary;
     const primaryMatch = findOption(primaryRef);
     if (primaryMatch) return primaryMatch.id;
     return defaultModelId() ?? (primaryRef && primaryRef.trim() ? primaryRef.trim() : null);
   }
   if (lower === "fast") {
+    const defaults = defaultModels();
     const fastRef = defaults.fast ?? defaults.primary;
     const fastMatch = findOption(fastRef);
     if (fastMatch) return fastMatch.id;
     return defaultModelId() ?? (fastRef && fastRef.trim() ? fastRef.trim() : null);
   }
+
+  if (direct) return direct.id;
 
   // Unknown session-only model id stays verbatim so the user sees what the session ran on.
   return trimmed;
@@ -399,10 +425,15 @@ function resolveTarget(target?: SessionModelTarget): {
 }
 
 export function modelIdForSession(sessionId: string | null, deviceId?: string): string | null {
-  if (!sessionId) return resolveModelRef(defaultModelId());
-  const key = sessionKey(sessionId, deviceId ?? activeSessionDevice());
-  const raw = sessionModels()[key] ?? boundModelOf(sessionId, deviceId ?? activeSessionDevice()) ?? defaultModelId();
-  return resolveModelRef(raw);
+  const sessionDevice = deviceId ?? activeSessionDevice();
+  if (!sessionId) return resolveModelRef(defaultModelId(), sessionDevice);
+  const key = sessionKey(sessionId, sessionDevice);
+  const raw =
+    sessionModels()[key] ??
+    boundModelOf(sessionId, sessionDevice) ??
+    (sessionDevice && sessionDevice !== deviceContext() ? fleetPrimaryModelId(sessionDevice) : null) ??
+    defaultModelId();
+  return resolveModelRef(raw, sessionDevice);
 }
 
 export function modelTextForSession(sessionId: string | null, deviceId?: string): { label: string; detail: string } {
@@ -495,9 +526,17 @@ export async function loadModels(): Promise<void> {
         reasoningByModel.update(current => ({ ...current, ...embeddedReasoning }));
       }
 
-      const usable = preferred
-        ? options.find(option => option.id === preferred || option.configId === preferred || option.modelName === preferred)?.id ?? null
-        : null;
+      const matchOption = (ref: string | null | undefined): string | null => {
+        const trimmed = typeof ref === "string" ? ref.trim() : "";
+        if (!trimmed) return null;
+        if (trimmed.startsWith("fleet:")) return trimmed;
+        return (
+          options.find(
+            option => option.id === trimmed || option.configId === trimmed || option.modelName === trimmed,
+          )?.id ?? null
+        );
+      };
+      const usable = matchOption(preferred) ?? matchOption(primaryRef);
       defaultModelId.set(usable ?? options.find(option => option.chat)?.id ?? null);
     },
     { trackBusy: false, clearError: false },
@@ -673,6 +712,7 @@ export async function chooseModel(
       saved = true;
       targetReadFor.add(key);
       setSessionModelBinding(key, sessionId, resolved, null);
+      if (deviceId === deviceContext()) defaultModelId.set(resolved);
       applyReasoningToSession(key, sendReasoning ? preset : null);
       applyContextLengthToSession(key, effectiveContext);
     });
@@ -1196,6 +1236,7 @@ export async function chooseContextLength(
       targetReadFor.add(key);
       if (switchingModel) {
         setSessionModelBinding(key, sessionId, resolvedModel, null);
+        if (deviceId === deviceContext()) defaultModelId.set(resolvedModel);
       }
       if (canSendReasoning) {
         applyReasoningToSession(key, desiredReasoning);

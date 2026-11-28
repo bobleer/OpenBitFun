@@ -80,6 +80,7 @@ import {
   subscribeContextUsage,
 } from "../composerStatusStore";
 import { permissionMode } from "../permissionPolicyStore";
+import { newSessionHere } from "../deviceTree";
 import { transcriptPlanArtifact } from "../planToolArtifact";
 import { TurnJumpRail, type TurnJumpPreviewData } from "../ui/TurnJumpRail";
 import { PlanArtifactCard, type PlanArtifactOwner } from "../ui/PlanArtifactCard";
@@ -292,6 +293,7 @@ import {
   slashSkillsFor,
   type SlashCommand,
   type SlashSkillItem,
+  type MentionHit,
   type MentionOwner,
   type MentionSource,
   syncInlineMention,
@@ -437,10 +439,17 @@ import {
   type InlineFigureDirective,
 } from "../ui/markdown";
 import {
+  ActiveFlowText,
+  BrandSpinner,
+  ElapsedDurationText,
   MOTION_DURATION,
   MOTION_EASE_STANDARD_BEZIER,
-  BrandSpinner,
+  MorphSlot,
+  SmoothDisclosure,
   enterMotion,
+  inlineStateEnterMotion,
+  isHeadlessMotionSync,
+  liveBlockEnterMotion,
   paintTransition,
   popoverEnterMotion,
   popoverOrigin,
@@ -448,6 +457,7 @@ import {
   rotatingChevronStyle,
   subtleCrossfadeMotion,
   tactileActiveStyle,
+  userBubbleEnterMotion,
 } from "../ui/motion";
 import {
   DropdownMenu,
@@ -1601,17 +1611,19 @@ function SessionHeaderBar(props: {
               justifyContent: "center",
             }}
           >
-            <Text
-              testID={props.titleTestID}
-              style={{
-                ...textStyle("sectionTitle", { color: palette().text }),
-                minWidth: 0,
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {props.title()}
-            </Text>
+            <MorphSlot morphKey={props.title} mode="rise" duration={170} style={{ minWidth: 0 }}>
+              <Text
+                testID={props.titleTestID}
+                style={{
+                  ...textStyle("sectionTitle", { color: palette().text }),
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {props.title()}
+              </Text>
+            </MorphSlot>
             <If when={Boolean(props.focused?.())}>
               <View
                 testID={props.focusIndicatorTestID}
@@ -1648,14 +1660,19 @@ function SessionHeaderBar(props: {
         </View>
         <CaptionActionStrip inset={captionInset()} gap={space.xs}>
           <If when={props.statusState?.() ?? null}>
-            {state => (
-              <View
-                accessibilityLabel={`${props.statusLabelPrefix ?? "session-status-"}${state()}`}
-                style={{ marginRight: space.xs }}
-              >
-                <StateMark state={state()} withWord={true} />
-              </View>
-            )}
+            {state => {
+              const badgeEnter = isHeadlessMotionSync() ? null : inlineStateEnterMotion();
+              return (
+                <View
+                  accessibilityLabel={`${props.statusLabelPrefix ?? "session-status-"}${state()}`}
+                  style={[{ marginRight: space.xs }, badgeEnter?.style]}
+                >
+                  <MorphSlot morphKey={state} mode="scale" duration={150}>
+                    <StateMark state={state()} withWord={true} />
+                  </MorphSlot>
+                </View>
+              );
+            }}
           </If>
           <If when={Boolean(props.showTools?.())}>
             <Each of={TOOL_TOGGLES} key={tool => tool.id}>
@@ -2561,8 +2578,11 @@ function UserBubble(props: {
   images?: UserImage[];
   referenceDraft?: SessionReferenceDraft;
   pane?: 0 | 1;
+  /** Play crisp upward entrance settle only for a freshly submitted live bubble. */
+  animateEnter?: boolean;
 }) {
   const hovered = signal(false);
+  const enter = props.animateEnter && !isHeadlessMotionSync() ? userBubbleEnterMotion() : null;
   effect(() => {
     // Reset local hover when a virtualized list cell is recycled for another turn.
     props.partKey;
@@ -2585,18 +2605,21 @@ function UserBubble(props: {
     <View
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      style={{
-        alignSelf: "flex-end",
-        // Spec §3 User: min(560, 72 %) of the column actually drawn (a phone's is narrower than `contentWidth()`).
-        maxWidth: Math.min(
-          560,
-          Math.round(
-            Math.min(contentWidth(), sessionsPaneWidth() > 0 ? sessionsPaneWidth() - 2 * sessionsPadX() : contentWidth()) * 0.72,
+      style={[
+        {
+          alignSelf: "flex-end",
+          // Spec §3 User: min(560, 72 %) of the column actually drawn (a phone's is narrower than `contentWidth()`).
+          maxWidth: Math.min(
+            560,
+            Math.round(
+              Math.min(contentWidth(), sessionsPaneWidth() > 0 ? sessionsPaneWidth() - 2 * sessionsPadX() : contentWidth()) * 0.72,
+            ),
           ),
-        ),
-        gap: space.xs,
-        alignItems: "flex-end",
-      }}
+          gap: space.xs,
+          alignItems: "flex-end",
+        },
+        enter?.style,
+      ]}
     >
       <If when={(props.images?.length ?? 0) > 0}>
         <UserImageStrip images={props.images ?? []} />
@@ -2998,10 +3021,19 @@ function ThinkingBlock(props: {
   text: string | (() => string);
   kind?: "reasoning" | "summary";
   live?: boolean;
+  /** Shared live turn start timestamp so elapsed time continues seamlessly from `TurnWaitingIndicator`. */
+  startedAt?: () => number | undefined;
 }) {
   let tailRef: ScrollRef | undefined;
   const expanded = computed(() => thinkingOverrides()[props.partKey] === true);
   const resolvedText = () => (typeof props.text === "function" ? props.text() : props.text);
+  const labelText = () =>
+    props.live
+      ? tr("state.thinking")
+      : props.kind === "summary"
+        ? tr("chat.thinkingSummary")
+        : tr("chat.thinking");
+  const chevronEnter = props.live && !isHeadlessMotionSync() ? inlineStateEnterMotion(40) : null;
   effect(() => {
     // Tail-follow while the reasoning streams into a block the reader opened.
     if (props.live && expanded()) {
@@ -3010,7 +3042,32 @@ function ThinkingBlock(props: {
     }
   });
   return (
-    <View style={{ gap: space.xs }}>
+    <SmoothDisclosure
+      open={expanded}
+      contentGap={space.xs}
+      content={() => (
+        <View
+          style={{
+            marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
+            paddingLeft: 15,
+            borderLeftWidth: 2,
+            borderColor: props.live ? palette().accentBorder : palette().borderSubtle,
+            ...paintTransition(MOTION_DURATION.base),
+          }}
+        >
+          <Scroll smoothWheel ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+            <TextView
+              markdown={resolvedText()}
+              selectable
+              links="report"
+              onLinkPress={handleMarkdownLink}
+              options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
+              styles={createMarkdownStyles({ compact: true, baseFontSize: 13 })}
+            />
+          </Scroll>
+        </View>
+      )}
+    >
       <View
         role="button"
         accessibilityLabel={`thinking-${props.partKey}`}
@@ -3025,50 +3082,45 @@ function ThinkingBlock(props: {
         activeStyle={tactileActiveStyle(0.98)}
         focusVisibleStyle={focusRingStyle(-1)}
       >
-        <TranscriptRowIconSlot>
-          <If when={Boolean(props.live)} else={<Icon name="bulb" size={14} color={palette().textMuted} />}>
-            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
+        <MorphSlot
+          morphKey={() => (props.live ? "live" : "settled")}
+          mode="scale"
+          duration={MOTION_DURATION.fast}
+        >
+          <TranscriptRowIconSlot>
+            <If when={Boolean(props.live)} else={<Icon name="bulb" size={14} color={palette().textMuted} />}>
+              <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
+            </If>
+          </TranscriptRowIconSlot>
+        </MorphSlot>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <MorphSlot morphKey={labelText} mode="rise" duration={150}>
+            <ActiveFlowText
+              active={() => Boolean(props.live)}
+              text={labelText}
+              mutedColor={() => palette().textMuted}
+              brightColor={() => palette().text}
+              staticColor={() => palette().textMuted}
+              style={textStyle("label")}
+            />
+          </MorphSlot>
+          <If when={Boolean(props.live) && Boolean(props.startedAt)}>
+            <ElapsedDurationText
+              startedAt={props.startedAt}
+              active={() => Boolean(props.live)}
+              minSeconds={2}
+              style={{
+                ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+                opacity: 0.72,
+              }}
+            />
           </If>
-        </TranscriptRowIconSlot>
-        <Text style={textStyle("label", { color: palette().textMuted })}>
-          {props.live
-            ? tr("state.thinking")
-            : props.kind === "summary"
-              ? tr("chat.thinkingSummary")
-              : tr("chat.thinking")}
-        </Text>
-        <TranscriptRowChevron expanded={expanded} />
+        </View>
+        <View style={chevronEnter?.style}>
+          <TranscriptRowChevron expanded={expanded} />
+        </View>
       </View>
-      <If when={expanded()}>
-        {() => {
-          const reveal = subtleCrossfadeMotion();
-          return (
-            <View
-              style={[
-                {
-                  marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
-                  paddingLeft: 15,
-                  borderLeftWidth: 2,
-                  borderColor: props.live ? palette().accentBorder : palette().borderSubtle,
-                },
-                reveal.style,
-              ]}
-            >
-              <Scroll smoothWheel ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
-                <TextView
-                  markdown={resolvedText()}
-                  selectable
-                  links="report"
-                  onLinkPress={handleMarkdownLink}
-                  options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
-                  styles={createMarkdownStyles({ compact: true, baseFontSize: 13 })}
-                />
-              </Scroll>
-            </View>
-          );
-        }}
-      </If>
-    </View>
+    </SmoothDisclosure>
   );
 }
 
@@ -3394,11 +3446,24 @@ function SessionToolCard(props: {
   </If>;
 }
 
-function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking" }>, pane: LivePane = 0, prefix = ""): JSX.Element {
+function renderFoldedThinking(
+  item: Extract<FoldedProcessItem, { kind: "thinking" }>,
+  pane: LivePane = 0,
+  prefix = "",
+  startedAt?: () => number | undefined,
+): JSX.Element {
   const text: string | (() => string) = item.roundId
     ? () => livePaneThinking(pane, item.roundId!)
     : item.text;
-  return <ThinkingBlock partKey={`${prefix}${item.key}`} text={text} kind={item.reasoningKind} live={item.live} />;
+  return (
+    <ThinkingBlock
+      partKey={`${prefix}${item.key}`}
+      text={text}
+      kind={item.reasoningKind}
+      live={item.live}
+      startedAt={item.live ? startedAt : undefined}
+    />
+  );
 }
 
 /**
@@ -3723,18 +3788,14 @@ function liveBlocksHaveActiveMotion(
  * Calm, zero-jump waiting row shown immediately after sending a message (before
  * TTFT) and between finished tool rounds while waiting for the next LLM chunk.
  */
-function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; accessibilityLabel: string }) {
-  const mountedAt = Date.now();
-  const originMs = () => {
-    const reported = props.startedAt?.();
-    return typeof reported === "number" && reported > 0 ? Math.min(reported, mountedAt) : mountedAt;
-  };
-  const elapsedSec = signal(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
-  const timer = setInterval(() => {
-    elapsedSec.set(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
-  }, 1000);
-  cleanup(() => clearInterval(timer));
-  const textMotion = subtleCrossfadeMotion();
+function TurnWaitingIndicator(props: {
+  startedAt?: () => number | undefined;
+  enterDelay?: number;
+  accessibilityLabel: string;
+}) {
+  const enter = isHeadlessMotionSync()
+    ? null
+    : liveBlockEnterMotion({ travel: 4, duration: 180, delay: props.enterDelay ?? 0 });
   return (
     <View
       accessibilityLabel={props.accessibilityLabel}
@@ -3744,26 +3805,29 @@ function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; acc
           minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           paddingVertical: 0,
         },
+        enter?.style,
       ]}
     >
       <TranscriptRowIconSlot>
         <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
       </TranscriptRowIconSlot>
-      <Text style={[textStyle("label", { color: palette().textMuted, tabular: true }), textMotion.style]}>
-        {tr("state.thinking")}
-        <If when={elapsedSec() >= 2 ? formatDuration(elapsedSec() * 1000) : ""}>
-          {formatted => (
-            <Text
-              style={{
-                ...textStyle("caption", { color: palette().textMuted, tabular: true }),
-                opacity: 0.72,
-              }}
-            >
-              {` · ${formatted()}`}
-            </Text>
-          )}
-        </If>
-      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 1, minWidth: 0 }}>
+        <ActiveFlowText
+          active={() => true}
+          text={() => tr("state.thinking")}
+          mutedColor={() => palette().textMuted}
+          brightColor={() => palette().text}
+          style={textStyle("label", { color: palette().textMuted, tabular: true })}
+        />
+        <ElapsedDurationText
+          startedAt={props.startedAt}
+          minSeconds={2}
+          style={{
+            ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+            opacity: 0.72,
+          }}
+        />
+      </View>
     </View>
   );
 }
@@ -3778,13 +3842,29 @@ function LiveTextSegment(props: { roundId: string; start: number; end?: number; 
   });
   return (
     <If when={hasVisibleTextFrom(slice())}>
-      <AnswerMarkdown text={slice()} live={props.live !== false} preserveFullReply={props.live === false} itemKey={props.itemKey} />
+      {() => {
+        const enter =
+          isHeadlessMotionSync() || props.live === false
+            ? null
+            : liveBlockEnterMotion({ travel: 4, duration: 175 });
+        return (
+          <View style={[{ width: "100%" }, enter?.style]}>
+            <AnswerMarkdown text={slice()} live={props.live !== false} preserveFullReply={props.live === false} itemKey={props.itemKey} />
+          </View>
+        );
+      }}
     </If>
   );
 }
 
 /** Shared live-turn block list used identically by Primary and Secondary split panes. */
-function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: LivePane; cardPrefix?: string; live?: boolean }) {
+function LiveTranscriptBlocks(props: {
+  blocks: () => LiveDisplayBlock[];
+  pane: LivePane;
+  cardPrefix?: string;
+  live?: boolean;
+  startedAt?: () => number | undefined;
+}) {
   const prefix = props.cardPrefix ?? "";
   const ephemeral = typeof props.pane === "function";
   const pane = props.pane === 1 ? 1 : 0;
@@ -3793,15 +3873,40 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
     const turn = source();
     return turn ? sessionKey(turn.sessionId, turn.deviceId ?? "") : null;
   };
+  const initialSnapshot = untracked(() => props.blocks());
+  // Skip replay when mounting into a mid-flight session that already has multiple live blocks.
+  const skipInitialKeys = initialSnapshot.length > 2 ? new Set(initialSnapshot.map(b => b.key)) : null;
+  let burstAt = 0;
+  let burstIndex = 0;
+  const nextEnterMotion = (item: LiveDisplayBlock) => {
+    if (isHeadlessMotionSync() || props.live === false) return null;
+    if (skipInitialKeys?.has(item.key)) return null;
+    // Live text reveals inside LiveTextSegment on its first visible character.
+    if (item.kind === "liveText") return null;
+    // First-slot live thinking replaces TurnWaitingIndicator in place — settle without vertical jump.
+    if (item.kind === "thinking" && item.live && initialSnapshot.length <= 1 && initialSnapshot[0]?.key === item.key) {
+      return subtleCrossfadeMotion();
+    }
+    const now = Date.now();
+    if (now - burstAt <= 40) {
+      burstIndex += 1;
+    } else {
+      burstAt = now;
+      burstIndex = 0;
+    }
+    const delay = Math.min(burstIndex * 32, 96);
+    return liveBlockEnterMotion({ travel: 5, duration: 185, delay });
+  };
   return (
     <View style={{ gap: 8 }}>
       <Each of={props.blocks()} key={block => block.key}>
         {block => {
+          const enter = nextEnterMotion(untracked(block));
           const kind = () => block().kind;
           const isGenUI = () => !ephemeral && kind() === "tool" && isGenUICall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
           const isNativeUi = () => !ephemeral && kind() === "tool" && isNativeUiCall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
           return (
-            <View style={{ width: "100%" }}>
+            <View style={[{ width: "100%" }, enter?.style]}>
               <If when={kind() === "liveText"}>
                 <LiveTextSegment
                   roundId={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).roundId}
@@ -3823,6 +3928,7 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
                       }
                       kind={item().reasoningKind}
                       live={item().live}
+                      startedAt={props.startedAt}
                     />
                   );
                 }}
@@ -3866,7 +3972,7 @@ function LiveTranscriptBlocks(props: { blocks: () => LiveDisplayBlock[]; pane: L
                   calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
                   cardId={`${prefix}${block().key}`}
                   stateOf={persistedToolState}
-                  renderThinking={entry => renderFoldedThinking(entry, props.pane, prefix)}
+                  renderThinking={entry => renderFoldedThinking(entry, props.pane, prefix, props.startedAt)}
                   live={props.live !== false}
                 />
               </If>
@@ -4294,7 +4400,7 @@ function handleTranscriptScroll(event: ScrollEvent): void {
 }
 
 function WelcomeStudio() {
-  const heroMotion = subtleCrossfadeMotion();
+  const heroMotion = isHeadlessMotionSync() ? subtleCrossfadeMotion() : liveBlockEnterMotion({ travel: 6, duration: 200 });
   return (
     <View
       style={{
@@ -4903,6 +5009,20 @@ const primaryTranscriptBlocks = computed<TranscriptBlockProjection>(() =>
   buildTranscriptBlockProjection(visibleTurnRows(), false),
 );
 
+/** Tracks a turnId that just transitioned from live → settled so its new notice/file-changes settle smoothly once. */
+const recentlySettledTurnId = signal<string>("");
+let recentlySettledTimer: ReturnType<typeof setTimeout> | null = null;
+
+function markRecentlySettledTurn(turnId: string): void {
+  if (!turnId || isHeadlessMotionSync()) return;
+  recentlySettledTurnId.set(turnId);
+  if (recentlySettledTimer) clearTimeout(recentlySettledTimer);
+  recentlySettledTimer = setTimeout(() => {
+    recentlySettledTimer = null;
+    if (recentlySettledTurnId() === turnId) recentlySettledTurnId.set("");
+  }, 600);
+}
+
 /**
  * One recycled virtualized cell inside `<List>`. Every branch reads `props.row()`
  * reactively and keeps per-item state external, so cell recycling across turns
@@ -4915,6 +5035,14 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
   const turnId = () => props.row().turnId;
   const kind = () => props.row().kind;
   const matches = computed(() => !isSecondary && Boolean(turnId()) && matchingSearchTurnIds().has(turnId()));
+  const initialRow = untracked(props.row);
+  const settleEnter =
+    !isHeadlessMotionSync() &&
+    (initialRow.kind === "failure" || initialRow.kind === "fileChanges") &&
+    Boolean(initialRow.turnId) &&
+    untracked(recentlySettledTurnId) === initialRow.turnId
+      ? liveBlockEnterMotion({ travel: 4, duration: 185 })
+      : null;
 
   return (
     <View style={{ width: "100%", alignItems: "center" }}>
@@ -5006,32 +5134,36 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
         </If>
 
         <If when={kind() === "failure"}>
-          <TurnFailureNotice
-            turn={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).turn}
-            failure={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).failure}
-            pane={props.pane}
-          />
+          <View style={settleEnter?.style}>
+            <TurnFailureNotice
+              turn={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).turn}
+              failure={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).failure}
+              pane={props.pane}
+            />
+          </View>
         </If>
 
         <If when={kind() === "fileChanges"}>
-          <TurnFileChangesCard
-            turnId={turnId()}
-            changes={(props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes}
-            onReview={filePath =>
-              openTurnChangesReview(
-                turnId(),
-                (props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes,
-                filePath,
-                isSecondary
-                  ? {
-                      sessionId: secondarySessionId() ?? undefined,
-                      workspaceId: secondaryWorkspaceId() ?? undefined,
-                      workspacePath: secondaryWorkspaceRoot() || undefined,
-                    }
-                  : undefined,
-              )
-            }
-          />
+          <View style={settleEnter?.style}>
+            <TurnFileChangesCard
+              turnId={turnId()}
+              changes={(props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes}
+              onReview={filePath =>
+                openTurnChangesReview(
+                  turnId(),
+                  (props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes,
+                  filePath,
+                  isSecondary
+                    ? {
+                        sessionId: secondarySessionId() ?? undefined,
+                        workspaceId: secondaryWorkspaceId() ?? undefined,
+                        workspacePath: secondaryWorkspaceRoot() || undefined,
+                      }
+                    : undefined,
+                )
+              }
+            />
+          </View>
         </If>
 
         <If when={kind() === "footer"}>
@@ -5231,6 +5363,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
                   images={props.pendingImages()}
                   timestamp={props.pendingCreatedAt()}
                   showCopy={false}
+                  animateEnter={true}
                 />
               </If>
 
@@ -5243,7 +5376,12 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
               >
                 <View style={{ gap: TRANSCRIPT_ROW_GAP }}>
                   <If when={props.liveDisplayBlocks().length > 0}>
-                    <LiveTranscriptBlocks blocks={props.liveDisplayBlocks} pane={props.pane} cardPrefix={props.cardPrefix} />
+                    <LiveTranscriptBlocks
+                      blocks={props.liveDisplayBlocks}
+                      pane={props.pane}
+                      cardPrefix={props.cardPrefix}
+                      startedAt={props.waitingStartedAt}
+                    />
                   </If>
                   <If when={fallbackItems().length > 0}>
                     <TranscriptItems items={fallbackItems()} live={true} pane={props.pane} />
@@ -5259,6 +5397,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
                     <TurnWaitingIndicator
                       startedAt={props.waitingStartedAt}
                       accessibilityLabel={`${prefix}turn-waiting-indicator`}
+                      enterDelay={props.liveDisplayBlocks().length === 0 ? 45 : 0}
                     />
                   </If>
                 </View>
@@ -5297,34 +5436,42 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
     </If>
   );
 
+  let listMountCount = 0;
   const renderList = () => (
     <Each of={[props.swapKey()]} key={k => k}>
-      {() => (
-        <List<TranscriptBlockRow>
-          ref={el => props.onListRef(el)}
-          style={{ flex: 1, minHeight: 0 }}
-          each={props.blocks().rows}
-          keyExtractor={row => row.key}
-          estimatedItemSize={props.blocks().estimatedRowHeight}
-          initialScrollAtEnd={true}
-          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 24 }}
-          loadMoreAtStartThreshold={0.5}
-          onLoadMoreAtStart={requestEarlierTurns}
-          onScroll={props.onScroll}
-          onViewableItemsChange={info => props.onViewableItemsChange(info.viewableItems)}
-          contentStyle={{
-            paddingLeft: paneTranscriptPadLeft(props.visibleTurnRows().length >= 2),
-            paddingRight: sessionsPadX(),
-            paddingTop: space.xl,
-            paddingBottom: space.x3l,
-            gap: 0,
-          }}
-          header={renderHeader}
-          footer={renderFooter}
-        >
-          {row => <TranscriptBlockCell row={row} pane={props.pane} />}
-        </List>
-      )}
+      {() => {
+        const shouldAnimate = listMountCount > 0 && !isHeadlessMotionSync();
+        listMountCount += 1;
+        const swapMotion = shouldAnimate ? subtleCrossfadeMotion() : null;
+        return (
+          <View style={[{ flex: 1, minHeight: 0 }, swapMotion?.style]}>
+            <List<TranscriptBlockRow>
+              ref={el => props.onListRef(el)}
+              style={{ flex: 1, minHeight: 0 }}
+              each={props.blocks().rows}
+              keyExtractor={row => row.key}
+              estimatedItemSize={props.blocks().estimatedRowHeight}
+              initialScrollAtEnd={true}
+              maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 24 }}
+              loadMoreAtStartThreshold={0.5}
+              onLoadMoreAtStart={requestEarlierTurns}
+              onScroll={props.onScroll}
+              onViewableItemsChange={info => props.onViewableItemsChange(info.viewableItems)}
+              contentStyle={{
+                paddingLeft: paneTranscriptPadLeft(props.visibleTurnRows().length >= 2),
+                paddingRight: sessionsPadX(),
+                paddingTop: space.xl,
+                paddingBottom: space.x3l,
+                gap: 0,
+              }}
+              header={renderHeader}
+              footer={renderFooter}
+            >
+              {row => <TranscriptBlockCell row={row} pane={props.pane} />}
+            </List>
+          </View>
+        );
+      }}
     </Each>
   );
 
@@ -5401,12 +5548,21 @@ function Transcript() {
     }
   });
 
+  let lastLiveTurnId = liveTurn()?.turnId ?? "";
   // Track ONLY the throttled 60fps `streamScrollTick()` and coarse structural
   // signals — never raw `streamText()`, `thinkingText()`, or full `liveTurn()`.
   effect(() => {
     const live = liveTurn();
-    if (live?.turnId && live.sessionId === activeSessionId() && (live.deviceId ?? "") === activeSessionDevice()) {
-      liveStreamedTurnIds.add(live.turnId);
+    const currentLiveId =
+      live?.turnId && live.sessionId === activeSessionId() && (live.deviceId ?? "") === activeSessionDevice()
+        ? live.turnId
+        : "";
+    if (currentLiveId) {
+      liveStreamedTurnIds.add(currentLiveId);
+      lastLiveTurnId = currentLiveId;
+    } else if (lastLiveTurnId) {
+      markRecentlySettledTurn(lastLiveTurnId);
+      lastLiveTurnId = "";
     }
     activeSessionId();
     sessionTurns().length;
@@ -6174,11 +6330,55 @@ function mentionInputRef(): ComposerInputHandle | undefined {
 
 const mentionSourceRows = [
   { id: "files", label: "sessions.mentionFiles", icon: "folder" },
+  { id: "workspaces", label: "sessions.mentionWorkspaces", icon: "folder-open" },
+  { id: "devices", label: "sessions.mentionDevices", icon: "laptop" },
+  { id: "models", label: "sessions.mentionModels", icon: "cpu" },
+  { id: "acp", label: "sessions.mentionAcp", icon: "bot" },
   { id: "skills", label: "sessions.slashSkillsSection", icon: "sparkles" },
   { id: "mcp", label: "sessions.mentionMcp", icon: "plug" },
   { id: "sessions", label: "sessions.mentionSessions", icon: "chat" },
   { id: "images", label: "chat.attach.pickImages", icon: "image" },
 ] as const;
+
+function mentionHitIcon(hit: MentionHit): IconName {
+  switch (hit.prompt?.kind) {
+    case "mcp":
+      return "plug";
+    case "skills":
+      return "sparkles";
+    case "workspaces":
+      return "folder-open";
+    case "devices":
+      return "laptop";
+    case "models":
+      return "cpu";
+    case "acp":
+      return "bot";
+    default:
+      return hit.session ? "chat" : hit.directory ? "folder" : "file-code";
+  }
+}
+
+function mentionEmptyMessageKey(source: MentionSource): MessageKey {
+  switch (source) {
+    case "sessions":
+      return "sessions.mentionSessionsEmpty";
+    case "workspaces":
+      return "sessions.mentionWorkspacesEmpty";
+    case "devices":
+      return "sessions.mentionDevicesEmpty";
+    case "models":
+      return "sessions.mentionModelsEmpty";
+    case "acp":
+      return "sessions.mentionAcpEmpty";
+    case "mcp":
+      return "sessions.mentionMcpEmpty";
+    case "skills":
+      return "sessions.mentionSkillsEmpty";
+    default:
+      return "sessions.mentionEmptyDir";
+  }
+}
 
 function selectMentionSourceRow(id: typeof mentionSourceRows[number]["id"]): void {
   if (id !== "images") {
@@ -6236,8 +6436,7 @@ function handleMentionKeyNavigation(key: string): void {
 
 /** Unified Floating 3-Band `ChatInput` dock with paste, file drop, and caret-anchored @ mentions. */
 const permissionPillAnchor = signal<ViewRef | null>(null);
-const fullAccessTriggerAnchor = signal<ViewRef | null>(null);
-const permissionModeAlign = signal<"start" | "end">("start");
+const permissionModeAlign = signal<"start" | "end">("end");
 const contextRingAnchor = signal<ViewRef | null>(null);
 const contextUsageAlign = signal<"start" | "end">("end");
 const contextPopoverOpen = signal(false);
@@ -6262,35 +6461,37 @@ function permissionModeLabel(mode: "ask" | "auto" | "full_access"): string {
 }
 
 /**
- * Shared full-access permission indicator pill rendered in both Primary and Secondary composers.
+ * Shared session permission-mode shield button rendered in both Primary and Secondary composers.
+ * Shows warning amber in `full_access` and calm neutral tint in `ask` / `auto`.
  */
-function ComposerFullAccessShield(props: {
+function ComposerPermissionShield(props: {
+  pane: 0 | 1 | "btw";
   sessionId: () => string | null;
   compact?: () => boolean;
   accessibilityLabel: string;
+  warningAccessibilityLabel: string;
   onPress: (anchor: ViewRef | null) => void;
 }) {
   let triggerRef: ViewRef | null = null;
+  const mode = () => {
+    const id = props.sessionId();
+    return id ? effectivePermissionMode(id) : "ask";
+  };
+  const isFullAccess = () => mode() === "full_access";
+  const pickerActive = () =>
+    permissionModePickerOpen() &&
+    (props.pane === 1 ? permissionModeTarget()?.sessionId === props.sessionId() : !permissionModeTarget());
   return (
-    <If
-      when={
-        permissionModeSupported() !== false &&
-        Boolean(props.sessionId()) &&
-        effectivePermissionMode(props.sessionId()!) === "full_access"
-      }
-    >
+    <If when={permissionModeSupported() !== false && Boolean(props.sessionId())}>
       <View
         ref={el => {
           triggerRef = el;
-          if (props.accessibilityLabel === "permission-mode-warning") {
-            fullAccessTriggerAnchor.set(el);
-          }
         }}
         role="button"
-        accessibilityLabel={props.accessibilityLabel}
+        accessibilityLabel={isFullAccess() ? props.warningAccessibilityLabel : props.accessibilityLabel}
         tooltip={
           <TooltipBubble
-            text={`${permissionModeLabel("full_access")} · ${tr("chat.permissionMode.tooltip")}`}
+            text={`${permissionModeLabel(mode())} · ${tr("chat.permissionMode.tooltip")}`}
           />
         }
         onPress={() => props.onPress(triggerRef)}
@@ -6302,16 +6503,20 @@ function ComposerFullAccessShield(props: {
           width: compactLayout() || props.compact?.() ? layout.touchTarget : chatComposerMetrics.controlHeight,
           height: compactLayout() || props.compact?.() ? layout.touchTarget : chatComposerMetrics.controlHeight,
           borderRadius: radii.pill,
-          backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
+          backgroundColor: pickerActive()
+            ? isFullAccess()
+              ? palette().warningSoft
+              : palette().panelHover
+            : "transparent",
           cursor: "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={{ backgroundColor: palette().warningSoft }}
+        hoverStyle={{ backgroundColor: isFullAccess() ? palette().warningSoft : palette().panelHover }}
         activeStyle={tactileActiveStyle(0.95)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <Icon name="shield" size={15} color={palette().warning} />
+        <Icon name="shield" size={15} color={isFullAccess() ? palette().warning : palette().textMuted} />
       </View>
     </If>
   );
@@ -6605,10 +6810,9 @@ function TouchTargetButton(props: {
 }
 
 /**
- * The composer's "+" menu: the rarely used controls (image picker, file
- * reference, quick actions, permission mode). On a narrow column it also holds
- * attach, agent, model, reasoning and context, so the row keeps only "+" and
- * Send. A picker opened from here anchors to the "+" button.
+ * The composer's "+" menu: attachment/reference triggers, quick actions, and
+ * creating a new session in the current workspace. On a narrow column it also
+ * holds agent and context controls so the row stays clean.
  */
 function composerPlusItems(compact: boolean): DropdownMenuItem[] {
   const fromPlus = (open: () => void) => () => {
@@ -6644,19 +6848,18 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
       }),
     },
   ];
-  if (permissionModeSupported() !== false && activeSessionId()) {
+  const targetWorkspaceId = activeSession()?.workspaceId || activeWorkspaceId();
+  if (targetWorkspaceId) {
+    const targetDeviceId = activeSessionDevice() || deviceContext();
     items.push({
-      id: "permission",
-      icon: "shield",
-      label: tr("chat.permissionMode.tooltip"),
-      trailingHint: permissionModeLabel(effectivePermissionMode(activeSessionId())),
-      accessibilityLabel: "permission-mode-pill",
+      id: "new-session",
+      icon: "plus",
+      label: tr("search.cmdNewSession"),
+      separator: true,
+      accessibilityLabel: "composer-plus-new-session",
       onSelect: fromPlus(() => {
-        permissionModeTarget.set(null);
-        permissionPillAnchor.set(composerPlusAnchor());
-        permissionModeAlign.set("start");
-        closePickers();
-        permissionModePickerOpen.set(true);
+        if (splitPaneOpen()) focusPane(0);
+        void newSessionHere(targetWorkspaceId, targetDeviceId);
       }),
     });
   }
@@ -7101,26 +7304,28 @@ function ComposerSubmitAction(props: {
   const label = () => showStop() ? props.stopLabel ?? "Stop" : props.sendLabel ?? "Send";
   const activate = () => showStop() ? props.onStop() : props.onSend();
   return (
-    <If when={useTouch()} else={
-      <IconCircleButton
-        icon={icon()}
-        variant={disabled() ? "subtle" : "primary"}
-        size={chatComposerMetrics.controlHeight}
-        iconSize={chatComposerMetrics.actionIconSize}
-        accessibilityLabel={label()}
-        tooltip={tr(showStop() ? "sessions.stopTurn" : "sessions.sendMessage")}
-        disabled={disabled()}
-        onPress={activate}
-      />
-    }>
-      <TouchTargetButton
-        icon={icon()}
-        tone={disabled() ? "subtle" : "primary"}
-        disabled={disabled()}
-        accessibilityLabel={label()}
-        onPress={activate}
-      />
-    </If>
+    <MorphSlot morphKey={() => (showStop() ? "stop" : "send")} mode="scale" duration={140} style={{ flexShrink: 0 }}>
+      <If when={useTouch()} else={
+        <IconCircleButton
+          icon={icon()}
+          variant={disabled() ? "subtle" : "primary"}
+          size={chatComposerMetrics.controlHeight}
+          iconSize={chatComposerMetrics.actionIconSize}
+          accessibilityLabel={label()}
+          tooltip={tr(showStop() ? "sessions.stopTurn" : "sessions.sendMessage")}
+          disabled={disabled()}
+          onPress={activate}
+        />
+      }>
+        <TouchTargetButton
+          icon={icon()}
+          tone={disabled() ? "subtle" : "primary"}
+          disabled={disabled()}
+          accessibilityLabel={label()}
+          onPress={activate}
+        />
+      </If>
+    </MorphSlot>
   );
 }
 
@@ -7289,6 +7494,7 @@ interface SessionComposerProps {
   modelAccessibilityLabel?: string;
   reasoningAccessibilityLabel?: string;
   permissionAccessibilityLabel?: string;
+  permissionWarningAccessibilityLabel?: string;
   contextAccessibilityLabel?: string;
   plusOpen?: Signal<boolean>;
   plusAnchor?: Signal<ViewRef | null>;
@@ -7699,10 +7905,12 @@ function SessionComposer(props: SessionComposerProps) {
                 onFocusPane={props.onFocusPane}
               />
               <If when={Boolean(props.showPermissionShield)}>
-                <ComposerFullAccessShield
+                <ComposerPermissionShield
+                  pane={props.pane}
                   sessionId={props.sessionId}
                   compact={isCompact}
-                  accessibilityLabel={props.permissionAccessibilityLabel ?? "permission-mode-warning"}
+                  accessibilityLabel={props.permissionAccessibilityLabel ?? "permission-mode-pill"}
+                  warningAccessibilityLabel={props.permissionWarningAccessibilityLabel ?? "permission-mode-warning"}
                   onPress={anchor => props.onOpenPermissionPicker?.(anchor)}
                 />
               </If>
@@ -8002,14 +8210,14 @@ function ComposerDock() {
       agentAccessibilityLabel="agent-picker"
       modelAccessibilityLabel="bot-capsule-trigger"
       reasoningAccessibilityLabel="reasoning-picker"
-      permissionAccessibilityLabel="permission-mode-warning"
+      permissionAccessibilityLabel="permission-mode-pill"
+      permissionWarningAccessibilityLabel="permission-mode-warning"
       contextAccessibilityLabel="context-usage"
       plusOpen={composerPlusOpen}
       plusAnchor={composerPlusAnchor}
       onTogglePlus={toggleComposerPlus}
       onPlusAnchorEl={el => {
         quickActionsAnchor.set(el);
-        permissionPillAnchor.set(el);
       }}
       plusItems={compact => composerPlusItems(compact)}
       showAgentPicker={true}
@@ -8483,12 +8691,14 @@ function ModelReasoningCapsule(props: {
           deviceId: props.deviceId ? props.deviceId() : activeSessionDevice(),
           workspaceId: props.workspaceId ? props.workspaceId() : activeWorkspaceId(),
         };
+  const modelNameMaxWidth = () =>
+    Math.round(chatComposerMetrics.modelNameWidth * (textSize(12.5) / 12.5));
   return (
     <View
       style={{
         flexShrink: 1,
         minWidth: 0,
-        maxWidth: props.compact() ? 168 : 292,
+        maxWidth: props.compact() ? 228 : 324,
         flexDirection: "row",
         alignItems: "center",
       }}
@@ -8522,7 +8732,7 @@ function ModelReasoningCapsule(props: {
           height: compactLayout() ? 34 : chatComposerMetrics.controlHeight,
           minWidth: 0,
           flexShrink: 1,
-          maxWidth: props.compact() ? 168 : 292,
+          maxWidth: props.compact() ? 228 : 324,
           paddingHorizontal: props.compact() ? space.sm : space.sm,
           borderRadius: radii.pill,
           borderWidth: 1,
@@ -8556,7 +8766,7 @@ function ModelReasoningCapsule(props: {
             flexShrink: 1,
             minWidth: 0,
             color: palette().text,
-            maxWidth: chatComposerMetrics.modelNameWidth,
+            maxWidth: modelNameMaxWidth(),
             fontSize: textSize(12.5),
             lineHeight: textLineHeight(12.5, 1.35),
             fontWeight: "500",
@@ -8609,7 +8819,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
       style={[
         overlayPopoverStyle(),
         {
-          width: 440,
+          width: 460,
           maxWidth: "92%",
           gap: space.sm,
           padding: space.sm,
@@ -8648,26 +8858,28 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         if (mentionInline()) mentionInputRef()?.focus();
       }} /></If>
       <If when={source() === "sources"}>
-        <View style={{ gap: space.hair }}>
-          <Each of={mentionSourceRows} key={row => row.id}>{(row, idx) => (
-            <View role="button" testID={`mention-source-${row().id}`}
-              accessibilityLabel={tr(row().label)} onPress={() => selectMentionSourceRow(row().id)}
-              style={{
-                flexDirection: "row", alignItems: "center", gap: space.sm, cursor: "pointer",
-                minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
-                paddingHorizontal: space.sm, borderRadius: radii.xs,
-                backgroundColor: idx() === mentionSelectedIndex() ? listRowHoverBg() : "transparent",
-              }}
-              hoverStyle={{ backgroundColor: listRowHoverBg() }}
-              focusVisibleStyle={focusRingStyle(-1)}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <ListRowContent title={tr(row().label)} icon={row().icon} titleWeight="500" />
+        <Scroll smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+          <View style={{ gap: space.hair }}>
+            <Each of={mentionSourceRows} key={row => row.id}>{(row, idx) => (
+              <View role="button" testID={`mention-source-${row().id}`}
+                accessibilityLabel={tr(row().label)} onPress={() => selectMentionSourceRow(row().id)}
+                style={{
+                  flexDirection: "row", alignItems: "center", gap: space.sm, cursor: "pointer",
+                  minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                  paddingHorizontal: space.sm, borderRadius: radii.xs,
+                  backgroundColor: idx() === mentionSelectedIndex() ? listRowHoverBg() : "transparent",
+                }}
+                hoverStyle={{ backgroundColor: listRowHoverBg() }}
+                focusVisibleStyle={focusRingStyle(-1)}
+              >
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <ListRowContent title={tr(row().label)} icon={row().icon} titleWeight="500" />
+                </View>
+                <If when={row().id !== "images"}><Icon name="chevron-right" size={12} color={palette().textMuted} /></If>
               </View>
-              <If when={row().id !== "images"}><Icon name="chevron-right" size={12} color={palette().textMuted} /></If>
-            </View>
-          )}</Each>
-        </View>
+            )}</Each>
+          </View>
+        </Scroll>
       </If>
       <If when={browsedSource()}>
         {row => <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
@@ -8724,7 +8936,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           >
             {tr(source() === "all" ? "sessions.mentionSearchingReferences"
               : source() === "sessions" ? "sessions.mentionSearchingSessions"
-              : source() === "skills" || source() === "mcp" ? "common.loading" : "sessions.searchingFiles")}
+              : source() === "files" ? "sessions.searchingFiles" : "common.loading")}
           </Text>
         </View>
       </If>
@@ -8759,9 +8971,9 @@ function MentionPopoverSurface(props: { placement: Placement }) {
             lineHeight: textLineHeight(12, 1.35),
           }}
         >
-            {tr(source() === "all" ? "sessions.mentionReferencesNoMatch"
+            {tr(source() === "files" ? "sessions.mentionNoMatch"
               : source() === "sessions" ? "sessions.mentionSessionsNoMatch"
-              : source() === "skills" || source() === "mcp" ? "sessions.mentionReferencesNoMatch" : "sessions.mentionNoMatch",
+              : "sessions.mentionReferencesNoMatch",
             { query: mentionQuery().trim() })}
         </Text>
       </If>
@@ -8781,9 +8993,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
             lineHeight: textLineHeight(12, 1.35),
           }}
         >
-          {tr(source() === "sessions" ? "sessions.mentionSessionsEmpty"
-            : source() === "mcp" ? "sessions.mentionMcpEmpty"
-            : source() === "skills" ? "sessions.mentionSkillsEmpty" : "sessions.mentionEmptyDir")}
+          {tr(mentionEmptyMessageKey(source()))}
         </Text>
       </If>
       <If when={mentionTruncated()}>
@@ -8833,8 +9043,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                     focusVisibleStyle={focusRingStyle(-1)}
                   >
                     <ListRowContent
-                      icon={hit().prompt?.kind === "mcp" ? "plug" : hit().prompt?.kind === "skills" ? "sparkles"
-                        : hit().session ? "chat" : hit().directory ? "folder" : "file-code"}
+                      icon={mentionHitIcon(hit())}
                       iconColor={palette().textSecondary}
                       title={hit().name}
                       titleWeight="500"
@@ -9096,6 +9305,87 @@ function modelHeaderMeta(modelId: string, groups: ModelPickerGroup[]): { label: 
   return { label: modelId, subtitle: "" };
 }
 
+const MODEL_PICKER_MIN_WIDTH = 248;
+const MODEL_PICKER_COMPACT_MIN_WIDTH = 288;
+const MODEL_PICKER_MAX_WIDTH = 348;
+const MODEL_PICKER_COMPACT_MAX_WIDTH = 332;
+
+/** Lightweight glyph-width estimate (px) so the model picker hugs its catalog without jittering on hover or search. */
+function estimateModelPickerTextPx(text: string, fontSize: number): number {
+  let width = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x2e80 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff00 && code <= 0xffef)
+    ) {
+      width += fontSize * 1.02;
+    } else if (
+      code === 32 || code === 33 || code === 39 || code === 44 || code === 46 ||
+      code === 58 || code === 59 || code === 73 || code === 105 || code === 108 ||
+      code === 49 || code === 124
+    ) {
+      width += fontSize * 0.36;
+    } else if (code === 77 || code === 87 || code === 64 || code === 37 || code === 38) {
+      width += fontSize * 0.8;
+    } else if (code >= 65 && code <= 90) {
+      width += fontSize * 0.68;
+    } else {
+      width += fontSize * 0.56;
+    }
+  }
+  return width;
+}
+
+function estimateModelPickerWidth(
+  groups: ReadonlyArray<ModelPickerGroup>,
+  opts: { compact: boolean; btw: boolean; hasFilter: boolean },
+): number {
+  const minW = opts.compact ? MODEL_PICKER_COMPACT_MIN_WIDTH : MODEL_PICKER_MIN_WIDTH;
+  const maxW = opts.compact ? MODEL_PICKER_COMPACT_MAX_WIDTH : MODEL_PICKER_MAX_WIDTH;
+  const titleSize = textSize(13);
+  const detailSize = textSize(11);
+  const tagSize = textSize(10.5);
+  const deviceSize = textSize(11.5);
+  const chromePadding = POPOVER_PADDING * 2 + space.sm * 2;
+  const primaryTagWidth = estimateModelPickerTextPx(tr("models.primary"), tagSize) + 10 + space.chip;
+  const trailingSlot = (opts.btw ? 16 : 30) + space.sm + 12;
+
+  let widest =
+    estimateModelPickerTextPx(tr("models.searchPlaceholder"), textSize(12)) +
+    space.sm * 2 +
+    46 +
+    (opts.hasFilter ? space.xs + 30 : 0);
+
+  for (const group of groups) {
+    if (group.device) {
+      const heading = group.device.isThisDevice
+        ? `${group.device.name} · ${tr("models.thisDevice")}`
+        : group.device.name;
+      const note = deviceModelsNote(group.device);
+      const trailingHeader = note
+        ? estimateModelPickerTextPx(note, detailSize) + 12
+        : group.rows.length > 0
+          ? estimateModelPickerTextPx(String(group.rows.length), detailSize)
+          : 0;
+      widest = Math.max(
+        widest,
+        chromePadding + 12 + space.chip + estimateModelPickerTextPx(heading, deviceSize) + space.md + trailingHeader,
+      );
+    }
+    for (const row of group.rows) {
+      const line1 =
+        estimateModelPickerTextPx(row.label, titleSize) + (row.primary ? primaryTagWidth : 0);
+      const line2 = row.detail ? estimateModelPickerTextPx(row.detail, detailSize) : 0;
+      widest = Math.max(widest, chromePadding + Math.max(line1, line2) + trailingSlot);
+    }
+  }
+
+  return Math.max(minW, Math.min(maxW, Math.ceil(widest)));
+}
+
 function ModelPickerOverlay() {
   const initialQuery = untracked(modelPickerRequestedSearch);
   if (initialQuery) {
@@ -9252,8 +9542,15 @@ function ModelPickerSurface(props: {
   const mobileTrayModelId = computed(() =>
     compactLayout() && !pickerTargetIsBtw() ? (modelConfigPinnedId() ?? "") : "",
   );
+  const contentPanelWidth = computed(() =>
+    estimateModelPickerWidth(catalog(), {
+      compact: compactLayout(),
+      btw: pickerTargetIsBtw(),
+      hasFilter: providers().length > 0,
+    }),
+  );
   const panelWidth = () => {
-    const target = compactLayout() ? 332 : 348;
+    const target = contentPanelWidth();
     return props.availableWidth > 0 ? Math.min(target, Math.floor(props.availableWidth)) : target;
   };
 
@@ -10377,284 +10674,296 @@ function QueueHostNotice() {
 function QueuedPanel() {
   return (
     <If when={queuedForActive().length > 0}>
-      <View
-        accessibilityLabel="queued-panel"
-        style={{
-          marginHorizontal: space.xs,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().surfaceSubtle,
-          overflow: "hidden",
-        }}
-      >
-        <View
-          role="button"
-          accessibilityLabel="queued-panel-toggle"
-          onPress={() => {
-            queueCollapsed.update(v => !v);
-          }}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            minHeight: compactLayout() ? layout.touchTarget : 30,
-            gap: space.xs,
-            paddingHorizontal: space.md,
-            paddingVertical: space.xs,
-            cursor: "pointer",
-            userSelect: "none",
-            ...paintTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{ backgroundColor: palette().panelHover }}
-          focusVisibleStyle={focusRingStyle(-1)}
-        >
-          <Icon name="clock" size={12} color={palette().textMuted} />
-          <Text
-            style={{
-              flex: 1,
-              minWidth: 0,
-              color: palette().textSecondary,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-              fontWeight: "500",
-              fontVariant: ["tabular-nums"],
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
+      {() => {
+        const enter = isHeadlessMotionSync() ? null : liveBlockEnterMotion({ travel: 4, duration: 170 });
+        return (
+          <View
+            accessibilityLabel="queued-panel"
+            style={[
+              {
+                marginHorizontal: space.xs,
+                borderRadius: radii.md,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().surfaceSubtle,
+                overflow: "hidden",
+              },
+              enter?.style,
+            ]}
           >
-            {tr("sessions.queuedSummary", { count: formatCount(queuedForActive().length) })}
-          </Text>
-          <View style={{ flexShrink: 0, ...rotatingChevronStyle(!queueCollapsed()) }}>
-            <Icon name="chevron-right" size={12} color={palette().textMuted} />
-          </View>
-        </View>
-        <If when={!queueCollapsed()}>
-          <Scroll smoothWheel style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
-            <View>
-              <Each of={queuedForActive()} key={item => item.id}>
-                {(item, index) => (
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: space.sm,
-                      paddingHorizontal: space.md,
-                      paddingVertical: space.xs + 2,
-                      borderTopWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      ...paintTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{ backgroundColor: palette().panelHover }}
-                  >
-                    <If when={queuedForActive().length > 1}>
-                      <Text
-                        style={{
-                          width: 14,
-                          flexShrink: 0,
-                          color: palette().textMuted,
-                          fontSize: textSize(11),
-                          lineHeight: textLineHeight(11, 1.3),
-                          fontVariant: ["tabular-nums"],
-                          textAlign: "center",
-                        }}
-                      >
-                        {String(index() + 1)}
-                      </Text>
-                    </If>
-                    <PromptReferenceText
-                      labelPrefix="queued-prompt-reference"
-                      text={composerReferenceDisplayText(item().referenceDraft, item().content) || formatPlural(
-                        item().attachments?.length ?? item().attachmentCount ?? 1,
-                        "format.imageOne",
-                        "format.imageOther",
-                      )}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        color: item().content ? palette().text : palette().textMuted,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.4),
-                        numberOfLines: 2,
-                        textOverflow: "ellipsis",
-                      }}
-                    />
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        flexShrink: 0,
-                        gap: space.hair,
-                      }}
-                    >
-                      <If when={(item().attachments?.length ?? item().attachmentCount ?? 0) > 0}>
+            <SmoothDisclosure
+              open={() => !queueCollapsed()}
+              content={() => (
+                <Scroll smoothWheel style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
+                  <View>
+                    <Each of={queuedForActive()} key={item => item.id}>
+                      {(item, index) => (
                         <View
                           style={{
                             flexDirection: "row",
                             alignItems: "center",
-                            gap: 3,
-                            paddingHorizontal: space.chip,
-                            paddingVertical: 2,
-                            borderRadius: radii.xs,
-                            backgroundColor: palette().surfaceTertiary,
-                            borderWidth: 1,
+                            gap: space.sm,
+                            paddingHorizontal: space.md,
+                            paddingVertical: space.xs + 2,
+                            borderTopWidth: 1,
+                            borderColor: palette().borderSubtle,
+                            ...paintTransition(MOTION_DURATION.fast),
+                          }}
+                          hoverStyle={{ backgroundColor: palette().panelHover }}
+                        >
+                          <If when={queuedForActive().length > 1}>
+                            <Text
+                              style={{
+                                width: 14,
+                                flexShrink: 0,
+                                color: palette().textMuted,
+                                fontSize: textSize(11),
+                                lineHeight: textLineHeight(11, 1.3),
+                                fontVariant: ["tabular-nums"],
+                                textAlign: "center",
+                              }}
+                            >
+                              {String(index() + 1)}
+                            </Text>
+                          </If>
+                          <PromptReferenceText
+                            labelPrefix="queued-prompt-reference"
+                            text={composerReferenceDisplayText(item().referenceDraft, item().content) || formatPlural(
+                              item().attachments?.length ?? item().attachmentCount ?? 1,
+                              "format.imageOne",
+                              "format.imageOther",
+                            )}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              color: item().content ? palette().text : palette().textMuted,
+                              fontSize: textSize(12),
+                              lineHeight: textLineHeight(12, 1.4),
+                              numberOfLines: 2,
+                              textOverflow: "ellipsis",
+                            }}
+                          />
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              flexShrink: 0,
+                              gap: space.hair,
+                            }}
+                          >
+                            <If when={(item().attachments?.length ?? item().attachmentCount ?? 0) > 0}>
+                              <View
+                                style={{
+                                  flexDirection: "row",
+                                  alignItems: "center",
+                                  gap: 3,
+                                  paddingHorizontal: space.chip,
+                                  paddingVertical: 2,
+                                  borderRadius: radii.xs,
+                                  backgroundColor: palette().surfaceTertiary,
+                                  borderWidth: 1,
+                                  borderColor: palette().borderSubtle,
+                                }}
+                              >
+                                <Icon name="image" size={11} color={palette().textMuted} />
+                                <Text
+                                  style={{
+                                    color: palette().textMuted,
+                                    fontSize: textSize(11),
+                                    lineHeight: textLineHeight(11, 1.2),
+                                    fontVariant: ["tabular-nums"],
+                                  }}
+                                >
+                                  {String(item().attachments?.length ?? item().attachmentCount ?? 0)}
+                                </Text>
+                              </View>
+                            </If>
+                            <If when={item().status !== "queued"}>
+                              <Badge label={queuedStatusLabel(item().status)} tone="warning" />
+                            </If>
+                            <If when={canReorder(item().source) && queuedForActive().length > 1}>
+                              <IconButton
+                                icon="chevron-up"
+                                size="xs"
+                                iconSize={13}
+                                disabled={index() === 0}
+                                tooltip={tr("common.up")}
+                                accessibilityLabel={tr("common.up")}
+                                style={{ borderRadius: radii.pill }}
+                                onPress={() => void moveQueued(item().id, -1)}
+                              />
+                              <IconButton
+                                icon="chevron-down"
+                                size="xs"
+                                iconSize={13}
+                                disabled={index() === queuedForActive().length - 1}
+                                tooltip={tr("common.down")}
+                                accessibilityLabel={tr("common.down")}
+                                style={{ borderRadius: radii.pill }}
+                                onPress={() => void moveQueued(item().id, 1)}
+                              />
+                            </If>
+                            <IconButton
+                              icon="arrow-up"
+                              size="xs"
+                              iconSize={13}
+                              tooltip={tr("sessions.sendNow")}
+                              accessibilityLabel={tr("sessions.sendNow")}
+                              style={{ borderRadius: radii.pill }}
+                              onPress={() => void sendQueuedNow(item().id)}
+                            />
+                            <IconButton
+                              icon="edit"
+                              size="xs"
+                              iconSize={13}
+                              tooltip={tr("common.edit")}
+                              accessibilityLabel={tr("common.edit")}
+                              style={{ borderRadius: radii.pill }}
+                              onPress={() => {
+                                const target = primaryComposerDraft.capture();
+                                const draft = target.read();
+                                const referenceDraft = item().referenceDraft;
+                                const content = referenceDraft?.text ?? item().content;
+                                const queuedAttachments = [...(item().attachments ?? [])];
+                                const text = draft.text.trim()
+                                  ? content ? `${draft.text.trimEnd()}\n${content}` : draft.text
+                                  : content;
+                                const rollback = stageComposerChange(target, {
+                                  text,
+                                  ...(queuedAttachments.length ? { images: [...draft.images, ...queuedAttachments] } : {}),
+                                  ...(referenceDraft ? { references: mergeSessionReferences(draft.references, referenceDraft.references) } : {}),
+                                });
+                                composerInputRef?.focus();
+                                void takeQueuedEntry(item().id).then(taken => {
+                                  if (!taken) rollback();
+                                });
+                              }}
+                            />
+                            <IconButton
+                              icon="trash"
+                              size="xs"
+                              iconSize={13}
+                              tone="danger"
+                              tooltip={tr("common.delete")}
+                              accessibilityLabel={tr("common.delete")}
+                              style={{ borderRadius: radii.pill }}
+                              onPress={() => void removeQueued(item().id)}
+                            />
+                          </View>
+                        </View>
+                      )}
+                    </Each>
+                    <Each of={queuedForActive().filter(item => item.reason.length > 0)} key={item => `reason-${item.id}`}>
+                      {item => (
+                        <View
+                          style={{
+                            paddingHorizontal: space.md,
+                            paddingVertical: space.xs,
+                            borderTopWidth: 1,
                             borderColor: palette().borderSubtle,
                           }}
                         >
-                          <Icon name="image" size={11} color={palette().textMuted} />
                           <Text
                             style={{
-                              color: palette().textMuted,
-                              fontSize: textSize(11),
-                              lineHeight: textLineHeight(11, 1.2),
-                              fontVariant: ["tabular-nums"],
+                              color: palette().warning,
+                              fontSize: textSize(12),
+                              lineHeight: textLineHeight(12, 1.35),
                             }}
                           >
-                            {String(item().attachments?.length ?? item().attachmentCount ?? 0)}
+                            {tr("sessions.queuedWaiting", { reason: localizeHostError(item().reason) })}
                           </Text>
                         </View>
-                      </If>
-                      <If when={item().status !== "queued"}>
-                        <Badge label={queuedStatusLabel(item().status)} tone="warning" />
-                      </If>
-                      <If when={canReorder(item().source) && queuedForActive().length > 1}>
-                        <IconButton
-                          icon="chevron-up"
-                          size="xs"
-                          iconSize={13}
-                          disabled={index() === 0}
-                          tooltip={tr("common.up")}
-                          accessibilityLabel={tr("common.up")}
-                          style={{ borderRadius: radii.pill }}
-                          onPress={() => void moveQueued(item().id, -1)}
-                        />
-                        <IconButton
-                          icon="chevron-down"
-                          size="xs"
-                          iconSize={13}
-                          disabled={index() === queuedForActive().length - 1}
-                          tooltip={tr("common.down")}
-                          accessibilityLabel={tr("common.down")}
-                          style={{ borderRadius: radii.pill }}
-                          onPress={() => void moveQueued(item().id, 1)}
-                        />
-                      </If>
-                      <IconButton
-                        icon="arrow-up"
-                        size="xs"
-                        iconSize={13}
-                        tooltip={tr("sessions.sendNow")}
-                        accessibilityLabel={tr("sessions.sendNow")}
-                        style={{ borderRadius: radii.pill }}
-                        onPress={() => void sendQueuedNow(item().id)}
-                      />
-                      <IconButton
-                        icon="edit"
-                        size="xs"
-                        iconSize={13}
-                        tooltip={tr("common.edit")}
-                        accessibilityLabel={tr("common.edit")}
-                        style={{ borderRadius: radii.pill }}
-                        onPress={() => {
-                          const target = primaryComposerDraft.capture();
-                          const draft = target.read();
-                          const referenceDraft = item().referenceDraft;
-                          const content = referenceDraft?.text ?? item().content;
-                          const queuedAttachments = [...(item().attachments ?? [])];
-                          const text = draft.text.trim()
-                            ? content ? `${draft.text.trimEnd()}\n${content}` : draft.text
-                            : content;
-                          const rollback = stageComposerChange(target, {
-                            text,
-                            ...(queuedAttachments.length ? { images: [...draft.images, ...queuedAttachments] } : {}),
-                            ...(referenceDraft ? { references: mergeSessionReferences(draft.references, referenceDraft.references) } : {}),
-                          });
-                          composerInputRef?.focus();
-                          void takeQueuedEntry(item().id).then(taken => {
-                            if (!taken) rollback();
-                          });
+                      )}
+                    </Each>
+                    <If when={queueFallbackReason().length > 0}>
+                      <View
+                        style={{
+                          paddingHorizontal: space.md,
+                          paddingVertical: space.xs,
+                          borderTopWidth: 1,
+                          borderColor: palette().borderSubtle,
                         }}
-                      />
-                      <IconButton
-                        icon="trash"
-                        size="xs"
-                        iconSize={13}
-                        tone="danger"
-                        tooltip={tr("common.delete")}
-                        accessibilityLabel={tr("common.delete")}
-                        style={{ borderRadius: radii.pill }}
-                        onPress={() => void removeQueued(item().id)}
-                      />
-                    </View>
+                      >
+                        <Text
+                          style={{
+                            color: palette().textMuted,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.35),
+                          }}
+                        >
+                          {localizeHostError(queueFallbackReason())}
+                        </Text>
+                      </View>
+                    </If>
+                    <If when={queueNotice().length > 0}>
+                      <View
+                        style={{
+                          paddingHorizontal: space.md,
+                          paddingVertical: space.xs,
+                          borderTopWidth: 1,
+                          borderColor: palette().borderSubtle,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: palette().danger,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.35),
+                          }}
+                        >
+                          {localizeHostError(queueNotice())}
+                        </Text>
+                      </View>
+                    </If>
                   </View>
-                )}
-              </Each>
-              <Each of={queuedForActive().filter(item => item.reason.length > 0)} key={item => `reason-${item.id}`}>
-                {item => (
-                  <View
-                    style={{
-                      paddingHorizontal: space.md,
-                      paddingVertical: space.xs,
-                      borderTopWidth: 1,
-                      borderColor: palette().borderSubtle,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: palette().warning,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.35),
-                      }}
-                    >
-                      {tr("sessions.queuedWaiting", { reason: localizeHostError(item().reason) })}
-                    </Text>
-                  </View>
-                )}
-              </Each>
-              <If when={queueFallbackReason().length > 0}>
-                <View
+                </Scroll>
+              )}
+            >
+              <View
+                role="button"
+                accessibilityLabel="queued-panel-toggle"
+                onPress={() => {
+                  queueCollapsed.update(v => !v);
+                }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  minHeight: compactLayout() ? layout.touchTarget : 30,
+                  gap: space.xs,
+                  paddingHorizontal: space.md,
+                  paddingVertical: space.xs,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...paintTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().panelHover }}
+                focusVisibleStyle={focusRingStyle(-1)}
+              >
+                <Icon name="clock" size={12} color={palette().textMuted} />
+                <Text
                   style={{
-                    paddingHorizontal: space.md,
-                    paddingVertical: space.xs,
-                    borderTopWidth: 1,
-                    borderColor: palette().borderSubtle,
+                    flex: 1,
+                    minWidth: 0,
+                    color: palette().textSecondary,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                    fontWeight: "500",
+                    fontVariant: ["tabular-nums"],
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
                   }}
                 >
-                  <Text
-                    style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.35),
-                    }}
-                  >
-                    {localizeHostError(queueFallbackReason())}
-                  </Text>
+                  {tr("sessions.queuedSummary", { count: formatCount(queuedForActive().length) })}
+                </Text>
+                <View style={{ flexShrink: 0, ...rotatingChevronStyle(!queueCollapsed()) }}>
+                  <Icon name="chevron-right" size={12} color={palette().textMuted} />
                 </View>
-              </If>
-              <If when={queueNotice().length > 0}>
-                <View
-                  style={{
-                    paddingHorizontal: space.md,
-                    paddingVertical: space.xs,
-                    borderTopWidth: 1,
-                    borderColor: palette().borderSubtle,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: palette().danger,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.35),
-                    }}
-                  >
-                    {localizeHostError(queueNotice())}
-                  </Text>
-                </View>
-              </If>
-            </View>
-          </Scroll>
-        </If>
-      </View>
+              </View>
+            </SmoothDisclosure>
+          </View>
+        );
+      }}
     </If>
   );
 }
@@ -11305,7 +11614,8 @@ function SecondaryComposerDock() {
       agentAccessibilityLabel="secondary-agent-picker"
       modelAccessibilityLabel="secondary-bot-capsule-trigger"
       reasoningAccessibilityLabel="secondary-reasoning-picker"
-      permissionAccessibilityLabel="secondary-permission-mode-warning"
+      permissionAccessibilityLabel="secondary-permission-mode-pill"
+      permissionWarningAccessibilityLabel="secondary-permission-mode-warning"
       contextAccessibilityLabel="secondary-context-usage"
       showAgentPicker={true}
       agentLocked={() => true}
@@ -11338,14 +11648,19 @@ function SecondaryComposerDock() {
             }),
           },
         ];
-        if (permissionModeSupported() !== false && secondarySessionId()) {
+        const targetWorkspaceId = secondaryWorkspaceId() || activeWorkspaceId();
+        if (targetWorkspaceId) {
+          const targetDeviceId = secondarySessionDevice() || deviceContext();
           items.push({
-            id: "sec-permission",
-            icon: "shield",
-            label: tr("chat.permissionMode.tooltip"),
-            trailingHint: permissionModeLabel(effectivePermissionMode(secondarySessionId())),
-            accessibilityLabel: "secondary-permission-mode-pill",
-            onSelect: fromPlus(() => openSecondaryPermissionPicker(anchor(), "start")),
+            id: "secondary-new-session",
+            icon: "plus",
+            label: tr("search.cmdNewSession"),
+            separator: true,
+            accessibilityLabel: "secondary-composer-plus-new-session",
+            onSelect: fromPlus(() => {
+              focusPane(1);
+              void newSessionHere(targetWorkspaceId, targetDeviceId);
+            }),
           });
         }
         return items;
@@ -11463,7 +11778,13 @@ function BtwTurn(props: { entry: SideQuestion }) {
           <TranscriptItems items={turnItems(props.entry.transcript)} preserveFullReply={true} ephemeral={true} />
         </If>
         <If when={!props.entry.transcript}>
-          <LiveTranscriptBlocks blocks={blocks} pane={rounds} cardPrefix={prefix()} live={props.entry.state === "running"} />
+          <LiveTranscriptBlocks
+            blocks={blocks}
+            pane={rounds}
+            cardPrefix={prefix()}
+            live={props.entry.state === "running"}
+            startedAt={() => props.entry.startedAt}
+          />
         </If>
         <If when={props.entry.state === "running" && !liveBlocksHaveActiveMotion(blocks(), rounds(), rounds)}>
           <TurnWaitingIndicator startedAt={() => props.entry.startedAt} accessibilityLabel="side-question-state" />
@@ -12035,7 +12356,7 @@ export function SessionsScene(props?: { overlayInset?: () => { side: "left" | "r
             <ReviewProgressInPane pane={0} />
             <SessionReviewRecords target={() => reviewParentTarget(0)} padding={sessionsPadX} width={contentWidth} />
             <ReviewLauncherDialog />
-            <BackgroundCommandsStrip />
+            <BackgroundCommandsStrip padding={sessionsPadX} width={contentWidth} />
           </>
         }
         composer={

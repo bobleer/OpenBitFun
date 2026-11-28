@@ -1989,6 +1989,12 @@ export function onSessionCreated(
   return () => sessionCreatedHandlers.delete(handler);
 }
 
+export function notifySessionCreated(info: { sessionId: string; deviceId: string; modelId?: string }): void {
+  for (const handler of sessionCreatedHandlers) {
+    handler(info);
+  }
+}
+
 export async function createSessionInWorkspace(
   name: string,
   agentType: string = chosenAgentType(),
@@ -2016,9 +2022,7 @@ export async function createSessionInWorkspace(
         chosenAgentType.set(created.agentType.trim());
       }
       const createdModel = (created.modelId ?? created.modelName ?? "").trim() || undefined;
-      for (const handler of sessionCreatedHandlers) {
-        handler({ sessionId: created.sessionId, deviceId: device, modelId: createdModel });
-      }
+      notifySessionCreated({ sessionId: created.sessionId, deviceId: device, modelId: createdModel });
     }
     await loadSessions();
     if (created?.sessionId) selectSession(created.sessionId);

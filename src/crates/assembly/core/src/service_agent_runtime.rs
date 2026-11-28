@@ -883,6 +883,7 @@ fn normalize_remote_model_selection(
 }
 
 #[cfg(feature = "remote-connect")]
+#[cfg(test)]
 fn session_uses_shared_mode_default(session: &Session) -> bool {
     session.kind == SessionKind::Standard
 }
@@ -2617,10 +2618,16 @@ impl CoreServiceAgentRuntime {
             .get_config(None)
             .await
             .map_err(|e| format!("Failed to load global config: {e}"))?;
+        let effective_ai = config_service
+            .get_effective_ai_config()
+            .await
+            .unwrap_or_else(|_| global_config.ai.clone());
+        let mode_default_model_id =
+            crate::service::config::model_projection::effective_new_session_model_id(
+                &global_config,
+                &effective_ai,
+            );
         let ai_config: AIConfig = global_config.ai;
-        let mode_default_model_id = ai_config.mode_model_reference().ok().and_then(|reference| {
-            crate::service::config::model_projection::resolve_model_selector(&ai_config, &reference)
-        });
         let models_dev = load_models_dev_reasoning_catalog().await;
         let models_dev_reasoning_catalog =
             remote_models_dev_reasoning_catalog(&models_dev, include_host_catalogs);
@@ -2772,21 +2779,11 @@ impl CoreServiceAgentRuntime {
                 )
                 .await
                 .map_err(|error| format!("Failed to update session model: {error}"))?;
-            if session_uses_shared_mode_default(&session) {
-                Self::persist_mode_model(&normalized_model_id).await;
-            }
             return Ok(RemoteSessionModelSelection {
                 model_id: session.config.model_id.unwrap_or(normalized_model_id),
                 reasoning_preset: session.config.reasoning_preset,
             });
         }
-
-        let previous_model_id = coordinator
-            .get_session_manager()
-            .get_session(session_id)
-            .and_then(|session| {
-                normalize_remote_session_model_id(session.config.model_id.as_deref())
-            });
 
         if reasoning_preset.is_none() {
             runtime
@@ -2811,19 +2808,6 @@ impl CoreServiceAgentRuntime {
                 .map_err(Self::runtime_error_message)?;
         }
 
-        let model_changed =
-            previous_model_id.as_deref().unwrap_or("primary") != normalized_model_id;
-        if model_changed
-            && coordinator
-                .get_session_manager()
-                .get_session(session_id)
-                .is_some_and(|session| session_uses_shared_mode_default(&session))
-        {
-            // New sessions of every mode share one selector. Delegated
-            // subagents intentionally keep their own defaults.
-            Self::persist_mode_model(&normalized_model_id).await;
-        }
-
         Ok(coordinator
             .get_session_manager()
             .get_session(session_id)
@@ -2836,20 +2820,6 @@ impl CoreServiceAgentRuntime {
                 model_id: normalized_model_id,
                 reasoning_preset: normalized_reasoning_preset.flatten(),
             }))
-    }
-
-    /// Persist the shared selector used by future mode sessions.
-    #[cfg(feature = "remote-connect")]
-    async fn persist_mode_model(model_id: &str) {
-        let Ok(config_service) = crate::service::config::get_global_config_service().await else {
-            return;
-        };
-        let _ = config_service
-            .set_config(
-                "ai.agent_model_selections.mode",
-                serde_json::json!({"kind":"model", "model_ref": model_id}),
-            )
-            .await;
     }
 
     /// Apply a controller's three device role defaults and report the device's
@@ -2870,6 +2840,9 @@ impl CoreServiceAgentRuntime {
             .await
             .map_err(|_| "Config service not available".to_string())?;
         persist_remote_model_defaults(&config_service, primary, fast, image_understanding).await?;
+        if primary.is_some() {
+            config_service.reset_session_model_memory_to_primary().await;
+        }
 
         let reconciled: AIConfig = config_service
             .get_config(Some("ai"))

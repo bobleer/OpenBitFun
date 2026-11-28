@@ -1,10 +1,13 @@
 //! Bootstrap WorkspaceService / FileSystemService / DialogScheduler for Peer Host.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use openbitfun_agent_runtime::sdk::SessionEventJournal;
 use openbitfun_core::service::filesystem::FileSystemServiceFactory;
+use openbitfun_core::service::search::{self, WorkspaceSearchService};
 use openbitfun_core::service::session_projection_store::{
     runtime_event_log_dir, FileSessionProjectionStore,
 };
@@ -34,6 +37,18 @@ pub(crate) async fn ensure_peer_host_ready(runtime: &CliRuntimeContext) -> Resul
     };
 
     let filesystem_service = Arc::new(FileSystemServiceFactory::create_default());
+    let workspace_search_service =
+        if let Some(existing) = search::get_global_workspace_search_service() {
+            existing
+        } else {
+            let service = Arc::new(WorkspaceSearchService::new());
+            search::set_global_workspace_search_service(service.clone());
+            service
+        };
+    if let Ok(config_service) = openbitfun_core::service::config::get_global_config_service().await
+    {
+        crate::ensure_cli_acp_service(config_service);
+    }
     // Same log the Desktop Host uses: either can own this Session at different
     // times, and a Turn left running by one must be replayable by the other.
     let session_event_journal = Arc::new(
@@ -67,7 +82,10 @@ pub(crate) async fn ensure_peer_host_ready(runtime: &CliRuntimeContext) -> Resul
         turns: PeerTurnTracker::new(),
         workspace_service,
         filesystem_service,
+        workspace_search_service,
+        active_searches: Arc::new(Mutex::new(HashMap::new())),
         token_usage_service: runtime.token_usage_service().clone(),
+        start_time: Instant::now(),
     };
 
     if set_peer_host_state(state.clone()).is_err() {

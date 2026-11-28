@@ -1,8 +1,8 @@
 // Shared live tool projection for foreground, background and ephemeral sessions.
 
-import type { ToolCallView } from "./format";
+import { basename, type ToolCallView } from "./format";
 import { appendPlanParameters, isPlanWritingTool } from "./planToolArtifact";
-import { effectiveToolInvocation, reviewProgressTool } from "./toolPresentation";
+import { effectiveToolInvocation, normalizeToolName, reviewProgressTool, toolInputRecord } from "./toolPresentation";
 
 export interface LiveToolItem {
   toolId: string;
@@ -11,10 +11,14 @@ export interface LiveToolItem {
   status: "queued" | "waiting" | "running" | "confirmation" | "completed" | "failed" | "cancelled" | "rejected";
   input?: unknown;
   planParameters?: string;
+  /** Bounded partial JSON argument stream kept while `ParamsPartial` fragments arrive. */
+  partialParams?: string;
   detail: string;
   progressMessage?: string;
   error?: string;
   durationMs?: number;
+  /** Epoch ms when the tool call first appeared, used for quiet live elapsed timers. */
+  startedAt?: number;
   /** The tool's `Completed` result payload, drawn in the expanded card. */
   result?: unknown;
   /** The text the model was given back, when the host reports it apart from `result`. */
@@ -41,6 +45,7 @@ export function liveToolToCallView(tool: LiveToolItem): ToolCallView {
     ...(tool.result !== undefined ? { result: tool.result } : {}),
     ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
     ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
+    ...(tool.startedAt !== undefined ? { startedAt: tool.startedAt } : {}),
     ...(tool.genuiStream
       ? {
           genuiStream: {
@@ -66,16 +71,120 @@ export interface LiveRoundMeta {
   durationMs?: number;
 }
 
+const MAX_PARTIAL_PARAM_BUFFER = 8192;
+
+const EXEC_PARTIAL_NAMES = new Set([
+  "bash", "execcommand", "runcode", "runcommand", "shell", "exec", "terminal", "writestdin",
+]);
+const FILE_PARTIAL_NAMES = new Set([
+  "read", "readfile", "write", "writefile", "createfile", "edit", "editfile",
+  "multiedit", "strreplace", "strreplaceeditor", "searchreplace", "applypatch",
+  "delete", "deletefile", "viewimage", "generateimage", "analyzeimage",
+]);
+const SEARCH_PARTIAL_NAMES = new Set(["grep", "searchfiles", "codebasesearch", "glob", "findfiles"]);
+const LS_PARTIAL_NAMES = new Set(["ls", "listdir", "listdirectory"]);
+const TASK_PARTIAL_NAMES = new Set(["task", "agentspawn", "agentfork"]);
+const SKILL_PARTIAL_NAMES = new Set(["skill", "loadskill", "useskill", "invokeskill"]);
+
+function cleanSingleLine(value: string, limit = 160): string {
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "";
+  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
+}
+
 function summarizeLiveInput(value: unknown, limit = 160): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}…` : value;
+  if (typeof value === "string") return cleanSingleLine(value, limit);
   try {
     const text = JSON.stringify(value);
     if (!text) return "";
-    return text.length > limit ? `${text.slice(0, limit)}…` : text;
+    return cleanSingleLine(text, limit);
   } catch {
     return "";
   }
+}
+
+function appendPartialParams(previous: string, fragment: string): string {
+  if (!fragment) return previous;
+  const trimmed = fragment.trimStart();
+  if (previous && trimmed.startsWith("{") && fragment.length <= MAX_PARTIAL_PARAM_BUFFER) {
+    const parsed = toolInputRecord(fragment);
+    if (Object.keys(parsed).length > 0) return fragment;
+  }
+  if (previous.length >= MAX_PARTIAL_PARAM_BUFFER) return previous;
+  return previous + fragment.slice(0, MAX_PARTIAL_PARAM_BUFFER - previous.length);
+}
+
+/** Extracts a decoded JSON string value prefix from an in-flight partial JSON buffer. */
+function pendingJsonString(buffer: string, field: string): string {
+  if (!buffer) return "";
+  const match = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\(?:u[0-9a-fA-F]{4}|["\\\\/bfnrt])|[^"\\\\])*)`).exec(buffer);
+  if (!match) return "";
+  try {
+    return JSON.parse(`"${match[1]}"`) as string;
+  } catch {
+    return "";
+  }
+}
+
+function partialFieldsForTool(toolName: string): { fields: readonly string[]; basenameOnly?: boolean } {
+  const normalized = normalizeToolName(toolName);
+  if (EXEC_PARTIAL_NAMES.has(normalized)) {
+    return { fields: ["command", "cmd", "script", "shell", "description", "code"] };
+  }
+  if (FILE_PARTIAL_NAMES.has(normalized)) {
+    return {
+      fields: ["file_path", "filePath", "path", "file", "target_file", "targetFile", "image_path"],
+      basenameOnly: true,
+    };
+  }
+  if (SEARCH_PARTIAL_NAMES.has(normalized)) {
+    return { fields: ["pattern", "query", "search_pattern", "glob_pattern", "file_pattern", "regex", "text"] };
+  }
+  if (LS_PARTIAL_NAMES.has(normalized)) {
+    return { fields: ["path", "target_directory", "directory"] };
+  }
+  if (normalized === "websearch") {
+    return { fields: ["query", "search_term"] };
+  }
+  if (normalized === "webfetch") {
+    return { fields: ["url"] };
+  }
+  if (TASK_PARTIAL_NAMES.has(normalized)) {
+    return { fields: ["description", "subagent_type", "subagentType", "prompt"] };
+  }
+  if (SKILL_PARTIAL_NAMES.has(normalized)) {
+    return { fields: ["skill", "command", "skill_name", "skillName", "name"] };
+  }
+  if (normalized === "askuserquestion") {
+    return { fields: ["header", "question"] };
+  }
+  return {
+    fields: ["description", "title", "query", "path", "file_path", "url", "command", "cmd", "name", "action"],
+  };
+}
+
+/**
+ * Extracts a stable, human-readable one-line target from accumulated `ParamsPartial`
+ * JSON chunks so streaming tool cards resolve to real semantic fields instead of
+ * flashing raw JSON syntax or mid-string delta fragments.
+ */
+export function extractPartialToolDetail(toolName: string, buffer: string): string {
+  if (!buffer) return "";
+  const { fields, basenameOnly } = partialFieldsForTool(toolName);
+  const parsed = buffer.trimStart().startsWith("{") ? toolInputRecord(buffer) : {};
+  for (const field of fields) {
+    const raw =
+      typeof parsed[field] === "string" && parsed[field]
+        ? (parsed[field] as string)
+        : pendingJsonString(buffer, field);
+    if (!raw) continue;
+    const candidate = field === "prompt" ? (raw.split(/\r?\n/)[0] ?? "") : raw;
+    const cleaned = cleanSingleLine(candidate, field === "prompt" ? 80 : 160);
+    if (!cleaned) continue;
+    return basenameOnly ? basename(cleaned) : cleaned;
+  }
+  return "";
 }
 
 export function applyToolEvent<T extends LiveRoundMeta>(
@@ -105,6 +214,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
           ...(effectiveToolName ? { effectiveToolName } : {}),
           status: "running",
           detail: "",
+          startedAt: Date.now(),
           textOffset,
         };
 
@@ -120,10 +230,18 @@ export function applyToolEvent<T extends LiveRoundMeta>(
     case "EarlyDetected":
     case "ParamsPartial": {
       const nextStatus = existing.status === "completed" ? "completed" : "running";
+      const fragment = typeof rawToolEvent.params === "string" ? rawToolEvent.params : "";
+      const partialParams = fragment
+        ? appendPartialParams(existing.partialParams ?? "", fragment)
+        : existing.partialParams;
+      const extractedDetail = partialParams
+        ? extractPartialToolDetail(next.effectiveToolName || next.toolName, partialParams)
+        : "";
       const nextDetail =
-        typeof rawToolEvent.params === "string" && rawToolEvent.params
+        extractedDetail ||
+        (rawToolEvent.params && typeof rawToolEvent.params === "object"
           ? summarizeLiveInput(rawToolEvent.params)
-          : next.detail;
+          : next.detail);
       const planParameters = eventType === "ParamsPartial" && typeof rawToolEvent.params === "string"
         && isPlanWritingTool(next.toolName) && existing.status === "running" && existing.input === undefined
         ? appendPlanParameters(existing.planParameters ?? "", rawToolEvent.params)
@@ -132,6 +250,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
         existingIdx >= 0 &&
         nextStatus === existing.status &&
         nextDetail === existing.detail &&
+        partialParams === existing.partialParams &&
         planParameters === existing.planParameters &&
         next.toolName === existing.toolName &&
         next.effectiveToolName === existing.effectiveToolName
@@ -142,6 +261,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
         ...next,
         status: nextStatus,
         detail: nextDetail,
+        partialParams,
         planParameters,
       };
       break;
@@ -176,6 +296,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "running",
+        partialParams: undefined,
         planParameters: undefined,
         ...(identity.input !== undefined
           ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
@@ -195,6 +316,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "confirmation",
+        partialParams: undefined,
         planParameters: undefined,
         ...(identity.input !== undefined
           ? { input: identity.input, detail: summarizeLiveInput(identity.input) }
@@ -209,6 +331,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: eventType === "Rejected" ? "rejected" : "cancelled",
+        partialParams: undefined,
         ...(typeof rawToolEvent.reason === "string" ? { error: rawToolEvent.reason } : {}),
       };
       break;
@@ -218,6 +341,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "completed",
+        partialParams: undefined,
         ...(rawToolEvent.result !== undefined ? { result: rawToolEvent.result } : {}),
         ...(typeof resultForAssistant === "string" && resultForAssistant
           ? { resultForAssistant }
@@ -232,6 +356,7 @@ export function applyToolEvent<T extends LiveRoundMeta>(
       next = {
         ...next,
         status: "failed",
+        partialParams: undefined,
         ...(typeof rawToolEvent.error === "string" ? { error: rawToolEvent.error } : {}),
         ...(typeof rawToolEvent.duration_ms === "number"
           ? { durationMs: rawToolEvent.duration_ms }

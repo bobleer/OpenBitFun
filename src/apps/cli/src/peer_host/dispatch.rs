@@ -176,11 +176,11 @@ mod tests {
 
     #[tokio::test]
     async fn cli_unsupported_commands_keep_the_legacy_prefix_and_add_a_reason() {
-        let err = handle_obp_call("worktree_list", json!({}))
+        let err = handle_obp_call("create_miniapp", json!({}))
             .await
             .expect_err("unsupported on the CLI");
         assert!(
-            err.starts_with("command 'worktree_list' is not supported on CLI peer host"),
+            err.starts_with("command 'create_miniapp' is not supported on CLI peer host"),
             "{err}"
         );
         assert!(err.contains(": "), "reason must be appended: {err}");

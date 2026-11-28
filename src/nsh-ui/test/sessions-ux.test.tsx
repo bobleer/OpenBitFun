@@ -677,10 +677,18 @@ test("the permission pill writes the session's mode", async () => {
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
   await app.waitFor("composer-plus");
+
+  // Permission mode is not duplicated inside the "+" menu.
   await app.press("composer-plus");
+  await app.waitFor("attach-image-file");
+  expect(app.texts()).not.toContain("Permission mode for this session");
+  expect(app.shows("composer-plus-new-session")).toBe(true);
+  await app.press("composer-plus");
+
+  // Pressing the composer shield opens the popover right-aligned over itself.
+  await app.waitFor("permission-mode-pill");
   await app.press("permission-mode-pill");
-  // Opening from "+" aligns to start above the "+" button.
-  await app.waitFor("label:permission-mode-popover-start");
+  await app.waitFor("label:permission-mode-popover-end");
   await app.press("permission-mode-full_access");
   expect(backend.calls.find(call => call.action === "update_session_permission_mode")?.request).toMatchObject({
     sessionId: "session-1",
@@ -689,16 +697,32 @@ test("the permission pill writes the session's mode", async () => {
   });
   await app.waitFor("permission-mode-warning");
 
-  // Pressing the inline FullAccessNotice trigger opens the popover right-aligned over itself, not over "+".
+  // Toggling the warning shield opens and closes right-aligned over itself, and switching back keeps the shield visible.
   await app.press("permission-mode-warning");
   await app.waitFor("label:permission-mode-popover-end");
   await app.press("permission-mode-warning");
   await app.waitFor("id:permission-mode-surface", { state: "gone" });
 
-  // Opening again from "+" restores start alignment on the "+" anchor.
+  await app.press("permission-mode-warning");
+  await app.waitFor("label:permission-mode-popover-end");
+  await app.press("permission-mode-ask");
+  await app.waitFor("permission-mode-pill");
+});
+
+test("composer + menu creates a new session in the current workspace via the shared workspace handler", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("composer-plus");
+
   await app.press("composer-plus");
-  await app.press("permission-mode-pill");
-  await app.waitFor("label:permission-mode-popover-start");
+  await app.waitFor("composer-plus-new-session");
+  await app.press("composer-plus-new-session");
+  await app.waitUntil(() => backend.calls.some(call => call.action === "create_session"));
+  expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+  });
+  await app.waitFor("How can I help today?");
 });
 
 test("a user message rolls back without resending", async () => {
@@ -1139,18 +1163,20 @@ test("a narrow chat runs full width with the composer controls in its + menu", a
   await app.waitFor("agent-picker", { state: "gone" });
   expect(app.shows("agent-picker")).toBe(false);
   expect(app.shows("composer-plus")).toBe(true);
-  // On a narrow/mobile column the model selector stays directly outside the "+" menu.
+  // On a narrow/mobile column the model selector and permission shield stay directly outside the "+" menu.
   expect(app.shows("bot-capsule-trigger")).toBe(true);
+  expect(app.shows("permission-mode-pill")).toBe(true);
   expect(app.shows("reasoning-picker")).toBe(false);
   expect(app.shows("Send")).toBe(true);
   expect(app.shows("thread-actions-trigger")).toBe(true);
 
-  // The "+" menu holds image picker, reference, permission, and agent controls (not model/reasoning).
+  // The "+" menu holds image picker, reference, new session, and agent controls (not duplicate permission or model/reasoning).
   await app.press("composer-plus");
   await app.waitFor("attach-image-file");
   expect(app.shows("Attach")).toBe(false);
   expect(app.shows("Reference")).toBe(true);
-  expect(app.shows("permission-mode-pill")).toBe(true);
+  expect(app.shows("composer-plus-new-session")).toBe(true);
+  expect(app.texts()).not.toContain("Permission mode for this session");
   await app.press("agent-picker");
   await app.waitFor("Profiles");
 
@@ -1676,9 +1702,10 @@ test("hovering model picker rows keeps the list width and position steady across
     expect(onRight || onLeft).toBe(true);
   };
 
-  // Wide desktop: list stays at exact 348px width and fixed x/y before, during, and after hover.
+  // Wide desktop: list adapts snugly to its catalog (tighter than the 348px ceiling) and stays steady on hover.
   const before = app.layout("id:model-picker")!;
-  expect(Math.abs(before.width - 348)).toBeLessThan(1);
+  expect(before.width).toBeGreaterThanOrEqual(248);
+  expect(before.width).toBeLessThan(310);
 
   await app.hover("label:model-option-cfg-primary");
   await app.waitFor("id:model-config-side-panel");
@@ -1707,7 +1734,7 @@ test("hovering model picker rows keeps the list width and position steady across
   );
   expect(app.shows("id:model-picker")).toBe(true);
 
-  // Close and reopen on a tighter desktop viewport where trigger.x + 348 + 264 overflows the right edge.
+  // Close and reopen on a tighter desktop viewport where trigger.x + list + 264 overflows the right edge.
   await app.press("model-config-close");
   await app.waitFor("id:model-picker", { state: "gone" });
   await app.setViewport(900, 820);
@@ -1716,7 +1743,7 @@ test("hovering model picker rows keeps the list width and position steady across
   await app.waitFor("label:model-option-cfg-primary");
 
   const narrowBefore = app.layout("id:model-picker")!;
-  expect(Math.abs(narrowBefore.width - 348)).toBeLessThan(1);
+  expect(Math.abs(narrowBefore.width - before.width)).toBeLessThan(1);
 
   await app.hover("label:model-option-cfg-primary");
   await app.waitFor("id:model-config-side-panel");

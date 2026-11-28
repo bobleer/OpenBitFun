@@ -528,7 +528,7 @@
       "userMessageRadius": { "$value": "calc({control.flowChat.cardRadius} + 2px)" },
       "userMessagePaddingBlock": { "$value": "0.46rem" },
       "userMessageMarginBlockStart": { "$value": "0.06rem" },
-      "modelNameMaxWidth": { "$value": "100px" },
+      "modelNameMaxWidth": { "$value": "192px" },
       "modelIdleOpacity": { "$type": "number", "$value": 0.72 },
       "rowIconSize": { "$value": "{control.icon.sizeSm}" },
       "rowIconGap": { "$value": "{space.1}" },

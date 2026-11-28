@@ -231,9 +231,4 @@ pub(super) const UNAUDITED_BASELINE: &[&str] = &[
 /// the desktop subsystem behind them does not exist on a CLI host. Each entry
 /// carries its justification in `table.rs`; a new empty answer needs a reviewed
 /// reason, not a new baseline entry.
-pub(super) const SOFT_EMPTY_BASELINE: &[&str] = &[
-    "get_acp_clients",
-    "list_background_command_activities",
-    "list_miniapps",
-    "miniapp_worker_list_running",
-];
+pub(super) const SOFT_EMPTY_BASELINE: &[&str] = &["list_miniapps", "miniapp_worker_list_running"];

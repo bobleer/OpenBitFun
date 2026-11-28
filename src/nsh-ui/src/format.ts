@@ -80,6 +80,8 @@ export interface ToolCallView {
   diffStats?: { added: number; removed: number };
   /** Tool execution duration in milliseconds, when persisted. */
   durationMs?: number;
+  /** Epoch ms when a live tool call first started, for quiet elapsed timers. */
+  startedAt?: number;
   /** What a subagent the call started did, as the host nested it. */
   subagentItems?: TranscriptItemView[];
   /** A GenerativeUI call's source as it streamed (`GenUIStream`), before its arguments closed. */

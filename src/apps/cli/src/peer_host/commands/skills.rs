@@ -13,7 +13,8 @@ use openbitfun_core::agentic::tools::implementations::skills::mode_overrides::{
     load_globally_disabled_user_skills, load_project_mode_skills_document_local,
     project_mode_skills_path_for_remote, save_project_mode_skills_document_local,
     set_disabled_mode_skills_in_document, set_global_project_skill_disabled,
-    set_global_user_skill_disabled, SkillPolicyWorkspace,
+    set_global_user_skill_disabled, set_mode_skill_disabled_in_document, set_user_mode_skill_state,
+    SkillPolicyWorkspace,
 };
 use openbitfun_core::agentic::tools::implementations::skills::registry::imports::{
     self as skill_imports, SkillImportPreview,
@@ -933,6 +934,121 @@ pub(crate) async fn reset_mode_skill_selection(args: &Value) -> Result<Value, St
 
     Ok(json!(format!(
         "Mode '{mode_id}' skill selection reset successfully"
+    )))
+}
+
+pub(crate) async fn set_mode_skill_disabled(args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let mode_id = get_string(request, "modeId")?;
+    let skill_key = get_string(request, "skillKey")?;
+    let disabled = optional_bool(request, "disabled")
+        .ok_or_else(|| "Missing or invalid 'disabled' field".to_string())?;
+    let workspace = resolve_workspace(request).await?;
+    if skill_key.starts_with("user::") {
+        let registry = SkillRegistry::global();
+        let skill_info = if let Some((remote_root, remote_workspace_fs)) =
+            remote_workspace_fs(workspace.as_ref()).await?
+        {
+            registry
+                .find_skill_by_key_for_remote_workspace(
+                    &remote_workspace_fs,
+                    &remote_root,
+                    &skill_key,
+                )
+                .await
+        } else {
+            registry
+                .find_skill_by_key_for_workspace(
+                    &skill_key,
+                    workspace.as_ref().map(|record| record.root_path.as_path()),
+                )
+                .await
+        }
+        .ok_or_else(|| format!("Skill '{skill_key}' not found"))?;
+        let default_enabled = resolve_skill_default_enabled_for_mode(&skill_info, &mode_id);
+        set_user_mode_skill_state(&mode_id, &skill_key, !disabled, default_enabled)
+            .await
+            .map_err(|error| format!("Failed to update user skill override: {error}"))?;
+        let _ = openbitfun_core::service::config::reload_global_config().await;
+        return Ok(json!(format!(
+            "Mode '{mode_id}' skill '{skill_key}' updated successfully"
+        )));
+    }
+    if !skill_key.starts_with("project::") {
+        return Err(format!("Unsupported skill key '{skill_key}'"));
+    }
+    if let Some((remote_root, _)) = remote_workspace_fs(workspace.as_ref()).await? {
+        let connection_id = workspace
+            .as_ref()
+            .and_then(|record| record.filesystem_connection_id().ok().flatten())
+            .ok_or("Remote workspace connection is unavailable")?;
+        let services =
+            openbitfun_core::service::remote_ssh::workspace_state::ensure_saved_connection_services()
+                .await?;
+        let remote_fs = services
+            .get_file_service()
+            .await
+            .ok_or("Remote file service is unavailable")?;
+        let config_path = project_mode_skills_path_for_remote(&remote_root);
+        let mut document = if remote_fs
+            .exists(connection_id, &config_path)
+            .await
+            .map_err(|error| format!("Failed to check remote project skill overrides: {error}"))?
+        {
+            let content = remote_fs
+                .read_file(connection_id, &config_path)
+                .await
+                .map_err(|error| {
+                    format!("Failed to read remote project skill overrides: {error}")
+                })?;
+            let content = String::from_utf8(content).map_err(|error| {
+                format!("Remote project skill overrides are not valid UTF-8: {error}")
+            })?;
+            deserialize_project_agent_profiles_document(&content)
+                .map_err(|error| format!("Invalid remote project skill overrides JSON: {error}"))?
+        } else {
+            Default::default()
+        };
+        set_mode_skill_disabled_in_document(&mut document, &mode_id, &skill_key, disabled)
+            .map_err(|error| format!("Failed to update remote project skill override: {error}"))?;
+        let config_dir = config_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir.to_string())
+            .ok_or_else(|| format!("Invalid remote project config path '{config_path}'"))?;
+        remote_fs
+            .create_dir_all(connection_id, &config_dir)
+            .await
+            .map_err(|error| {
+                format!("Failed to create remote project skill overrides directory: {error}")
+            })?;
+        remote_fs
+            .write_file(
+                connection_id,
+                &config_path,
+                serialize_project_agent_profiles_document(&document)
+                    .map_err(|error| {
+                        format!("Failed to serialize remote project skill overrides: {error}")
+                    })?
+                    .as_slice(),
+            )
+            .await
+            .map_err(|error| format!("Failed to write remote project skill overrides: {error}"))?;
+    } else {
+        let record = workspace
+            .as_ref()
+            .ok_or_else(|| "Workspace is required to update project skill overrides".to_string())?;
+        let mut document = load_project_mode_skills_document_local(&record.root_path)
+            .await
+            .map_err(|error| format!("Failed to load project mode skills: {error}"))?;
+        set_mode_skill_disabled_in_document(&mut document, &mode_id, &skill_key, disabled)
+            .map_err(|error| format!("Failed to update project skill override: {error}"))?;
+        save_project_mode_skills_document_local(&record.root_path, &document)
+            .await
+            .map_err(|error| format!("Failed to save project mode skills: {error}"))?;
+    }
+    let _ = openbitfun_core::service::config::reload_global_config().await;
+    Ok(json!(format!(
+        "Mode '{mode_id}' skill '{skill_key}' updated successfully"
     )))
 }
 

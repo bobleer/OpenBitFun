@@ -1662,12 +1662,12 @@ impl StartupPage {
                     };
                 if let Err(error) = config_service
                     .set_config(
-                        "ai.agent_model_selections.mode",
-                        serde_json::json!({"kind":"model", "model_ref": &selected_id}),
+                        "app.flow_chat.last_model_selection",
+                        serde_json::json!({ "model_id": &selected_id }),
                     )
                     .await
                 {
-                    tracing::error!("Failed to set future mode model: {error}");
+                    tracing::error!("Failed to persist last session model: {error}");
                     return false;
                 }
 

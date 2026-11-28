@@ -328,6 +328,9 @@ impl ConfigService {
     }
 
     async fn after_config_change(&self, path: &str) {
+        if path == "ai.default_models.primary" {
+            self.reset_session_model_memory_to_primary().await;
+        }
         let model_configuration_changed = Self::path_touches_models(path);
         if model_configuration_changed {
             if path != "ai.agent_model_selections.mode" {
@@ -348,6 +351,37 @@ impl ConfigService {
             self.refresh_web_search_runtime().await;
         }
         self.local_changes.send_replace(());
+    }
+
+    /// When the user explicitly updates this device's primary model, clear any
+    /// stale last-used session selection and repoint non-pool `mode` defaults
+    /// back to `"primary"` so the very next new session picks up the new primary.
+    pub(crate) async fn reset_session_model_memory_to_primary(&self) {
+        let mut manager = self.manager.write().await;
+        let mut config = manager.get_config().clone();
+        let mut changed = false;
+        if config.app.flow_chat.last_model_selection.take().is_some() {
+            changed = true;
+        }
+        if let Ok(mut selections) = config.ai.effective_model_selections() {
+            if matches!(
+                &selections.mode,
+                openbitfun_core_types::model_pool::ModelSelection::Model { model_ref }
+                    if model_ref != "primary"
+            ) {
+                selections.mode = openbitfun_core_types::model_pool::ModelSelection::Model {
+                    model_ref: "primary".to_string(),
+                };
+                if config.ai.set_model_selections(selections).is_ok() {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Err(error) = manager.set("", &config).await {
+                warn!("Failed to reset session model memory after primary model update: error={error}");
+            }
+        }
     }
 
     #[cfg(feature = "web-tools")]
@@ -2838,6 +2872,96 @@ mod tests {
                 .await
                 .unwrap(),
             original
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_primary_model_clears_last_model_selection_and_resets_stale_mode_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user_root = dir.path().join("primary-reset-last-model");
+        let path_manager = Arc::new(PathManager::with_user_root_for_tests(user_root));
+        let service = ConfigService::with_settings(ConfigManagerSettings {
+            path_manager: Some(path_manager),
+            auto_save: true,
+            backup_count: 0,
+        })
+        .await
+        .expect("config service");
+
+        let make_model = |id: &str| AIModelConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "openai".to_string(),
+            model_name: id.to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "key".to_string(),
+            enabled: true,
+            category: ModelCategory::GeneralChat,
+            capabilities: vec![ModelCapability::TextChat],
+            ..AIModelConfig::default()
+        };
+        service
+            .set_config(
+                "ai.models",
+                vec![
+                    make_model("model-a"),
+                    make_model("model-b"),
+                    make_model("model-c"),
+                ],
+            )
+            .await
+            .unwrap();
+        service
+            .set_config("ai.default_models.primary", "model-a")
+            .await
+            .unwrap();
+        service
+            .set_config(
+                "ai.agent_model_selections.mode",
+                serde_json::json!({ "kind": "model", "model_ref": "model-b" }),
+            )
+            .await
+            .unwrap();
+        service
+            .set_config(
+                "app.flow_chat.last_model_selection",
+                serde_json::json!({
+                    "model_id": "model-b",
+                    "reasoning_preset": "high",
+                    "context_window_override": 300000
+                }),
+            )
+            .await
+            .unwrap();
+
+        // While last_model_selection is set, the projected new-session default follows it.
+        let before: GlobalConfig = service.get_config(None).await.unwrap();
+        assert_eq!(
+            crate::service::config::model_projection::effective_new_session_model_id(
+                &before, &before.ai
+            )
+            .as_deref(),
+            Some("model-b")
+        );
+
+        // Changing primary model clears last_model_selection and resets stale mode default to "primary".
+        service
+            .set_config("ai.default_models.primary", "model-c")
+            .await
+            .unwrap();
+
+        let after: GlobalConfig = service.get_config(None).await.unwrap();
+        assert_eq!(after.app.flow_chat.last_model_selection, None);
+        assert_eq!(
+            after.ai.mode_model_reference().as_deref().ok(),
+            Some("primary")
+        );
+        assert_eq!(
+            crate::service::config::model_projection::effective_new_session_model_id(
+                &after, &after.ai
+            )
+            .as_deref(),
+            Some("model-c")
         );
     }
 }

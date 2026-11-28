@@ -1,9 +1,17 @@
 //! Snapshot / rollback HostInvoke handlers for CLI Peer Host.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
+use std::sync::Arc;
+
+use openbitfun_core::service::snapshot::{
+    ensure_snapshot_manager_for_workspace, get_snapshot_manager_for_workspace,
+    initialize_snapshot_manager_for_workspace, open_snapshot_manager_for_view, FileChangeEntry,
+    OperationType, SnapshotManager,
+};
 use openbitfun_core::service::workspace::{WorkspaceInfo, WorkspaceKind};
 use openbitfun_runtime_ports::{
     AgentSessionRollbackToTurnRequest, LocalWorkspaceSnapshotFileDiffStats,
@@ -11,10 +19,22 @@ use openbitfun_runtime_ports::{
     LocalWorkspaceSnapshotSessionRequest, LocalWorkspaceSnapshotStats, PortError, PortErrorKind,
 };
 
-use crate::peer_host::args::{get_string, optional_string, request_value};
+use crate::peer_host::args::{get_string, optional_bool, optional_string, request_value};
 use crate::peer_host::state::PeerHostState;
 
 use super::session::{ensure_session_workspace_runtime_ownership, resolved_session_storage_scope};
+
+async fn ensure_snapshot_manager_ready_for_workspace(
+    workspace_id: &str,
+) -> Result<Arc<SnapshotManager>, String> {
+    if let Some(manager) = get_snapshot_manager_for_workspace(workspace_id) {
+        return Ok(manager);
+    }
+    initialize_snapshot_manager_for_workspace(workspace_id, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    ensure_snapshot_manager_for_workspace(workspace_id).map_err(|error| error.to_string())
+}
 
 pub(super) async fn resolve_snapshot_workspace(
     state: &PeerHostState,
@@ -297,6 +317,565 @@ pub(crate) async fn rollback_session_to_turn(
         .await
         .map_err(|error| error.into_message())?;
     serde_json::to_value(outcome).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn rollback_session(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let delete_session = optional_bool(request, "deleteSession").unwrap_or(false);
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_complete_rollback_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    let restored_files = manager
+        .rollback_session(&session_id)
+        .await
+        .map_err(|error| format!("Failed to rollback session: {error}"))?;
+    let restored_files_str: Vec<String> = restored_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    crate::obp_host::publish_event(
+        "session_rolled_back",
+        &json!({
+            "session_id": session_id,
+            "files_count": restored_files_str.len(),
+            "session_deleted": delete_session,
+        }),
+    );
+    Ok(json!(restored_files_str))
+}
+
+pub(crate) async fn accept_session(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    manager
+        .accept_session(&session_id)
+        .await
+        .map_err(|error| format!("Failed to accept session: {error}"))?;
+    crate::obp_host::publish_event("session_accepted", &json!({ "session_id": session_id }));
+    Ok(json!({ "success": true, "message": "Session changes accepted" }))
+}
+
+pub(crate) async fn accept_file(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let file_path = get_string(request, "filePath")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    manager
+        .accept_file(&session_id, &file_path)
+        .await
+        .map_err(|error| format!("Failed to accept file: {error}"))?;
+    crate::obp_host::publish_event(
+        "file_accepted",
+        &json!({ "session_id": session_id, "file_path": file_path }),
+    );
+    Ok(json!({ "success": true, "message": "File changes accepted" }))
+}
+
+pub(crate) async fn reject_file(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let file_path = get_string(request, "filePath")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    let restored_files = manager
+        .reject_file(&session_id, &file_path)
+        .await
+        .map_err(|error| format!("Failed to reject file: {error}"))?;
+    let restored_files_str: Vec<String> = restored_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    crate::obp_host::publish_event(
+        "file_rejected",
+        &json!({
+            "session_id": session_id,
+            "file_path": file_path,
+            "restored_files": restored_files_str,
+        }),
+    );
+    Ok(json!({
+        "success": true,
+        "message": "File changes rejected",
+        "restored_files": restored_files_str,
+    }))
+}
+
+pub(crate) async fn accept_operation(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let operation_id = get_string(request, "operationId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    let summary = manager
+        .get_operation_summary(&session_id, &operation_id)
+        .await
+        .map_err(|error| format!("Failed to accept operation: {error}"))?;
+    let file_path = summary
+        .get("file_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Operation file path not found".to_string())?;
+    manager
+        .accept_file(&session_id, file_path)
+        .await
+        .map_err(|error| format!("Failed to accept operation: {error}"))?;
+    crate::obp_host::publish_event(
+        "operation_accepted",
+        &json!({
+            "session_id": session_id,
+            "operation_id": operation_id,
+            "file_path": file_path,
+        }),
+    );
+    Ok(json!({ "success": true, "message": "Operation accepted" }))
+}
+
+pub(crate) async fn reject_operation(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let operation_id = get_string(request, "operationId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let _mutation = state
+        .compatibility
+        .begin_persisted_session_mutation(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to acquire snapshot mutation lock: {error}"))?;
+    let manager = ensure_snapshot_manager_ready_for_workspace(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to initialize snapshot manager: {error}"))?;
+    let summary = manager
+        .get_operation_summary(&session_id, &operation_id)
+        .await
+        .map_err(|error| format!("Failed to reject operation: {error}"))?;
+    let file_path = summary
+        .get("file_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Operation file path not found".to_string())?;
+    let restored_files = manager
+        .reject_file(&session_id, file_path)
+        .await
+        .map_err(|error| format!("Failed to reject operation: {error}"))?;
+    let restored_files_str: Vec<String> = restored_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    crate::obp_host::publish_event(
+        "operation_rejected",
+        &json!({
+            "session_id": session_id,
+            "operation_id": operation_id,
+            "file_path": file_path,
+            "restored_files": restored_files_str,
+        }),
+    );
+    Ok(json!({ "success": true, "message": "Operation rejected" }))
+}
+
+pub(crate) async fn get_session_turns(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let turns = manager
+        .get_session_turns_before(&session_id, read.visible_turn_end())
+        .await
+        .map_err(|error| format!("Failed to get session turns: {error}"))?;
+    Ok(json!(turns))
+}
+
+pub(crate) async fn get_turn_files(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let turn_index = request
+        .get("turnIndex")
+        .or_else(|| request.get("turn_index"))
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| "Missing or invalid 'turnIndex' field".to_string())?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let files = manager
+        .get_turn_files_before(&session_id, turn_index, read.visible_turn_end())
+        .await
+        .map_err(|error| format!("Failed to get turn files: {error}"))?;
+    Ok(json!(files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect::<Vec<_>>()))
+}
+
+pub(crate) async fn get_file_diff(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let file_path = get_string(request, "filePath")?;
+    let operation_id = optional_string(request, "operationId");
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    manager
+        .get_file_diff_before(
+            &session_id,
+            &file_path,
+            operation_id.as_deref(),
+            read.visible_turn_end(),
+        )
+        .await
+        .map_err(|error| format!("Failed to get file diff: {error}"))
+}
+
+pub(crate) async fn get_operation_summary(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let operation_id = get_string(request, "operationId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let summary = manager
+        .get_operation_summary_before(&session_id, &operation_id, read.visible_turn_end())
+        .await
+        .map_err(|error| format!("Failed to get operation summary: {error}"))?;
+    Ok(json!({
+        "operationId": summary.get("operation_id").and_then(Value::as_str).unwrap_or(&operation_id),
+        "sessionId": summary.get("session_id").and_then(Value::as_str).unwrap_or(&session_id),
+        "turnIndex": summary.get("turn_index").and_then(Value::as_u64),
+        "seqInTurn": summary.get("seq_in_turn").and_then(Value::as_u64),
+        "filePath": summary.get("file_path").and_then(Value::as_str),
+        "operationType": summary.get("operation_type").and_then(Value::as_str),
+        "toolName": summary.get("tool_name").and_then(Value::as_str),
+        "linesAdded": summary.get("lines_added").and_then(Value::as_u64),
+        "linesRemoved": summary.get("lines_removed").and_then(Value::as_u64),
+    }))
+}
+
+pub(crate) async fn get_session_operations(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    openbitfun_agent_runtime::session_control::validate_session_id(&session_id)?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let read = state
+        .compatibility
+        .begin_persisted_session_read(&storage_path, &session_id)
+        .await
+        .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let session = manager
+        .get_session_before(&session_id, read.visible_turn_end())
+        .await
+        .map_err(|error| format!("Failed to get session operations: {error}"))?;
+    let operations: Vec<Value> = session
+        .operations
+        .into_iter()
+        .map(|operation| {
+            let operation_type = match operation.operation_type {
+                OperationType::Create => "create",
+                OperationType::Modify => "modify",
+                OperationType::Delete => "delete",
+                OperationType::Rename => "rename",
+            };
+            json!({
+                "operation_id": operation.operation_id,
+                "session_id": operation.session_id,
+                "turn_index": operation.turn_index,
+                "seq_in_turn": operation.seq_in_turn,
+                "file_path": operation.file_path.to_string_lossy().to_string(),
+                "tool_name": operation.tool_context.tool_name,
+                "operation_type": operation_type,
+                "status": "applied",
+                "timestamp": chrono::DateTime::<chrono::Utc>::from(operation.timestamp).to_rfc3339(),
+                "diff_summary": {
+                    "lines_added": operation.diff_summary.lines_added,
+                    "lines_removed": operation.diff_summary.lines_removed,
+                    "blocks_changed": operation.diff_summary.lines_modified,
+                }
+            })
+        })
+        .collect();
+    Ok(Value::Array(operations))
+}
+
+pub(crate) async fn get_snapshot_system_stats(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    manager
+        .get_system_stats()
+        .await
+        .map_err(|error| format!("Failed to get system stats: {error}"))
+}
+
+pub(crate) async fn get_snapshot_sessions(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let sessions = manager
+        .list_sessions()
+        .await
+        .map_err(|error| format!("Failed to list snapshot sessions: {error}"))?;
+    Ok(json!(sessions))
+}
+
+pub(crate) async fn check_git_isolation(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let is_isolated = manager
+        .check_git_isolation()
+        .await
+        .map_err(|error| format!("Failed to check git isolation: {error}"))?;
+    Ok(json!({
+        "git_isolated": is_isolated,
+        "message": if is_isolated {
+            "Git repository is safely isolated"
+        } else {
+            "Git isolation status abnormal"
+        }
+    }))
+}
+
+pub(crate) async fn get_file_change_history(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let file_path = PathBuf::from(get_string(request, "filePath")?);
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let session_ids = manager
+        .list_sessions()
+        .await
+        .map_err(|error| format!("Failed to list snapshot sessions: {error}"))?;
+    let mut changes = Vec::new();
+    for session_id in session_ids {
+        let read = state
+            .compatibility
+            .begin_persisted_session_read(&storage_path, &session_id)
+            .await
+            .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+        let session = manager
+            .get_session_before(&session_id, read.visible_turn_end())
+            .await
+            .map_err(|error| format!("Failed to get file change history: {error}"))?;
+        changes.extend(
+            session
+                .operations
+                .into_iter()
+                .filter(|operation| operation.file_path == file_path)
+                .map(|operation| FileChangeEntry {
+                    session_id: operation.session_id,
+                    turn_index: operation.turn_index,
+                    snapshot_id: operation
+                        .before_snapshot_id
+                        .unwrap_or_else(|| format!("empty_snapshot_{}", operation.operation_id)),
+                    timestamp: operation.timestamp,
+                    operation_type: operation.operation_type,
+                    tool_name: operation.tool_context.tool_name,
+                }),
+        );
+    }
+    changes.sort_by_key(|entry| (entry.session_id.clone(), entry.turn_index, entry.timestamp));
+    serde_json::to_value(changes).map_err(|error| format!("Serialization failed: {error}"))
+}
+
+pub(crate) async fn get_all_modified_files(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let scope = ensure_session_workspace_runtime_ownership(state, request).await?;
+    let storage_path = resolved_session_storage_scope(state, scope).await?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let session_ids = manager
+        .list_sessions()
+        .await
+        .map_err(|error| format!("Failed to list snapshot sessions: {error}"))?;
+    let mut files = BTreeSet::new();
+    for session_id in session_ids {
+        let read = state
+            .compatibility
+            .begin_persisted_session_read(&storage_path, &session_id)
+            .await
+            .map_err(|error| format!("Failed to open a consistent snapshot view: {error}"))?;
+        files.extend(
+            manager
+                .get_session_files_before(&session_id, read.visible_turn_end())
+                .await
+                .map_err(|error| format!("Failed to get modified files: {error}"))?,
+        );
+    }
+    Ok(json!(files
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()))
+}
+
+pub(crate) async fn get_baseline_snapshot_diff(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let file_path = get_string(request, "filePath")?;
+    let workspace = resolve_snapshot_workspace(state, request).await?;
+    require_local_snapshot_workspace(&workspace)?;
+    let manager = open_snapshot_manager_for_view(&workspace.id)
+        .await
+        .map_err(|error| format!("Failed to open snapshot view: {error}"))?;
+    let (baseline_content, current_content) = {
+        let snapshot_service = manager.get_snapshot_service();
+        let snapshot_service = snapshot_service.read().await;
+        snapshot_service
+            .get_baseline_snapshot_diff(&PathBuf::from(&file_path))
+            .await
+            .unwrap_or_else(|_| (String::new(), String::new()))
+    };
+    Ok(json!({
+        "filePath": file_path,
+        "originalContent": baseline_content,
+        "modifiedContent": current_content,
+    }))
 }
 
 #[cfg(test)]

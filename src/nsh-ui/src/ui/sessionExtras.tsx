@@ -400,42 +400,52 @@ function backgroundStatusWord(command: BackgroundCommand): string {
   return key ? tr(key) : command.status;
 }
 
-/** A 32 row above the composer while the session has commands running. */
-export function BackgroundCommandsStrip(): JSX.Element {
+/** A 32 row above the composer while the session has commands running, aligned to the composer column. */
+export function BackgroundCommandsStrip(props: {
+  padding?: () => number;
+  width?: () => number;
+} = {}): JSX.Element {
   const running = computed(() => runningBackgroundCommands().length);
   return (
     <If when={running() > 0}>
       <View
-        role="button"
-        accessibilityLabel="background-commands-strip"
-        onPress={() => backgroundListOpen.set(true)}
         style={{
-          alignSelf: "center",
-          width: "100%",
-          maxWidth: layout.conversationWidth,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space.sm,
-          minHeight: compactLayout() ? layout.touchTarget : space.x3l,
-          paddingHorizontal: space.lg,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          cursor: "pointer",
-          userSelect: "none",
-          ...pressTransition(MOTION_DURATION.fast),
+          paddingHorizontal: props.padding ? props.padding() : 0,
+          paddingTop: space.chip,
         }}
-        hoverStyle={{ backgroundColor: palette().panelHover }}
-        activeStyle={tactileActiveStyle(0.985)}
-        focusVisibleStyle={focusRingStyle()}
       >
-        <Icon name="terminal" size={14} color={palette().textMuted} />
-        <Text style={{ ...textStyle("label", { color: palette().textSecondary }), flex: 1, minWidth: 0 }}>
-          {running() === 1
-            ? tr("background.runningOne")
-            : tr("background.runningOther", { count: running() })}
-        </Text>
-        <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("background.show")}</Text>
-        <Icon name="chevron-right" size={12} color={palette().textMuted} />
+        <View
+          role="button"
+          accessibilityLabel="background-commands-strip"
+          onPress={() => backgroundListOpen.set(true)}
+          style={{
+            alignSelf: "center",
+            width: "100%",
+            maxWidth: props.width ? props.width() : layout.conversationWidth,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            minHeight: compactLayout() ? layout.touchTarget : space.x3l,
+            paddingHorizontal: space.md,
+            borderRadius: radii.md,
+            borderCurve: "continuous",
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{ backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.985)}
+          focusVisibleStyle={focusRingStyle()}
+        >
+          <Icon name="terminal" size={14} color={palette().textMuted} />
+          <Text style={{ ...textStyle("label", { color: palette().textSecondary }), flex: 1, minWidth: 0 }}>
+            {running() === 1
+              ? tr("background.runningOne")
+              : tr("background.runningOther", { count: running() })}
+          </Text>
+          <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("background.show")}</Text>
+          <Icon name="chevron-right" size={12} color={palette().textMuted} />
+        </View>
       </View>
     </If>
   );

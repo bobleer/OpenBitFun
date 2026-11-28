@@ -454,3 +454,23 @@ pub(crate) async fn cancel_mcp_remote_oauth(args: &Value) -> Result<Value, Strin
         .map_err(|error| error.to_string())?;
     Ok(Value::Null)
 }
+
+pub(crate) async fn initialize_mcp_servers() -> Result<Value, String> {
+    let service = mcp_service().await?;
+    service
+        .server_manager()
+        .initialize_all()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Value::Null)
+}
+
+pub(crate) async fn initialize_mcp_servers_non_destructive() -> Result<Value, String> {
+    let service = mcp_service().await?;
+    service
+        .server_manager()
+        .initialize_non_destructive()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Value::Null)
+}

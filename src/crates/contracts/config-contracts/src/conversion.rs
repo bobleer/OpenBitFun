@@ -636,13 +636,16 @@ mod tests {
     }
 
     #[test]
-    fn derives_the_largest_output_tier_within_one_quarter_of_context_with_64k_context_gate() {
+    fn derives_the_largest_output_tier_within_sixteen_percent_of_context() {
         for (context_window, expected_max_tokens) in [
-            (32_000, 8_000),
-            (48_000, 8_000),
-            (64_000, 16_000),
-            (128_000, 32_000),
-            (128_128, 32_000),
+            (32_000, 5_120),
+            (48_000, 7_680),
+            (50_000, 8_000),
+            (64_000, 8_000),
+            (128_000, 16_000),
+            (128_128, 16_000),
+            (150_000, 24_000),
+            (200_000, 32_000),
             (256_000, 32_000),
             (399_999, 32_000),
             (400_000, 64_000),
@@ -677,7 +680,7 @@ mod tests {
 
         let config = AIConfig::try_from(model).expect("conversion should succeed");
 
-        assert_eq!(config.max_tokens, Some(32_000));
+        assert_eq!(config.max_tokens, Some(16_000));
     }
 
     #[test]

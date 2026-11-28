@@ -7600,17 +7600,17 @@ mod tests {
         let budget = model_budget(128_000, Some(32_000));
 
         assert_eq!(budget.output_reserve_tokens, 32_000);
-        assert_eq!(budget.safety_reserve_tokens, 10_000);
-        assert_eq!(budget.input_limit, 86_000);
+        assert_eq!(budget.safety_reserve_tokens, 6_400);
+        assert_eq!(budget.input_limit, 89_600);
     }
 
     #[test]
     fn compression_trigger_budget_uses_the_automatic_output_tier_when_max_tokens_is_unset() {
         let budget = model_budget(128_000, None);
 
-        assert_eq!(budget.output_reserve_tokens, 32_000);
-        assert_eq!(budget.safety_reserve_tokens, 10_000);
-        assert_eq!(budget.input_limit, 86_000);
+        assert_eq!(budget.output_reserve_tokens, 16_000);
+        assert_eq!(budget.safety_reserve_tokens, 6_400);
+        assert_eq!(budget.input_limit, 102_400);
     }
 
     #[test]

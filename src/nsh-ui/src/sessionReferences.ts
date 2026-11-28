@@ -1,4 +1,4 @@
-import { promptReferenceParts, promptReferencesIn } from "./promptReferences";
+import { isInlinePlainPromptReference, promptReferenceParts, promptReferencesIn } from "./promptReferences";
 import {
   codeSnippetLabel, codeSnippetLocation, codeSnippetPromptToken, readCodeSnippetContext, type CodeSnippetContext,
 } from "./codeSnippetReference";
@@ -101,7 +101,7 @@ export function sessionReferenceDraft(presentation: unknown): SessionReferenceDr
 /** Preserve the locator and the readable presentation each host already accepts. */
 export function messageWithSessionReferences(text: string, references: readonly SessionReferenceCandidate[]) {
   const parts = promptReferenceParts(text);
-  const hasPresentation = parts.some(part => part.kind !== "text" && part.kind !== "mcp");
+  const hasPresentation = parts.some(part => part.kind !== "text" && !isInlinePlainPromptReference(part.kind));
   if (references.length === 0 && !hasPresentation) return { text, displayText: text };
   const promptContexts = new Map<string, string>();
   const segments = parts.reduce<Array<

@@ -121,6 +121,8 @@ pub enum PeerHostCapability {
     SessionTrajectoryV1,
     /// `search_referenceable_sessions` accepts an omitted query to browse.
     SessionReferenceBrowseV1,
+    /// Host manages external ACP clients (`get_acp_clients`, ACP flow sessions, and `acp__*` tools).
+    AcpClientHostV1,
     /// `submit_user_answers` is implemented for Runtime-owned questions.
     UserQuestionResponse,
     /// First human interaction disables the unattended question timeout.
@@ -200,6 +202,7 @@ impl PeerHostCapability {
         Self::RecoverableInterruptionV1,
         Self::SessionTrajectoryV1,
         Self::SessionReferenceBrowseV1,
+        Self::AcpClientHostV1,
         Self::UserQuestionResponse,
         Self::UserQuestionInteractionV1,
         Self::SshNoneAuthV1,
@@ -265,6 +268,7 @@ impl PeerHostCapability {
             Self::WorkspaceLatexPreviewV1 => "workspace_latex_preview_v1",
             Self::SessionTrajectoryV1 => "session_trajectory_v1",
             Self::SessionReferenceBrowseV1 => "session_reference_browse_v1",
+            Self::AcpClientHostV1 => "acp_client_host_v1",
             Self::WholeSessionCopyV1 => "whole_session_copy_v1",
             Self::SessionForkV1 => "session_fork_v1",
             Self::RecoverableInterruptionV1 => "recoverable_interruption_v1",
@@ -343,6 +347,7 @@ const DESKTOP_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::RecoverableInterruptionV1,
     PeerHostCapability::SessionTrajectoryV1,
     PeerHostCapability::SessionReferenceBrowseV1,
+    PeerHostCapability::AcpClientHostV1,
     PeerHostCapability::UserQuestionResponse,
     PeerHostCapability::UserQuestionInteractionV1,
     PeerHostCapability::SshNoneAuthV1,
@@ -381,6 +386,8 @@ const CLI_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::SessionForkV1,
     PeerHostCapability::RecoverableInterruptionV1,
     PeerHostCapability::SessionTrajectoryV1,
+    PeerHostCapability::SessionReferenceBrowseV1,
+    PeerHostCapability::AcpClientHostV1,
     PeerHostCapability::ChatMcpCatalogV1,
     PeerHostCapability::WorkspaceIconV1,
     PeerHostCapability::WorkspaceIdReferencesV1,

@@ -206,3 +206,125 @@ test("a Mermaid reply keeps its source while streaming and uses the shared block
   await app.press("doc-mermaid-copy-source");
   expect(app.clipboard()?.trim()).toBe(source);
 });
+
+test("streaming ParamsPartial chunks resolve semantic targets without leaking raw JSON fragments", async () => {
+  const backend = createBackend();
+  withTurns(backend, { "session-1": [] });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  const turnId = "partial-turn";
+  const send = (event: string, payload: Record<string, unknown> = {}) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-1", turnId, ...payload } });
+  backend.setRunningTurn("session-1", turnId);
+  await send("agentic://dialog-turn-started", { userInput: "Survey architecture" });
+
+  // Stream a Task call chunk by chunk: partial key must not leak raw JSON syntax.
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "EarlyDetected", tool_id: "t-task", tool_name: "Task" },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "ParamsPartial", tool_id: "t-task", tool_name: "Task", params: '{"pro' },
+  });
+  await app.waitFor("tool-card-Task");
+  expect(app.texts().join("\n")).not.toContain('{"pro');
+
+  // Prompt streams first: only its clean first line surfaces, never raw escapes.
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: {
+      event_type: "ParamsPartial",
+      tool_id: "t-task",
+      tool_name: "Task",
+      params: 'mpt": "Inspect core architecture\\nDo not over-read", ',
+    },
+  });
+  await app.waitFor("Inspect core architecture");
+  expect(app.texts().join("\n")).not.toContain("Do not over-read");
+
+  // Once description streams in, it supersedes the prompt fallback cleanly.
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: {
+      event_type: "ParamsPartial",
+      tool_id: "t-task",
+      tool_name: "Task",
+      params: '"description": "Survey architecture"}',
+    },
+  });
+  await app.waitFor("Survey architecture");
+
+  // Un-anchored orphan fragments (e.g. missed opening brace) never leak into the card.
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "EarlyDetected", tool_id: "t-orphan", tool_name: "Task" },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: {
+      event_type: "ParamsPartial",
+      tool_id: "t-orphan",
+      tool_name: "Task",
+      params: "ntrollers.rs, do not over-read",
+    },
+  });
+  // ExecCommand accumulates partial cmd chunks cleanly.
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "EarlyDetected", tool_id: "t-exec", tool_name: "ExecCommand" },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "ParamsPartial", tool_id: "t-exec", tool_name: "ExecCommand", params: '{"cmd": "git status' },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "ParamsPartial", tool_id: "t-exec", tool_name: "ExecCommand", params: ' --short"}' },
+  });
+  await app.waitFor("git status --short");
+  expect(app.texts().join("\n")).not.toContain("ntrollers.rs");
+});
+
+test("waiting hands off cleanly to live thinking and SmoothDisclosure toggles without stale content", async () => {
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "session-flow",
+        sessionName: "Flow test",
+        lastUpdated: 1763150000000,
+        messageCount: 0,
+        agentType: "Standard",
+      },
+    ],
+  });
+  withTurns(backend, { "session-flow": [] });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Flow test");
+  const turnId = "flow-turn";
+  const send = (event: string, payload: Record<string, unknown> = {}) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-flow", turnId, ...payload } });
+
+  backend.setRunningTurn("session-flow", turnId);
+  await send("agentic://dialog-turn-started", { userInput: "Explain the pipeline" });
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // First thinking chunk hands off from TurnWaitingIndicator to ThinkingBlock in place.
+  await send("agentic://text-chunk", { roundId: "r1", contentType: "thinking", text: "Tracing event pipeline carefully." });
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  expect(app.texts()).toContain("Thinking…");
+  expect(app.texts().join("\n")).not.toContain("Tracing event pipeline carefully.");
+
+  // SmoothDisclosure opens to show reasoning, then collapses cleanly.
+  await app.press("Thinking…");
+  await app.waitFor("Tracing event pipeline carefully.");
+  await app.press("Thinking…");
+  await app.waitUntil(() => !app.texts().join("\n").includes("Tracing event pipeline carefully."));
+
+  // Streaming answer text settles thinking and renders cleanly.
+  await send("agentic://text-chunk", { roundId: "r1", contentType: "thinking", isThinkingEnd: true });
+  await send("agentic://text-chunk", { roundId: "r1", text: "The pipeline routes events through OBP." });
+  await app.waitFor("The pipeline routes events through OBP.");
+  expect(app.texts()).toContain("Thinking");
+  expect(app.texts()).not.toContain("Thinking…");
+});

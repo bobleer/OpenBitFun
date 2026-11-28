@@ -714,20 +714,23 @@ export const updateSessionModelTarget = (request: {
 }, route?: InvokeCommandOptions) => invokeCommand<SessionModelTargetResponse>("update_session_model_target", request, route);
 
 /** Session lifecycle and row actions; sessions address a workspace by `workspace_id`. */
-export const createSession = (request: {
-  sessionId?: string;
-  sessionName: string;
-  agentType: string;
-  workspacePath?: string;
-  workspaceId?: string;
-}) =>
+export const createSession = (
+  request: {
+    sessionId?: string;
+    sessionName: string;
+    agentType: string;
+    workspacePath?: string;
+    workspaceId?: string;
+  },
+  route?: InvokeCommandOptions,
+) =>
   invokeCommand<{
     sessionId: string;
     sessionName: string;
     agentType: string;
     modelId?: string | null;
     modelName?: string | null;
-  }>("create_session", request);
+  }>("create_session", request, route);
 
 export interface FreshExternalSubagentExecution {
   kind: "fresh_external_subagent";

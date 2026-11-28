@@ -12,9 +12,20 @@ import {
 } from "./api";
 import { addFileAttachment, addSessionReference, toRelativeWorkspacePath, type FileAttachment } from "./attachmentStore";
 import { fleetActive, invokeCommand, invokeRawCommand } from "./bridge";
-import { fleetDeviceById } from "./fleetStore";
+import { localDeviceId } from "./devicePrefsStore";
+import { isRuntimeFleetDevice, isSidebarFleetDevice, remoteWorkspaceHost } from "./deviceTree";
+import { fleetDeviceById, fleetDevices } from "./fleetStore";
 import { tr, type MessageKey } from "./i18n";
-import { mcpPromptToken, skillPromptToken } from "./promptReferences";
+import { fleetModelText, readChatModelsForDevice, readFleetModelsForDevice } from "./modelStore";
+import {
+  acpPromptToken,
+  devicePromptToken,
+  mcpPromptToken,
+  modelPromptToken,
+  skillPromptToken,
+  workspacePromptToken,
+} from "./promptReferences";
+import { errorMessageOf } from "./shared/errorUtils";
 import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeSessionId,
@@ -28,9 +39,12 @@ import {
   composerText,
   deviceContext,
   sessions,
+  workspaces,
 } from "./state";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { readSessionReference, sessionReferenceKey, type SessionReferenceCandidate } from "./sessionReferences";
+
+export type MentionPromptKind = "skills" | "mcp" | "workspaces" | "devices" | "models" | "acp";
 
 /** One row of the picker: a path the host reported, split into what a row shows. */
 export interface MentionHit {
@@ -39,7 +53,7 @@ export interface MentionHit {
   directory: boolean;
   relativePath?: string;
   session?: SessionReferenceCandidate;
-  prompt?: { kind: "skills" | "mcp"; token: string; scope: string };
+  prompt?: { kind: MentionPromptKind; token: string; scope: string };
 }
 
 export interface MentionOwner {
@@ -74,7 +88,17 @@ let ownerKey: string | null = null;
 
 export const mentionOpen = signal(false);
 export const mentionPane = signal<"primary" | "secondary">("primary");
-export type MentionSource = "sources" | "all" | "files" | "sessions" | "skills" | "mcp";
+export type MentionSource =
+  | "sources"
+  | "all"
+  | "files"
+  | "workspaces"
+  | "devices"
+  | "models"
+  | "acp"
+  | "sessions"
+  | "skills"
+  | "mcp";
 export const mentionSource = signal<MentionSource>("files");
 let explicitSource = false;
 export const mentionQuery = signal("");
@@ -355,7 +379,7 @@ export function setMentionQuery(query: string): void {
     mentionLoading.set(false);
     return;
   }
-  if (source === "skills" || source === "mcp" || source === "sessions") {
+  if (source === "sessions" || isPromptSource(source)) {
     const search = source === "sessions"
       ? () => searchSessionMentions(trimmed)
       : () => searchCatalogMentions(source, trimmed);
@@ -397,12 +421,16 @@ async function searchMentions(query: string): Promise<void> {
   const includeSessions = all && canSearchSessionReferences();
   const seq = ++mentionReqSeq;
   mentionLoading.set(true);
-  const [files, sessionMatches, skills, mcp] = await Promise.allSettled([
+  const [files, sessionMatches, workspaceMatches, deviceMatches, modelMatches, acpMatches, skills, mcp] = await Promise.allSettled([
     workspaceId ? searchWorkspaceFiles(workspaceId, query, {
       searchContent: false,
       maxResults: RESULT_LIMIT + 6,
     }, mentionRoute()) : Promise.resolve([]),
     includeSessions ? fetchSessionMentions(query) : Promise.resolve([]),
+    all ? readMentionCatalog("workspaces").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
+    all ? readMentionCatalog("devices").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
+    all ? readMentionCatalog("models").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
+    all ? readMentionCatalog("acp").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
     all ? readMentionCatalog("skills").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
     all && !owner.remoteWorkspace()
       ? readMentionCatalog("mcp").then(catalog => matchCatalog(catalog, query)) : Promise.resolve([]),
@@ -412,9 +440,13 @@ async function searchMentions(query: string): Promise<void> {
   const fileHits = hitsOf(rows, query);
   const sessionHits = sessionMatches.status === "fulfilled" ? sessionMatches.value : [];
   const currentScope = mentionCatalogScope() === scope;
+  const workspaceHits = currentScope && workspaceMatches.status === "fulfilled" ? workspaceMatches.value : [];
+  const deviceHits = currentScope && deviceMatches.status === "fulfilled" ? deviceMatches.value : [];
+  const modelHits = currentScope && modelMatches.status === "fulfilled" ? modelMatches.value : [];
+  const acpHits = currentScope && acpMatches.status === "fulfilled" ? acpMatches.value : [];
   const skillHits = currentScope && skills.status === "fulfilled" ? skills.value : [];
   const mcpHits = currentScope && mcp.status === "fulfilled" ? mcp.value : [];
-  const sources = [fileHits, sessionHits, skillHits, mcpHits];
+  const sources = [fileHits, workspaceHits, deviceHits, modelHits, acpHits, sessionHits, skillHits, mcpHits];
   const counts = sources.map(() => 0);
   let remaining = RESULT_LIMIT;
   for (let row = 0; row < RESULT_LIMIT && remaining > 0; row++) {
@@ -426,7 +458,9 @@ async function searchMentions(query: string): Promise<void> {
   }
   const combined = sources.flatMap((hits, index) => hits.slice(0, counts[index]));
   mentionHits.set(combined);
-  mentionTruncated.set(rows.length + sessionHits.length + skillHits.length + mcpHits.length > combined.length);
+  const totalMatches = rows.length + workspaceHits.length + deviceHits.length + modelHits.length + acpHits.length
+    + sessionHits.length + skillHits.length + mcpHits.length;
+  mentionTruncated.set(totalMatches > combined.length);
   mentionSearched.set(true);
   if (files.status === "rejected") {
     const error = files.reason;
@@ -550,7 +584,9 @@ export function selectMentionSource(source: MentionSource): void {
 }
 
 function canSearchSessionReferences(): boolean {
-  return fleetDeviceById(owner.deviceId())?.hostKind !== "cli";
+  const device = fleetDeviceById(owner.deviceId());
+  if (!device || device.hostKind !== "cli") return true;
+  return device.hostCapabilities.includes("session_reference_browse_v1");
 }
 
 async function fetchSessionMentions(query: string): Promise<MentionHit[]> {
@@ -595,27 +631,329 @@ async function searchSessionMentions(query: string): Promise<void> {
   }
 }
 
-type PromptSource = "mcp" | "skills";
+type PromptSource = MentionPromptKind;
 type MentionCatalog = {
   entries: { hit: MentionHit; keywords: string[] }[];
   notice?: MessageKey;
 };
 
+function isPromptSource(source: MentionSource): source is PromptSource {
+  return (
+    source === "skills" ||
+    source === "mcp" ||
+    source === "workspaces" ||
+    source === "devices" ||
+    source === "models" ||
+    source === "acp"
+  );
+}
+
+function readWorkspacesMentionCatalog(scope: string): MentionCatalog {
+  if (fleetActive()) {
+    const devices = fleetDevices().filter(isSidebarFleetDevice);
+    const multiDevice = devices.length > 1;
+    const entries: MentionCatalog["entries"] = [];
+    for (const device of devices) {
+      for (const workspace of device.workspaces) {
+        const wsName =
+          workspace.name?.trim() ||
+          workspace.rootPath.split(/[\\/]/).filter(Boolean).pop() ||
+          workspace.workspaceId;
+        const remoteAlias = remoteWorkspaceHost(workspace);
+        const subtitle =
+          [multiDevice ? device.name : "", remoteAlias ?? "", workspace.rootPath]
+            .filter(Boolean)
+            .join(" · ") || workspace.workspaceId;
+        entries.push({
+          hit: {
+            path: `workspace:${device.deviceId}:${workspace.workspaceId}`,
+            name: wsName,
+            directory: false,
+            relativePath: subtitle,
+            prompt: {
+              kind: "workspaces",
+              token: workspacePromptToken(workspace.workspaceId, wsName, {
+                rootPath: workspace.rootPath,
+                deviceId: device.deviceId,
+              }),
+              scope,
+            },
+          },
+          keywords: [
+            "workspace",
+            workspace.workspaceId,
+            wsName,
+            workspace.rootPath,
+            workspace.kind,
+            device.name,
+            device.deviceId,
+            remoteAlias ?? "",
+            workspace.sshHost ?? "",
+            workspace.connectionName ?? "",
+          ].filter(Boolean),
+        });
+      }
+    }
+    return { entries };
+  }
+  const entries: MentionCatalog["entries"] = workspaces().map(ws => {
+    const wsName = ws.name?.trim() || ws.rootPath.split(/[\\/]/).filter(Boolean).pop() || ws.id;
+    const remoteAlias = remoteWorkspaceHost(ws);
+    const subtitle = [remoteAlias ?? "", ws.rootPath].filter(Boolean).join(" · ") || ws.id;
+    return {
+      hit: {
+        path: `workspace:local:${ws.id}`,
+        name: wsName,
+        directory: false,
+        relativePath: subtitle,
+        prompt: {
+          kind: "workspaces",
+          token: workspacePromptToken(ws.id, wsName, { rootPath: ws.rootPath }),
+          scope,
+        },
+      },
+      keywords: [
+        "workspace",
+        ws.id,
+        wsName,
+        ws.rootPath,
+        ws.workspaceKind ?? "",
+        remoteAlias ?? "",
+        ws.sshHost ?? "",
+        ws.connectionName ?? "",
+      ].filter(Boolean),
+    };
+  });
+  return { entries };
+}
+
+function readDevicesMentionCatalog(scope: string): MentionCatalog {
+  if (fleetActive()) {
+    const entries: MentionCatalog["entries"] = fleetDevices()
+      .filter(isRuntimeFleetDevice)
+      .map(device => {
+        const name = device.name?.trim() || device.deviceId;
+        const subtitle =
+          [
+            device.isClientDevice ? tr("device.thisDevice") : "",
+            device.hostKind && device.hostKind !== "unknown" ? device.hostKind : "",
+            device.state && device.state !== "online" ? device.state : "",
+            device.deviceId,
+          ]
+            .filter(Boolean)
+            .join(" · ") || device.deviceId;
+        return {
+          hit: {
+            path: `device:${device.deviceId}`,
+            name,
+            directory: false,
+            relativePath: subtitle,
+            prompt: {
+              kind: "devices",
+              token: devicePromptToken(device.deviceId, name),
+              scope,
+            },
+          },
+          keywords: [
+            "device",
+            device.deviceId,
+            name,
+            device.hostKind,
+            device.state,
+            ...(device.isClientDevice ? ["self", "local", tr("device.thisDevice")] : []),
+          ].filter(Boolean),
+        };
+      });
+    return { entries };
+  }
+  const id = localDeviceId() || "self";
+  const name = tr("device.thisDevice");
+  const subtitle = localDeviceId() ? `${tr("common.local")} · ${localDeviceId()}` : tr("common.local");
+  return {
+    entries: [
+      {
+        hit: {
+          path: `device:${id}`,
+          name,
+          directory: false,
+          relativePath: subtitle,
+          prompt: {
+            kind: "devices",
+            token: devicePromptToken(id, name),
+            scope,
+          },
+        },
+        keywords: ["device", "self", "local", id, name],
+      },
+    ],
+  };
+}
+
+async function readModelsMentionCatalog(scope: string, deviceId: string): Promise<MentionCatalog> {
+  if (fleetActive()) {
+    try {
+      const groups = await readFleetModelsForDevice(deviceId || undefined);
+      if (groups && groups.length > 0) {
+        const entries: MentionCatalog["entries"] = [];
+        for (const device of groups) {
+          if (!device.online || device.unavailableReason) continue;
+          const sameDevice = device.isThisDevice || (Boolean(deviceId) && device.deviceId === deviceId);
+          for (const choice of device.models) {
+            if (!choice.selectable) continue;
+            const text = fleetModelText(choice);
+            const label = sameDevice ? text.label : `${text.label} · ${device.name}`;
+            const subtitle =
+              [
+                text.detail || choice.provider,
+                choice.modelName && choice.modelName !== text.label ? choice.modelName : "",
+                sameDevice ? "" : device.name,
+              ]
+                .filter(Boolean)
+                .join(" · ") || choice.modelRef;
+            entries.push({
+              hit: {
+                path: `model:${choice.modelRef}`,
+                name: label,
+                directory: false,
+                relativePath: subtitle,
+                prompt: {
+                  kind: "models",
+                  token: modelPromptToken(choice.modelRef, label, { modelName: choice.modelName }),
+                  scope,
+                },
+              },
+              keywords: [
+                "model",
+                choice.modelRef,
+                choice.modelId,
+                choice.displayName,
+                choice.modelName ?? "",
+                choice.provider,
+                text.label,
+                text.detail,
+                device.name,
+                device.deviceId,
+              ].filter(Boolean),
+            });
+          }
+        }
+        return { entries };
+      }
+    } catch {
+      // Older fleet entries without `fleet_models` fall back to the owning device's model catalog.
+    }
+  }
+  const options = await readChatModelsForDevice(deviceId);
+  return {
+    entries: options.map(option => {
+      const subtitle =
+        [
+          option.detail || option.provider,
+          option.modelName && option.modelName !== option.label ? option.modelName : "",
+        ]
+          .filter(Boolean)
+          .join(" · ") || option.id;
+      return {
+        hit: {
+          path: `model:${option.id}`,
+          name: option.label,
+          directory: false,
+          relativePath: subtitle,
+          prompt: {
+            kind: "models",
+            token: modelPromptToken(option.id, option.label, { modelName: option.modelName }),
+            scope,
+          },
+        },
+        keywords: [
+          "model",
+          option.id,
+          option.configId,
+          option.configName,
+          option.modelName,
+          option.provider,
+          option.detail,
+        ].filter(Boolean),
+      };
+    }),
+  };
+}
+
+function readAcpString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+async function readAcpMentionCatalog(
+  scope: string,
+  deviceId: string,
+  route: ReturnType<typeof mentionRoute>,
+): Promise<MentionCatalog> {
+  const device = fleetDeviceById(deviceId);
+  if (device?.hostKind === "cli" && !device.hostCapabilities.includes("acp_client_host_v1")) {
+    return { entries: [], notice: "sessions.mentionAcpUnavailable" };
+  }
+  const raw = await invokeCommand<unknown>("get_acp_clients", {}, route);
+  if (!Array.isArray(raw)) {
+    return { entries: [], notice: "sessions.mentionAcpUnavailable" };
+  }
+  const entries: MentionCatalog["entries"] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    if (record.enabled !== true) continue;
+    const id = readAcpString(record, ["id", "clientId", "client_id"]);
+    if (!id) continue;
+    const name = readAcpString(record, ["name", "displayName", "display_name"]) || id;
+    const toolName = readAcpString(record, ["toolName", "tool_name"]);
+    const status = readAcpString(record, ["status"]);
+    const command = readAcpString(record, ["command"]);
+    const subtitle = [toolName || id, status === "running" ? tr("common.running") : ""].filter(Boolean).join(" · ");
+    entries.push({
+      hit: {
+        path: `acp:${id}`,
+        name,
+        directory: false,
+        relativePath: subtitle,
+        prompt: {
+          kind: "acp",
+          token: acpPromptToken(id, name, toolName || undefined),
+          scope,
+        },
+      },
+      keywords: ["acp", id, name, toolName, command, status].filter(Boolean),
+    });
+  }
+  return { entries };
+}
+
 function readMentionCatalog(source: PromptSource): Promise<MentionCatalog> {
   const scope = mentionCatalogScope();
+  if (source === "workspaces") return Promise.resolve(readWorkspacesMentionCatalog(scope));
+  if (source === "devices") return Promise.resolve(readDevicesMentionCatalog(scope));
   const key = JSON.stringify([source, scope]);
   const existing = mentionCatalogs.get(key);
   if (existing) return existing;
+  const deviceId = owner.deviceId();
   const workspaceId = owner.workspaceId();
   const mode = mentionMode();
   const route = mentionRoute();
   const current = () => mentionOpen() && mentionOwnerCurrent() && scope === mentionCatalogScope();
   const remote = owner.remoteWorkspace();
-  const promise = source === "mcp"
-    ? remote
+  let promise: Promise<MentionCatalog>;
+  if (source === "mcp") {
+    promise = remote
       ? Promise.resolve<MentionCatalog>({ entries: [], notice: "sessions.mentionMcpRemote" })
-      : readMcpMentionCatalog(scope, mode, workspaceId, route)
-    : readSlashSkills(current, mode, workspaceId, owner.workspaceRoot(), false, route, true)
+      : readMcpMentionCatalog(scope, mode, workspaceId, route);
+  } else if (source === "models") {
+    promise = readModelsMentionCatalog(scope, deviceId);
+  } else if (source === "acp") {
+    promise = readAcpMentionCatalog(scope, deviceId, route);
+  } else {
+    promise = readSlashSkills(current, mode, workspaceId, owner.workspaceRoot(), false, route, true)
       .then(skills => ({
         entries: skills.map(skill => ({
           hit: {
@@ -626,6 +964,7 @@ function readMentionCatalog(source: PromptSource): Promise<MentionCatalog> {
           keywords: [skill.description, skill.argumentHint ?? ""],
         })),
       }));
+  }
   mentionCatalogs.set(key, promise);
   return promise;
 }
@@ -669,6 +1008,7 @@ async function readMcpMentionCatalog(
 
 function matchCatalog(catalog: MentionCatalog, query: string): MentionHit[] {
   const needle = query.trim().toLowerCase();
+  if (!needle) return catalog.entries.map(entry => entry.hit);
   const rank = ({ hit }: MentionCatalog["entries"][number]) => {
     const name = hit.name.toLowerCase();
     return name === needle ? 0 : name.startsWith(needle) ? 1 : 2;
@@ -694,12 +1034,25 @@ async function searchCatalogMentions(source: PromptSource, query: string): Promi
     if (catalog.notice) mentionNotice.set(tr(catalog.notice));
   } catch (failure) {
     if (!current()) return;
-    const command = source === "mcp" ? "get_chat_mcp_catalog" : "get_mode_skill_configs";
-    const unavailable = isMissingCommand(failure, command);
-    mentionNotice.set(tr(source === "mcp"
-      ? unavailable ? "sessions.mentionMcpUnavailable" : "sessions.mentionMcpFailed"
-      : unavailable ? "sessions.mentionSkillsUnavailable" : "sessions.mentionSkillsFailed"));
-    mentionRetryable.set(!unavailable);
+    if (source === "mcp") {
+      const unavailable = isMissingCommand(failure, "get_chat_mcp_catalog");
+      mentionNotice.set(tr(unavailable ? "sessions.mentionMcpUnavailable" : "sessions.mentionMcpFailed"));
+      mentionRetryable.set(!unavailable);
+    } else if (source === "models") {
+      const unavailable = isMissingCommand(failure, "get_ai_model_catalog");
+      mentionNotice.set(tr(unavailable ? "sessions.mentionModelsUnavailable" : "sessions.mentionModelsFailed"));
+      mentionRetryable.set(!unavailable);
+    } else if (source === "acp") {
+      const unavailable =
+        isMissingCommand(failure, "get_acp_clients") ||
+        /acp client service not initialized/i.test(errorMessageOf(failure));
+      mentionNotice.set(tr(unavailable ? "sessions.mentionAcpUnavailable" : "sessions.mentionAcpFailed"));
+      mentionRetryable.set(!unavailable);
+    } else {
+      const unavailable = isMissingCommand(failure, "get_mode_skill_configs");
+      mentionNotice.set(tr(unavailable ? "sessions.mentionSkillsUnavailable" : "sessions.mentionSkillsFailed"));
+      mentionRetryable.set(!unavailable);
+    }
   } finally {
     if (seq === mentionReqSeq) mentionLoading.set(false);
   }

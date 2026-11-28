@@ -614,3 +614,283 @@ for (const remote of [false, true]) {
     expect(host.pageHostCalls).toHaveLength(0);
   });
 }
+
+test("the composer references workspaces, devices, models, and enabled ACP agents inline", async () => {
+  const { backend } = promptReferenceBackend();
+  const app = await open("../App.tsx", { ...desktop, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Message");
+
+  await app.type("composer", "Use @");
+  await app.press("id:mention-source-workspaces");
+  await app.waitFor("mention-option-remote-host");
+  await app.press("mention-option-remote-host");
+  await app.waitFor("composer-prompt-reference-workspace-remote-host");
+
+  await app.type("composer", "on @");
+  await app.press("id:mention-source-devices");
+  await app.waitFor("mention-option-This device");
+  await app.press("mention-option-This device");
+  await app.waitFor("composer-prompt-reference-device-This device");
+
+  await app.type("composer", "with @");
+  await app.press("id:mention-source-models");
+  await app.waitFor("mention-option-Fast model");
+  expect(app.shows("mention-option-Image model")).toBe(false);
+  await app.press("mention-option-Fast model");
+  await app.waitFor("composer-prompt-reference-model-Fast model");
+
+  await app.type("composer", "via @");
+  await app.press("id:mention-source-acp");
+  await app.waitFor("mention-option-OpenCode");
+  expect(app.shows("mention-option-Codex CLI")).toBe(false);
+  await app.press("mention-option-OpenCode");
+  await app.waitFor("composer-prompt-reference-acp-OpenCode");
+
+  const expectedText =
+    'Use Workspace "remote-host" (id: "workspace-2", path: "/srv/app") ' +
+    'on Device "This device" (id: "self") ' +
+    'with Model "Fast model" (id: "cfg-fast", model: "fast-small") ' +
+    'via ACP "OpenCode" (client: "opencode", tool: "run_opencode_agent")';
+
+  await app.press("Send");
+  const sent = backend.calls.find(call => call.action === "submit_user_message")?.request as Record<string, unknown>;
+  expect(sent).toMatchObject({ sessionId: "session-1", text: expectedText });
+  expect(sent.userMessageMetadata).toBe(undefined);
+  await app.waitFor("user-prompt-reference-workspace-remote-host");
+  await app.waitFor("user-prompt-reference-device-This device");
+  await app.waitFor("user-prompt-reference-model-Fast model");
+  await app.waitFor("user-prompt-reference-acp-OpenCode");
+
+  // Unified `@query` search matches across the new sources and supports atomic copy/delete.
+  await app.type("composer", "Ask @opencode");
+  await app.waitFor("mention-option-OpenCode");
+  await app.press("mention-option-OpenCode");
+  await app.waitFor("composer-prompt-reference-acp-OpenCode");
+  await app.keyboard.press("mod+a");
+  await app.keyboard.press("mod+c");
+  expect(app.clipboard()).toBe('Ask ACP "OpenCode" (client: "opencode", tool: "run_opencode_agent") ');
+  await app.keyboard.press("end");
+  await app.keyboard.press("backspace");
+  await app.keyboard.press("backspace");
+  expect(app.shows("composer-prompt-reference-acp-OpenCode")).toBe(false);
+});
+
+test("model and ACP mention sources distinguish retryable errors from unavailable hosts", async () => {
+  const { backend } = promptReferenceBackend();
+  const base = backend.handlers["openbitfun.invoke"];
+  let modelState: "ready" | "failed" | "unsupported" = "failed";
+  let acpState: "ready" | "failed" | "unsupported" = "failed";
+  backend.handlers["openbitfun.invoke"] = data => {
+    const args = data as { action?: string };
+    if (args.action === "get_ai_model_catalog" && modelState !== "ready") {
+      return {
+        ok: false,
+        error: modelState === "unsupported" ? "unknown command: get_ai_model_catalog" : "Model catalog timeout",
+      };
+    }
+    if (args.action === "get_acp_clients" && acpState !== "ready") {
+      return {
+        ok: false,
+        error: acpState === "unsupported" ? "ACP client service not initialized" : "ACP daemon busy",
+      };
+    }
+    return base(data);
+  };
+  const app = await open("../App.tsx", { ...desktop, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+
+  await app.type("composer", "@");
+  await app.press("id:mention-source-models");
+  await app.waitFor("Could not load models.");
+  modelState = "ready";
+  await app.press("mention-retry-catalog");
+  await app.waitFor("mention-option-Primary model");
+  await app.press("mention-option-Primary model");
+  await app.waitFor("composer-prompt-reference-model-Primary model");
+
+  modelState = "unsupported";
+  await app.type("composer", "@");
+  await app.press("id:mention-source-models");
+  await app.waitFor("This device does not provide a model catalog.");
+  expect(app.shows("mention-retry-catalog")).toBe(false);
+
+  await app.press("id:mention-source-acp");
+  await app.waitFor("Could not load ACP agents.");
+  acpState = "ready";
+  await app.press("mention-retry-catalog");
+  await app.waitFor("mention-option-OpenCode");
+  await app.press("mention-option-OpenCode");
+  await app.waitFor("composer-prompt-reference-acp-OpenCode");
+
+  acpState = "unsupported";
+  await app.type("composer", "@");
+  await app.press("id:mention-source-acp");
+  await app.waitFor("This device does not provide an ACP catalog.");
+  expect(app.shows("mention-retry-catalog")).toBe(false);
+});
+
+test("the fleet composer references cross-device workspaces, runtime devices, fleet models, and routes ACP", async () => {
+  const { backend } = promptReferenceBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 3, full: true, removedDeviceIds: [], totals: { running: 0, waiting: 0, unread: 0 },
+      devices: [
+        fleetDeviceRow("dev-a", "Entry", [{
+          workspaceId: "ws-a", name: "Local repo", rootPath: "/Users/me/local",
+          sessions: [],
+        }], { isClientDevice: true, hostKind: "desktop", state: "online" }),
+        fleetDeviceRow("dev-b", "Desktop runtime", [{
+          workspaceId: "ws-b", name: "Work tree", rootPath: "/home/b/repo",
+          sessions: [fleetSessionRow("dev-b", "ws-b", "s-b1", "Composing on B")],
+        }], { hostKind: "desktop", state: "online" }),
+        fleetDeviceRow("dev-cli", "Build box", [{
+          workspaceId: "ws-cli", name: "CI repo", rootPath: "/srv/ci",
+          sessions: [],
+        }], { hostKind: "cli", state: "online" }),
+        fleetDeviceRow("dev-cloud", "SuperAgent", [], { hostKind: "cloud", state: "online" }),
+      ],
+    },
+    fleetModels: {
+      "dev-b": {
+        devices: [
+          {
+            deviceId: "dev-b", name: "Desktop runtime", hostKind: "desktop", state: "online",
+            online: true, isThisDevice: true,
+            models: [{
+              modelId: "cfg-b1", displayName: "Local B", provider: "openai", modelName: "gpt-5",
+              label: "Local B", detail: "openai", modelRef: "cfg-b1", selectable: true,
+            }],
+          },
+          {
+            deviceId: "dev-a", name: "Entry", hostKind: "desktop", state: "online",
+            online: true, isThisDevice: false,
+            models: [{
+              modelId: "cfg-a1", displayName: "Claude Sonnet", provider: "anthropic", modelName: "claude-sonnet-4",
+              label: "Claude Sonnet", detail: "anthropic", modelRef: "fleet:dev-a/cfg-a1", selectable: true,
+            }],
+          },
+        ],
+      },
+    },
+  });
+  const app = await open("./fixtures/sessionApp.tsx", { ...desktop, host: { handlers: host.handlers } });
+  await app.waitFor("text:ready");
+  await app.press("harness-open-session");
+  await app.waitFor("text:Composing on B");
+
+  await app.type("composer", "Run in @");
+  await app.press("id:mention-source-workspaces");
+  await app.waitFor("mention-option-CI repo");
+  await app.press("mention-option-CI repo");
+  await app.waitFor("composer-prompt-reference-workspace-CI repo");
+
+  await app.type("composer", "on @");
+  await app.press("id:mention-source-devices");
+  await app.waitFor("mention-option-Build box");
+  expect(app.shows("mention-option-SuperAgent")).toBe(false);
+  await app.press("mention-option-Build box");
+  await app.waitFor("composer-prompt-reference-device-Build box");
+
+  await app.type("composer", "using @");
+  await app.press("id:mention-source-models");
+  await app.waitFor("mention-option-Claude Sonnet · Entry");
+  await app.press("mention-option-Claude Sonnet · Entry");
+  await app.waitFor("composer-prompt-reference-model-Claude Sonnet · Entry");
+
+  await app.type("composer", "with @");
+  await app.press("id:mention-source-acp");
+  await app.waitFor("mention-option-OpenCode");
+  expect(host.fleetCalls.find(call => call.command === "get_acp_clients")).toMatchObject({ target: "dev-b" });
+  await app.press("mention-option-OpenCode");
+  await app.waitFor("composer-prompt-reference-acp-OpenCode");
+
+  await app.press("Send");
+  expect(host.fleetCalls.find(call => call.command === "submit_user_message")).toMatchObject({
+    target: "dev-b",
+    args: {
+      request: {
+        sessionId: "s-b1",
+        text:
+          'Run in Workspace "CI repo" (id: "ws-cli", path: "/srv/ci", device: "dev-cli") ' +
+          'on Device "Build box" (id: "dev-cli") ' +
+          'using Model "Claude Sonnet · Entry" (id: "fleet:dev-a/cfg-a1", model: "claude-sonnet-4") ' +
+          'with ACP "OpenCode" (client: "opencode", tool: "run_opencode_agent")',
+      },
+    },
+  });
+  expect(host.pageHostCalls).toHaveLength(0);
+});
+
+test("an older CLI fleet peer without ACP/session capabilities degrades loudly without issuing remote calls", async () => {
+  const { backend } = promptReferenceBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 2, full: true, removedDeviceIds: [], totals: { running: 0, waiting: 0, unread: 0 },
+      devices: [
+        fleetDeviceRow("dev-a", "Entry", [], { isClientDevice: true, hostKind: "desktop", state: "online" }),
+        fleetDeviceRow("dev-b", "Build box", [{
+          workspaceId: "ws-b", name: "Work tree", rootPath: "/home/b/repo",
+          sessions: [fleetSessionRow("dev-b", "ws-b", "s-b1", "CLI session")],
+        }], { hostKind: "cli", state: "online", hostCapabilities: [] }),
+      ],
+    },
+  });
+  const app = await open("./fixtures/sessionApp.tsx", { ...desktop, host: { handlers: host.handlers } });
+  await app.waitFor("text:ready");
+  await app.press("harness-open-session");
+  await app.waitFor("text:CLI session");
+
+  await app.type("composer", "@");
+  await app.press("id:mention-source-acp");
+  await app.waitFor("This device does not provide an ACP catalog.");
+  expect(host.fleetCalls.filter(call => call.command === "get_acp_clients")).toHaveLength(0);
+
+  await app.press("id:mention-source-sessions");
+  await app.waitFor("This runtime does not offer session reference search.");
+  expect(host.fleetCalls.filter(call => call.command === "search_referenceable_sessions")).toHaveLength(0);
+});
+
+test("a capable CLI fleet peer supports ACP and session reference mentions via capability negotiation", async () => {
+  const { backend } = promptReferenceBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 2, full: true, removedDeviceIds: [], totals: { running: 0, waiting: 0, unread: 0 },
+      devices: [
+        fleetDeviceRow("dev-a", "Entry", [], { isClientDevice: true, hostKind: "desktop", state: "online" }),
+        fleetDeviceRow("dev-b", "Build box", [{
+          workspaceId: "ws-b", name: "Work tree", rootPath: "/home/b/repo",
+          sessions: [fleetSessionRow("dev-b", "ws-b", "s-b1", "CLI session")],
+        }], {
+          hostKind: "cli",
+          state: "online",
+          hostCapabilities: ["acp_client_host_v1", "session_reference_browse_v1"],
+        }),
+      ],
+    },
+  });
+  const app = await open("./fixtures/sessionApp.tsx", { ...desktop, host: { handlers: host.handlers } });
+  await app.waitFor("text:ready");
+  await app.press("harness-open-session");
+  await app.waitFor("text:CLI session");
+
+  await app.type("composer", "Ask @");
+  await app.press("id:mention-source-acp");
+  await app.waitFor("mention-option-OpenCode");
+  expect(host.fleetCalls.find(call => call.command === "get_acp_clients")).toMatchObject({ target: "dev-b" });
+  await app.press("mention-option-OpenCode");
+  await app.waitFor("composer-prompt-reference-acp-OpenCode");
+
+  await app.press("composer-plus");
+  await app.press("Reference");
+  await app.press("id:mention-source-sessions");
+  await app.waitFor("mention-option-Archive review");
+  expect(host.fleetCalls.find(call => call.command === "search_referenceable_sessions")).toMatchObject({
+    target: "dev-b",
+  });
+  await app.press("mention-option-Archive review");
+  await app.waitFor("session-reference-Archive review");
+});

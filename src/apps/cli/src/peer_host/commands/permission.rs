@@ -369,3 +369,240 @@ pub(crate) fn get_session_interaction_mailbox(
     )
     .map_err(|error| error.to_string())
 }
+
+fn project_permission_rules_revision(content: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    match content {
+        Some(content) => {
+            hasher.update(b"present\0");
+            hasher.update(content.as_bytes());
+        }
+        None => hasher.update(b"missing\0"),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn local_project_permission_path_for(
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+) -> Result<std::path::PathBuf, String> {
+    if workspace.workspace_kind == WorkspaceKind::Remote {
+        return Err(format!(
+            "CLI peer project permission rules do not support remote workspaces: {}",
+            workspace.id
+        ));
+    }
+    Ok(
+        openbitfun_core::service::config::project_permission_store::project_permission_file_path(
+            &workspace.root_path,
+        ),
+    )
+}
+
+async fn local_project_permission_path(
+    workspace_service: &openbitfun_core::service::workspace::WorkspaceService,
+    workspace_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let workspace = workspace_service
+        .get_workspace(workspace_id)
+        .await
+        .ok_or_else(|| format!("Workspace not found: {workspace_id}"))?;
+    local_project_permission_path_for(&workspace)
+}
+
+async fn get_project_permission_rules_in(
+    workspace_service: &openbitfun_core::service::workspace::WorkspaceService,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let workspace_id = get_string(request, "workspaceId")?;
+    let path = local_project_permission_path(workspace_service, &workspace_id).await?;
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Failed to read project permission rules '{}': {error}",
+                path.display()
+            ))
+        }
+    };
+    let rules = content
+        .as_deref()
+        .map(openbitfun_core::service::config::project_permission_store::deserialize_project_permission_config)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default()
+        .rules;
+    Ok(json!({
+        "rules": rules,
+        "revision": project_permission_rules_revision(content.as_deref()),
+    }))
+}
+
+pub(crate) async fn get_project_permission_rules(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    get_project_permission_rules_in(&state.workspace_service, args).await
+}
+
+async fn save_project_permission_rules_in(
+    workspace_service: &openbitfun_core::service::workspace::WorkspaceService,
+    args: &Value,
+) -> Result<Value, String> {
+    use openbitfun_core::service::config::project_permission_store::ProjectPermissionConfig;
+    use openbitfun_product_domains::tool_permissions::PermissionRule;
+
+    let request = request_value(args);
+    let workspace_id = get_string(request, "workspaceId")?;
+    let expected_revision = get_string(request, "revision")?;
+    let rules: Vec<PermissionRule> = serde_json::from_value(
+        request
+            .get("rules")
+            .cloned()
+            .ok_or_else(|| "Missing 'rules' field".to_string())?,
+    )
+    .map_err(|error| format!("Invalid project permission rules: {error}"))?;
+    if rules
+        .iter()
+        .any(|rule| rule.action.trim().is_empty() || rule.resource.trim().is_empty())
+    {
+        return Err("Project permission rule action and resource must be non-empty".to_string());
+    }
+    let path = local_project_permission_path(workspace_service, &workspace_id).await?;
+    let current_content = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Failed to read project permission rules '{}': {error}",
+                path.display()
+            ))
+        }
+    };
+    let current_revision = project_permission_rules_revision(current_content.as_deref());
+    if expected_revision != current_revision {
+        return Err(
+            "Project permission rules changed outside OpenBitFun. Reload before saving."
+                .to_string(),
+        );
+    }
+    let content = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&ProjectPermissionConfig {
+            rules: rules.clone(),
+        })
+        .map_err(|error| format!("Failed to serialize project permission rules: {error}"))?
+    );
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            format!(
+                "Failed to create project permission rules directory '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    tokio::fs::write(&path, &content).await.map_err(|error| {
+        format!(
+            "Failed to write project permission rules '{}': {error}",
+            path.display()
+        )
+    })?;
+    Ok(json!({
+        "rules": rules,
+        "revision": project_permission_rules_revision(Some(&content)),
+    }))
+}
+
+pub(crate) async fn save_project_permission_rules(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    save_project_permission_rules_in(&state.workspace_service, args).await
+}
+
+#[cfg(test)]
+mod project_permission_tests {
+    use super::*;
+    use openbitfun_core::service::workspace::{WorkspaceInfoRuntimeExt, WorkspaceService};
+
+    #[tokio::test]
+    async fn project_permission_rules_round_trip_and_reject_stale_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspaces = WorkspaceService::new_isolated_for_tests(temp.path().join("user")).await;
+        let ws = workspaces
+            .register_local_workspace_record(root)
+            .await
+            .unwrap();
+
+        let initial = get_project_permission_rules_in(
+            &workspaces,
+            &json!({ "request": { "workspaceId": ws.id } }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(initial["rules"], json!([]));
+        let rev0 = initial["revision"].as_str().unwrap().to_string();
+
+        let saved = save_project_permission_rules_in(
+            &workspaces,
+            &json!({
+                "request": {
+                    "workspaceId": ws.id,
+                    "revision": rev0,
+                    "rules": [{
+                        "action": "shell_execute",
+                        "resource": "cargo test*",
+                        "effect": "allow"
+                    }]
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let rev1 = saved["revision"].as_str().unwrap().to_string();
+        assert_ne!(rev0, rev1);
+        assert_eq!(saved["rules"].as_array().unwrap().len(), 1);
+
+        let stale_err = save_project_permission_rules_in(
+            &workspaces,
+            &json!({
+                "request": {
+                    "workspaceId": ws.id,
+                    "revision": rev0,
+                    "rules": []
+                }
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(stale_err.contains("Reload before saving"));
+
+        let reloaded = get_project_permission_rules_in(
+            &workspaces,
+            &json!({ "request": { "workspaceId": ws.id } }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reloaded["revision"], json!(rev1));
+        assert_eq!(reloaded["rules"][0]["resource"], json!("cargo test*"));
+    }
+
+    #[tokio::test]
+    async fn project_permission_rules_refuse_remote_workspace_loudly() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut workspace =
+            openbitfun_core::service::workspace::WorkspaceInfo::new_without_worktree(
+                temp.path().to_path_buf(),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        workspace.workspace_kind = WorkspaceKind::Remote;
+        let err = local_project_permission_path_for(&workspace).unwrap_err();
+        assert!(err.contains("do not support remote workspaces"));
+    }
+}

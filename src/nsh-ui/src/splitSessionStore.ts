@@ -50,6 +50,7 @@ import {
   loadSessions,
   notifySecondaryRunningTurn,
   notifySecondarySessionSwitch,
+  notifySessionCreated,
   registerSecondaryPaneBridge,
   runningTurns,
   runStep,
@@ -838,14 +839,19 @@ export async function createSecondarySession(
   const device = fleetActive() ? (deviceId || secondarySessionDevice() || deviceContext()) : "";
 
   await runStep(async () => {
-    const created = await createSession({
-      sessionName: tr("nav.newSession"),
-      agentType: agentType || chosenAgentType(),
-      workspaceId: targetWs,
-      ...(targetWsRoot ? { workspacePath: targetWsRoot } : {}),
-    });
+    const created = await createSession(
+      {
+        sessionName: tr("nav.newSession"),
+        agentType: agentType || chosenAgentType(),
+        workspaceId: targetWs,
+        ...(targetWsRoot ? { workspacePath: targetWsRoot } : {}),
+      },
+      device ? { target: device } : undefined,
+    );
     await loadSessions();
     if (created?.sessionId) {
+      const createdModel = (created.modelId ?? created.modelName ?? "").trim() || undefined;
+      notifySessionCreated({ sessionId: created.sessionId, deviceId: device, modelId: createdModel });
       selectSecondarySession(created.sessionId, device, targetWs);
     }
   });
