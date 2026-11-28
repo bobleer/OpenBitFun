@@ -44,9 +44,9 @@ pub fn resolve_user_message_route(
 pub const ASSISTANT_MODE_ID: &str = "Claw";
 
 /// Mode ids a project session is never switched to from the composer: Claw
-/// belongs exclusively to assistant workspaces, and `multitask` / `plan` are
-/// retired ids an older peer may still advertise.
-const INELIGIBLE_MODE_IDS: [&str; 3] = ["claw", "multitask", "plan"];
+/// belongs exclusively to assistant workspaces, and `cowork` / `multitask` /
+/// `plan` are retired ids an older peer or stored preference may still name.
+const INELIGIBLE_MODE_IDS: [&str; 4] = ["claw", "cowork", "multitask", "plan"];
 
 /// One mode the host's agent registry reported, before the catalog rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -525,6 +525,7 @@ mod tests {
             source("minimal", "Minimal"),
             source("MY-AGENT", "Duplicate"),
             source("multitask", "Old"),
+            source("Cowork", "Retired"),
         ];
         let catalog = build_session_mode_catalog(&rows, &Default::default(), None);
         let ids: Vec<_> = catalog

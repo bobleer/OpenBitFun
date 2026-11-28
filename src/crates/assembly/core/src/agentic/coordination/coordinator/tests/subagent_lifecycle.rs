@@ -25,7 +25,7 @@ async fn subagent_concurrency_uses_global_capacity_for_all_ordinary_agent_types(
     let capacity = limiter.max_concurrency;
     let agent_types = [
         "Explore",
-        "Cowork",
+        "Ultimate",
         "ResearchSpecialist",
         "ReviewSecurity",
         "Standard",

@@ -136,7 +136,7 @@ mod implicit_invocation_policy_tests {
 
     #[test]
     fn same_named_skill_remains_available_outside_native_deep_research() {
-        for agent_type in [Some("Cowork"), None] {
+        for agent_type in [Some("Claw"), None] {
             let skills = vec![skill("deep-research", true)];
             let filtered = filter_implicitly_invocable_skills_for_agent(skills, agent_type);
 
@@ -2715,7 +2715,7 @@ mod remote_scan_tests {
             .get_mode_skill_scan_report_for_remote_workspace(
                 &DelayedFs::default(),
                 "/remote/project",
-                "Cowork",
+                "Claw",
             )
             .await;
         let key = initial
@@ -2733,7 +2733,7 @@ mod remote_scan_tests {
             );
         crate::service::config::agent_profile_project_store::set_disabled_project_skills(
             &mut document,
-            &crate::agentic::agents::resolve_mode_config_profile_id("Cowork"),
+            &crate::agentic::agents::resolve_mode_config_profile_id("Claw"),
             vec![key.clone()],
         );
         let contents = serde_json::to_string(&document).unwrap();
@@ -2742,11 +2742,7 @@ mod remote_scan_tests {
             ..Default::default()
         };
         let first = registry
-            .get_mode_skill_scan_report_for_remote_workspace(
-                &single_fs,
-                "/remote/project",
-                "Cowork",
-            )
+            .get_mode_skill_scan_report_for_remote_workspace(&single_fs, "/remote/project", "Claw")
             .await;
         let single_calls = single_fs.calls.load(Ordering::SeqCst);
         let batch_fs = DelayedFs {
@@ -2757,12 +2753,12 @@ mod remote_scan_tests {
             .get_mode_skill_scan_reports_for_remote_workspace(
                 &batch_fs,
                 "/remote/project",
-                &["Cowork".into(), "review".into(), "Cowork".into()],
+                &["Claw".into(), "review".into(), "Claw".into()],
             )
             .await;
         assert_eq!(reports.len(), 2);
         assert!(
-            !reports["Cowork"]
+            !reports["Claw"]
                 .skills
                 .iter()
                 .find(|skill| skill.skill.key == key)
@@ -2779,7 +2775,7 @@ mod remote_scan_tests {
         );
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
-            serde_json::to_value(&reports["Cowork"]).unwrap()
+            serde_json::to_value(&reports["Claw"]).unwrap()
         );
         // Discovery and project policy are each read once for the entire batch.
         assert!(batch_fs.calls.load(Ordering::SeqCst) <= single_calls);

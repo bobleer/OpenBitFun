@@ -102,7 +102,7 @@ async fn session_mode_update_waits_for_the_same_session_mutation_permit() {
     let session_id = session.session_id.clone();
     let update_task = tokio::spawn(async move {
         manager_for_update
-            .update_session_agent_type(&session_id, "Cowork")
+            .update_session_agent_type(&session_id, "Ultimate")
             .await
     });
     tokio::time::sleep(Duration::from_millis(50)).await;

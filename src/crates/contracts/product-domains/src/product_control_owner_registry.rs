@@ -299,19 +299,31 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
         ),
         operation(
             "feature.detached-dispatch",
+            "probe",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["target"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "probe"),
+        ),
+        operation(
+            "feature.detached-dispatch",
             "submit",
             Execute,
             json!({"type": "object", "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 512},
                 "prompt": {"type": "string", "minLength": 1, "maxLength": 32768},
-                "approvalPolicy": {"type": "string", "enum": ["auto", "reject-and-report"]},
+                "approvalPolicy": {"type": "string", "enum": ["auto", "reject-and-report", "remote"]},
                 "workspacePath": {"type": "string", "minLength": 1},
+                "source": {"type": "object", "description": "Target-resolved source ({kind:'workspace', workspaceId, ref?}, {kind:'remote', remoteUrl, ref}, or {kind:'job', jobId, sourceDeviceId, head?, branch?, baseCommit?}). Mutually exclusive with workspacePath."},
                 "agent": {"type": "string", "minLength": 1, "maxLength": 128},
                 "model": {"type": "string", "minLength": 1, "maxLength": 256},
                 "baseRef": {"type": "string", "minLength": 1, "maxLength": 512},
                 "includeUncommitted": {"type": "boolean"},
                 "title": {"type": "string", "minLength": 1, "maxLength": 200}
-            }, "required": ["target", "prompt", "approvalPolicy", "workspacePath"], "additionalProperties": false}),
+            }, "required": ["target", "prompt", "approvalPolicy"], "additionalProperties": false}),
             &[("workspacePath", ProductHostLocal)],
             operation_provider("detached-dispatch", "submit"),
         ),
@@ -319,9 +331,107 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
             "feature.detached-dispatch",
             "status",
             Read,
-            json!({"type": "object", "properties": {"jobId": {"type": "string", "minLength": 1, "maxLength": 128}, "cursor": {"type": "integer", "minimum": 0}}, "required": ["jobId"], "additionalProperties": false}),
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "cursor": {"type": "integer", "minimum": 0},
+                "summaryOnly": {"type": "boolean"}
+            }, "required": ["jobId"], "additionalProperties": false}),
             &[],
             operation_provider("detached-dispatch", "status"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "wait",
+            Read,
+            json!({"type": "object", "properties": {
+                "jobIds": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+                "until": {"type": "string", "enum": ["state_change", "any_blocked", "any_terminal", "all_terminal"]},
+                "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600}
+            }, "required": ["jobIds"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "wait"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "result-summary",
+            Read,
+            json!({"type": "object", "properties": {"jobId": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["jobId"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "result-summary"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "continue",
+            Execute,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": 32768},
+                "approvalPolicy": {"type": "string", "enum": ["auto", "reject-and-report", "remote"]},
+                "model": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["jobId", "prompt"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "continue"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "append",
+            Execute,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": 32768}
+            }, "required": ["jobId", "prompt"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "append"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "answer",
+            Execute,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "requestId": {"type": "string", "minLength": 1, "maxLength": 512},
+                "reply": {"type": "string", "enum": ["once", "always", "reject"]},
+                "feedback": {"type": "string", "maxLength": 4096},
+                "answers": {"type": "object", "description": "Question answers keyed by question index when answering pendingQuestions"}
+            }, "required": ["jobId", "requestId"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "answer"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "sync-result",
+            Execute,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "message": {"type": "string", "minLength": 1, "maxLength": 512}
+            }, "required": ["jobId"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "sync-result"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "fetch-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "File path inside the target job workspace or session output directory"},
+                "localPath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Absolute destination file path on this controlling host"},
+                "overwrite": {"type": "boolean"},
+                "maxBytes": {"type": "integer", "minimum": 1, "maximum": 2147483648_u64}
+            }, "required": ["jobId", "remotePath", "localPath"], "additionalProperties": false}),
+            &[("localPath", ProductHostLocal)],
+            operation_provider("detached-dispatch", "fetch-file"),
+        ),
+        operation(
+            "feature.detached-dispatch",
+            "publish-branch",
+            Execute,
+            json!({"type": "object", "properties": {
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "remote": {"type": "string", "minLength": 1, "maxLength": 128}
+            }, "required": ["jobId"], "additionalProperties": false}),
+            &[],
+            operation_provider("detached-dispatch", "publish-branch"),
         ),
         operation(
             "feature.detached-dispatch",
@@ -338,6 +448,1188 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
             json!({"type": "object", "properties": {"jobId": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["jobId"], "additionalProperties": false}),
             &[],
             operation_provider("detached-dispatch", "cancel"),
+        ),
+        operation(
+            "feature.fleet",
+            "navigator",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Optional device filter ('self', 'local', 'all', deviceId, device:<id>, or device name/alias)"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "navigator"),
+        ),
+        operation(
+            "feature.fleet",
+            "device-detail",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "device-detail"),
+        ),
+        operation(
+            "feature.fleet",
+            "list-models",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Device perspective for model grouping; defaults to 'self'"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "list-models"),
+        ),
+        operation(
+            "feature.fleet",
+            "list-workspaces",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "'self' (default), 'all', or a specific device selector"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "list-workspaces"),
+        ),
+        operation(
+            "feature.fleet",
+            "list-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "list-sessions"),
+        ),
+        operation(
+            "feature.fleet",
+            "create-session",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "sessionName": {"type": "string", "minLength": 1, "maxLength": 200},
+                "agentType": {"type": "string", "minLength": 1, "maxLength": 128},
+                "modelName": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["sessionName"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "create-session"),
+        ),
+        operation(
+            "feature.fleet",
+            "send-message",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "message": {"type": "string", "minLength": 1, "maxLength": 65536},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "agentType": {"type": "string", "minLength": 1, "maxLength": 128},
+                "modelId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["sessionId", "message"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "send-message"),
+        ),
+        operation(
+            "feature.fleet",
+            "read-session",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "tailTurnCount": {"type": "integer", "minimum": 1, "maximum": 16}
+            }, "required": ["sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "read-session"),
+        ),
+        operation(
+            "feature.fleet",
+            "cancel-session",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "cancel-session"),
+        ),
+        operation(
+            "feature.fleet",
+            "list-prompts",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "'all' (default), 'self', or a specific device selector"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "list-prompts"),
+        ),
+        operation(
+            "feature.fleet",
+            "answer-prompt",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "requestId": {"type": "string", "minLength": 1, "maxLength": 512},
+                "route": {"type": "string", "enum": ["auto", "session", "dispatch"]},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "reply": {"type": "string", "enum": ["once", "always", "reject"]},
+                "feedback": {"type": "string", "maxLength": 4096},
+                "answers": {"type": "object", "description": "Answers payload when answering a user question"}
+            }, "required": ["requestId"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "answer-prompt"),
+        ),
+        operation(
+            "feature.fleet",
+            "pull-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Source device selector; defaults to 'self' (this device)"},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "File path on the source device (within an opened workspace)"},
+                "localPath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Absolute destination file path on this host"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "overwrite": {"type": "boolean"},
+                "maxBytes": {"type": "integer", "minimum": 1, "maximum": 134217728_u64}
+            }, "required": ["remotePath", "localPath"], "additionalProperties": false}),
+            &[("localPath", ProductHostLocal)],
+            operation_provider("fleet", "pull-file"),
+        ),
+        operation(
+            "feature.fleet",
+            "attention",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("fleet", "attention"),
+        ),
+        operation(
+            "feature.fleet",
+            "mark-attention-read",
+            Write,
+            json!({"type": "object", "properties": {
+                "revision": {"type": "integer", "minimum": 0}
+            }, "required": ["revision"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "mark-attention-read"),
+        ),
+        operation(
+            "feature.fleet",
+            "recent-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": {"type": "string", "minLength": 1, "maxLength": 512}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "recent-sessions"),
+        ),
+        operation(
+            "feature.fleet",
+            "search-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "'self' (default), 'all', or a specific device selector"},
+                "query": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }, "required": ["query"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "search-sessions"),
+        ),
+        operation(
+            "feature.fleet",
+            "manage-cron",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector (e.g. an always-on host); defaults to 'self'"},
+                "action": {"type": "string", "enum": ["list", "create", "update", "delete"]},
+                "jobId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "schedule": {"type": "object", "description": "CronSchedule object for create/update"},
+                "payload": {"type": "object", "description": "CronJobPayload object for create/update"},
+                "enabled": {"type": "boolean"}
+            }, "required": ["action"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "manage-cron"),
+        ),
+        operation(
+            "feature.fleet",
+            "invoke-control",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self'"},
+                "action": {"type": "string", "enum": ["get", "configure", "execute"]},
+                "capabilityId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "operationId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "optionId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "arguments": {"type": "object"},
+                "value": {}
+            }, "required": ["action", "capabilityId"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "invoke-control"),
+        ),
+        // ── workspace-ops (feature.projects & feature.remote-workspaces) ──
+        operation(
+            "feature.projects",
+            "list-workspaces",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("workspace-ops", "list-workspaces"),
+        ),
+        operation(
+            "feature.projects",
+            "open-workspace",
+            Write,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "createLocal": {"type": "boolean"},
+                "remoteConnectionId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": [], "additionalProperties": false}),
+            &[("path", ProductHostLocal)],
+            operation_provider("workspace-ops", "open-workspace"),
+        ),
+        operation(
+            "feature.projects",
+            "close-workspace",
+            Write,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "close-workspace"),
+        ),
+        operation(
+            "feature.projects",
+            "set-active-workspace",
+            Write,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "set-active-workspace"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "list-connections",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("workspace-ops", "list-connections"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "discover-environments",
+            Read,
+            json!({"type": "object", "properties": {
+                "dockerSshConfig": {"type": "object", "description": "Optional SSHConnectionConfig when listing remote Docker containers"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "discover-environments"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "test-connection",
+            Read,
+            json!({"type": "object", "properties": {
+                "config": {"type": "object", "description": "SSHConnectionConfig object (from list-connections or discovered host)"}
+            }, "required": ["config"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "test-connection"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "connect",
+            Execute,
+            json!({"type": "object", "properties": {
+                "config": {"type": "object", "description": "SSHConnectionConfig object"}
+            }, "required": ["config"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "connect"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "disconnect",
+            Write,
+            json!({"type": "object", "properties": {
+                "connectionId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["connectionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "disconnect"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "open-remote-workspace",
+            Execute,
+            json!({"type": "object", "properties": {
+                "connectionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "connectionName": {"type": "string", "minLength": 1, "maxLength": 256},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "sshHost": {"type": "string", "minLength": 1, "maxLength": 256},
+                "rebindConnection": {"type": "boolean"}
+            }, "required": ["connectionId", "connectionName", "remotePath"], "additionalProperties": false}),
+            &[],
+            operation_provider("workspace-ops", "open-remote-workspace"),
+        ),
+        operation(
+            "feature.remote-workspaces",
+            "transfer-file",
+            Execute,
+            json!({"type": "object", "properties": {
+                "direction": {"type": "string", "enum": ["upload", "download"]},
+                "connectionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "localPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["direction", "connectionId", "localPath", "remotePath"], "additionalProperties": false}),
+            &[("localPath", ProductHostLocal)],
+            operation_provider("workspace-ops", "transfer-file"),
+        ),
+        // ── skills-ops (feature.skills) ───────────────────────────────────
+        operation(
+            "feature.skills",
+            "list-skills",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "forceRefresh": {"type": "boolean"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("skills-ops", "list-skills"),
+        ),
+        operation(
+            "feature.skills",
+            "search-market",
+            Read,
+            json!({"type": "object", "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("skills-ops", "search-market"),
+        ),
+        operation(
+            "feature.skills",
+            "install-market-skill",
+            Execute,
+            json!({"type": "object", "properties": {
+                "package": {"type": "string", "minLength": 1, "maxLength": 512},
+                "level": {"type": "string", "enum": ["user", "project"]},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["package"], "additionalProperties": false}),
+            &[],
+            operation_provider("skills-ops", "install-market-skill"),
+        ),
+        operation(
+            "feature.skills",
+            "add-local-skill",
+            Write,
+            json!({"type": "object", "properties": {
+                "sourcePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "level": {"type": "string", "enum": ["user", "project"]},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "targetName": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["sourcePath"], "additionalProperties": false}),
+            &[("sourcePath", ProductHostLocal)],
+            operation_provider("skills-ops", "add-local-skill"),
+        ),
+        operation(
+            "feature.skills",
+            "set-skill-enabled",
+            Write,
+            json!({"type": "object", "properties": {
+                "skillKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                "enabled": {"type": "boolean"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["skillKey", "enabled"], "additionalProperties": false}),
+            &[],
+            operation_provider("skills-ops", "set-skill-enabled"),
+        ),
+        operation(
+            "feature.skills",
+            "delete-skill",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "skillKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["skillKey"], "additionalProperties": false}),
+            &[],
+            operation_provider("skills-ops", "delete-skill"),
+        ),
+        // ── acp-ops (setting.tools.acp) ───────────────────────────────────
+        operation(
+            "setting.tools.acp",
+            "list-clients",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("acp-ops", "list-clients"),
+        ),
+        operation(
+            "setting.tools.acp",
+            "probe-client",
+            Read,
+            json!({"type": "object", "properties": {
+                "remoteConnectionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "forceRefresh": {"type": "boolean"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("acp-ops", "probe-client"),
+        ),
+        operation(
+            "setting.tools.acp",
+            "install-client",
+            Execute,
+            json!({"type": "object", "properties": {
+                "clientId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "remoteConnectionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "predownloadAdapterOnly": {"type": "boolean"}
+            }, "required": ["clientId"], "additionalProperties": false}),
+            &[],
+            operation_provider("acp-ops", "install-client"),
+        ),
+        operation(
+            "setting.tools.acp",
+            "set-acp-permission-mode",
+            Write,
+            json!({"type": "object", "properties": {
+                "clientId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "permissionMode": {"type": "string", "minLength": 1, "maxLength": 64}
+            }, "required": ["clientId", "permissionMode"], "additionalProperties": false}),
+            &[],
+            operation_provider("acp-ops", "set-acp-permission-mode"),
+        ),
+        // ── ecosystem-ops (feature.ecosystem-compatibility) ───────────────
+        operation(
+            "feature.ecosystem-compatibility",
+            "discover-sources",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "forceRefresh": {"type": "boolean"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "discover-sources"),
+        ),
+        operation(
+            "feature.ecosystem-compatibility",
+            "set-source-enabled",
+            Write,
+            json!({"type": "object", "properties": {
+                "sourceKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                "enabled": {"type": "boolean"},
+                "expectedPreferenceRevision": {"type": "integer", "minimum": 0},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["sourceKey", "enabled", "expectedPreferenceRevision"], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "set-source-enabled"),
+        ),
+        operation(
+            "feature.ecosystem-compatibility",
+            "plan-mcp-import",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "plan-mcp-import"),
+        ),
+        operation(
+            "feature.ecosystem-compatibility",
+            "apply-mcp-import",
+            Execute,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "plan": {"type": "object"},
+                "serverKeys": {"type": "array", "items": {"type": "string", "minLength": 1}}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "apply-mcp-import"),
+        ),
+        operation(
+            "feature.ecosystem-compatibility",
+            "list-external-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "list-external-sessions"),
+        ),
+        operation(
+            "feature.ecosystem-compatibility",
+            "restore-external-session",
+            Execute,
+            json!({"type": "object", "properties": {
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("ecosystem-ops", "restore-external-session"),
+        ),
+        // ── review-ops (feature.code-review & feature.files-editor) ───────
+        operation(
+            "feature.code-review",
+            "launch-deep-review",
+            Execute,
+            json!({"type": "object", "properties": {
+                "parentSessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "intent": {"type": "string", "enum": ["review", "strict"]},
+                "commandText": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "files": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "focus": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "dryRun": {"type": "boolean"}
+            }, "required": ["parentSessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "launch-deep-review"),
+        ),
+        operation(
+            "feature.code-review",
+            "launch-pr-review",
+            Execute,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "remoteId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "pullRequestId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "provider": {"type": "object", "description": "{platform, host, projectPath}"},
+                "parentSessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "dryRun": {"type": "boolean"}
+            }, "required": ["workspaceId", "remoteId", "pullRequestId", "provider"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "launch-pr-review"),
+        ),
+        operation(
+            "feature.code-review",
+            "launch-remediation",
+            Execute,
+            json!({"type": "object", "properties": {
+                "payload": {"type": "object", "description": "Remediation launch request matching list-review-records findings"}
+            }, "required": ["payload"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "launch-remediation"),
+        ),
+        operation(
+            "feature.code-review",
+            "list-review-records",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "parentSessionId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "list-review-records"),
+        ),
+        operation(
+            "feature.code-review",
+            "generate-commit-message",
+            Read,
+            json!({"type": "object", "properties": {
+                "repoPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "options": {"type": "object"}
+            }, "required": ["repoPath"], "additionalProperties": false}),
+            &[("repoPath", ProductHostLocal)],
+            operation_provider("review-ops", "generate-commit-message"),
+        ),
+        operation(
+            "feature.files-editor",
+            "session-diff-stats",
+            Read,
+            json!({"type": "object", "properties": {
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "session-diff-stats"),
+        ),
+        operation(
+            "feature.files-editor",
+            "accept-or-reject-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "decision": {"type": "string", "enum": ["accept_file", "reject_file", "accept_session"]},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "filePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["decision", "sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "accept-or-reject-file"),
+        ),
+        operation(
+            "feature.files-editor",
+            "rollback-session-turn",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "turnIndex": {"type": "integer", "minimum": 0},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["sessionId", "turnIndex"], "additionalProperties": false}),
+            &[],
+            operation_provider("review-ops", "rollback-session-turn"),
+        ),
+        // ── ai-policy-ops (models / permissions / web-search) ─────────────
+        operation(
+            "setting.ai.models",
+            "list-catalog",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("ai-policy-ops", "list-catalog"),
+        ),
+        operation(
+            "setting.ai.models",
+            "list-model-pools",
+            Read,
+            json!({"type": "object", "properties": {
+                "poolId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "list-model-pools"),
+        ),
+        operation(
+            "setting.ai.models",
+            "save-model-pool",
+            Write,
+            json!({"type": "object", "properties": {
+                "pool": {"type": "object", "description": "ModelPoolDefinition object"}
+            }, "required": ["pool"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "save-model-pool"),
+        ),
+        operation(
+            "setting.ai.models",
+            "delete-model-pool",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "poolId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["poolId"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "delete-model-pool"),
+        ),
+        operation(
+            "setting.ai.models",
+            "set-task-model",
+            Write,
+            json!({"type": "object", "properties": {
+                "task": {"type": "string", "minLength": 1, "maxLength": 128},
+                "selection": {"type": "object", "description": "{kind:'inherit'} or {kind:'fixed', model_id:'...'}"}
+            }, "required": ["task", "selection"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "set-task-model"),
+        ),
+        operation(
+            "setting.ai.models",
+            "set-default-models",
+            Write,
+            json!({"type": "object", "properties": {
+                "primary": {"type": "string", "minLength": 1, "maxLength": 256},
+                "fast": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "set-default-models"),
+        ),
+        operation(
+            "setting.ai.permissions",
+            "get-permissions",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("ai-policy-ops", "get-permissions"),
+        ),
+        operation(
+            "setting.ai.permissions",
+            "set-permission-mode",
+            Write,
+            json!({"type": "object", "properties": {
+                "mode": {"type": "string", "enum": ["ask", "auto", "full_access"]}
+            }, "required": ["mode"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "set-permission-mode"),
+        ),
+        operation(
+            "setting.ai.permissions",
+            "upsert-permission-rule",
+            Write,
+            json!({"type": "object", "properties": {
+                "index": {"type": "integer", "minimum": 0},
+                "rule": {"type": "object", "description": "{action, resource, effect}"}
+            }, "required": ["rule"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "upsert-permission-rule"),
+        ),
+        operation(
+            "setting.ai.permissions",
+            "delete-permission-rule",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "index": {"type": "integer", "minimum": 0},
+                "expected": {"type": "object"}
+            }, "required": ["index"], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "delete-permission-rule"),
+        ),
+        operation(
+            "setting.ai.permissions",
+            "set-device-dispatch-policy",
+            Write,
+            json!({"type": "object", "properties": {
+                "acceptDispatch": {"type": "boolean"},
+                "allowAutoApproval": {"type": "boolean"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "set-device-dispatch-policy"),
+        ),
+        operation(
+            "setting.tools.web-search",
+            "get-web-search-status",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("ai-policy-ops", "get-web-search-status"),
+        ),
+        operation(
+            "setting.tools.web-search",
+            "set-web-search-provider",
+            Write,
+            json!({"type": "object", "properties": {
+                "provider": {"type": "string", "minLength": 1, "maxLength": 64},
+                "endpoint": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "protocol": {"type": "string", "minLength": 1, "maxLength": 64}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("ai-policy-ops", "set-web-search-provider"),
+        ),
+        // ── agent-assistant-ops (agents / assistants / memory) ────────────
+        operation(
+            "feature.agents",
+            "list-agents",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "list-agents"),
+        ),
+        operation(
+            "feature.agents",
+            "get-agent-detail",
+            Read,
+            json!({"type": "object", "properties": {
+                "agentId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "isSubagent": {"type": "boolean"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["agentId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "get-agent-detail"),
+        ),
+        operation(
+            "feature.agents",
+            "create-agent",
+            Write,
+            json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["mode", "subagent"]},
+                "id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "description": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": 65536},
+                "level": {"type": "string", "enum": ["user", "project"]},
+                "tools": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "readonly": {"type": "boolean"},
+                "review": {"type": "boolean"},
+                "model": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["kind", "id", "name", "description", "prompt"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "create-agent"),
+        ),
+        operation(
+            "feature.agents",
+            "update-agent",
+            Write,
+            json!({"type": "object", "properties": {
+                "agentId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "isSubagent": {"type": "boolean"},
+                "payload": {"type": "object"}
+            }, "required": ["agentId", "payload"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "update-agent"),
+        ),
+        operation(
+            "feature.agents",
+            "delete-agent",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "agentId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "isSubagent": {"type": "boolean"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["agentId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "delete-agent"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "list-assistants",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("agent-assistant-ops", "list-assistants"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "create-assistant",
+            Write,
+            json!({"type": "object", "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 128}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "create-assistant"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "set-assistant-identity",
+            Write,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "role": {"type": "string", "minLength": 1, "maxLength": 256},
+                "creature": {"type": "string", "minLength": 1, "maxLength": 128},
+                "vibe": {"type": "string", "minLength": 1, "maxLength": 256},
+                "emoji": {"type": "string", "minLength": 1, "maxLength": 32}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "set-assistant-identity"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "set-primary-assistant",
+            Write,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "set-primary-assistant"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "reset-assistant",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "reset-assistant"),
+        ),
+        operation(
+            "feature.personal-assistants",
+            "delete-assistant",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": ["workspaceId"], "additionalProperties": false}),
+            &[],
+            operation_provider("agent-assistant-ops", "delete-assistant"),
+        ),
+        operation(
+            "setting.ai.memory",
+            "get-memory-paths",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("agent-assistant-ops", "get-memory-paths"),
+        ),
+        operation(
+            "setting.ai.memory",
+            "reset-memory",
+            Destructive,
+            empty_input(),
+            &[],
+            operation_provider("agent-assistant-ops", "reset-memory"),
+        ),
+        // ── automation-data-ops (computer-use / miniapp market / home / data)
+        operation(
+            "feature.computer-use",
+            "computer-use-status",
+            Read,
+            json!({"type": "object", "properties": {
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "computer-use-status"),
+        ),
+        operation(
+            "feature.computer-use",
+            "request-os-permission",
+            Execute,
+            json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["accessibility", "screen_recording", "input_monitoring"]},
+                "openSettingsPane": {"type": "string", "enum": ["accessibility", "screen_capture", "input_monitoring"]}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "request-os-permission"),
+        ),
+        operation(
+            "feature.computer-use",
+            "launch-browser",
+            Execute,
+            json!({"type": "object", "properties": {
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "enableDefaultCdp": {"type": "boolean"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "launch-browser"),
+        ),
+        operation(
+            "feature.computer-use",
+            "disconnect-browser",
+            Write,
+            json!({"type": "object", "properties": {
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "disconnect-browser"),
+        ),
+        operation(
+            "feature.computer-use",
+            "control-session-status",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("automation-data-ops", "control-session-status"),
+        ),
+        operation(
+            "feature.computer-use",
+            "stop-control-session",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "generation": {"type": "integer", "minimum": 0}
+            }, "required": ["generation"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "stop-control-session"),
+        ),
+        operation(
+            "feature.miniapps",
+            "browse-miniapp-market",
+            Read,
+            json!({"type": "object", "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                "category": {"type": "string", "minLength": 1, "maxLength": 128},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "cursor": {"type": "string", "minLength": 1, "maxLength": 512}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "browse-miniapp-market"),
+        ),
+        operation(
+            "feature.miniapps",
+            "install-market-miniapp",
+            Execute,
+            json!({"type": "object", "properties": {
+                "slug": {"type": "string", "minLength": 1, "maxLength": 256},
+                "releaseNumber": {"type": "integer", "minimum": 1},
+                "existingAppId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "confirmPermissions": {"type": "boolean"},
+                "confirmOverwrite": {"type": "boolean"}
+            }, "required": ["slug", "releaseNumber"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "install-market-miniapp"),
+        ),
+        operation(
+            "feature.miniapps",
+            "call-miniapp-worker",
+            Execute,
+            json!({"type": "object", "properties": {
+                "appId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "method": {"type": "string", "minLength": 1, "maxLength": 256},
+                "params": {"type": "object"}
+            }, "required": ["appId", "method"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "call-miniapp-worker"),
+        ),
+        operation(
+            "feature.home-search",
+            "personal-overview",
+            Read,
+            json!({"type": "object", "properties": {
+                "timeZone": {"type": "string", "minLength": 1, "maxLength": 128}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "personal-overview"),
+        ),
+        operation(
+            "feature.home-search",
+            "search-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }, "required": ["query"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "search-sessions"),
+        ),
+        operation(
+            "feature.insights",
+            "list-insights",
+            Read,
+            json!({"type": "object", "properties": {
+                "days": {"type": "integer", "minimum": 1, "maximum": 365}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "list-insights"),
+        ),
+        operation(
+            "feature.insights",
+            "load-insights-report",
+            Read,
+            json!({"type": "object", "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["path"], "additionalProperties": false}),
+            &[("path", ProductHostLocal)],
+            operation_provider("automation-data-ops", "load-insights-report"),
+        ),
+        operation(
+            "feature.insights",
+            "generate-insights",
+            Execute,
+            json!({"type": "object", "properties": {
+                "days": {"type": "integer", "minimum": 1, "maximum": 365},
+                "modelId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "generationId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "generate-insights"),
+        ),
+        operation(
+            "feature.insights",
+            "cancel-insights",
+            Write,
+            json!({"type": "object", "properties": {
+                "generationId": {"type": "string", "minLength": 1, "maxLength": 256}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "cancel-insights"),
+        ),
+        operation(
+            "setting.data.usage",
+            "get-usage-stats",
+            Read,
+            json!({"type": "object", "properties": {
+                "request": {"type": "object", "description": "Optional TokenUsageStatisticsRequest filter"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "get-usage-stats"),
+        ),
+        operation(
+            "setting.data.usage",
+            "get-activity-heatmap",
+            Read,
+            json!({"type": "object", "properties": {
+                "request": {"type": "object", "description": "Optional TokenUsageActivityRequest filter"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "get-activity-heatmap"),
+        ),
+        operation(
+            "setting.data.archived",
+            "list-archived-sessions",
+            Read,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "list-archived-sessions"),
+        ),
+        operation(
+            "setting.data.archived",
+            "unarchive-session",
+            Write,
+            json!({"type": "object", "properties": {
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": ["sessionId"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "unarchive-session"),
+        ),
+        operation(
+            "setting.data.archived",
+            "delete-all-archived-sessions",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "delete-all-archived-sessions"),
+        ),
+        operation(
+            "setting.data.storage",
+            "inspect-snapshot-storage",
+            Read,
+            json!({"type": "object", "properties": {
+                "period": {"type": "string", "minLength": 1, "maxLength": 64}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "inspect-snapshot-storage"),
+        ),
+        operation(
+            "setting.data.storage",
+            "clean-snapshot-storage",
+            Destructive,
+            json!({"type": "object", "properties": {
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "period": {"type": "string", "minLength": 1, "maxLength": 64},
+                "candidates": {"type": "array", "items": {"type": "object"}}
+            }, "required": ["workspaceId", "period", "candidates"], "additionalProperties": false}),
+            &[],
+            operation_provider("automation-data-ops", "clean-snapshot-storage"),
+        ),
+        operation(
+            "setting.data.diagnostics",
+            "runtime-diagnostics-info",
+            Read,
+            empty_input(),
+            &[],
+            operation_provider("automation-data-ops", "runtime-diagnostics-info"),
+        ),
+        operation(
+            "setting.data.diagnostics",
+            "export-diagnostics-bundle",
+            Execute,
+            empty_input(),
+            &[],
+            operation_provider("automation-data-ops", "export-diagnostics-bundle"),
         ),
         operation(
             "feature.remote-connect",
@@ -1045,5 +2337,34 @@ mod tests {
             };
             assert!(ids.insert(id.clone()), "duplicate owner definition: {id}");
         }
+    }
+
+    #[test]
+    fn capability_op_metadata_matches_owner_definitions() {
+        use crate::product_capability_ops::{is_capability_op_provider, CAPABILITY_OP_METADATA};
+        let mut from_owners = BTreeSet::new();
+        for definition in owner_definitions() {
+            if let ProductControlOwnerDefinition::Operation {
+                handler:
+                    ProductCapabilityOperationHandler::Provider {
+                        provider_id,
+                        operation_id,
+                    },
+                ..
+            } = definition
+            {
+                if is_capability_op_provider(&provider_id) {
+                    assert!(
+                        from_owners.insert((provider_id.clone(), operation_id.clone())),
+                        "duplicate provider operation {provider_id}:{operation_id}"
+                    );
+                }
+            }
+        }
+        let from_meta: BTreeSet<(String, String)> = CAPABILITY_OP_METADATA
+            .iter()
+            .map(|(p, op, _, _, _)| ((*p).to_string(), (*op).to_string()))
+            .collect();
+        assert_eq!(from_owners, from_meta);
     }
 }

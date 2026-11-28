@@ -244,7 +244,7 @@ async fn session_mode_runtime_updates_the_real_core_session() {
     runtime
         .update_session_mode(AgentSessionModeUpdateRequest {
             session_id: session.session_id.clone(),
-            mode_id: " Cowork ".to_string(),
+            mode_id: " Ultimate ".to_string(),
             agent_route_key: None,
         })
         .await
@@ -255,7 +255,7 @@ async fn session_mode_runtime_updates_the_real_core_session() {
             .get_session(&session.session_id)
             .map(|session| session.agent_type.clone())
             .as_deref(),
-        Some("Cowork")
+        Some("Ultimate")
     );
     let _ = std::fs::remove_dir_all(workspace_path);
 }

@@ -26,19 +26,19 @@ Distill your recent conversations, project activity, and model usage into an eng
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 自动检测当前设备与工作区是否已积累足够的可分析会话数据
+- **智能体可直接控制 / Direct Agent control** · 自动检测当前设备与工作区是否已积累足够的可分析会话数据
   - Check whether current sessions contain analyzable activity data
   - 说明：进入页面即可知晓可分析的数据状态，没有足够历史记录时会给出友好提示，避免空跑消耗额度。
   - Why & how: Know right away whether enough session history exists before spending tokens on a report run.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 自选时间范围与分析模型，一键生成深度工作洞察报告
+- **智能体可直接控制 / Direct Agent control** · 自选时间范围与分析模型，一键生成深度工作洞察报告
   - Generate a tailored work-insights report for a chosen date range and model
   - 说明：你可以按周、按月挑选回顾区间，并自由指定擅长总结推理的模型来执笔撰写报告。
   - Why & how: Pick the exact window you want to reflect on and choose which configured model synthesizes the findings.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 随时取消正在生成的洞察分析任务
+- **智能体可直接控制 / Direct Agent control** · 随时取消正在生成的洞察分析任务
   - Cancel an in-progress insights generation run anytime
   - 说明：如果选错了时间跨度或换了主意，点一下即可立即中止后台汇总任务，不必干等跑完。
   - Why & how: Changed your mind about the date range or model? Stop the running analysis cleanly with one click.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 即时阅读最新洞察报告，或随时加载以往保存的历史报告
+- **智能体可直接控制 / Direct Agent control** · 即时阅读最新洞察报告，或随时加载以往保存的历史报告
   - Read your latest report instantly or switch to any saved historical report
   - 说明：每次生成的报告都会妥善留存，打开即看最新一期，也能翻出上个月的报告纵向对比变化。
   - Why & how: Open straight to your most recent retrospective or load past reports from history to see how your workflow evolved.
@@ -68,7 +68,10 @@ Distill your recent conversations, project activity, and model usage into an eng
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看工作洞察报告与数据就绪状态 / List insights reports | 列出最近生成的工作洞察报告并检查近 N 天是否有足够会话数据。 | List recent retrospective work insights reports and check data availability for the last N days. |
+| 读取工作洞察报告内容 / Load insights report | 按本地报告文件路径加载完整的工作洞察报告内容。 | Load a saved insights report from its local path. |
+| 生成周期性工作洞察报告 / Generate insights report | 统计近 N 天的会话模式、习惯与瓶颈并生成新的洞察报告。 | Generate a retrospective work insights report over the last N days. |
+| 取消正在生成的洞察任务 / Cancel insights generation | 中止当前进行中的洞察报告生成任务。 | Cancel an in-progress insights report generation run. |
 
 ## 可配置选项 / Configurable options
 

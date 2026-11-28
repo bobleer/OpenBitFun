@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "3ed78c6ff3e1a9cdd54af58d888ee083cfdd4ab2b2a16f56f1270290a8a2b1f8",
+  "catalogDigest": "0baa7e0a981143fcddb900c7e0a7162ce6f567fc78d247927ac722e24cd6095e",
   "commandCount": 727,
   "coverage": {
     "commandCount": 727,
-    "documentedCommandCount": 630,
-    "implementationCommandCount": 97,
-    "implementationDigest": "56c3f129de51205ee00af4ac936add094f57dacb9c0d2a198e0cbd6050baf93f"
+    "documentedCommandCount": 633,
+    "implementationCommandCount": 94,
+    "implementationDigest": "2cda42ebb8a5b23cb24861977720b292ceedbd2519f23ee2973d54543958ed4a"
   },
   "commands": [
     {
@@ -869,13 +869,15 @@
     {
       "id": "cancel_session",
       "moduleId": "agentic",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
         "feature.ai-assistant:agent-session-coordination",
-        "feature.ai-assistant:turn-control"
+        "feature.ai-assistant:turn-control",
+        "feature.fleet:cross-device-sessions"
       ],
       "visibility": "documented",
       "rustPath": "api::agentic_api::cancel_session",
@@ -1655,13 +1657,15 @@
     {
       "id": "create_session",
       "moduleId": "agentic",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
         "feature.ai-assistant:agent-session-coordination",
-        "feature.ai-assistant:create-session"
+        "feature.ai-assistant:create-session",
+        "feature.fleet:cross-device-sessions"
       ],
       "visibility": "documented",
       "rustPath": "api::agentic_api::create_session",
@@ -2124,7 +2128,7 @@
         "feature.detached-dispatch"
       ],
       "documentedItemIds": [
-        "feature.detached-dispatch:transcript"
+        "feature.detached-dispatch:permission-continuation"
       ],
       "visibility": "documented",
       "rustPath": "api::dispatch_api::dispatch_append",
@@ -2236,6 +2240,7 @@
         "feature.detached-dispatch"
       ],
       "documentedItemIds": [
+        "feature.detached-dispatch:result-sync",
         "feature.detached-dispatch:status-list"
       ],
       "visibility": "documented",
@@ -2635,11 +2640,14 @@
     {
       "id": "fleet_call",
       "moduleId": "fleet",
-      "capabilityId": "feature.remote-connect",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.remote-connect"
       ],
       "documentedItemIds": [
+        "feature.fleet:cross-device-sessions",
+        "feature.fleet:workspace-file-pull",
         "feature.remote-connect:peer-device"
       ],
       "visibility": "documented",
@@ -2651,12 +2659,14 @@
     {
       "id": "fleet_device_detail",
       "moduleId": "fleet",
-      "capabilityId": "feature.remote-connect",
+      "capabilityId": "feature.fleet",
       "capabilityIds": [
-        "feature.remote-connect"
+        "feature.fleet"
       ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
+      "documentedItemIds": [
+        "feature.fleet:topology-and-models"
+      ],
+      "visibility": "documented",
       "rustPath": "fleet::fleet_api::fleet_device_detail",
       "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
       "signature": "fn fleet_device_detail( request: FleetDeviceDetailRequest, ) -> Result<FleetDeviceDetail, String>",
@@ -2681,12 +2691,14 @@
     {
       "id": "fleet_models",
       "moduleId": "fleet",
-      "capabilityId": "feature.remote-connect",
+      "capabilityId": "feature.fleet",
       "capabilityIds": [
-        "feature.remote-connect"
+        "feature.fleet"
       ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
+      "documentedItemIds": [
+        "feature.fleet:topology-and-models"
+      ],
+      "visibility": "documented",
       "rustPath": "fleet::fleet_api::fleet_models",
       "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
       "signature": "fn fleet_models(request: FleetModelsRequest) -> Result<FleetModels, String>",
@@ -2695,11 +2707,13 @@
     {
       "id": "fleet_navigator",
       "moduleId": "fleet",
-      "capabilityId": "feature.remote-connect",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.remote-connect"
       ],
       "documentedItemIds": [
+        "feature.fleet:topology-and-models",
         "feature.remote-connect:peer-device"
       ],
       "visibility": "documented",
@@ -2711,12 +2725,14 @@
     {
       "id": "fleet_prompts",
       "moduleId": "fleet",
-      "capabilityId": "feature.remote-connect",
+      "capabilityId": "feature.fleet",
       "capabilityIds": [
-        "feature.remote-connect"
+        "feature.fleet"
       ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
+      "documentedItemIds": [
+        "feature.fleet:fleet-prompts"
+      ],
+      "visibility": "documented",
       "rustPath": "fleet::fleet_api::fleet_prompts",
       "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
       "signature": "fn fleet_prompts(request: FleetPromptsRequest) -> Result<FleetPromptsResponse, String>",
@@ -5757,10 +5773,12 @@
       "capabilityId": null,
       "capabilityIds": [
         "feature.ai-assistant",
+        "feature.fleet",
         "setting.data.archived"
       ],
       "documentedItemIds": [
         "feature.ai-assistant:history-search",
+        "feature.fleet:cross-device-sessions",
         "setting.data.archived:browse"
       ],
       "visibility": "documented",
@@ -7351,10 +7369,12 @@
       "capabilityId": null,
       "capabilityIds": [
         "feature.files-editor",
+        "feature.fleet",
         "feature.personal-assistants"
       ],
       "documentedItemIds": [
         "feature.files-editor:edit-save",
+        "feature.fleet:workspace-file-pull",
         "feature.personal-assistants:persona-documents"
       ],
       "visibility": "documented",
@@ -8315,12 +8335,14 @@
     {
       "id": "respond_permission",
       "moduleId": "agentic",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
-        "feature.ai-assistant:permission-mailbox"
+        "feature.ai-assistant:permission-mailbox",
+        "feature.fleet:fleet-prompts"
       ],
       "visibility": "documented",
       "rustPath": "api::agentic_api::respond_permission",
@@ -8412,11 +8434,13 @@
     {
       "id": "restore_session_view",
       "moduleId": "agentic",
-      "capabilityId": "setting.data.archived",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "setting.data.archived"
       ],
       "documentedItemIds": [
+        "feature.fleet:cross-device-sessions",
         "setting.data.archived:restore"
       ],
       "visibility": "documented",
@@ -10375,12 +10399,14 @@
     {
       "id": "start_dialog_turn",
       "moduleId": "agentic",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
-        "feature.ai-assistant:turn-control"
+        "feature.ai-assistant:turn-control",
+        "feature.fleet:cross-device-sessions"
       ],
       "visibility": "documented",
       "rustPath": "api::agentic_api::start_dialog_turn",
@@ -10629,12 +10655,14 @@
     {
       "id": "submit_user_answers",
       "moduleId": "tool",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
-        "feature.ai-assistant:permission-mailbox"
+        "feature.ai-assistant:permission-mailbox",
+        "feature.fleet:fleet-prompts"
       ],
       "visibility": "documented",
       "rustPath": "submit_user_answers",

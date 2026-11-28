@@ -567,7 +567,6 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "agents.modeCreative": "創造",
   "agents.modeCreativeDesc": "開放探索與方案構思",
   "agents.modeDeepResearch": "深度研究",
-  "agents.modeCowork": "辦公協作",
   "agents.modePaperWriting": "論文寫作",
   "agents.modeComputerUse": "電腦操作",
   "agents.botCountOne": "{{count}} 個模式",

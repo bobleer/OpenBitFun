@@ -26,27 +26,27 @@ Turn domain know-how, team conventions, debugging playbooks, and helper scripts 
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 集中浏览内置、个人全局、当前项目与外部导入的全部已安装 Skills
+- **智能体可直接控制 / Direct Agent control** · 集中浏览内置、个人全局、当前项目与外部导入的全部已安装 Skills
   - Browse built-in, user, project, and imported Skills in one unified catalog
   - 说明：清晰展示每个技能的来源标签、路径、扫描状态与简介，哪个是全局通用、哪个是当前仓库专属一目了然。
   - Why & how: See every Skill’s source badge, location, scan health, and summary in one place so user-wide and repo-specific workflows stay clear.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 逛 Skill 市场：搜索、分类浏览与刷新社区精选技能
+- **智能体可直接控制 / Direct Agent control** · 逛 Skill 市场：搜索、分类浏览与刷新社区精选技能
   - Explore, search, and refresh community workflows in the Skill Market
   - 说明：按关键词查找现成的开发、写作、设计与自动化工作流，点击即可预览技能详情与使用说明。
   - Why & how: Search by keyword to discover ready-made coding, writing, design, and automation workflows before installing.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 将市场中的 Skill 一键安装到个人全局或当前项目
+- **智能体可直接控制 / Direct Agent control** · 将市场中的 Skill 一键安装到个人全局或当前项目
   - Install a Marketplace Skill to your user profile or active project
   - 说明：通用效率技能装到「用户级」所有项目都能用；团队协作规范装到「项目级」方便随 Git 提交共享。
   - Why & how: Install personal productivity Skills at user scope for every workspace, or at project scope to share with teammates in Git.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 校验本地文件夹（含 SKILL.md）并添加为个人或项目 Skill
+- **智能体可直接控制 / Direct Agent control** · 校验本地文件夹（含 SKILL.md）并添加为个人或项目 Skill
   - Validate a local SKILL.md folder and add it at user or project scope
   - 说明：自己动手写新技能时，导入前会自动检查目录结构与 Frontmatter 格式，有问题当场给出清晰提示。
   - Why & how: Authoring your own Skill? OpenBitFun validates the folder and SKILL.md frontmatter before linking it to your user or project catalog.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 安全移除不再需要的个人级或项目级已安装 Skill
+- **智能体可直接控制 / Direct Agent control** · 安全移除不再需要的个人级或项目级已安装 Skill
   - Remove an installed user-level or project-level Skill safely
   - 说明：清理过时或测试用的自定义技能（内置系统技能受保护不会被误删），操作前有明确确认提示。
   - Why & how: Clean up outdated user or project Skills with explicit confirmation while built-in Skills remain protected.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在全局一键启用或暂时停用某个 Skill，无需卸载
+- **智能体可直接控制 / Direct Agent control** · 在全局一键启用或暂时停用某个 Skill，无需卸载
   - Enable or temporarily disable any Skill globally without uninstalling it
   - 说明：某个技能暂时不用但以后还想保留？关掉开关即可对所有新轮次隐藏，随时再点一下就能恢复。
   - Why & how: Keep a Skill installed on disk while hiding it from agents until you need it again.
@@ -80,7 +80,12 @@ Turn domain know-how, team conventions, debugging playbooks, and helper scripts 
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看已安装技能列表 / List installed skills | 列出用户级与项目级已安装的 Skills 及其启用状态。 | List installed user and project Skills along with global enablement settings. |
+| 搜索或浏览技能市场 / Search or browse Skill marketplace | 按关键词搜索技能市场或浏览热门技能包。 | Search the Skill marketplace by keyword or browse featured packages. |
+| 从市场安装技能包 / Install Skill from marketplace | 下载并安装指定技能市场包到用户级或项目级目录。 | Download and install a marketplace Skill package at user or project level. |
+| 导入本地技能目录 / Add local Skill | 将本机目录或文件添加为 OpenBitFun Skill。 | Import a local Skill directory or file into OpenBitFun. |
+| 启用或停用技能 / Enable or disable Skill | 在全局范围启用或禁用指定 skillKey 的技能。 | Enable or disable a Skill globally by skillKey. |
+| 删除自定义技能 / Delete custom Skill | 删除 OpenBitFun 托管的非内置技能。 | Delete an OpenBitFun-owned, non-builtin Skill. |
 
 ## 可配置选项 / Configurable options
 

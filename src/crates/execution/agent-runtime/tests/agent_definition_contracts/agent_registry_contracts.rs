@@ -148,7 +148,7 @@ fn shared_coding_modes_resolve_to_the_same_config_profile() {
         );
     }
 
-    assert_eq!(resolve_mode_config_profile_id("Cowork").as_ref(), "Cowork");
+    assert_eq!(resolve_mode_config_profile_id("Claw").as_ref(), "Claw");
     assert_eq!(
         mode_config_profile_member_mode_ids(STANDARD_HARNESS_CONFIG_ID),
         STANDARD_HARNESS_CONFIG_MEMBERS
@@ -201,9 +201,9 @@ fn subagent_source_contract_preserves_runtime_kind_and_presentation_order() {
 #[test]
 fn mode_presentation_and_shared_context_policy_match_existing_mode_contract() {
     assert_eq!(mode_presentation_rank("Standard"), 0);
-    assert_eq!(mode_presentation_rank("Cowork"), 1);
-    assert_eq!(mode_presentation_rank("Ultimate"), 3);
-    assert_eq!(mode_presentation_rank("Creative"), 4);
+    assert_eq!(mode_presentation_rank("DeepResearch"), 1);
+    assert_eq!(mode_presentation_rank("Ultimate"), 2);
+    assert_eq!(mode_presentation_rank("Creative"), 3);
     assert_eq!(mode_presentation_rank("unknown"), 99);
 
     assert_eq!(
@@ -221,7 +221,6 @@ fn builtin_agent_definition_catalog_preserves_order_categories_models_and_visibi
         vec![
             "Minimal",
             "Standard",
-            "Cowork",
             "Creative",
             "Claw",
             "DeepResearch",
@@ -326,7 +325,6 @@ fn builtin_agent_definition_catalog_preserves_order_categories_models_and_visibi
             None,
             Some("Minimal"),
             Some("Standard"),
-            Some("Cowork"),
             Some("Creative"),
             Some("Claw"),
             Some("DeepResearch"),

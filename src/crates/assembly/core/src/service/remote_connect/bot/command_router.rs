@@ -231,10 +231,6 @@ fn main_menu_view(state: &BotChatState, s: &'static BotStrings) -> MenuView {
             s.item_new_code_session,
             "/new_code_session",
         ));
-        items.push(MenuItem::default(
-            s.item_new_cowork_session,
-            "/new_cowork_session",
-        ));
         items.push(MenuItem::default(s.item_resume_session, "/resume"));
         items.push(MenuItem::default(s.item_switch_workspace, "/switch"));
     } else {
@@ -291,10 +287,6 @@ fn need_session_view(state: &BotChatState, s: &'static BotStrings) -> MenuView {
         items.push(MenuItem::primary(
             s.item_new_code_session,
             "/new_code_session",
-        ));
-        items.push(MenuItem::default(
-            s.item_new_cowork_session,
-            "/new_cowork_session",
         ));
     } else {
         items.push(MenuItem::primary(s.item_new_session, "/new"));
@@ -920,10 +912,6 @@ async fn dispatch(
                     s.item_new_code_session,
                     "/new_code_session",
                 ));
-                items.push(MenuItem::default(
-                    s.item_new_cowork_session,
-                    "/new_cowork_session",
-                ));
                 items.push(MenuItem::default(s.item_switch_workspace, "/switch"));
             } else {
                 items.push(MenuItem::primary(s.item_new_session, "/new"));
@@ -949,7 +937,6 @@ async fn dispatch(
         BotCommand::SwitchContext => start_switch(state, s).await,
         BotCommand::NewSession => new_session_for_mode(state, s).await,
         BotCommand::NewCodeSession => guarded_new(state, "Standard", s).await,
-        BotCommand::NewCoworkSession => guarded_new(state, "Cowork", s).await,
         BotCommand::NewClawSession => guarded_new(state, "Claw", s).await,
         BotCommand::ResumeSession => start_resume(state, 0, s).await,
         BotCommand::SwitchModel => start_switch_model(state, s).await,
@@ -2503,15 +2490,11 @@ async fn guarded_new(
     agent_type: &str,
     s: &'static BotStrings,
 ) -> HandleResult {
-    let needs_pro = matches!(agent_type, "Standard" | "Cowork");
+    let needs_pro = matches!(agent_type, "Standard" | "Ultimate");
     let needs_assistant = matches!(agent_type, "Claw");
 
     if needs_pro && state.display_mode != BotDisplayMode::Pro {
-        let target_cmd = match agent_type {
-            "Standard" => "/new_code_session",
-            "Cowork" => "/new_cowork_session",
-            _ => "/new_code_session",
-        };
+        let target_cmd = "/new_code_session";
         return confirm_then_run(state, BotDisplayMode::Pro, target_cmd.to_string(), s).await;
     }
     if needs_assistant && state.display_mode != BotDisplayMode::Assistant {
@@ -3513,7 +3496,7 @@ async fn submit_question_answers(
 
 // ── Free-form chat handling ───────────────────────────────────────
 
-/// Look up the agent type a session was created with (e.g. "Claw", "Cowork",
+/// Look up the agent type a session was created with (e.g. "Claw", "Standard",
 /// "Standard").  Returns `None` if the coordinator is unavailable or the
 /// session is not currently hot in memory; in that case `send_message` will
 /// lazily restore the session from disk and `resolve_agent_type` falls back
@@ -5107,7 +5090,7 @@ mod parse_command_tests {
         ));
         assert!(matches!(
             parse_command("/new_cowork_session"),
-            BotCommand::NewCoworkSession
+            BotCommand::NewCodeSession
         ));
         assert!(matches!(
             parse_command("/new_claw_session"),

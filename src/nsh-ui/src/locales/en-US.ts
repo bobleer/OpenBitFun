@@ -568,7 +568,6 @@ export const enUSMessages = {
   "agents.modeCreative": "Creative",
   "agents.modeCreativeDesc": "Exploration and ideation",
   "agents.modeDeepResearch": "Deep Research",
-  "agents.modeCowork": "Cowork",
   "agents.modePaperWriting": "Paper Writing",
   "agents.modeComputerUse": "Computer Use",
   "agents.botCountOne": "{{count}} mode",

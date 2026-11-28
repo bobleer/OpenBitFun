@@ -34,15 +34,15 @@ Load pull request diffs, linked issues, and failing CI logs from GitHub, GitLab,
   - Read pull-request descriptions, review threads, and paged file changes directly in context
   - 说明：即使面对包含上百个文件的大号 PR，也会按页有序读取概览与关键改动，不会一次性撑爆模型上下文窗口。
   - Why & how: Loads PR overviews, review comments, and file diffs in clean pages so even large pull requests stay fast and within context budgets.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 从拉取请求面板开始只读审查
+- **智能体可直接控制 / Direct Agent control** · 从拉取请求面板开始只读审查
   - Start a read-only review from the pull request panel
   - 说明：选择拉取请求后，可以开始只读审查或打开已保存的审查结果。运行设备会核对确切提交，并在面板中标明审查状态和提交是否一致。
   - Why & how: Select a pull request to start a read-only review or reopen a saved run. The runtime verifies the exact commits and shows each run’s status and revision match in the panel.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在原会话中查看审查进度与结果
+- **智能体可直接控制 / Direct Agent control** · 在原会话中查看审查进度与结果
   - View review progress and results in the original chat
   - 说明：会话卡片显示最新一轮的审查状态和报告摘要，可以打开完整报告。
   - Why & how: The chat card shows the latest review status and summary and opens the full report.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 选择审查发现并启动修复
+- **智能体可直接控制 / Direct Agent control** · 选择审查发现并启动修复
   - Select Review findings and start fixes
   - 说明：打开已完成的工作区审查，选择修复项并确认决策后，由工作区所属运行端启动修复。
   - Why & how: Open a completed workspace Review, select findings and confirm decisions to start a fix session on the owning runtime.
@@ -62,7 +62,7 @@ Load pull request diffs, linked issues, and failing CI logs from GitHub, GitLab,
   - Reuse local GitHub CLI (`gh`) login or securely store and clear GitLab, GitCode, and Gitee access tokens
   - 说明：GitHub 仓库优先直接复用你本机已登录的 `gh` 凭据（需要时还会贴心打开终端引导对应域名的 `gh auth login`）；GitLab、GitCode 与 Gitee 则支持单独保存和随时清除私有访问令牌。
   - Why & how: GitHub repositories reuse your local `gh` CLI authentication (and can open a terminal session for host-matched `gh auth login`), while GitLab, GitCode, and Gitee support dedicated token management.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键预览、生成或快速填充贴合改动的提交信息
+- **智能体可直接控制 / Direct Agent control** · 一键预览、生成或快速填充贴合改动的提交信息
   - Preview, generate, or quick-fill commit messages tailored to your staged changes
   - 说明：修复完评审指出的问题后，可快速生成符合规范的修复提交说明，保持分支提交历史清晰易读。
   - Why & how: After addressing review findings, generate a concise, conventional commit message in one click.
@@ -84,7 +84,11 @@ Load pull request diffs, linked issues, and failing CI logs from GitHub, GitLab,
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 发起多角色 Deep Review / Launch multi-agent Deep Review | 针对当前工作区变更或指定文件/Git 范围启动多角色只读深度代码评审子会话。 | Launch OpenBitFun multi-agent Deep Review as a child session over workspace changes or a git range. |
+| 发起 Pull Request 深度评审 / Launch Pull Request Deep Review | 针对托管平台的指定 PR 启动自动化深度代码评审。 | Launch an automated Deep Review for a hosted Pull Request. |
+| 启动评审问题自动修复 / Launch review remediation | 基于已生成的 Deep Review 报告启动 ReviewFixer 自动修复选中问题。 | Launch automated ReviewFixer remediation from a completed Deep Review report. |
+| 查看代码评审历史记录 / List code review records | 查询指定工作区或父会话的历史 Deep Review 记录与结论。 | List past Deep Review runs and records for a workspace or parent session. |
+| 智能生成 Git 提交说明 / Generate Git commit message | 分析仓库变更并生成结构化提交说明。 | Analyze repository changes and generate a structured Git commit message. |
 
 ## 可配置选项 / Configurable options
 

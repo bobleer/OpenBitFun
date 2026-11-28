@@ -928,6 +928,8 @@ enum DesktopProviderOperation {
     Mcp(openbitfun_core::service::mcp::control::MCPControlOperation),
     RemoteConnect(&'static str),
     DetachedDispatch(&'static str),
+    Fleet(&'static str),
+    SharedCapability(&'static str, &'static str),
     ListCompanionPets,
     UseCompanionPet,
     DeleteCompanionPet,
@@ -937,6 +939,13 @@ fn desktop_provider_operation(
     provider_id: &str,
     operation_id: &str,
 ) -> Option<DesktopProviderOperation> {
+    if let Some((provider, op, _, _, _)) =
+        openbitfun_product_domains::product_capability_ops::CAPABILITY_OP_METADATA
+            .iter()
+            .find(|(p, o, _, _, _)| *p == provider_id && *o == operation_id)
+    {
+        return Some(DesktopProviderOperation::SharedCapability(provider, op));
+    }
     match (provider_id, operation_id) {
         ("remote-connect", id) => [
             "status",
@@ -950,10 +959,16 @@ fn desktop_provider_operation(
         .into_iter()
         .find(|operation| *operation == id)
         .map(DesktopProviderOperation::RemoteConnect),
-        ("detached-dispatch", id) => ["list-targets", "submit", "status", "list-jobs", "cancel"]
-            .into_iter()
+        ("detached-dispatch", id) => openbitfun_product_domains::detached_dispatch_control::DetachedDispatchControlRequest::ALL_OPERATIONS
+            .iter()
+            .copied()
             .find(|operation| *operation == id)
             .map(DesktopProviderOperation::DetachedDispatch),
+        ("fleet", id) => openbitfun_product_domains::fleet_control::FleetControlRequest::ALL_OPERATIONS
+            .iter()
+            .copied()
+            .find(|operation| *operation == id)
+            .map(DesktopProviderOperation::Fleet),
         ("miniapp", id) => miniapps::operation(id).map(DesktopProviderOperation::MiniApp),
         ("mcp", id) => {
             openbitfun_core::service::mcp::control::operation(id).map(DesktopProviderOperation::Mcp)
@@ -985,6 +1000,19 @@ async fn select_companion(
     companion_state(state).await
 }
 
+struct DesktopCommandDispatcher {
+    service: crate::backend_protocol::BackendService,
+}
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::product_control_providers::LocalCommandDispatcher
+    for DesktopCommandDispatcher
+{
+    async fn invoke(&self, command: &str, args: Value) -> Result<Value, String> {
+        self.service.dispatch(command, args).await
+    }
+}
+
 async fn execute_desktop_provider_operation(
     app: &HostHandle,
     operation: DesktopProviderOperation,
@@ -992,6 +1020,22 @@ async fn execute_desktop_provider_operation(
 ) -> Result<Value, String> {
     let state = app.state::<AppState>();
     match operation {
+        DesktopProviderOperation::SharedCapability(provider_id, operation_id) => {
+            let request =
+                openbitfun_product_domains::product_capability_ops::ProductCapabilityOpRequest::from_provider_operation(
+                    provider_id,
+                    operation_id,
+                    arguments,
+                )?;
+            let dispatcher = DesktopCommandDispatcher {
+                service: crate::backend_protocol::BackendService::new(Arc::clone(app.native())),
+            };
+            openbitfun_core::service::product_control_providers::execute_capability_op(
+                &dispatcher,
+                request,
+            )
+            .await
+        }
         DesktopProviderOperation::RemoteConnect(operation) => {
             let request =
                 openbitfun_product_domains::remote_control::RemoteControlRequest::from_operation(
@@ -1011,6 +1055,13 @@ async fn execute_desktop_provider_operation(
                 request,
             )
             .await
+        }
+        DesktopProviderOperation::Fleet(operation) => {
+            let request =
+                openbitfun_product_domains::fleet_control::FleetControlRequest::from_operation(
+                    operation, arguments,
+                )?;
+            crate::fleet::fleet_api::execute_agent_fleet_control(request).await
         }
         DesktopProviderOperation::Mcp(operation) => {
             let mut result = state
@@ -1189,12 +1240,16 @@ async fn execute_desktop(
     // order matches the order in which product state/effects are committed.
     // Dispatch jobs change no product settings, and a submit can spend minutes
     // uploading its baseline; holding the transaction would stall settings.
-    let dispatch_job = matches!(
+    let concurrent_runtime_control = matches!(
         &operation.handler,
         ProductCapabilityOperationHandler::Provider { provider_id, .. }
             if provider_id == openbitfun_product_domains::detached_dispatch_control::DETACHED_DISPATCH_CONTROL_PROVIDER
+                || provider_id == openbitfun_product_domains::fleet_control::FLEET_CONTROL_PROVIDER
+                || openbitfun_product_domains::product_capability_ops::is_capability_op_provider(
+                    provider_id
+                )
     );
-    let _transaction = if operation.risk == ProductControlRisk::Read || dispatch_job {
+    let _transaction = if operation.risk == ProductControlRisk::Read || concurrent_runtime_control {
         None
     } else {
         Some(product_control_transaction().lock().await)
@@ -1236,10 +1291,24 @@ async fn execute_desktop(
     Ok(result)
 }
 
+fn targets_remote_device(target: Option<&str>) -> bool {
+    target
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| {
+            !value.eq_ignore_ascii_case("self") && !value.eq_ignore_ascii_case("local")
+        })
+}
+
 async fn dispatch_request(
     app: &HostHandle,
     request: OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
+    if targets_remote_device(request.target.as_deref()) {
+        let target = request.target.clone();
+        return crate::fleet::fleet_api::forward_agent_product_control(target.as_deref(), request)
+            .await;
+    }
     match request.action {
         ProductControlAction::Get => inspect_desktop(app, &request).await,
         ProductControlAction::Open => {

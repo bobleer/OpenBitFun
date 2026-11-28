@@ -567,7 +567,6 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "agents.modeCreative": "创造",
   "agents.modeCreativeDesc": "开放探索与方案构思",
   "agents.modeDeepResearch": "深度研究",
-  "agents.modeCowork": "办公协作",
   "agents.modePaperWriting": "论文写作",
   "agents.modeComputerUse": "电脑操作",
   "agents.botCountOne": "{{count}} 个模式",

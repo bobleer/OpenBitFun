@@ -26,11 +26,11 @@ Set the default safety posture for agent tool calls (Ask, Auto-approve, or Full 
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换
+- **智能体可直接控制 / Direct Agent control** · 在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换
   - Switch the default permission mode between Ask (default), Auto-approve, and Full access
   - 说明：“需要确认”默认放行普通工作区编辑、已识别的只读命令、任务调度和会话间消息，对其他命令、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。
   - Why & how: Ask allows ordinary workspace edits, recognized read-only commands, scheduling, and messages between sessions, while keeping other commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求
+- **智能体可直接控制 / Direct Agent control** · 决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求
   - Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started
   - 说明：“接收 OpenBitFun 的任务”关闭后，OpenBitFun 不会在此设备上开展工作；“允许 OpenBitFun 代我回答”开启时，它可以批准自己在本机启动的任务所发出的请求，并显示批准了什么。两者默认开启，按设备分别设置。
   - Why & how: With Accept jobs from OpenBitFun off, OpenBitFun keeps this device out of its work; with Let OpenBitFun answer for me on, it can approve requests from jobs it started on this device and shows what it approved. Both are on by default and set per device.
@@ -42,7 +42,7 @@ Set the default safety posture for agent tool calls (Ask, Auto-approve, or Full 
   - Configure auto-approval timeout (30s default) and fallback actions on uncertainty or errors
   - 说明：超时支持 1–300 秒调节；当审查模型返回“不确定”或遭遇网络/超时错误时，可分别设为转为向你弹出确认（默认，防止无故中断任务）或直接拒绝执行。
   - Why & how: Set the timeout anywhere from 1 to 300 seconds, and decide independently whether uncertain verdicts or model/network errors fall back to asking you (default) or rejecting the call.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 编辑与排序全局 Allow、Ask、Deny 权限规则
+- **智能体可直接控制 / Direct Agent control** · 编辑与排序全局 Allow、Ask、Deny 权限规则
   - Edit and order global Allow, Ask, and Deny permission rules
   - 说明：在弹窗中管理跨项目通用的允许、询问或禁止规则；单个项目或特定智能体的专属规则可按需覆盖全局默认值。
   - Why & how: Maintain cross-workspace Allow, Ask, and Deny baseline rules in a dedicated dialog; project- or agent-specific rules can override global defaults when needed.
@@ -68,7 +68,11 @@ Set the default safety posture for agent tool calls (Ask, Auto-approve, or Full 
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看权限模式、规则与设备派发策略 / Inspect permissions and device policy | 读取当前权限模式、全局规则、审批设置以及本机派发接收/自动审批开关。 | Read permission mode, global rules, approval tuning, and device dispatch/auto-approval switches. |
+| 切换全局默认权限模式 / Set default permission mode | 在 ask、auto、full_access 三种默认权限模式之间切换。 | Switch the default permission mode between ask, auto, and full_access. |
+| 新增或修改权限白/黑名单规则 / Upsert permission rule | 添加或更新一条工具/命令权限匹配规则（allow/ask/deny）。 | Add or update a tool/command permission rule. |
+| 删除权限规则 / Delete permission rule | 按索引删除一条全局权限规则。 | Delete a global permission rule by index. |
+| 配置本机远端派发与自动审批开关 / Set device dispatch policy | 开启或关闭本机的 acceptDispatch 与 allowAutoApproval 策略开关。 | Configure this device’s superagent.acceptDispatch and allowAutoApproval switches. |
 
 ## 可配置选项 / Configurable options
 

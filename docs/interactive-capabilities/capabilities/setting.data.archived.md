@@ -24,11 +24,11 @@ Review archived conversations grouped by collapsible workspace headers, restore 
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 按可折叠的工作区分组浏览全部已归档会话与更新时间
+- **智能体可直接控制 / Direct Agent control** · 按可折叠的工作区分组浏览全部已归档会话与更新时间
   - Browse archived sessions and timestamps grouped by collapsible workspace sections
   - 说明：自动按项目路径聚合归档记录并显示每组条数；默认折叠所有工作区，点开目标项目即可查看标题、归档时间与来源标记，右上角支持手动刷新。
   - Why & how: Groups archived threads under collapsible project headers with session counts (collapsed by default for easy scanning) plus a top Refresh button.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键取消归档并将选中会话连同完整轮次恢复回原工作区
+- **智能体可直接控制 / Direct Agent control** · 一键取消归档并将选中会话连同完整轮次恢复回原工作区
   - Unarchive and restore a selected session with all its turns back to its original workspace
   - 说明：恢复后该会话会重新出现在对应项目的会话侧栏中，过往对话轮次、工具调用记录与上下文均可继续查看或接着追问。
   - Why & how: Restoring puts the thread right back in its project’s session list with full message turns and tool transcripts ready to read or continue.
@@ -36,7 +36,7 @@ Review archived conversations grouped by collapsible workspace headers, restore 
   - Permanently delete a selected archived session or remove an imported external source after confirmation
   - 说明：删除原生会话会彻底清理本机持久化记录；若条目来自 Codex / Zcode 等外部工具导入视图，按钮会变为“移除来源”，只从 OpenBitFun 列表移除而不触碰外部工具的原始数据。
   - Why & how: Deleting a native session permanently removes its local persisted record; for imported external history (like Codex or Zcode), Remove Source detaches it from OpenBitFun without touching the external tool’s files.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 明确确认后一键永久清空全部已归档会话
+- **智能体可直接控制 / Direct Agent control** · 明确确认后一键永久清空全部已归档会话
   - Permanently delete all archived sessions at once after explicit confirmation
   - 说明：适合定期大扫除一次性清理所有项目的归档积压；正在活跃使用、尚未归档的工作区会话不受任何影响。
   - Why & how: Clears every archived thread across workspaces in one confirmed action while leaving all active unarchived sessions completely untouched.
@@ -60,7 +60,9 @@ Review archived conversations grouped by collapsible workspace headers, restore 
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 列出已归档的历史会话 / List archived sessions | 列出指定工作区下已归档的历史会话元数据。 | List archived session records for a workspace. |
+| 恢复已归档会话 / Unarchive archived session | 将已归档的历史会话恢复回活跃会话列表。 | Restore an archived session back to the active session list. |
+| 清空全部已归档会话 / Delete all archived sessions | 永久删除指定工作区下的全部已归档会话。 | Permanently delete all archived sessions in a workspace. |
 
 ## 可配置选项 / Configurable options
 

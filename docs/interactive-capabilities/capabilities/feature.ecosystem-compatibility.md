@@ -26,11 +26,11 @@ Discover existing configurations and histories from Claude Code, Codex, OpenCode
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 自动扫描并发现 Claude Code、Codex、OpenCode、ZCode 等外部来源与可用内容
+- **智能体可直接控制 / Direct Agent control** · 自动扫描并发现 Claude Code、Codex、OpenCode、ZCode 等外部来源与可用内容
   - Discover Claude Code, Codex, OpenCode, ZCode, and other external AI sources and assets
   - 说明：汇总展示本机及当前工作区已识别到的外部 AI 工具，并可通过标题旁的“自动发现”开关随时暂停或恢复扫描。
   - Why & how: Lists detected external AI tools across user and workspace paths, with an Automatic discovery toggle right beside the External apps heading.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 发现、移除与恢复 Codex 来源会话，并在 OpenBitFun 独立分支中安全续聊
+- **智能体可直接控制 / Direct Agent control** · 发现、移除与恢复 Codex 来源会话，并在 OpenBitFun 独立分支中安全续聊
   - Discover, remove, and restore Codex source sessions, then continue in independent OpenBitFun branches
   - 说明：按工作区自动匹配 Codex 历史会话；点开时同步最新上下文，首次发送消息自动创建互不干扰的 OpenBitFun 分支，归档或删除分支均不影响原 Codex 记录。
   - Why & how: Matches Codex sessions by workspace, refreshes history on open, and forks a clean OpenBitFun branch on your first message so original Codex transcripts stay untouched.
@@ -38,7 +38,7 @@ Discover existing configurations and histories from Claude Code, Codex, OpenCode
   - Discover, remove, and restore ZCode source sessions, then continue in independent OpenBitFun branches
   - 说明：同样按当前工作区自动发现 ZCode 会话，支持随时移除列表视图或重新找回，并在发送新消息时自动切出独立续聊分支。
   - Why & how: Discovers ZCode sessions for the active workspace, supports hiding or restoring source entries anytime, and forks an independent branch when you reply.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 预览外部 MCP 服务器导入计划，逐个解决同名冲突并保存副本
+- **智能体可直接控制 / Direct Agent control** · 预览外部 MCP 服务器导入计划，逐个解决同名冲突并保存副本
   - Preview external MCP import plans, resolve server conflicts individually, and save copies
   - 说明：清晰展示待导入的 MCP 服务定义与同名冲突选项；导入后请前往“工具与集成 → MCP”补齐密钥认证并确认连接状态。
   - Why & how: Shows candidate MCP server definitions and per-server conflict choices; after importing, visit Tools & Integrations → MCP to verify credentials and connectivity.
@@ -46,7 +46,7 @@ Discover existing configurations and histories from Claude Code, Codex, OpenCode
   - Inspect external Hook catalogs and plan, edit, and apply Hook imports
   - 说明：将受支持的外部生命周期 Hooks 导入为本地配置副本，导入后可在“工具与集成 → 自动化”中查看与管理开关。
   - Why & how: Imports supported external lifecycle hooks as local copies that you can review and toggle under Tools & Integrations → Automation.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 按外部来源启用或停用兼容集成，并选择管理、预览或只读策略
+- **智能体可直接控制 / Direct Agent control** · 按外部来源启用或停用兼容集成，并选择管理、预览或只读策略
   - Enable or disable integration per source and choose managed, preview, or read-only policy
   - 说明：决定每个外部工具来源在当前环境中的参与级别与同名优先级策略，避免多套配置互相覆盖。
   - Why & how: Control each external tool source’s integration posture and conflict precedence without overwriting external configs.
@@ -90,7 +90,12 @@ Discover existing configurations and histories from Claude Code, Codex, OpenCode
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 扫描外部 AI 生态配置 / Discover external AI sources | 扫描本机与工作区的 Claude Code、Codex、OpenCode、Cursor 等外部来源与控制快照。 | Discover external AI application sources (Claude Code, Codex, OpenCode, Cursor, etc.) and control status. |
+| 启用或停用外部生态来源 / Enable or disable external source | 按期望修订号启用或停用指定外部生态来源。 | Enable or disable a discovered external source with optimistic revision check. |
+| 预览外部 MCP 导入计划 / Plan external MCP import | 生成外部 AI 应用 MCP 服务器导入 OpenBitFun 的冲突与变更预览。 | Preview the import plan for external MCP servers before applying. |
+| 执行外部 MCP 导入 / Apply external MCP import | 将选中的外部 MCP 服务器配置导入到 OpenBitFun 中。 | Apply an external MCP import plan into OpenBitFun. |
+| 列出可恢复的外部历史会话 / List external sessions | 查看已移除或可恢复的外部历史会话记录。 | List removed or restorable external sessions for a workspace. |
+| 恢复外部历史会话 / Restore external session | 将指定的外部历史会话恢复到当前工作区以继续协作。 | Restore a removed external session back into the workspace. |
 
 ## 可配置选项 / Configurable options
 

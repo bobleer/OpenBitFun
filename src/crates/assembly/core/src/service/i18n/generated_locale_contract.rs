@@ -79,11 +79,6 @@ pub const GENERATED_SHARED_TERMS: &[GeneratedSharedTermEntry] = &[
     },
     GeneratedSharedTermEntry {
         locale: LocaleId::ZhCN,
-        key: "agents.Cowork",
-        value: "办公协作",
-    },
-    GeneratedSharedTermEntry {
-        locale: LocaleId::ZhCN,
         key: "agents.Creative",
         value: "创造",
     },
@@ -294,11 +289,6 @@ pub const GENERATED_SHARED_TERMS: &[GeneratedSharedTermEntry] = &[
     },
     GeneratedSharedTermEntry {
         locale: LocaleId::ZhTW,
-        key: "agents.Cowork",
-        value: "辦公協作",
-    },
-    GeneratedSharedTermEntry {
-        locale: LocaleId::ZhTW,
         key: "agents.Creative",
         value: "創造",
     },
@@ -506,11 +496,6 @@ pub const GENERATED_SHARED_TERMS: &[GeneratedSharedTermEntry] = &[
         locale: LocaleId::EnUS,
         key: "agents.ComputerUse",
         value: "Computer Use",
-    },
-    GeneratedSharedTermEntry {
-        locale: LocaleId::EnUS,
-        key: "agents.Cowork",
-        value: "Cowork",
     },
     GeneratedSharedTermEntry {
         locale: LocaleId::EnUS,

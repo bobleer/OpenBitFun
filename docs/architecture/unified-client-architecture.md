@@ -324,6 +324,27 @@ any of them can be the entry, there is no home device, and the user never picks 
   device; prose (memory) keeps a conflict copy when a concurrent edit replaces local content. Assistants
   stay on their device: their persona documents are not account records, so one device's assistant never
   replaces another's.
+- **Agent-facing Fleet & cross-device ProductControl (`feature.fleet` + `target` routing)**: Both Desktop and CLI bind
+  the `fleet` product-control provider (`openbitfun_product_domains::fleet_control`,
+  `openbitfun_core::service::fleet::execute_fleet_control`) to their `FleetHost`
+  (falling back to a local-only fleet for `"self"` when signed out or off Link).
+  Agents can inspect all devices including `"self"` (`navigator`, `device-detail`,
+  `list-models`, `list-workspaces`, `recent-sessions`), coordinate sessions symmetrically on this
+  device and online peers (`list-sessions`, `create-session`, `send-message`,
+  `read-session`, `cancel-session`), triage prompts and Inbox (`list-prompts`,
+  `answer-prompt`, `attention`, `mark-attention-read`), search session transcripts across
+  devices (`search-sessions`), manage Cron jobs on always-on peers (`manage-cron`),
+  pull workspace files (`pull-file`), and forward any peer-safe `OpenBitFunControl`
+  `get`/`configure`/`execute` call either via `feature.fleet:invoke-control` or via
+  top-level `target` on `OpenBitFunControl` (`forward_product_control` over
+  `fleet_call(target, "product_control_invoke", ...)` with `target` stripped on the wire).
+  The 8 shared capability providers (`workspace-ops`, `skills-ops`, `acp-ops`,
+  `ecosystem-ops`, `review-ops`, `ai-policy-ops`, `agent-assistant-ops`,
+  `automation-data-ops` in `openbitfun_product_domains::product_capability_ops` and
+  `openbitfun_core::service::product_control_providers`) execute over Desktop's
+  `BackendService::dispatch` and CLI's `peer_host::handle_obp_call`, degrading loudly
+  for Desktop-only operations on headless CLI and keeping unattended dispatch workers
+  strictly read-only.
 - **Compatibility.** An entry without `fleet` on its hello leaves the UI on that one backend (with an "update
   this device" notice) and its legacy Peer Device Mode ([peer-device-mode.md](peer-device-mode.md)). Fleet DTOs
   read tolerantly: every field defaults, unknown fields are ignored, every enum has an `Unknown` variant.

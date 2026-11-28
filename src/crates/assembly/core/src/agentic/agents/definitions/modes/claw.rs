@@ -47,6 +47,7 @@ impl ClawMode {
                 "create_goal".to_string(),
                 "update_goal".to_string(),
                 "Skill".to_string(),
+                "Playbook".to_string(),
                 "ListWorkspaces".to_string(),
                 "SessionControl".to_string(),
                 "SessionMessage".to_string(),
@@ -57,6 +58,7 @@ impl ClawMode {
                 // Desktop control runs directly through its own native tool.
                 "ControlHub".to_string(),
                 "ComputerUse".to_string(),
+                "MiniAppBrowser".to_string(),
                 "OpenBitFunControl".to_string(),
                 "PageManage".to_string(),
             ],

@@ -32,11 +32,11 @@ Change backend log verbosity without restarting, open the runtime log folder, re
   - Control whether logs and diagnostic bundles may include sensitive debug context (off by default)
   - 说明：默认关闭以保护隐私。开启后可能会把完整提示词、工具调用参数或模型原始返回写入本机日志；建议仅在深度复现问题时临时打开，排查完立即关闭。
   - Why & how: Off by default to protect your privacy. Enabling it allows full prompts, tool arguments, or raw model responses into local logs — turn it on only briefly while reproducing a bug, then switch it back off.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看当前会话日志目录路径并一键打开本地日志文件夹
+- **智能体可直接控制 / Direct Agent control** · 查看当前会话日志目录路径并一键打开本地日志文件夹
   - Inspect the active session log directory path and open the log folder in one click
   - 说明：直接展示当前实例正在写入的精确日志目录，点“打开文件夹”即可在访达（Finder）或资源管理器中用自己的编辑器查看实时日志文件。
   - Why & how: Shows the exact directory where this running instance writes its logs and opens it directly in Finder or Explorer so you can tail or inspect files locally.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 确认隐私说明后导出本地 ZIP 诊断包并自动在文件管理器中定位
+- **智能体可直接控制 / Direct Agent control** · 确认隐私说明后导出本地 ZIP 诊断包并自动在文件管理器中定位
   - Confirm the privacy notice to export a local ZIP diagnostics bundle and reveal it in your file manager
   - 说明：点击“导出诊断包”会先弹出应用内隐私说明弹窗，确认“继续导出”后自动在 `<logs>/diagnostics/` 目录生成 `openbitfun-diagnostics-<时间戳>.zip`（含运行状态、配置健康与近期会话日志），并在访达 / 资源管理器中高亮该文件，**绝不自动上传**。
   - Why & how: Clicking Export Diagnostics opens an in-app privacy confirmation dialog (`Continue export`), writes `openbitfun-diagnostics-<timestamp>.zip` (metadata, run state, config health, and recent session logs) into `<logs>/diagnostics/`, and automatically reveals the `.zip` file in Finder / Explorer — **never auto-uploading**.
@@ -60,7 +60,8 @@ Change backend log verbosity without restarting, open the runtime log folder, re
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看运行日志路径与系统版本信息 / Inspect runtime logging and system info | 读取日志路径、日志级别、操作系统环境与应用版本号。 | Read runtime log directory/level, host OS environment, and app version. |
+| 导出本地故障诊断包 / Export diagnostics bundle | 打包运行日志与环境信息生成可分享的本地故障诊断包。 | Export a local troubleshooting diagnostics bundle. |
 
 ## 可配置选项 / Configurable options
 

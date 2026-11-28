@@ -280,8 +280,27 @@ impl OpenBitFunControlTool {
         )
     }
 
+    fn target_device(input: &Value) -> Option<&str> {
+        input
+            .get("target")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    fn targets_remote_device(target: Option<&str>) -> bool {
+        target.is_some_and(|value| {
+            !value.eq_ignore_ascii_case("self") && !value.eq_ignore_ascii_case("local")
+        })
+    }
+
     fn validate_operation_scope(input: &Value, context: &ToolUseContext) -> Result<(), String> {
         if Self::action(input) != Some("execute") {
+            return Ok(());
+        }
+        // When explicitly targeting a peer device over Fleet, host-local paths
+        // are evaluated on that target device rather than this SSH workspace host.
+        if Self::targets_remote_device(Self::target_device(input)) {
             return Ok(());
         }
         let capability_id = Self::capability_id(input).unwrap_or_default();
@@ -310,13 +329,14 @@ impl Tool for OpenBitFunControlTool {
 
     async fn description(&self) -> OpenBitFunResult<String> {
         Ok(
-            "Control OpenBitFun features and settings, including MCP servers, Remote Connect bots/Mobile Web, and same-account devices with Detached Dispatch to other hosts. Prefer this tool over ComputerUse. Use the two-step flow: `list` or `search`, then `get` the matching capability and follow its schema and availability to `configure`, `execute`, or `open`. Open a root with capability_id only. destination.actionId is presentation metadata, never an item_id or operation_id. The catalog loads on demand; never guess IDs or values."
+            "Control OpenBitFun features, settings, and same-account Fleet devices (`target`), including workspaces, Skills/MCP/ACP, review, models, permissions, agents, automation, and Detached Dispatch. Prefer this over ComputerUse. Use the two-step flow: `list` or `search`, then `get` and follow its schema to `configure`, `execute`, or `open`. Pass optional `target` on `get`/`configure`/`execute` to operate a peer device. Never guess IDs or values."
                 .to_string(),
         )
     }
 
     fn short_description(&self) -> String {
-        "Discover and control OpenBitFun features and settings, including MCP servers.".to_string()
+        "Discover and control OpenBitFun features, settings, and same-account Fleet devices."
+            .to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -329,6 +349,10 @@ impl Tool for OpenBitFunControlTool {
                     "type": "string",
                     "enum": ACTIONS,
                     "description": "Discovery: list/search/get. Control: open/execute/configure. Discover a capability before controlling it."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Optional target runtime device for get/configure/execute ('self'/'local' default for this device, or a peer deviceId, 'device:<id>', or exact device name/alias)."
                 },
                 "query": {
                     "type": "string",
@@ -467,9 +491,15 @@ impl Tool for OpenBitFunControlTool {
                 .unwrap_or_else(|| capability_id.to_string()),
             _ => capability_id.to_string(),
         };
+        let scoped_target = match Self::target_device(input) {
+            Some(device) if Self::targets_remote_device(Some(device)) => {
+                format!("{device}/{target}")
+            }
+            _ => target,
+        };
         Ok(vec![PermissionIntent::new(
             "openbitfun_control",
-            vec![format!("{action}:{target}")],
+            vec![format!("{action}:{scoped_target}")],
         )])
     }
 
@@ -497,6 +527,18 @@ impl Tool for OpenBitFunControlTool {
             return invalid(
                 "action must be one of list, search, get, open, execute, or configure.",
             );
+        }
+        if let Some(raw_target) = input.get("target") {
+            let Some(target) = raw_target.as_str().map(str::trim).filter(|v| !v.is_empty()) else {
+                return invalid("target must be a non-empty string when provided.");
+            };
+            if Self::targets_remote_device(Some(target))
+                && !matches!(action, "get" | "configure" | "execute")
+            {
+                return invalid(
+                    "remote target is only supported for get, configure, and execute; omit target for list/search/open.",
+                );
+            }
         }
         if action == "search"
             && !input
@@ -665,8 +707,11 @@ impl Tool for OpenBitFunControlTool {
             ));
         }
 
+        let target = Self::target_device(input).map(str::to_string);
+        let remote_target = Self::targets_remote_device(target.as_deref());
         let request = OpenBitFunControlHostRequest {
             action: typed_action,
+            target,
             query: input
                 .get("query")
                 .and_then(Value::as_str)
@@ -713,6 +758,10 @@ impl Tool for OpenBitFunControlTool {
                 let mut result = if openbitfun_control_host_available() {
                     match invoke_openbitfun_control(request.clone()).await {
                         Ok(result) => result,
+                        Err(error) if remote_target => {
+                            // Never fall back to local config when targeting a peer device.
+                            return Err(OpenBitFunError::tool(error));
+                        }
                         Err(error) => {
                             let mut result = self.inspect_shared_capability(capability_id).await?;
                             if let Some(object) = result.as_object_mut() {
@@ -727,6 +776,11 @@ impl Tool for OpenBitFunControlTool {
                             result
                         }
                     }
+                } else if remote_target {
+                    return Err(OpenBitFunError::tool(
+                        "remote_target_unavailable: OpenBitFunControl host is unavailable to route to a peer device"
+                            .to_string(),
+                    ));
                 } else {
                     self.inspect_shared_capability(capability_id).await?
                 };
@@ -780,6 +834,11 @@ impl Tool for OpenBitFunControlTool {
                     invoke_openbitfun_control(request)
                         .await
                         .map_err(OpenBitFunError::tool)?
+                } else if remote_target {
+                    return Err(OpenBitFunError::tool(
+                        "remote_target_unavailable: OpenBitFunControl host is unavailable to route configure to a peer device"
+                            .to_string(),
+                    ));
                 } else {
                     self.configure_shared_option(&request).await?
                 }

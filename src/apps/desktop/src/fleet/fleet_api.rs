@@ -140,3 +140,122 @@ pub(crate) async fn owner_verb(command: String, args: Value) -> Result<Value, St
         .await
         .unwrap_or_else(|| Err(format!("unknown fleet owner verb {command}")))
 }
+
+struct DesktopFleetControlHost;
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::fleet::FleetControlHost for DesktopFleetControlHost {
+    fn local_device_id(&self) -> Option<String> {
+        super::serving("fleet_navigator")
+            .ok()
+            .map(|host| host.device_id().to_string())
+            .or_else(|| crate::api::remote_connect_api::current_device_id_for_peer().ok())
+    }
+
+    async fn navigator(&self) -> anyhow::Result<FleetNavigator> {
+        let host = super::serving("fleet_navigator").map_err(anyhow::Error::msg)?;
+        Ok(host.router().navigator(FleetNavigatorRequest::default()))
+    }
+
+    async fn device_detail(&self, device_id: &str) -> anyhow::Result<FleetDeviceDetail> {
+        let host = super::serving("fleet_device_detail").map_err(anyhow::Error::msg)?;
+        host.views()
+            .device_detail(&FleetDeviceDetailRequest {
+                device_id: device_id.to_string(),
+            })
+            .await
+            .map_err(anyhow::Error::msg)
+    }
+
+    async fn models(&self, device_id: Option<&str>) -> anyhow::Result<FleetModels> {
+        let host = super::serving("fleet_models").map_err(anyhow::Error::msg)?;
+        Ok(host.views().models(&FleetModelsRequest {
+            device_id: device_id.map(str::to_string),
+        }))
+    }
+
+    async fn prompts(&self) -> anyhow::Result<FleetPromptsResponse> {
+        let host = super::serving("fleet_prompts").map_err(anyhow::Error::msg)?;
+        Ok(host.router().prompts())
+    }
+
+    async fn attention(&self) -> anyhow::Result<FleetAttentionView> {
+        let host = super::serving("fleet_attention").map_err(anyhow::Error::msg)?;
+        Ok(host.attention().view().await)
+    }
+
+    async fn mark_attention_read(
+        &self,
+        revision: u64,
+    ) -> anyhow::Result<FleetAttentionMarkReadResponse> {
+        let host = super::serving("fleet_attention_mark_read").map_err(anyhow::Error::msg)?;
+        Ok(host.attention().mark_read(revision))
+    }
+
+    async fn recent_sessions(
+        &self,
+        request: FleetRecentSessionsRequest,
+    ) -> anyhow::Result<FleetRecentSessions> {
+        let host = super::serving("fleet_recent_sessions").map_err(anyhow::Error::msg)?;
+        Ok(host.views().recent_sessions(&request))
+    }
+
+    async fn fleet_call(
+        &self,
+        target_device_id: &str,
+        command: &str,
+        args: Value,
+    ) -> anyhow::Result<Value> {
+        fleet_call(FleetCallRequest {
+            target: Some(target_device_id.to_string()),
+            command: command.to_string(),
+            args,
+        })
+        .await
+        .map_err(anyhow::Error::msg)
+    }
+
+    async fn dispatch_answer(
+        &self,
+        target_device_id: &str,
+        payload: Value,
+    ) -> anyhow::Result<Value> {
+        let is_local = self
+            .local_device_id()
+            .as_deref()
+            .is_some_and(|local| local == target_device_id);
+        if is_local {
+            return crate::api::dispatch_host::dispatch("dispatch_target_answer", payload).await;
+        }
+        openbitfun_core::service::dispatch::invoke_device_dispatch(
+            openbitfun_services_integrations::remote_connect::mesh_route::mesh_route(),
+            target_device_id,
+            "dispatch_target_answer",
+            payload,
+        )
+        .await
+    }
+}
+
+/// Run one Agent product-control Fleet request on this desktop host.
+pub(crate) async fn execute_agent_fleet_control(
+    request: openbitfun_product_domains::fleet_control::FleetControlRequest,
+) -> Result<Value, String> {
+    openbitfun_core::service::fleet::execute_fleet_control(&DesktopFleetControlHost, request)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Forward an `OpenBitFunControl` request (`get`/`configure`/`execute`) to a peer device.
+pub(crate) async fn forward_agent_product_control(
+    target: Option<&str>,
+    request: openbitfun_product_domains::product_control::ProductControlRequest,
+) -> Result<Value, String> {
+    openbitfun_core::service::fleet::forward_product_control(
+        &DesktopFleetControlHost,
+        target,
+        request,
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}

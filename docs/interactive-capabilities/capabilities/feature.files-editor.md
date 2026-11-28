@@ -38,11 +38,11 @@ Browse and edit code right beside your chat, review or roll back AI changes by f
   - Inspect diffs and line-change stats by file, single tool operation, turn, or full session
   - 说明：不管是点对话里的文件编辑卡片，还是点输入框上方的改动文件汇总条，都能立即在右侧对照修改前后的每一处差异。
   - Why & how: Click any file-edit card in the transcript or the modified-files bar above the composer to compare exact before-and-after diffs.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 按单次操作、单个文件或整个会话一键「接受」或「拒绝」智能体产生的代码改动
+- **智能体可直接控制 / Direct Agent control** · 按单次操作、单个文件或整个会话一键「接受」或「拒绝」智能体产生的代码改动
   - Accept or reject AI code changes by individual operation, file, or entire session
   - 说明：把最终拍板权留在你手里：保留改得漂亮的部分，一键撤销不符合预期的文件修改，无需手动敲 Git 恢复命令。
   - Why & how: Stay in full control of your working tree: keep clean edits and revert unwanted file or operation changes in one click.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 基于自动变更快照查看文件修改轨迹，随时把会话与代码一起回滚到指定历史轮次
+- **智能体可直接控制 / Direct Agent control** · 基于自动变更快照查看文件修改轨迹，随时把会话与代码一起回滚到指定历史轮次
   - Browse automatic file-change snapshots and roll back a session and its files to any earlier turn
   - 说明：如果后面几轮尝试走偏了，直接选择「回滚到此轮」，OpenBitFun 会利用操作前自动保存的快照把代码干净还原到当时的状态。
   - Why & how: If a multi-turn experiment goes sideways, roll back to an earlier turn and let OpenBitFun’s automatic pre-edit snapshots restore your files cleanly.
@@ -88,7 +88,9 @@ Browse and edit code right beside your chat, review or roll back AI changes by f
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看会话文件改动统计 / Inspect session file diff stats | 获取指定会话修改过的文件清单及增删行统计。 | Inspect modified files and diff stats produced by a session. |
+| 接受或拒绝会话文件修改 / Accept or reject session edits | 按单文件接受/拒绝修改，或一键接受整个会话的全部变更。 | Accept or reject a single modified file, or accept all edits for a session. |
+| 回滚会话与文件快照到指定回合 / Roll back session to turn | 将指定会话的对话与文件快照精确回滚到历史回合 turnIndex。 | Roll back a session and its file snapshots to an earlier turnIndex. |
 
 ## 可配置选项 / Configurable options
 

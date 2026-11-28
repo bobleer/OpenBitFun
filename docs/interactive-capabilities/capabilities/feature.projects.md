@@ -34,11 +34,11 @@ Open local folders or remote environments as workspaces, and use each project’
   - Configure per-project default models and mode in Project Resources, alongside project permissions, schedules, subagents, and Skills
   - 说明：点击项目行旁的「项目资源」图标即可设置只对该仓库（含其关联 Worktree）生效的主力模型、快速模型与默认模式，并在同一页增删该项目的工具审批规则、定时任务、项目子智能体和项目级 Skills。
   - Why & how: Open Project Resources from a project row to override the Primary model, Fast model, and default mode for that repo (inherited by its worktrees), and manage its tool permissions, scheduled jobs, subagents, and Skills.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在多个已打开项目间自由切换、拖拽排序或关闭闲置工作区
+- **智能体可直接控制 / Direct Agent control** · 在多个已打开项目间自由切换、拖拽排序或关闭闲置工作区
   - Switch, drag to reorder, or close open project workspaces in the sidebar
   - 说明：支持按习惯拖拽调整侧边栏项目顺序；关闭项目只会把它从当前侧边栏收起，磁盘文件和历史会话均不受影响。
   - Why & how: Drag project headers to keep active repos at the top, or close idle workspaces without touching files or saved conversation history.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看最近打开过的项目列表，一键重开或清理失效记录
+- **智能体可直接控制 / Direct Agent control** · 查看最近打开过的项目列表，一键重开或清理失效记录
   - Browse recently opened projects, reopen them in one click, or clean up stale entries
   - 说明：如果某个本地目录已被移动或删除，可以单独移除记录或一键清理失效路径，保持列表清爽。
   - Why & how: Quickly jump back into recent repositories or prune moved and deleted directory entries from your history.
@@ -86,6 +86,10 @@ Open local folders or remote environments as workspaces, and use each project’
 | --- | --- | --- |
 | 打开项目 / Open project | 弹出目录选择器并打开一个已有项目文件夹。 | Open the directory picker to open an existing project folder. |
 | 新建项目 / Create project | 打开新建项目向导，支持本地目录、模板或远程环境。 | Launch the new-project wizard for local folders, templates, or remote targets. |
+| 查看已打开与最近工作区 / List opened and recent workspaces | 列出本机当前活跃工作区、已打开工作区列表与最近访问工作区。 | List the active workspace, opened workspaces, and recent workspaces on this host. |
+| 打开或新建本地工作区 / Open or create a workspace | 按目录路径或 workspaceId 打开本地工作区（可选 createLocal 创建目录）。 | Open a local directory or workspace ID as an active workspace (optionally creating the folder). |
+| 关闭工作区 / Close workspace | 从已打开列表中关闭指定工作区。 | Close an opened workspace by workspaceId. |
+| 切换当前活跃工作区 / Switch active workspace | 将指定已打开工作区设为当前活跃工作区。 | Set an opened workspace as the active workspace. |
 
 ## 可配置选项 / Configurable options
 

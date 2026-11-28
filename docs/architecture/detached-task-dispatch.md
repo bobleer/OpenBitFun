@@ -32,13 +32,20 @@ envelope over the relay RPC was removed.
 
 The Agent reaches the same controller through the `detached-dispatch`
 product-control provider on `feature.detached-dispatch` (`list-targets`,
-`submit`, `status`, `list-jobs`, `cancel`). Both hosts bind it to Core's
-`execute_dispatch_control`, which `dispatch outbound` also uses; hosts supply
-only their account session and SSH manager. `list-targets` returns every
-same-account device with `isCurrentDevice` and the saved SSH targets, so the
-Agent never infers the device count from Remote Connect status. `submit` is
-refused inside a detached dispatch worker, so a job cannot fan out further
-dispatches.
+`probe`, `submit`, `status`, `wait`, `result-summary`, `continue`, `append`,
+`answer`, `sync-result`, `fetch-file`, `publish-branch`, `list-jobs`,
+`cancel`). Both hosts bind it to Core's `execute_dispatch_control`, which
+`openbitfun dispatch outbound` also uses; hosts supply only their account
+session and SSH manager. `list-targets` returns every same-account device with
+`isCurrentDevice` and the saved SSH targets, so the Agent never infers the
+device count from Remote Connect status. `submit` accepts either a local Git
+`workspacePath` or a target-resolved `source` (`workspace`, `remote`, or `job`
+peer import on targets advertising `workspace_target_source_v1` /
+`workspace_peer_import_v1`), and is refused inside a detached dispatch worker
+so a job cannot fan out further dispatches. `fetch-file` streams remote job
+files (including compiled binaries) chunk-by-chunk over `readFileChunk`
+(`query_file_chunks_v1`) directly to a controller-local path with revision and
+SHA-256 verification.
 
 The controller is never a runtime or filesystem proxy for a non-local job. It
 stores only an outbound observer record under

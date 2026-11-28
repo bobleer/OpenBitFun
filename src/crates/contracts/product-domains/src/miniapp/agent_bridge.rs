@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 pub const MINIAPP_AGENT_SURFACE: &str = "miniapp_agent";
 pub const MINIAPP_AGENT_SESSION_NAME: &str = "MiniApp Agent Run";
-pub const MINIAPP_AGENT_KIND: &str = "Cowork";
+pub const MINIAPP_AGENT_KIND: &str = "Standard";
 pub const AGENT_ACCESS_DISABLED_MESSAGE: &str = "Agent access is not enabled for this MiniApp";
 pub const UNKNOWN_AGENT_SESSION_MESSAGE: &str = "Unknown MiniApp agent session";
 pub const UNKNOWN_AGENT_RUN_MESSAGE: &str = "Unknown MiniApp agent run";

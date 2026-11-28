@@ -950,7 +950,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_summary_ids_fail_before_discovery() {
         let error = get_mode_skill_configs(
-            &json!({"modeId":"Cowork","includeDiagnostics":true,"summaryModeIds":[1]}),
+            &json!({"modeId":"Claw","includeDiagnostics":true,"summaryModeIds":[1]}),
         )
         .await
         .unwrap_err();
@@ -959,20 +959,20 @@ mod tests {
 
     #[tokio::test]
     async fn mode_summary_preserves_legacy_payloads() {
-        let legacy = get_mode_skill_configs(&json!({"modeId":"Cowork"}))
+        let legacy = get_mode_skill_configs(&json!({"modeId":"Claw"}))
             .await
             .unwrap();
         let diagnostic =
-            get_mode_skill_configs(&json!({"modeId":"Cowork","includeDiagnostics":true}))
+            get_mode_skill_configs(&json!({"modeId":"Claw","includeDiagnostics":true}))
                 .await
                 .unwrap();
         assert_eq!(legacy, diagnostic["skills"]);
         assert!(diagnostic.get("skillCountsVersion").is_none());
-        let summary = get_mode_skill_configs(&json!({"modeId":"Cowork","includeDiagnostics":true,"summaryModeIds":["Cowork","review","Cowork"]})).await.unwrap();
+        let summary = get_mode_skill_configs(&json!({"modeId":"Claw","includeDiagnostics":true,"summaryModeIds":["Claw","review","Claw"]})).await.unwrap();
         assert_eq!(legacy, summary["skills"]);
         assert_eq!(summary["skillCountsVersion"], 1);
         assert_eq!(
-            summary["enabledSkillCounts"]["Cowork"].as_u64().unwrap(),
+            summary["enabledSkillCounts"]["Claw"].as_u64().unwrap(),
             legacy
                 .as_array()
                 .unwrap()

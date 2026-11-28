@@ -1,5 +1,4 @@
 mod claw;
-mod cowork;
 mod creative;
 mod deep_research;
 mod minimal;
@@ -8,7 +7,6 @@ mod standard;
 mod ultimate;
 
 pub use claw::ClawMode;
-pub use cowork::CoworkMode;
 pub use creative::CreativeHarness;
 pub use deep_research::DeepResearchMode;
 pub use minimal::MinimalHarness;

@@ -58,7 +58,7 @@ Control whether OpenBitFun generates memories automatically and uses memories in
   - Set Candidate retention days for unused raw memories
   - 说明：超过“候选保留天数”仍未被用到的陈旧原始候选会自动淘汰，避免过时上下文长期堆积。
   - Why & how: Automatically expires stale, unused raw memory candidates past the Candidate retention window so old assumptions do not pile up.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 通过“⋯”菜单打开本地记忆目录、恢复默认设置或清空全部记忆
+- **智能体可直接控制 / Direct Agent control** · 通过“⋯”菜单打开本地记忆目录、恢复默认设置或清空全部记忆
   - Open the local memory folder, restore default settings, or erase all memories from the ⋯ menu
   - 说明：记忆区块标题栏右侧提供透明可控的维护入口：可随时打开磁盘目录检查和手改记忆内容，也可单独重置参数或彻底清空已存记忆。
   - Why & how: Use the ⋯ menu in the Memory section header to inspect or hand-edit memory files on disk, reset tuning parameters, or permanently clear all stored memories.
@@ -80,7 +80,8 @@ Control whether OpenBitFun generates memories automatically and uses memories in
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看长期记忆存储路径 / Inspect memory storage paths | 读取长期记忆的存储目录与文件位置。 | Inspect storage directories and paths for long-term memory files. |
+| 重置长期记忆 / Reset long-term memory | 清空并重置已提取的长期记忆数据。 | Clear and reset stored long-term memories. |
 
 ## 可配置选项 / Configurable options
 

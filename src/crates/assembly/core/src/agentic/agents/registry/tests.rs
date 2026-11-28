@@ -276,7 +276,6 @@ async fn remote_workspace_load_publishes_an_empty_project_set_and_keeps_user_age
 fn top_level_modes_default_to_auto() {
     for agent_type in [
         "Standard",
-        "Cowork",
         "Creative",
         "Claw",
         "DeepResearch",
@@ -285,6 +284,25 @@ fn top_level_modes_default_to_auto() {
     ] {
         assert_eq!(default_model_id_for_builtin_agent(agent_type), "primary");
     }
+}
+
+#[tokio::test]
+async fn retired_cowork_mode_is_unlisted_but_resolves_legacy_sessions_to_standard() {
+    let registry = AgentRegistry::new();
+    let modes = registry.get_modes_info().await;
+    assert!(
+        !modes
+            .iter()
+            .any(|mode| mode.id.eq_ignore_ascii_case("cowork")),
+        "Cowork must not be exposed as a selectable built-in mode"
+    );
+    assert!(!registry.check_agent_exists("Cowork"));
+    assert!(registry.get_mode_agent("Cowork").is_none());
+
+    let fallback = registry
+        .get_agent("Cowork", None)
+        .expect("legacy Cowork sessions should still resolve transparently to Standard");
+    assert_eq!(fallback.id(), "Standard");
 }
 
 #[test]
@@ -433,8 +451,7 @@ fn every_builtin_mode_with_control_hub_can_also_schedule_with_cron() {
     // ControlHub's `wait` documentation tells the agent to schedule anything
     // repeating — or further out than an hour — with Cron instead of holding
     // the turn open. A mode that offers one without the other sends the agent
-    // after a tool that is not in its list; Cowork answered a "check every 30
-    // minutes" request with "I have no cron tool" for exactly this reason.
+    // after a tool that is not in its list.
     for spec in builtin_agent_specs()
         .iter()
         .filter(|spec| spec.category == AgentCategory::Mode)

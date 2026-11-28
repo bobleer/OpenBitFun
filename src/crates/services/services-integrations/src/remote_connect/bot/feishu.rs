@@ -786,14 +786,6 @@ fn replace_command_tokens(language: BotLanguage, line: &str) -> String {
             },
         ),
         (
-            "/new_cowork_session",
-            if language.is_chinese() {
-                "新建协作会话"
-            } else {
-                "New Cowork Session"
-            },
-        ),
-        (
             "/new_claw_session",
             if language.is_chinese() {
                 "新建助理会话"

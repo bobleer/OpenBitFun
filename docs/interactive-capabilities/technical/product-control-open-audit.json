@@ -1,48 +1,15 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "3ed78c6ff3e1a9cdd54af58d888ee083cfdd4ab2b2a16f56f1270290a8a2b1f8",
-  "count": 226,
+  "catalogDigest": "0baa7e0a981143fcddb900c7e0a7162ce6f567fc78d247927ac722e24cd6095e",
+  "count": 162,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
-    "unstructuredInteraction": 189,
-    "visualSelection": 27
+    "unstructuredInteraction": 128,
+    "visualSelection": 24
   },
   "entries": [
-    {
-      "capabilityId": "feature.home-search",
-      "itemId": "home-overview",
-      "titleZh": "在「首页」总览活跃度热力图、已关联设备，并快捷启动智能体、助理、小应用与技能",
-      "titleEn": "Review your activity heatmap and connected devices on Home, with quick actions for Agents, Assistants, Mini Apps, and Skills",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在「首页」总览活跃度热力图、已关联设备，并快捷启动智能体、助理、小应用与技能」需要结合你在首页卡片上的实时浏览与点选目标来完成操作；智能体可为你直接打开首页，方便你查看概览或点击对应模块。",
-      "reasonEn": "“Review your activity heatmap and connected devices on Home, with quick actions for Agents, Assistants, Mini Apps, and Skills” depends on what you want to inspect or launch from the live Home dashboard; the Agent opens Home directly so you can act in place.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "personal-overview"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/homeStore.ts#loadAccountActivity",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.activity.summary\""
-      ]
-    },
-    {
-      "capabilityId": "feature.home-search",
-      "itemId": "global-search",
-      "titleZh": "用全局搜索（⌘K / Ctrl+K 或 Alt+F）跨项目检索消息、文件、功能与设置，或输入 > 运行命令",
-      "titleEn": "Search across messages, sessions, files, features, and settings with ⌘K / Ctrl+K, or type > to run commands",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「用全局搜索（⌘K / Ctrl+K 或 Alt+F）跨项目检索消息、文件、功能与设置，或输入 > 运行命令」需要你输入关键词并在实时匹配的会话、文件或命令结果中挑选目标；智能体也可通过内置控制工具直接帮你跳转到明确的功能或设置页。",
-      "reasonEn": "“Search across messages, sessions, files, features, and settings with ⌘K / Ctrl+K, or type > to run commands” lets you type queries and pick from live session, file, action, and settings matches; you can also ask the Agent to open a specific page directly.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "personal-overview"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/globalSearchStore.ts#export function openGlobalSearch"
-      ]
-    },
     {
       "capabilityId": "feature.home-search",
       "itemId": "split-workbench",
@@ -332,60 +299,6 @@
     },
     {
       "capabilityId": "feature.agents",
-      "itemId": "browse-agents",
-      "titleZh": "按内置、个人、项目与外部来源分类浏览当前环境可用的全部智能体",
-      "titleEn": "Browse built-in, personal, project, and external agents available in the current environment",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「按内置、个人、项目与外部来源分类浏览当前环境可用的全部智能体」需要结合当前主机与工作区的实时目录进行筛选查看；智能体可为你直接打开智能体管理中心。",
-      "reasonEn": "“Browse built-in, personal, project, and external agents available in the current environment” displays live agent catalogs scoped to your active host and workspace; the Agent opens the Agents gallery directly for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.agents.open"
-      },
-      "evidence": [
-        "command:list_visible_subagents",
-        "command:list_subagents",
-        "command:list_manageable_subagents"
-      ]
-    },
-    {
-      "capabilityId": "feature.agents",
-      "itemId": "custom-agent-create",
-      "titleZh": "创建自定义主对话智能体，设定专属名称、职责说明与系统提示词",
-      "titleEn": "Create custom primary agents with their own name, description, and role instructions",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「创建自定义主对话智能体，设定专属名称、职责说明与系统提示词」包含角色提示词编写与工具边界挑选，打开创建弹窗后即可按向导保存。",
-      "reasonEn": "“Create custom primary agents with their own name, description, and role instructions” lets you author role instructions and pick allowed capabilities in the creation dialog.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.agents.open"
-      },
-      "evidence": [
-        "command:create_custom_agent"
-      ]
-    },
-    {
-      "capabilityId": "feature.agents",
-      "itemId": "custom-agent-manage",
-      "titleZh": "查看详情、随时微调提示词、热重载配置或删除不再需要的自定义智能体",
-      "titleEn": "Inspect, edit instructions, hot-reload, or remove custom agents anytime",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「查看详情、随时微调提示词、热重载配置或删除不再需要的自定义智能体」需要选定目标自定义智能体并确认编辑或删除动作，智能体会为你打开管理界面。",
-      "reasonEn": "“Inspect, edit instructions, hot-reload, or remove custom agents anytime” targets the specific custom agent you select for editing, reloading, or removal in the Agents view.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.agents.open"
-      },
-      "evidence": [
-        "command:get_custom_agent_detail",
-        "command:update_custom_agent",
-        "command:reload_custom_agents",
-        "command:delete_custom_agent",
-        "command:reload_subagents"
-      ]
-    },
-    {
-      "capabilityId": "feature.agents",
       "itemId": "subagent-manage",
       "titleZh": "创建与维护可被主智能体自动委派的个人级或项目级子智能体",
       "titleEn": "Create and configure personal or project-scoped subagents that primary agents can delegate to",
@@ -446,24 +359,6 @@
     },
     {
       "capabilityId": "feature.personal-assistants",
-      "itemId": "assistant-gallery",
-      "titleZh": "在助理空间一览全部个人助理、查看人设与能力摘要，并一键创建新助理",
-      "titleEn": "Browse all your personal assistants, review their persona and capability summaries, and create new ones in one click",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在助理空间一览全部个人助理、查看人设与能力摘要，并一键创建新助理」需要你在助理空间中浏览卡片并确认新建或进入哪个助理；智能体可为你直接打开助理空间。",
-      "reasonEn": "“Browse all your personal assistants, review their persona and capability summaries, and create new ones in one click” opens the Assistant gallery where you can browse existing companions, create a new one, or jump into its configuration.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "assistant"
-      },
-      "evidence": [
-        "command:create_assistant_workspace",
-        "command:set_assistant_identity",
-        "command:get_assistant_workspaces"
-      ]
-    },
-    {
-      "capabilityId": "feature.personal-assistants",
       "itemId": "assistant-open-close",
       "titleZh": "把暂时不用的助理从侧边栏收起（完整保留人设与历史），需要时随时重新打开",
       "titleEn": "Hide inactive assistants from the sidebar while keeping their persona and history intact, and reopen them anytime",
@@ -477,41 +372,6 @@
       "evidence": [
         "command:close_workspace",
         "command:open_workspace"
-      ]
-    },
-    {
-      "capabilityId": "feature.personal-assistants",
-      "itemId": "primary-delete-reset",
-      "titleZh": "将最常用的伙伴设为「主助理」、删除不再需要的副助理，或一键重置为初始状态",
-      "titleEn": "Designate your Primary Assistant, remove extra assistants, or reset an assistant workspace back to defaults",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「将最常用的伙伴设为「主助理」、删除不再需要的副助理，或一键重置为初始状态」涉及影响长期记忆与历史记录的确认动作，由你在助理详情菜单中核对后执行。",
-      "reasonEn": "“Designate your Primary Assistant, remove extra assistants, or reset an assistant workspace back to defaults” includes destructive reset and deletion confirmations that remain safely under your explicit control in the UI.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "assistant"
-      },
-      "evidence": [
-        "command:get_primary_assistant_workspace",
-        "command:set_primary_assistant_workspace",
-        "command:delete_assistant_workspace",
-        "command:reset_assistant_workspace"
-      ]
-    },
-    {
-      "capabilityId": "feature.personal-assistants",
-      "itemId": "identity-avatar",
-      "titleZh": "定制助理昵称、角色设定与说话气质，并挑选官方插画头像、Emoji 或自定义字符",
-      "titleEn": "Edit an assistant’s name, role archetype, and conversational vibe, and pick a preset avatar, emoji, or custom glyph",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「定制助理昵称、角色设定与说话气质，并挑选官方插画头像、Emoji 或自定义字符」属于可视化的形象与气质编辑流程，可在助理配置页边改边看实时效果。",
-      "reasonEn": "“Edit an assistant’s name, role archetype, and conversational vibe, and pick a preset avatar, emoji, or custom glyph” is a visual customization flow on the assistant detail page with live avatar preview.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "assistant"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/assistantStore.ts#ASSISTANT_AVATAR_PRESETS"
       ]
     },
     {
@@ -577,44 +437,6 @@
       },
       "evidence": [
         "source:src/crates/contracts/config-contracts/src/types.rs#pub project_defaults:"
-      ]
-    },
-    {
-      "capabilityId": "feature.projects",
-      "itemId": "close-switch-reorder",
-      "titleZh": "在多个已打开项目间自由切换、拖拽排序或关闭闲置工作区",
-      "titleEn": "Switch, drag to reorder, or close open project workspaces in the sidebar",
-      "reasonCode": "visualSelection",
-      "reasonZh": "排序与关闭哪个工作区取决于你在侧边栏的实时选择；智能体可帮你打开项目入口，不会擅自关闭你正在使用的工作区。",
-      "reasonEn": "Reordering or closing workspaces depends on your live sidebar selection; the Agent can open the project flow without closing active work behind your back.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.open"
-      },
-      "evidence": [
-        "command:close_workspace",
-        "command:set_active_workspace",
-        "command:reorder_opened_workspaces",
-        "command:get_opened_workspaces",
-        "command:get_workspace_navigator"
-      ]
-    },
-    {
-      "capabilityId": "feature.projects",
-      "itemId": "recent-workspaces",
-      "titleZh": "查看最近打开过的项目列表，一键重开或清理失效记录",
-      "titleEn": "Browse recently opened projects, reopen them in one click, or clean up stale entries",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「查看最近打开过的项目列表，一键重开或清理失效记录」需要你从历史项目列表中确认要重开或清理的条目；智能体会为你打开对应入口并在界面中完成选择。",
-      "reasonEn": "“Browse recently opened projects, reopen them in one click, or clean up stale entries” lets you inspect your recent history list and confirm which project to reopen or remove in the UI.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.open"
-      },
-      "evidence": [
-        "command:get_recent_workspaces",
-        "command:remove_recent_workspace",
-        "command:cleanup_invalid_workspaces"
       ]
     },
     {
@@ -725,46 +547,6 @@
         "command:get_statistics",
         "command:get_global_config_status",
         "command:update_app_status"
-      ]
-    },
-    {
-      "capabilityId": "feature.files-editor",
-      "itemId": "accept-reject",
-      "titleZh": "按单次操作、单个文件或整个会话一键「接受」或「拒绝」智能体产生的代码改动",
-      "titleEn": "Accept or reject AI code changes by individual operation, file, or entire session",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「按单次操作、单个文件或整个会话一键「接受」或「拒绝」智能体产生的代码改动」需要你在审阅具体 Diff 后做出保留或还原的判断，可在会话修改栏与差异视图中直接点击完成。",
-      "reasonEn": "“Accept or reject AI code changes by individual operation, file, or entire session” lets you review the concrete diff first and confirm which edits to keep or revert in the diff viewer and modified-files bar.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:accept_file",
-        "command:reject_file",
-        "command:accept_operation",
-        "command:reject_operation",
-        "command:accept_session"
-      ]
-    },
-    {
-      "capabilityId": "feature.files-editor",
-      "itemId": "snapshots-rollback",
-      "titleZh": "基于自动变更快照查看文件修改轨迹，随时把会话与代码一起回滚到指定历史轮次",
-      "titleEn": "Browse automatic file-change snapshots and roll back a session and its files to any earlier turn",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「基于自动变更快照查看文件修改轨迹，随时把会话与代码一起回滚到指定历史轮次」会同时回退工作区文件内容与对话时间线，需要你在会话轮次上明确选择回滚节点并确认。",
-      "reasonEn": "“Browse automatic file-change snapshots and roll back a session and its files to any earlier turn” rewinds workspace files alongside the conversation timeline, so you explicitly choose and confirm the target turn in the UI.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:get_file_change_history",
-        "command:get_snapshot_sessions",
-        "command:rollback_session",
-        "command:rollback_session_to_turn",
-        "command:get_snapshot_system_stats"
       ]
     },
     {
@@ -1036,55 +818,6 @@
     },
     {
       "capabilityId": "feature.code-review",
-      "itemId": "review-pull-request",
-      "titleZh": "从拉取请求面板开始只读审查",
-      "titleEn": "Start a read-only review from the pull request panel",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「从拉取请求面板开始只读审查」需在对应工作区选定拉取请求及其报送审查的会话。",
-      "reasonEn": "Start a read-only review from the pull request panel requires the user to choose the pull request and the session in its owning workspace.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:review_platform_launch_pull_request_review",
-        "command:review_platform_list_pull_request_reviews"
-      ]
-    },
-    {
-      "capabilityId": "feature.code-review",
-      "itemId": "session-review-records",
-      "titleZh": "在原会话中查看审查进度与结果",
-      "titleEn": "View review progress and results in the original chat",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在原会话中查看审查进度与结果」需找到发起审查的会话，并在其中选择一条已保存的记录。",
-      "reasonEn": "View review progress and results in the original chat requires opening the chat that requested the review and choosing a saved record.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:list_session_review_records"
-      ]
-    },
-    {
-      "capabilityId": "feature.code-review",
-      "itemId": "review-remediation",
-      "titleZh": "选择审查发现并启动修复",
-      "titleEn": "Select Review findings and start fixes",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「选择审查发现并启动修复」需先查看审查报告，再确认希望修复的发现。",
-      "reasonEn": "Select Review findings and start fixes requires the user to open the review report and select the findings they want fixed.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:launch_review_remediation"
-      ]
-    },
-    {
-      "capabilityId": "feature.code-review",
       "itemId": "issues",
       "titleZh": "读取关联 Issue 的需求背景、验收标准与讨论上下文",
       "titleEn": "Load linked Issue titles, descriptions, acceptance criteria, and discussion context",
@@ -1097,56 +830,6 @@
       },
       "evidence": [
         "command:review_platform_get_issue"
-      ]
-    },
-    {
-      "capabilityId": "feature.code-review",
-      "itemId": "commit-message",
-      "titleZh": "一键预览、生成或快速填充贴合改动的提交信息",
-      "titleEn": "Preview, generate, or quick-fill commit messages tailored to your staged changes",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「一键预览、生成或快速填充贴合改动的提交信息」需要结合当前工作区暂存改动并在提交输入框中由你过目确认或微调文案。",
-      "reasonEn": "“Preview, generate, or quick-fill commit messages tailored to your staged changes” drafts a commit message from your current changes so you can review and tweak the wording before committing.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "command:preview_commit_message",
-        "command:generate_commit_message",
-        "command:quick_commit_message"
-      ]
-    },
-    {
-      "capabilityId": "feature.computer-use",
-      "itemId": "status",
-      "titleZh": "一键检查桌面控制可用性及「辅助功能」「屏幕录制」授权状态",
-      "titleEn": "Check Computer Use availability plus Accessibility and Screen Recording status",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「一键检查桌面控制可用性及「辅助功能」「屏幕录制」授权状态」会实时读取当前系统的图形会话与隐私授权状态；智能体会为你直接打开「浏览器与桌面控制」设置页核对。",
-      "reasonEn": "\"Check Computer Use availability plus Accessibility and Screen Recording status\" reads live graphical-session and OS privacy state; the Agent opens Browser & Desktop Control settings so you can review each check.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.execution"
-      },
-      "evidence": [
-        "command:computer_use_get_status"
-      ]
-    },
-    {
-      "capabilityId": "feature.computer-use",
-      "itemId": "request-permissions",
-      "titleZh": "在界面内一键触发桌面控制所需的操作系统权限申请",
-      "titleEn": "Request required operating-system permissions for desktop control",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在界面内一键触发桌面控制所需的操作系统权限申请」必须由本机用户在操作系统原生权限弹窗中亲自确认；智能体会打开授权设置入口但绝不能代你越权开启。",
-      "reasonEn": "\"Request required operating-system permissions for desktop control\" must be confirmed personally in the operating system’s native consent prompt; the Agent opens the setup page and never grants permissions itself.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.execution"
-      },
-      "evidence": [
-        "command:computer_use_request_permission"
       ]
     },
     {
@@ -1184,23 +867,6 @@
     },
     {
       "capabilityId": "feature.computer-use",
-      "itemId": "launch-connect",
-      "titleZh": "启动受控浏览器，或随时连接 / 断开已开启 CDP 的浏览器",
-      "titleEn": "Launch browser control, or connect to and disconnect from a CDP-enabled browser",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「启动受控浏览器，或随时连接 / 断开已开启 CDP 的浏览器」涉及你日常浏览器的连接授权与会话切换；智能体会为你打开「浏览器与桌面控制」页面由你点击连接或断开。",
-      "reasonEn": "\"Launch browser control, or connect to and disconnect from a CDP-enabled browser\" controls live access to your personal browser session; the Agent opens Browser & Desktop Control settings so you can connect or disconnect explicitly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.execution"
-      },
-      "evidence": [
-        "command:browser_control_launch",
-        "command:browser_control_disconnect"
-      ]
-    },
-    {
-      "capabilityId": "feature.computer-use",
       "itemId": "default-cdp",
       "titleZh": "一键配置默认 CDP 远程调试参数并按需优雅重启浏览器",
       "titleEn": "Enable default CDP debugging setup and restart the browser when needed",
@@ -1214,23 +880,6 @@
       "evidence": [
         "command:browser_control_enable_default_cdp",
         "command:browser_control_restart_with_cdp"
-      ]
-    },
-    {
-      "capabilityId": "feature.computer-use",
-      "itemId": "control-session-preview",
-      "titleZh": "在会话控制卡片中实时查看当前受控目标、模式与授权画面预览",
-      "titleEn": "Watch the current target, control mode, and live capture preview in the session card",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在会话控制卡片中实时查看当前受控目标、模式与授权画面预览」需要当前存在活动的桌面控制会话并在界面展开控制卡片查看（预览仅限已授权目标与虚拟指针，远程设备不会回退截取控制端本机画面）。",
-      "reasonEn": "\"Watch the current target, control mode, and live capture preview in the session card\" requires an active control session and expanding the live card in chat (the preview shows only the authorized target and virtual pointer, without local fallback on remote hosts).",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.execution"
-      },
-      "evidence": [
-        "command:computer_use_control_status",
-        "command:computer_use_control_preview"
       ]
     },
     {
@@ -1288,105 +937,6 @@
     },
     {
       "capabilityId": "feature.skills",
-      "itemId": "installed-catalog",
-      "titleZh": "集中浏览内置、个人全局、当前项目与外部导入的全部已安装 Skills",
-      "titleEn": "Browse built-in, user, project, and imported Skills in one unified catalog",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「集中浏览内置、个人全局、当前项目与外部导入的全部已安装 Skills」支持按来源筛选、搜索与查看扫描诊断详情；智能体会直接为你打开已安装技能目录。",
-      "reasonEn": "\"Browse built-in, user, project, and imported Skills in one unified catalog\" supports source filtering, live search, and scan-diagnostic inspection; the Agent opens the Installed Skills catalog directly for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:get_skill_configs"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
-      "itemId": "market",
-      "titleZh": "逛 Skill 市场：搜索、分类浏览与刷新社区精选技能",
-      "titleEn": "Explore, search, and refresh community workflows in the Skill Market",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「逛 Skill 市场：搜索、分类浏览与刷新社区精选技能」需要你结合任务偏好浏览和挑选合适的市场条目；智能体会为你打开「发现技能」市场视图。",
-      "reasonEn": "\"Explore, search, and refresh community workflows in the Skill Market\" lets you browse descriptions and pick workflows that match your needs; the Agent opens the Discover Skills marketplace view for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:list_skill_market",
-        "command:search_skill_market"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
-      "itemId": "market-install",
-      "titleZh": "将市场中的 Skill 一键安装到个人全局或当前项目",
-      "titleEn": "Install a Marketplace Skill to your user profile or active project",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「将市场中的 Skill 一键安装到个人全局或当前项目」需要你确认安装目标（个人全局还是当前项目工作区）；智能体会打开市场入口交由你一键确认安装。",
-      "reasonEn": "\"Install a Marketplace Skill to your user profile or active project\" requires choosing whether to install at user scope or into the current project; the Agent opens the market listing so you can confirm.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:download_skill_market"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
-      "itemId": "local-add",
-      "titleZh": "校验本地文件夹（含 SKILL.md）并添加为个人或项目 Skill",
-      "titleEn": "Validate a local SKILL.md folder and add it at user or project scope",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「校验本地文件夹（含 SKILL.md）并添加为个人或项目 Skill」需要选择本地技能目录、查看校验反馈并选定作用范围；智能体会打开添加技能向导供你完成操作。",
-      "reasonEn": "\"Validate a local SKILL.md folder and add it at user or project scope\" requires picking a folder, reviewing validation results, and choosing user or project scope; the Agent opens the Add Skill dialog for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:validate_skill_path",
-        "command:add_skill"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
-      "itemId": "remove",
-      "titleZh": "安全移除不再需要的个人级或项目级已安装 Skill",
-      "titleEn": "Remove an installed user-level or project-level Skill safely",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「安全移除不再需要的个人级或项目级已安装 Skill」属于删除操作，需要你在技能列表中核对来源并二次确认，防止误删项目共享技能。",
-      "reasonEn": "\"Remove an installed user-level or project-level Skill safely\" is a destructive action that requires verifying the Skill’s scope and confirming deletion in the catalog.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:delete_skill"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
-      "itemId": "global-enable",
-      "titleZh": "在全局一键启用或暂时停用某个 Skill，无需卸载",
-      "titleEn": "Enable or temporarily disable any Skill globally without uninstalling it",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在全局一键启用或暂时停用某个 Skill，无需卸载」依赖你查看当前技能列表状态并选择要切换的具体条目；智能体会打开技能管理页供你直接点按开关。",
-      "reasonEn": "\"Enable or temporarily disable any Skill globally without uninstalling it\" depends on inspecting your installed list and toggling the target entry; the Agent opens the Skills page so you can flip the switch.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.skills.open"
-      },
-      "evidence": [
-        "command:get_global_skill_settings",
-        "command:set_global_skill_disabled"
-      ]
-    },
-    {
-      "capabilityId": "feature.skills",
       "itemId": "mode-selection",
       "titleZh": "按智能体模式（如 Standard、Creative）定制可用 Skill 组合并支持恢复默认",
       "titleEn": "Customize which Skills and skill groups each Agent mode can use, with one-click reset",
@@ -1418,28 +968,6 @@
       },
       "evidence": [
         "source:src/nsh-ui/src/skillsCatalogStore.ts#shadowed"
-      ]
-    },
-    {
-      "capabilityId": "feature.miniapps",
-      "itemId": "market",
-      "titleZh": "浏览小应用市场、查看应用详情与包信息，一键安装或升级版本",
-      "titleEn": "Browse the Mini App Market, inspect listings, and install or update releases",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「浏览小应用市场、查看应用详情与包信息，一键安装或升级版本」需要你浏览市场卡片、核对应用说明与权限范围后确认安装；智能体会为你直接打开小应用市场。",
-      "reasonEn": "\"Browse the Mini App Market, inspect listings, and install or update releases\" lets you browse listings, review permissions, and confirm installation; the Agent opens the Mini App gallery directly for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.miniapps.open"
-      },
-      "evidence": [
-        "command:miniapp_market_browse",
-        "command:miniapp_market_get_listing",
-        "command:miniapp_market_read_screenshot",
-        "command:miniapp_market_install",
-        "command:miniapp_market_installed_status",
-        "command:miniapp_market_import_package",
-        "command:miniapp_market_inspect_package"
       ]
     },
     {
@@ -1481,33 +1009,6 @@
         "command:grant_miniapp_workspace",
         "command:miniapp_permission_diff_for_draft",
         "command:miniapp_set_draft_permissions"
-      ]
-    },
-    {
-      "capabilityId": "feature.miniapps",
-      "itemId": "runtime",
-      "titleZh": "运行小应用前端与后台 Worker、自动安装依赖并管理运行状态",
-      "titleEn": "Run Mini App UI and background Workers, manage dependencies, and stop workers",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「运行小应用前端与后台 Worker、自动安装依赖并管理运行状态」绑定正在运行的小应用实例生命周期与后台 Worker 控制；智能体会打开小应用管理面供你查看运行中状态或停止任务。",
-      "reasonEn": "\"Run Mini App UI and background Workers, manage dependencies, and stop workers\" tracks live Mini App instances and background Worker lifecycles; the Agent opens the Mini Apps surface so you can inspect or stop running workers.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.miniapps.open"
-      },
-      "evidence": [
-        "command:miniapp_host_call",
-        "command:miniapp_worker_call",
-        "command:miniapp_runtime_status",
-        "command:miniapp_presentation",
-        "command:miniapp_worker_list_running",
-        "command:miniapp_worker_stop",
-        "command:miniapp_draft_host_call",
-        "command:miniapp_draft_worker_call",
-        "command:miniapp_draft_worker_stop",
-        "command:miniapp_install_deps",
-        "command:miniapp_recompile",
-        "command:miniapp_sync_from_fs"
       ]
     },
     {
@@ -1693,71 +1194,6 @@
     },
     {
       "capabilityId": "feature.insights",
-      "itemId": "availability",
-      "titleZh": "自动检测当前设备与工作区是否已积累足够的可分析会话数据",
-      "titleEn": "Check whether current sessions contain analyzable activity data",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「自动检测当前设备与工作区是否已积累足够的可分析会话数据」依赖读取当前主机的本地会话统计状态；智能体会为你打开「洞察」页面直观展示可用范围。",
-      "reasonEn": "\"Check whether current sessions contain analyzable activity data\" checks live session data on the active host; the Agent opens the Insights scene to show what data is ready.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.insights.open"
-      },
-      "evidence": [
-        "command:has_insights_data"
-      ]
-    },
-    {
-      "capabilityId": "feature.insights",
-      "itemId": "generate",
-      "titleZh": "自选时间范围与分析模型，一键生成深度工作洞察报告",
-      "titleEn": "Generate a tailored work-insights report for a chosen date range and model",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「自选时间范围与分析模型，一键生成深度工作洞察报告」需要你确认分析的时间窗口与消耗额度的模型选择；智能体会打开生成面板交由你点按启动。",
-      "reasonEn": "\"Generate a tailored work-insights report for a chosen date range and model\" lets you choose the date range and model before spending tokens; the Agent opens the Insights view so you can start generation.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.insights.open"
-      },
-      "evidence": [
-        "command:generate_insights"
-      ]
-    },
-    {
-      "capabilityId": "feature.insights",
-      "itemId": "cancel",
-      "titleZh": "随时取消正在生成的洞察分析任务",
-      "titleEn": "Cancel an in-progress insights generation run anytime",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「随时取消正在生成的洞察分析任务」仅在报告生成进行中可用；智能体会打开当前洞察界面供你随时停止正在运行的分析。",
-      "reasonEn": "\"Cancel an in-progress insights generation run anytime\" applies while a report job is actively running; the Agent opens the Insights view where you can cancel it immediately.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.insights.open"
-      },
-      "evidence": [
-        "command:cancel_insights_generation"
-      ]
-    },
-    {
-      "capabilityId": "feature.insights",
-      "itemId": "latest-report",
-      "titleZh": "即时阅读最新洞察报告，或随时加载以往保存的历史报告",
-      "titleEn": "Read your latest report instantly or switch to any saved historical report",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「即时阅读最新洞察报告，或随时加载以往保存的历史报告」支持在可视化排版界面中切换历史期数与分区阅读；智能体会为你直接打开报告阅读视图。",
-      "reasonEn": "\"Read your latest report instantly or switch to any saved historical report\" supports browsing formatted sections and switching among historical snapshots; the Agent opens the Insights reader for you.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.insights.open"
-      },
-      "evidence": [
-        "command:get_latest_insights",
-        "command:load_insights_report"
-      ]
-    },
-    {
-      "capabilityId": "feature.insights",
       "itemId": "usage-statistics",
       "titleZh": "将工作产出与模型分布、Token 消耗及缓存命中率对照查看",
       "titleEn": "Connect project activity with model, token, and prompt-cache metrics",
@@ -1792,42 +1228,6 @@
     },
     {
       "capabilityId": "feature.ecosystem-compatibility",
-      "itemId": "source-discovery",
-      "titleZh": "自动扫描并发现 Claude Code、Codex、OpenCode、ZCode 等外部来源与可用内容",
-      "titleEn": "Discover Claude Code, Codex, OpenCode, ZCode, and other external AI sources and assets",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“自动扫描并发现 Claude Code、Codex、OpenCode、ZCode 等外部来源与可用内容”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Discover Claude Code, Codex, OpenCode, ZCode, and other external AI sources and assets” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.external-import"
-      },
-      "evidence": [
-        "command:get_external_ecosystem_awareness_command",
-        "command:get_external_source_snapshot",
-        "command:get_instruction_source_catalog",
-        "command:get_external_source_discovery_snapshot"
-      ]
-    },
-    {
-      "capabilityId": "feature.ecosystem-compatibility",
-      "itemId": "codex-session-import",
-      "titleZh": "发现、移除与恢复 Codex 来源会话，并在 OpenBitFun 独立分支中安全续聊",
-      "titleEn": "Discover, remove, and restore Codex source sessions, then continue in independent OpenBitFun branches",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“发现、移除与恢复 Codex 来源会话，并在 OpenBitFun 独立分支中安全续聊”由用户在“外部导入”设置页开启自动发现或管理已移除来源；打开来源会话时刷新历史，首次发送自动派生独立分支，原应用历史保持不变。智能体会为你打开精确入口。",
-      "reasonEn": "“Discover, remove, and restore Codex source sessions, then continue in independent OpenBitFun branches” lets you enable discovery or restore removed sources on the External import settings page; opening a source refreshes its history and your first send forks an independent branch without modifying original history. The Agent opens the entry for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.external-import"
-      },
-      "evidence": [
-        "command:list_removed_external_sessions",
-        "command:restore_removed_external_session"
-      ]
-    },
-    {
-      "capabilityId": "feature.ecosystem-compatibility",
       "itemId": "zcode-session-import",
       "titleZh": "发现、移除与恢复 ZCode 来源会话，并在 OpenBitFun 独立分支中安全续聊",
       "titleEn": "Discover, remove, and restore ZCode source sessions, then continue in independent OpenBitFun branches",
@@ -1841,26 +1241,6 @@
       "evidence": [
         "command:list_removed_external_sessions",
         "command:restore_removed_external_session"
-      ]
-    },
-    {
-      "capabilityId": "feature.ecosystem-compatibility",
-      "itemId": "mcp-import",
-      "titleZh": "预览外部 MCP 服务器导入计划，逐个解决同名冲突并保存副本",
-      "titleEn": "Preview external MCP import plans, resolve server conflicts individually, and save copies",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“预览外部 MCP 服务器导入计划，逐个解决同名冲突并保存副本”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Preview external MCP import plans, resolve server conflicts individually, and save copies” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.external-import"
-      },
-      "evidence": [
-        "command:plan_external_mcp_import_command",
-        "command:choose_external_mcp_conflict_command",
-        "command:set_external_mcp_server_decision_command",
-        "command:apply_external_mcp_import_command",
-        "command:set_external_mcp_servers_enabled_command"
       ]
     },
     {
@@ -1880,24 +1260,6 @@
         "command:plan_external_hook_import_command",
         "command:mutate_external_hook_import_command",
         "command:apply_external_hook_import_command"
-      ]
-    },
-    {
-      "capabilityId": "feature.ecosystem-compatibility",
-      "itemId": "source-policy",
-      "titleZh": "按外部来源启用或停用兼容集成，并选择管理、预览或只读策略",
-      "titleEn": "Enable or disable integration per source and choose managed, preview, or read-only policy",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“按外部来源启用或停用兼容集成，并选择管理、预览或只读策略”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Enable or disable integration per source and choose managed, preview, or read-only policy” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.external-import"
-      },
-      "evidence": [
-        "command:set_external_source_enabled_command",
-        "command:update_external_integration_policy_command",
-        "command:set_external_source_conflict_choice_command"
       ]
     },
     {
@@ -1992,25 +1354,6 @@
     },
     {
       "capabilityId": "feature.remote-workspaces",
-      "itemId": "ssh-profiles",
-      "titleZh": "保存、测试与管理常用 SSH 连接配置",
-      "titleEn": "Save, test, and manage reusable SSH connection profiles",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「保存、测试与管理常用 SSH 连接配置」涉及填写主机参数、连通性探测与删除确认；智能体会为你打开连接配置界面，由你核对并保存目标主机。",
-      "reasonEn": "\"Save, test, and manage reusable SSH connection profiles\" involves editing host parameters, running live connectivity checks, and confirming removals; the Agent opens the connection setup dialog so you can review and save the host.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.new"
-      },
-      "evidence": [
-        "command:ssh_save_connection",
-        "command:ssh_list_saved_connections",
-        "command:ssh_test_connection",
-        "command:ssh_delete_connection"
-      ]
-    },
-    {
-      "capabilityId": "feature.remote-workspaces",
       "itemId": "ssh-auth",
       "titleZh": "支持密码、私钥、证书、~/.ssh/config 与跳板机登录",
       "titleEn": "Authenticate via passwords, keys, certificates, ~/.ssh/config, and jump hosts",
@@ -2030,22 +1373,6 @@
     },
     {
       "capabilityId": "feature.remote-workspaces",
-      "itemId": "docker",
-      "titleZh": "自动发现远程 Docker 容器并进入容器内开发",
-      "titleEn": "Discover remote Docker containers and work directly inside a container",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「自动发现远程 Docker 容器并进入容器内开发」需要先连接宿主机并从实时容器列表中选择目标环境；智能体可打开远程项目向导，由你选定容器与目录。",
-      "reasonEn": "\"Discover remote Docker containers and work directly inside a container\" requires connecting to the host and picking from live running containers; the Agent opens the remote project wizard so you can select the container and folder.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.new"
-      },
-      "evidence": [
-        "command:ssh_list_docker_containers"
-      ]
-    },
-    {
-      "capabilityId": "feature.remote-workspaces",
       "itemId": "wsl",
       "titleZh": "在 Windows 上直接把 WSL 发行版作为项目工作区",
       "titleEn": "Open a Windows WSL distribution directly as a Linux workspace",
@@ -2058,65 +1385,6 @@
       },
       "evidence": [
         "command:ssh_list_wsl_distributions"
-      ]
-    },
-    {
-      "capabilityId": "feature.remote-workspaces",
-      "itemId": "remote-open",
-      "titleZh": "打开、关闭或移除远程工作区并查看远端系统信息",
-      "titleEn": "Open, close, or remove remote workspaces and inspect host details",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「打开、关闭或移除远程工作区并查看远端系统信息」依赖当前已连接主机与你在目录浏览器中选定的路径；智能体会打开对应入口，由你确认要打开或移除的远程项目。",
-      "reasonEn": "\"Open, close, or remove remote workspaces and inspect host details\" depends on the active host connection and folder selection; the Agent opens the workspace flow so you can confirm which remote project to open or remove.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.new"
-      },
-      "evidence": [
-        "command:remote_open_workspace",
-        "command:remote_close_workspace",
-        "command:remote_remove_workspace",
-        "command:ssh_get_server_info"
-      ]
-    },
-    {
-      "capabilityId": "feature.remote-workspaces",
-      "itemId": "transfer",
-      "titleZh": "在本机与远端之间上传、下载文件或压缩包并可随时取消",
-      "titleEn": "Upload and download files or archives between local and remote hosts",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在本机与远端之间上传、下载文件或压缩包并可随时取消」需要你在本机与远端目录之间选择源文件及保存路径，并跟踪实时传输进度；智能体会打开文件面板交由你确认操作。",
-      "reasonEn": "\"Upload and download files or archives between local and remote hosts\" requires picking local and remote paths and monitoring live transfer progress; the Agent opens the file surface so you can confirm the transfer.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.new"
-      },
-      "evidence": [
-        "command:remote_upload_from_local_path",
-        "command:remote_download_to_local_path",
-        "command:cancel_transfer",
-        "command:compress_path",
-        "command:decompress_path"
-      ]
-    },
-    {
-      "capabilityId": "feature.remote-workspaces",
-      "itemId": "connection-lifecycle",
-      "titleZh": "查看实时 SSH 连接状态，按需断开单个或全部连接",
-      "titleEn": "Monitor live SSH connection state and disconnect one or all sessions",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「查看实时 SSH 连接状态，按需断开单个或全部连接」会改变当前已打开远程工作区的在线状态，需根据实时连接列表确认断开范围；智能体会打开连接状态入口供你操作。",
-      "reasonEn": "\"Monitor live SSH connection state and disconnect one or all sessions\" affects live remote workspaces and requires choosing which active connection to close; the Agent opens the connection control entry for confirmation.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "project.new"
-      },
-      "evidence": [
-        "command:ssh_is_connected",
-        "command:ssh_disconnect",
-        "command:ssh_disconnect_all",
-        "command:remote_workspace_ensure_connected",
-        "command:remote_workspace_link_states"
       ]
     },
     {
@@ -2282,47 +1550,7 @@
       },
       "evidence": [
         "command:dispatch_save_transcript",
-        "command:dispatch_append",
         "command:dispatch_load_transcript"
-      ]
-    },
-    {
-      "capabilityId": "feature.detached-dispatch",
-      "itemId": "permission-continuation",
-      "titleZh": "远程批复目标端等待中的权限请求并继续推进任务",
-      "titleEn": "Answer pending target-side permission requests remotely and continue work",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「远程批复目标端等待中的权限请求并继续推进任务」需要你逐条审阅待授权的操作内容与后续补充指令；智能体会定位到该会话的审批界面交由你拍板。",
-      "reasonEn": "\"Answer pending target-side permission requests remotely and continue work\" requires your explicit review of each guarded operation and any follow-up instructions; the Agent opens the session approval prompt for your decision.",
-      "presentationTarget": {
-        "kind": "event",
-        "eventName": "openbitfun:open-remote-connect",
-        "detail": {
-          "group": "account"
-        }
-      },
-      "evidence": [
-        "command:dispatch_answer",
-        "command:dispatch_continue"
-      ]
-    },
-    {
-      "capabilityId": "feature.detached-dispatch",
-      "itemId": "result-sync",
-      "titleZh": "将目标机完成的代码改动安全同步回本机工作区",
-      "titleEn": "Sync completed target-side code changes back to your local workspace",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「将目标机完成的代码改动安全同步回本机工作区」涉及对比本机当前分支状态与确认合并方式；智能体会打开派发结果同步入口，确保不会意外覆盖你未保存的本地改动。",
-      "reasonEn": "\"Sync completed target-side code changes back to your local workspace\" involves checking local working-tree state and confirming how changes land; the Agent opens the result-sync flow so local edits are never overwritten.",
-      "presentationTarget": {
-        "kind": "event",
-        "eventName": "openbitfun:open-remote-connect",
-        "detail": {
-          "group": "account"
-        }
-      },
-      "evidence": [
-        "command:dispatch_sync_result"
       ]
     },
     {
@@ -2748,24 +1976,6 @@
     },
     {
       "capabilityId": "setting.ai.models",
-      "itemId": "default-models",
-      "titleZh": "选择主模型、快速模型、经济模型以及图像理解、图像生成和语音识别默认模型",
-      "titleEn": "Choose Primary, Fast, Economy, image-understanding, image-generation, and speech-recognition defaults",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“选择主模型、快速模型、经济模型以及图像理解、图像生成和语音识别默认模型”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Choose Primary, Fast, Economy, image-understanding, image-generation, and speech-recognition defaults” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.models"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.primary\"",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.economy\"",
-        "source:src/nsh-ui/src/modelSettingsStore.ts#image_generation"
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.models",
       "itemId": "reasoning",
       "titleZh": "按模型能力选择推理预设或自定义思考预算",
       "titleEn": "Choose reasoning presets or a custom thinking budget per model",
@@ -2778,44 +1988,6 @@
       },
       "evidence": [
         "command:project_ai_model_reasoning_catalog"
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.models",
-      "itemId": "smart-routing",
-      "titleZh": "配置智能模式路由：联动主模型、经济模型与路由分类模型",
-      "titleEn": "Configure Smart Mode routing with Primary, Economy, and router classifier models",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“配置智能模式路由：联动主模型、经济模型与路由分类模型”依赖当前执行宿主的路由支持状态以及主模型、经济模型与路由分类模型的连通校验，需要在模型设置弹窗中确认保存；智能体会直接为你定位到该入口。",
-      "reasonEn": "“Configure Smart Mode routing with Primary, Economy, and router classifier models” depends on execution-host routing availability plus live connectivity checks across the Primary, Economy, and router classifier models; the Agent opens the exact model settings entry so you can configure and verify them.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.models"
-      },
-      "evidence": [
-        "command:get_model_routing_status"
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.models",
-      "itemId": "model-pools",
-      "titleZh": "管理多成员模型池、路由策略、健康状态与会话模型选择",
-      "titleEn": "Manage multi-member model pools, routing strategies, health status, and session selection",
-      "reasonCode": "visualSelection",
-      "reasonZh": "通过模型池编辑器选择已配置成员、顺序与路由策略，并查看健康状态。",
-      "reasonEn": "Use the pool editor to select configured members, their order and routing strategy, and inspect health.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.models"
-      },
-      "evidence": [
-        "command:get_model_pools",
-        "command:save_model_pool",
-        "command:delete_model_pool",
-        "command:get_model_pool_status",
-        "command:get_session_model_target",
-        "command:update_session_model_target",
-        "command:retry_model_pool_member"
       ]
     },
     {
@@ -2872,59 +2044,6 @@
       ]
     },
     {
-      "capabilityId": "setting.ai.models",
-      "itemId": "model-catalog",
-      "titleZh": "查看 models.dev 目录同步状态、手动刷新并打开本地缓存目录",
-      "titleEn": "Inspect models.dev catalog sync status, refresh manually, and reveal the local cache folder",
-      "reasonCode": "visualSelection",
-      "reasonZh": "ListModels 可读取运行时可用模型，但 models.dev 刷新、缓存定位和维护仍属于设置界面生命周期。",
-      "reasonEn": "ListModels reads runtime-available models, while models.dev refresh, cache reveal, and maintenance remain owned by the Settings lifecycle.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.models"
-      },
-      "evidence": [
-        "command:get_models_dev_catalog_status",
-        "command:refresh_models_dev_catalog_now",
-        "command:reveal_models_dev_cache_directory"
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.permissions",
-      "itemId": "default-permission-posture",
-      "titleZh": "在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换",
-      "titleEn": "Switch the default permission mode between Ask (default), Auto-approve, and Full access",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换”会改变后续工具调用的安全边界（切换到完全访问还需显式确认高风险警告）；智能体会打开权限规则页交由你亲自选择。",
-      "reasonEn": "“Switch the default permission mode between Ask (default), Auto-approve, and Full access” changes your tool-execution safety boundary (and Full access requires an explicit high-risk confirmation dialog); the Agent opens Permission Rules so you choose directly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.permissions"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/permissionPolicyStore.ts#auto_approve_ask",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"perm.ask\""
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.permissions",
-      "itemId": "openbitfun-device-switches",
-      "titleZh": "决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求",
-      "titleEn": "Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求”会改变这台设备的安全边界；智能体会打开权限页交由你亲自切换。",
-      "reasonEn": "“Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started” changes this device's safety boundary; the Agent opens Permissions so you switch it yourself.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.permissions"
-      },
-      "evidence": [
-        "command:set_superagent_settings",
-        "source:src/nsh-ui/src/settingsStore.ts#superagent-accept-dispatch",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"perm.acceptJobs\""
-      ]
-    },
-    {
       "capabilityId": "setting.ai.permissions",
       "itemId": "auto-approval-screener",
       "titleZh": "为自动审批选择聊天审查模型或专用 Jev 决策模型并加密保存凭据",
@@ -2956,23 +2075,6 @@
       "evidence": [
         "source:src/nsh-ui/src/permissionPolicyStore.ts#timeout_ms",
         "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.whenFails\""
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.permissions",
-      "itemId": "global-permission-rules",
-      "titleZh": "编辑与排序全局 Allow、Ask、Deny 权限规则",
-      "titleEn": "Edit and order global Allow, Ask, and Deny permission rules",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“编辑与排序全局 Allow、Ask、Deny 权限规则”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Edit and order global Allow, Ask, and Deny permission rules” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.permissions"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/permissionPolicyStore.ts#upsert_permission_rule",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.globalRulesTitle\""
       ]
     },
     {
@@ -3022,24 +2124,6 @@
       },
       "evidence": [
         "source:src/nsh-ui/src/settingsStore.ts#\"memories.consolidation_model\""
-      ]
-    },
-    {
-      "capabilityId": "setting.ai.memory",
-      "itemId": "maintenance",
-      "titleZh": "通过“⋯”菜单打开本地记忆目录、恢复默认设置或清空全部记忆",
-      "titleEn": "Open the local memory folder, restore default settings, or erase all memories from the ⋯ menu",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“通过“⋯”菜单打开本地记忆目录、恢复默认设置或清空全部记忆”包含不可逆的清空确认或文件管理器跳转；智能体会直接打开记忆设置区块，由你在可见界面中确认操作。",
-      "reasonEn": "“Open the local memory folder, restore default settings, or erase all memories from the ⋯ menu” includes destructive erase confirmation or opening the host file manager; the Agent opens the Memory section so you confirm visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "ai.memory"
-      },
-      "evidence": [
-        "command:get_memory_paths",
-        "command:reset_memory",
-        "command:reset_config"
       ]
     },
     {
@@ -3476,23 +2560,6 @@
     },
     {
       "capabilityId": "setting.tools.web-search",
-      "itemId": "provider",
-      "titleZh": "在 Exa MCP（免费）、Exa Search API、Tavily、DeepSeek、Keenable 与自定义 HTTP 服务间选择搜索服务",
-      "titleEn": "Choose Exa MCP (free), Exa Search API, Tavily, DeepSeek, Keenable, or Custom HTTP service",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“在 Exa MCP（免费）、Exa Search API、Tavily、DeepSeek、Keenable 与自定义 HTTP 服务间选择搜索服务”与所选服务商的端点及密钥就绪状态联动，需在网页搜索设置页核对后点击保存；智能体会直接为你打开该页面。",
-      "reasonEn": "“Choose Exa MCP (free), Exa Search API, Tavily, DeepSeek, Keenable, or Custom HTTP service” depends on provider-specific endpoint and credential readiness that must be reviewed and saved together on the Web Search settings page; the Agent opens the exact entry for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.webSearch"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.provider\"",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.providerTavily\""
-      ]
-    },
-    {
-      "capabilityId": "setting.tools.web-search",
       "itemId": "device-credential",
       "titleZh": "查看当前执行主机的搜索凭据状态，并加密保存、替换或清除 API Key / Secret",
       "titleEn": "Inspect search credential status on the current execution host and save, replace, or clear API keys",
@@ -3614,62 +2681,6 @@
     },
     {
       "capabilityId": "setting.tools.acp",
-      "itemId": "presets",
-      "titleZh": "在“本机”页签启用原生 ACP CLI（opencode、dsh、omp）或 npx 桥接预设（Claude Code、Codex）",
-      "titleEn": "Enable native ACP CLIs (opencode, dsh, omp) or npx-bridged presets (Claude Code, Codex) on the Local tab",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“在“本机”页签启用原生 ACP CLI（opencode、dsh、omp）或 npx 桥接预设（Claude Code、Codex）”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Enable native ACP CLIs (opencode, dsh, omp) or npx-bridged presets (Claude Code, Codex) on the Local tab” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.acp",
-        "viewId": "local"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.title\"",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.installCli\""
-      ]
-    },
-    {
-      "capabilityId": "setting.tools.acp",
-      "itemId": "probe",
-      "titleZh": "一键探测 CLI 可执行路径、版本号、适配器状态与连接就绪度",
-      "titleEn": "Probe CLI binary paths, versions, adapter cache status, and connection readiness",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“一键探测 CLI 可执行路径、版本号、适配器状态与连接就绪度”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Probe CLI binary paths, versions, adapter cache status, and connection readiness” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.acp",
-        "viewId": "local"
-      },
-      "evidence": [
-        "command:probe_acp_client_requirements",
-        "command:get_acp_clients",
-        "command:initialize_acp_clients",
-        "command:stop_acp_client"
-      ]
-    },
-    {
-      "capabilityId": "setting.tools.acp",
-      "itemId": "install",
-      "titleZh": "一键安装受支持的外部智能体 CLI 或点击“预下载 ACP”缓存适配器",
-      "titleEn": "Install supported external-agent CLIs or click Predownload ACP to cache adapters",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“一键安装受支持的外部智能体 CLI 或点击“预下载 ACP”缓存适配器”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Install supported external-agent CLIs or click Predownload ACP to cache adapters” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.acp",
-        "viewId": "local"
-      },
-      "evidence": [
-        "command:install_acp_client_cli",
-        "command:predownload_acp_client_adapter"
-      ]
-    },
-    {
-      "capabilityId": "setting.tools.acp",
       "itemId": "remote-detection",
       "titleZh": "在“SSH”页签探测远程工作区服务器上的可用 ACP 智能体并查看不支持原因",
       "titleEn": "Detect available ACP agents on SSH remote hosts on the SSH tab with explicit unsupported reasons",
@@ -3739,42 +2750,6 @@
       ]
     },
     {
-      "capabilityId": "setting.tools.acp",
-      "itemId": "dialog-permissions",
-      "titleZh": "发起或取消 ACP 会话轮次，并在本地或远程回答外部智能体的权限请求",
-      "titleEn": "Start or cancel ACP dialog turns and answer external-agent permission prompts locally or remotely",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“发起或取消 ACP 会话轮次，并在本地或远程回答外部智能体的权限请求”涉及多项联动表单、实时状态检查或用户确认，无法由单一结构化命令静默替代；智能体会直接打开对应设置位置，方便你在界面中确认调整。",
-      "reasonEn": "“Start or cancel ACP dialog turns and answer external-agent permission prompts locally or remotely” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.acp"
-      },
-      "evidence": [
-        "command:start_acp_dialog_turn",
-        "command:cancel_acp_dialog_turn",
-        "command:submit_acp_permission_response",
-        "command:create_acp_flow_session"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.usage",
-      "itemId": "activity-heatmap",
-      "titleZh": "通过顶部使用活跃度热力图回顾每日 AI 协作密度",
-      "titleEn": "Review daily AI collaboration intensity on the top Activity Heatmap",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“通过顶部使用活跃度热力图回顾每日 AI 协作密度”属于可视化统计图表展示，智能体会直接为你打开“数据与维护 → 调用统计”页面查看。",
-      "reasonEn": "“Review daily AI collaboration intensity on the top Activity Heatmap” is a visual analytics chart; the Agent opens Data & Maintenance → Call Statistics so you can inspect it directly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.usage"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#HEATMAP_HEIGHT",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.activityHeading\""
-      ]
-    },
-    {
       "capabilityId": "setting.data.usage",
       "itemId": "time-range",
       "titleZh": "按最近 24 小时、今天、本周、本月（默认）或全部时间切换统计窗口",
@@ -3806,23 +2781,6 @@
       "evidence": [
         "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byHour\"",
         "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byDay\""
-      ]
-    },
-    {
-      "capabilityId": "setting.data.usage",
-      "itemId": "summary",
-      "titleZh": "查看总 Token、输入/输出 Token、请求次数以及缓存 Token 与缓存命中率",
-      "titleEn": "Inspect total tokens, input/output tokens, request count, cached tokens, and cache-hit rate",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“查看总 Token、输入/输出 Token、请求次数以及缓存 Token 与缓存命中率”用于对照多项实时汇总指标，智能体会为你直达调用统计面板。",
-      "reasonEn": "“Inspect total tokens, input/output tokens, request count, cached tokens, and cache-hit rate” presents multi-metric usage summaries visually; the Agent opens Call Statistics directly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.usage"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.requests\"",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.cacheHitRate\""
       ]
     },
     {
@@ -3875,59 +2833,6 @@
       ]
     },
     {
-      "capabilityId": "setting.data.storage",
-      "itemId": "clean",
-      "titleZh": "预览并清理会话文件快照",
-      "titleEn": "Preview and clean up session file snapshots",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“预览并清理会话文件快照”会永久移除所选会话的文件回退记录，请在存储空间页面核对并确认。",
-      "reasonEn": "“Preview and clean up session file snapshots” opens Storage so you can review the affected sessions before permanently removing their file rollback history.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.storage"
-      },
-      "evidence": [
-        "command:inspect_snapshot_storage",
-        "command:clean_snapshot_storage"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.archived",
-      "itemId": "browse",
-      "titleZh": "按可折叠的工作区分组浏览全部已归档会话与更新时间",
-      "titleEn": "Browse archived sessions and timestamps grouped by collapsible workspace sections",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“按可折叠的工作区分组浏览全部已归档会话与更新时间”需要展开具体项目分组核对会话标题与时间，智能体会为你直达“已归档会话”管理页。",
-      "reasonEn": "“Browse archived sessions and timestamps grouped by collapsible workspace sections” lets you expand specific project groups to review session titles and timestamps; the Agent opens Archived Sessions directly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.archived"
-      },
-      "evidence": [
-        "command:list_archived_sessions",
-        "command:list_persisted_sessions_page"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.archived",
-      "itemId": "restore",
-      "titleZh": "一键取消归档并将选中会话连同完整轮次恢复回原工作区",
-      "titleEn": "Unarchive and restore a selected session with all its turns back to its original workspace",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“一键取消归档并将选中会话连同完整轮次恢复回原工作区”需要你在归档列表中挑出要找回的那条历史会话，智能体会打开归档管理入口。",
-      "reasonEn": "“Unarchive and restore a selected session with all its turns back to its original workspace” requires picking the exact historical thread you want back from the workspace list; the Agent opens Archived Sessions for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.archived"
-      },
-      "evidence": [
-        "command:restore_session",
-        "command:restore_session_with_turns",
-        "command:restore_session_view",
-        "command:unarchive_session"
-      ]
-    },
-    {
       "capabilityId": "setting.data.archived",
       "itemId": "delete-selected",
       "titleZh": "二次确认后永久删除单条归档会话，或移除导入的外部会话来源",
@@ -3945,22 +2850,6 @@
     },
     {
       "capabilityId": "setting.data.archived",
-      "itemId": "delete-all",
-      "titleZh": "明确确认后一键永久清空全部已归档会话",
-      "titleEn": "Permanently delete all archived sessions at once after explicit confirmation",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“明确确认后一键永久清空全部已归档会话”会永久清空全部归档历史且无法撤销，必须由你在确认弹窗中亲自批准；智能体会打开对应设置页。",
-      "reasonEn": "“Permanently delete all archived sessions at once after explicit confirmation” permanently erases all archived history and cannot be undone, so it always requires your direct confirmation dialog approval; the Agent opens Archived Sessions.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.archived"
-      },
-      "evidence": [
-        "command:delete_all_archived_sessions"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.archived",
       "itemId": "search",
       "titleZh": "通过会话侧栏或聊天框 @ 引用按标题与正文检索历史会话",
       "titleEn": "Search historical sessions by title and content from the session panel or `@` picker",
@@ -3974,45 +2863,6 @@
       "evidence": [
         "command:search_referenceable_sessions",
         "command:search_session_content"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.diagnostics",
-      "itemId": "log-path",
-      "titleZh": "查看当前会话日志目录路径并一键打开本地日志文件夹",
-      "titleEn": "Inspect the active session log directory path and open the log folder in one click",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“查看当前会话日志目录路径并一键打开本地日志文件夹”涉及打开本机操作系统文件管理器查看实时目录；智能体会为你直达“日志与诊断”页。",
-      "reasonEn": "“Inspect the active session log directory path and open the log folder in one click” opens your local OS file manager on the live runtime directory; the Agent opens Logs & Diagnostics directly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      },
-      "evidence": [
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.openFolder\"",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.title\""
-      ]
-    },
-    {
-      "capabilityId": "setting.data.diagnostics",
-      "itemId": "export-bundle",
-      "titleZh": "确认隐私说明后导出本地 ZIP 诊断包并自动在文件管理器中定位",
-      "titleEn": "Confirm the privacy notice to export a local ZIP diagnostics bundle and reveal it in your file manager",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“确认隐私说明后导出本地 ZIP 诊断包并自动在文件管理器中定位”需要你先阅读并确认应用内导出隐私提示弹窗（继续导出），随后在系统文件管理器中查看生成的压缩包；智能体会为你打开诊断页入口。",
-      "reasonEn": "“Confirm the privacy notice to export a local ZIP diagnostics bundle and reveal it in your file manager” requires confirming the in-app privacy notice dialog (`Continue export`) before revealing the generated `.zip` archive in Finder or Explorer; the Agent opens Logs & Diagnostics for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      },
-      "evidence": [
-        "command:export_diagnostics_bundle",
-        "command:get_system_info",
-        "command:get_global_config_health",
-        "command:append_flow_chat_diagnostics",
-        "command:export_config",
-        "command:import_config",
-        "command:validate_config"
       ]
     },
     {

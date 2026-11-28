@@ -469,15 +469,15 @@ mod tests {
 
     #[test]
     fn displaced_local_baseline_is_case_insensitive() {
-        use crate::agentic::agents::{Agent, CoworkMode};
+        use crate::agentic::agents::{Agent, ClawMode};
 
         assert_eq!(
             native_tool_baseline(
-                "cowork",
+                "claw",
                 ExternalSubagentMode::Primary,
                 "workspace-publication"
             ),
-            CoworkMode::new().default_tools()
+            ClawMode::new().default_tools()
         );
     }
 }

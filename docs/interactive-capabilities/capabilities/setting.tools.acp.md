@@ -26,15 +26,15 @@ Connect external CLI coding agents into OpenBitFun over Agent Client Protocol (A
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在“本机”页签启用原生 ACP CLI（opencode、dsh、omp）或 npx 桥接预设（Claude Code、Codex）
+- **智能体可直接控制 / Direct Agent control** · 在“本机”页签启用原生 ACP CLI（opencode、dsh、omp）或 npx 桥接预设（Claude Code、Codex）
   - Enable native ACP CLIs (opencode, dsh, omp) or npx-bridged presets (Claude Code, Codex) on the Local tab
   - 说明：OpenCode、DeepSeek Harness（dsh）与 Oh My Pi（omp）直接通过自身原生 ACP 命令通信；Claude Code 与 Codex 则通过官方 `npx` ACP 适配器桥接接入，并支持为每个智能体选择工具调用“询问”或“自动通过”。
   - Why & how: OpenCode, DeepSeek Harness (`dsh`), and Oh My Pi (`omp`) speak ACP natively, while Claude Code and Codex connect via official `npx` ACP adapters—with per-agent Ask or Auto-approve tool posture.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键探测 CLI 可执行路径、版本号、适配器状态与连接就绪度
+- **智能体可直接控制 / Direct Agent control** · 一键探测 CLI 可执行路径、版本号、适配器状态与连接就绪度
   - Probe CLI binary paths, versions, adapter cache status, and connection readiness
   - 说明：不确定为什么某个外部智能体置灰不可选？点一下探测即可逐项看清是缺 CLI、缺 Node/`npx` 适配器，还是尚未在对应终端完成账号登录。
   - Why & how: Run a probe whenever an external agent appears unavailable to pinpoint missing binaries, missing Node/`npx` adapters, or unauthenticated CLI accounts.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键安装受支持的外部智能体 CLI 或点击“预下载 ACP”缓存适配器
+- **智能体可直接控制 / Direct Agent control** · 一键安装受支持的外部智能体 CLI 或点击“预下载 ACP”缓存适配器
   - Install supported external-agent CLIs or click Predownload ACP to cache adapters
   - 说明：对支持应用内安装的预设可直接触发 CLI 安装，并通过“预下载 ACP”为 Claude Code / Codex 预热适配器缓存；注意 `Oh My Pi (omp)` 需你在系统终端手动安装并加入 `PATH` 后再回来探测。
   - Why & how: Install supported preset CLIs and click Predownload ACP to warm `npx` adapter caches right from Settings; note that `Oh My Pi (omp)` must be installed manually in your system `PATH` before probing.
@@ -54,7 +54,7 @@ Connect external CLI coding agents into OpenBitFun over Agent Client Protocol (A
   - Browse and execute session commands exposed by an external ACP agent
   - 说明：不同 ACP 智能体自带的特色命令会自动同步到当前会话中供你调用。
   - Why & how: Surfaces agent-specific slash or session commands advertised over ACP right inside the conversation.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 发起或取消 ACP 会话轮次，并在本地或远程回答外部智能体的权限请求
+- **智能体可直接控制 / Direct Agent control** · 发起或取消 ACP 会话轮次，并在本地或远程回答外部智能体的权限请求
   - Start or cancel ACP dialog turns and answer external-agent permission prompts locally or remotely
   - 说明：外部智能体请求读写或执行命令时，同样接入统一的权限确认卡片链路，即使在远程控制场景下也不会卡死在不可见终端。
   - Why & how: Routes external-agent permission prompts through OpenBitFun’s interactive approval cards so turns stay answerable locally and remotely.
@@ -76,7 +76,10 @@ Connect external CLI coding agents into OpenBitFun over Agent Client Protocol (A
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 列出外部 ACP 智能体客户端 / List ACP external agent clients | 查看已配置的 Claude Code、Codex、Gemini CLI 等 ACP 客户端及其状态。 | List configured external ACP agent clients and their status. |
+| 探测 ACP 客户端依赖状态 / Probe ACP client requirements | 检测本机或指定远程连接上各 ACP CLI 与适配器的安装就绪状态。 | Probe installation readiness of ACP CLIs and adapters locally or on a remote connection. |
+| 安装 ACP 客户端或适配器 / Install ACP client CLI or adapter | 自动安装指定 ACP 客户端 CLI 或预下载其适配器。 | Install an ACP client CLI or predownload its adapter. |
+| 设置 ACP 客户端权限模式 / Set ACP client permission mode | 更新指定 ACP 客户端的默认权限模式。 | Set the default permission mode for one configured ACP client. |
 
 ## 可配置选项 / Configurable options
 

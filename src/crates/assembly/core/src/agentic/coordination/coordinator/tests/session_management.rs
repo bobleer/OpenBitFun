@@ -352,7 +352,7 @@ async fn runtime_default_title_is_shared_and_explicit_remote_titles_stay_literal
     .unwrap();
     for (agent_type, title, descriptor) in [
         ("Standard", "", false),
-        ("Cowork", "  ", false),
+        ("Ultimate", "  ", false),
         ("Claw", "", false),
         ("Claw", "Remote Claw Session", false),
         ("Standard", expected, false),

@@ -27,10 +27,23 @@ impl SessionControlAction {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub enum SessionControlAgentType {
-    #[serde(rename = "Standard", alias = "Standard", alias = "AGENTIC")]
+    #[serde(
+        rename = "Standard",
+        alias = "standard",
+        alias = "agentic",
+        alias = "AGENTIC",
+        alias = "Cowork",
+        alias = "cowork",
+        alias = "COWORK"
+    )]
     Agentic,
-    #[serde(rename = "Cowork", alias = "cowork", alias = "COWORK")]
-    Cowork,
+    #[serde(
+        rename = "Ultimate",
+        alias = "ultimate",
+        alias = "Ultra",
+        alias = "ultra"
+    )]
+    Ultimate,
     #[serde(
         rename = "DeepResearch",
         alias = "deepresearch",
@@ -43,7 +56,7 @@ impl SessionControlAgentType {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Agentic => "Standard",
-            Self::Cowork => "Cowork",
+            Self::Ultimate => "Ultimate",
             Self::DeepResearch => "DeepResearch",
         }
     }
@@ -436,5 +449,15 @@ mod tests {
         assert!(message.contains("worker_1"));
         assert!(message.contains("new-title"));
         assert!(message.contains("/ws"));
+    }
+
+    #[test]
+    fn session_control_agent_type_supports_ultimate_and_legacy_cowork_fallback() {
+        let cowork: SessionControlAgentType =
+            serde_json::from_value(json!("Cowork")).expect("legacy Cowork should deserialize");
+        assert_eq!(cowork.as_str(), "Standard");
+        let ultimate: SessionControlAgentType =
+            serde_json::from_value(json!("Ultimate")).expect("Ultimate should deserialize");
+        assert_eq!(ultimate.as_str(), "Ultimate");
     }
 }

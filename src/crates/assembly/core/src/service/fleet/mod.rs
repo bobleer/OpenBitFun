@@ -7,7 +7,11 @@
 //! model catalog of this host (`models`): what it publishes, and how a
 //! session here runs another device's model.
 
+#[cfg(feature = "agent-runtime")]
+pub mod agent_control;
 pub mod digest;
 pub mod models;
 
+#[cfg(feature = "agent-runtime")]
+pub use agent_control::{execute_fleet_control, forward_product_control, FleetControlHost};
 pub use digest::*;

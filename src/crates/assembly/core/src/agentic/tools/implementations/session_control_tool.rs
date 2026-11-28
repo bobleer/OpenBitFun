@@ -426,8 +426,8 @@ Arguments:
 - "workspace": Registered workspace ID or absolute path, required for create and list. Use ListWorkspaces to discover IDs. IDs select any workspace registered on this runtime host. Paths select only the current machine or SSH connection. Ignored for cancel, delete, and rename.
 - "session_name": Used by create (defaults to "New Session") and required as the new title for rename.
 - "agent_type": Only used by create. Defaults to "Standard".
-  - "Standard": Coding-focused agent for implementation, debugging, and code changes.
-  - "Cowork": Collaborative agent for office-style work such as research, documentation, presentations, etc.
+  - "Standard": General-purpose agent for implementation, debugging, documents, and project work.
+  - "Ultimate": Swarm root planner for complex multi-file architecture and coordinated parallel tasks.
   - "DeepResearch": Research agent for systematic investigation and evidence-driven reports.
 - "session_id": Required for cancel, delete, and rename."#
                 .to_string(),
@@ -465,7 +465,7 @@ Arguments:
                 },
                 "agent_type": {
                     "type": "string",
-                    "enum": ["Standard", "Cowork", "DeepResearch"],
+                    "enum": ["Standard", "Ultimate", "DeepResearch"],
                     "description": "Optional agent type when creating a session. Defaults to Standard."
                 }
             },

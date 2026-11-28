@@ -470,7 +470,7 @@ mod tests {
         assert!(matches!(
             store.lookup_system_prompt(
                 "session-1",
-                &SystemPromptCacheIdentity::new("template:cowork_mode"),
+                &SystemPromptCacheIdentity::new("template:claw_mode"),
                 None,
             ),
             PromptCacheLookup::Miss

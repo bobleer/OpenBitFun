@@ -2443,7 +2443,6 @@ pub fn resolve_remote_agent_type(mobile_type: Option<&str>) -> &'static str {
             "Standard"
         }
         Some("code") => "Standard",
-        Some("cowork") | Some("Cowork") => "Cowork",
         Some("PaperWriting") => "PaperWriting",
         Some("claw") | Some("Claw") | Some("assistant") | Some("chat") => "Claw",
         _ => "Standard",
@@ -5344,7 +5343,7 @@ mod tests {
             &host,
             &RemoteCommand::CreateSession {
                 workspace_id: None,
-                agent_type: Some("Cowork".to_string()),
+                agent_type: Some("Ultimate".to_string()),
                 session_name: None,
                 workspace_path: Some("/workspace/project".to_string()),
                 remote_connection_id: Some("conn-1".to_string()),
@@ -5364,7 +5363,7 @@ mod tests {
         );
         let created_requests = host.created_requests.lock().unwrap();
         assert_eq!(created_requests[0].session_name, "");
-        assert_eq!(created_requests[0].agent_type, "Cowork");
+        assert_eq!(created_requests[0].agent_type, "Ultimate");
         assert_eq!(
             created_requests[0].workspace_id.as_deref(),
             Some("workspace-project")

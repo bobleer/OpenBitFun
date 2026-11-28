@@ -600,6 +600,229 @@ pub(crate) fn presence_changed() {
     }
 }
 
+/// Local-only fleet serving this CLI host when the account device network is
+/// not running in this process (signed out, Link off, or standalone `exec`).
+static LOCAL: RwLock<Option<(Arc<FleetHost>, Arc<FleetDigestProducer>)>> = RwLock::new(None);
+
+struct CliLocalObpBackend {
+    hub: Arc<EventHub>,
+}
+
+impl ObpBackend for CliLocalObpBackend {
+    fn dispatch(&self, command: String, args: Value) -> openbitfun_obp::server::ObpDispatchFuture {
+        Box::pin(async move { crate::peer_host::handle_obp_call(&command, args).await })
+    }
+
+    fn events(&self) -> Arc<EventHub> {
+        Arc::clone(&self.hub)
+    }
+
+    fn info(&self) -> Value {
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+        })
+    }
+
+    fn host_kind(&self) -> openbitfun_obp::server::PeerHostKind {
+        openbitfun_obp::server::PeerHostKind::Cli
+    }
+
+    fn is_account_device_host_verb(&self, command: &str) -> bool {
+        crate::peer_host::is_dispatch_target_command(command)
+    }
+}
+
+async fn serving_or_local(runtime: &Arc<CliRuntimeContext>) -> Result<Arc<FleetHost>, String> {
+    if let Some(host) = current() {
+        return Ok(host);
+    }
+    if let Some((host, _)) = LOCAL
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+    {
+        return Ok(Arc::clone(host));
+    }
+    crate::peer_host::ensure_peer_host_ready(runtime.as_ref())
+        .await
+        .map_err(|error| format!("CLI peer host is unavailable: {error:#}"))?;
+    let state = crate::peer_host::try_peer_host_state()
+        .ok_or_else(|| "CLI peer host state is unavailable".to_string())?;
+    let device_id =
+        openbitfun_core::service::remote_connect::DeviceIdentity::from_current_machine()
+            .map(|identity| identity.device_id)
+            .unwrap_or_else(|_| "local-cli".to_string());
+    let mut slot = LOCAL
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((host, _)) = slot.as_ref() {
+        return Ok(Arc::clone(host));
+    }
+    if let Some(host) = current() {
+        return Ok(host);
+    }
+    let hub = EventHub::new(64);
+    let source = CoreFleetDigestSource::new(
+        Arc::clone(&state.workspace_service),
+        state.compatibility.clone(),
+        state.agent_runtime.clone(),
+    )
+    .with_dispatch_prompts(Arc::new(CliDispatchPrompts));
+    let digest = FleetDigestProducer::new(
+        device_id.clone(),
+        uuid::Uuid::new_v4().to_string(),
+        Arc::new(source),
+        Some(Arc::new(HubEmitter(Arc::clone(&hub)))),
+    );
+    let obp: Arc<dyn ObpBackend> = Arc::new(CliLocalObpBackend {
+        hub: Arc::clone(&hub),
+    });
+    let backend: Arc<dyn FleetBackend> = Arc::new(CliFleetBackend {
+        device_id: device_id.clone(),
+        name: machine_name(&device_id),
+        obp,
+        digest: Arc::clone(&digest),
+    });
+    let host = FleetHost::start_local(device_id, backend, hub, None);
+    *slot = Some((Arc::clone(&host), digest));
+    Ok(host)
+}
+
+struct CliFleetControlHost {
+    host: Arc<FleetHost>,
+}
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::fleet::FleetControlHost for CliFleetControlHost {
+    fn local_device_id(&self) -> Option<String> {
+        Some(self.host.device_id().to_string())
+    }
+
+    async fn navigator(&self) -> anyhow::Result<openbitfun_product_domains::fleet::FleetNavigator> {
+        Ok(self
+            .host
+            .router()
+            .navigator(openbitfun_product_domains::fleet::FleetNavigatorRequest::default()))
+    }
+
+    async fn device_detail(
+        &self,
+        device_id: &str,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetDeviceDetail> {
+        self.host
+            .views()
+            .device_detail(
+                &openbitfun_product_domains::fleet::FleetDeviceDetailRequest {
+                    device_id: device_id.to_string(),
+                },
+            )
+            .await
+            .map_err(anyhow::Error::msg)
+    }
+
+    async fn models(
+        &self,
+        device_id: Option<&str>,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetModels> {
+        Ok(self
+            .host
+            .views()
+            .models(&openbitfun_product_domains::fleet::FleetModelsRequest {
+                device_id: device_id.map(str::to_string),
+            }))
+    }
+
+    async fn prompts(
+        &self,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetPromptsResponse> {
+        Ok(self.host.router().prompts())
+    }
+
+    async fn attention(
+        &self,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetAttentionView> {
+        Ok(self.host.attention().view().await)
+    }
+
+    async fn mark_attention_read(
+        &self,
+        revision: u64,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetAttentionMarkReadResponse> {
+        Ok(self.host.attention().mark_read(revision))
+    }
+
+    async fn recent_sessions(
+        &self,
+        request: openbitfun_product_domains::fleet::FleetRecentSessionsRequest,
+    ) -> anyhow::Result<openbitfun_product_domains::fleet::FleetRecentSessions> {
+        Ok(self.host.views().recent_sessions(&request))
+    }
+
+    async fn fleet_call(
+        &self,
+        target_device_id: &str,
+        command: &str,
+        args: Value,
+    ) -> anyhow::Result<Value> {
+        self.host
+            .router()
+            .fleet_call(openbitfun_product_domains::fleet::FleetCallRequest {
+                target: Some(target_device_id.to_string()),
+                command: command.to_string(),
+                args,
+            })
+            .await
+            .map_err(|error| anyhow::Error::msg(error.into_message()))
+    }
+
+    async fn dispatch_answer(
+        &self,
+        target_device_id: &str,
+        payload: Value,
+    ) -> anyhow::Result<Value> {
+        if self.host.device_id() == target_device_id {
+            return crate::peer_host::handle_obp_call("dispatch_target_answer", payload)
+                .await
+                .map_err(anyhow::Error::msg);
+        }
+        openbitfun_core::service::dispatch::invoke_device_dispatch(
+            openbitfun_core::service::remote_connect::mesh_route::mesh_route(),
+            target_device_id,
+            "dispatch_target_answer",
+            payload,
+        )
+        .await
+    }
+}
+
+/// Run one Agent product-control Fleet request on this CLI host.
+pub(crate) async fn execute_agent_fleet_control(
+    runtime: &Arc<CliRuntimeContext>,
+    request: openbitfun_product_domains::fleet_control::FleetControlRequest,
+) -> Result<Value, String> {
+    let host = serving_or_local(runtime).await?;
+    openbitfun_core::service::fleet::execute_fleet_control(&CliFleetControlHost { host }, request)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Forward an `OpenBitFunControl` request (`get`/`configure`/`execute`) to a peer device.
+pub(crate) async fn forward_agent_product_control(
+    runtime: &Arc<CliRuntimeContext>,
+    target: Option<&str>,
+    request: openbitfun_product_domains::product_control::ProductControlRequest,
+) -> Result<Value, String> {
+    let host = serving_or_local(runtime).await?;
+    openbitfun_core::service::fleet::forward_product_control(
+        &CliFleetControlHost { host },
+        target,
+        request,
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

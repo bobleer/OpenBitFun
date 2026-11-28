@@ -18,7 +18,6 @@ pub enum BotCommand {
     NewSession,
     /// Specific session creators (kept as hidden aliases).
     NewCodeSession,
-    NewCoworkSession,
     NewClawSession,
     /// Resume an existing session (workspace or assistant by mode).
     ResumeSession,
@@ -106,10 +105,10 @@ pub fn parse_command(text: &str) -> BotCommand {
 
         // Generic "new" picks the right session type by mode.
         "/new" | "/n" | "新建" | "新建会话" | "新会话" => return BotCommand::NewSession,
-        // Hidden aliases / power users.
-        "/new_code_session" | "新建编码会话" => return BotCommand::NewCodeSession,
-        "/new_cowork_session" | "新建协作会话" => {
-            return BotCommand::NewCoworkSession;
+        // Hidden aliases / power users. Legacy cowork command falls back to code (Standard) session.
+        "/new_code_session" | "新建编码会话" | "/new_cowork_session" | "新建协作会话" =>
+        {
+            return BotCommand::NewCodeSession;
         }
         "/new_claw_session" | "新建助理会话" => return BotCommand::NewClawSession,
 

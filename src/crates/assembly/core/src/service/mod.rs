@@ -28,6 +28,7 @@ pub(crate) mod instruction_context; // Workspace instruction file prompt helpers
 pub mod mcp; // MCP (Model Context Protocol) system
 #[cfg(feature = "agent-runtime")]
 pub mod personal_overview; // Home overview view model (logic batch 4)
+pub mod product_control_providers; // Shared typed ProductControl capability executors
 #[cfg(feature = "remote-connect")]
 pub mod remote_connect; // Remote Connect (phone → desktop)
 #[cfg(feature = "remote-workspace")]

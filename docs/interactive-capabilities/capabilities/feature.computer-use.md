@@ -26,11 +26,11 @@ Let agents connect to your everyday Chrome or Edge browser (reusing signed-in we
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键检查桌面控制可用性及「辅助功能」「屏幕录制」授权状态
+- **智能体可直接控制 / Direct Agent control** · 一键检查桌面控制可用性及「辅助功能」「屏幕录制」授权状态
   - Check Computer Use availability plus Accessibility and Screen Recording status
   - 说明：清楚告诉你当前系统环境支持哪些能力、还差哪一项系统权限没开，不用盲目猜为什么点不动。
   - Why & how: See immediately whether your OS session supports desktop control and exactly which system permissions are granted or missing.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在界面内一键触发桌面控制所需的操作系统权限申请
+- **智能体可直接控制 / Direct Agent control** · 在界面内一键触发桌面控制所需的操作系统权限申请
   - Request required operating-system permissions for desktop control
   - 说明：直接唤起 macOS 等系统的原生授权弹窗，按指引勾选 OpenBitFun（或在 CLI 下勾选所用终端应用）即可。
   - Why & how: Trigger the native OS consent prompt directly so you can authorize OpenBitFun without hunting through menus.
@@ -42,7 +42,7 @@ Let agents connect to your everyday Chrome or Edge browser (reusing signed-in we
   - Discover installed supported browsers and inspect live CDP connection status
   - 说明：自动扫描本机已安装的 Chrome、Edge 等 Chromium 内核浏览器，展示当前是否已就绪连通。
   - Why & how: Automatically scan installed Chromium-based browsers such as Chrome and Edge and show whether a live CDP link is active.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 启动受控浏览器，或随时连接 / 断开已开启 CDP 的浏览器
+- **智能体可直接控制 / Direct Agent control** · 启动受控浏览器，或随时连接 / 断开已开启 CDP 的浏览器
   - Launch browser control, or connect to and disconnect from a CDP-enabled browser
   - 说明：要用的时候连上让 AI 协作操作，处理私密事务时随时点「断开」切断智能体访问。
   - Why & how: Connect your browser when you want AI assistance, and disconnect in one click whenever you want private manual browsing.
@@ -54,7 +54,7 @@ Let agents connect to your everyday Chrome or Edge browser (reusing signed-in we
   - Let authorized agents capture, locate elements, click, type, and scroll
   - 说明：授权完成后，智能体会结合最新画面与无障碍树稳健执行点击、填表和快捷键操作；缺权限时会主动停下提示你。
   - Why & how: Once authorized, the agent combines fresh captures and accessibility trees to click, type, and scroll reliably—and stops to tell you if permissions are missing.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在会话控制卡片中实时查看当前受控目标、模式与授权画面预览
+- **智能体可直接控制 / Direct Agent control** · 在会话控制卡片中实时查看当前受控目标、模式与授权画面预览
   - Watch the current target, control mode, and live capture preview in the session card
   - 说明：展开聊天流里的控制状态卡片，就能看清 AI 正在看哪个窗口、虚拟鼠标指在哪里，全程透明不黑盒。
   - Why & how: Expand the in-chat control status card to see the exact window being shared and where the virtual pointer is acting in real time.
@@ -92,7 +92,12 @@ Let agents connect to your everyday Chrome or Edge browser (reusing signed-in we
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 诊断桌面自动化与浏览器 CDP 状态 / Inspect Computer Use and browser CDP status | 一次查看桌面控制开关、系统辅助/录屏权限状态，以及已安装浏览器和 CDP 连接状态。 | Inspect OS automation enablement, accessibility/screen-recording permissions, installed browsers, and CDP readiness. |
+| 触发系统权限申请或打开隐私设置 / Request OS permission or open privacy pane | 向操作系统发起辅助功能/录屏授权请求，或直接打开对应的系统隐私设置面板。 | Trigger OS accessibility/screen-recording permission prompts or open the matching system privacy pane. |
+| 拉起或启用带 CDP 的外部浏览器 / Launch or enable CDP browser | 自动拉起带远程调试端口的外部浏览器，或启用默认 CDP 调试支持。 | Launch a CDP-enabled external browser or enable default CDP debugging support. |
+| 断开外部浏览器 CDP 连接 / Disconnect external CDP browser | 在不关闭浏览器标签页的前提下安全断开 CDP 自动化连接。 | Detach OpenBitFun from the connected external CDP browser without closing tabs. |
+| 查看当前桌面接管控制会话状态 / Inspect active control session | 读取当前 Computer Use 控制会话的代次与运行状态。 | Inspect the active Computer Use control session generation and state. |
+| 立即停止桌面接管控制会话 / Stop active control session | 按 generation 立即中止当前正在运行的桌面自动化接管会话。 | Immediately stop an active Computer Use control session by generation. |
 
 ## 可配置选项 / Configurable options
 

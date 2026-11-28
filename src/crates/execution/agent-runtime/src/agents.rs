@@ -41,10 +41,9 @@ pub fn mode_config_profile_label(profile_id: &str) -> Option<&'static str> {
 pub fn mode_presentation_rank(mode_id: &str) -> u8 {
     match mode_id {
         "Standard" => 0,
-        "Cowork" => 1,
-        "DeepResearch" => 2,
-        "Ultimate" => 3,
-        "Creative" => 4,
+        "DeepResearch" => 1,
+        "Ultimate" => 2,
+        "Creative" => 3,
         _ => 99,
     }
 }
@@ -84,12 +83,6 @@ pub fn builtin_agent_definition_specs() -> Vec<BuiltinAgentDefinitionSpec> {
         ),
         builtin_agent_spec(
             "Standard",
-            Mode,
-            "primary",
-            SubagentVisibilityPolicy::default(),
-        ),
-        builtin_agent_spec(
-            "Cowork",
             Mode,
             "primary",
             SubagentVisibilityPolicy::default(),
@@ -189,7 +182,7 @@ pub fn builtin_agent_definition_specs() -> Vec<BuiltinAgentDefinitionSpec> {
             "CodeReview",
             SubAgent,
             "fast",
-            SubagentVisibilityPolicy::hidden(["Standard", "Cowork"]),
+            SubagentVisibilityPolicy::hidden(["Standard"]),
         ),
         builtin_agent_spec(
             "DeepReview",
@@ -215,7 +208,7 @@ pub fn builtin_agent_definition_specs() -> Vec<BuiltinAgentDefinitionSpec> {
 /// Fallback for sessions without a model; normal delegation resolves configured defaults.
 pub fn default_model_id_for_builtin_agent(agent_type: &str) -> &'static str {
     match agent_type {
-        "OpenBitFun" | "Minimal" | "Standard" | "Cowork" | "Creative" | "ComputerUse" | "Claw"
+        "OpenBitFun" | "Minimal" | "Standard" | "Creative" | "ComputerUse" | "Claw"
         | "DeepResearch" | "PaperWriting" | "Ultimate" => "primary",
         "MemoryPhase2" => "primary",
         "ResearchSpecialist"

@@ -2422,6 +2422,82 @@ mod dispatch_command_tests {
             "prompt",
         ])
         .is_err());
+
+        for argv in [
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "probe",
+                "--target",
+                "device:win-id",
+            ],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "wait",
+                "job-1",
+                "job-2",
+                "--until",
+                "all-terminal",
+                "--timeout",
+                "90",
+            ],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "fetch-file",
+                "job-1",
+                "--remote-path",
+                "target/release/app.exe",
+                "--local-path",
+                "/tmp/app.exe",
+                "--overwrite",
+            ],
+            vec!["openbitfun", "dispatch", "outbound", "sync-result", "job-1"],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "result-summary",
+                "job-1",
+            ],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "continue",
+                "job-1",
+                "fix windows link error",
+            ],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "publish-branch",
+                "job-1",
+            ],
+            vec![
+                "openbitfun",
+                "dispatch",
+                "outbound",
+                "submit",
+                "--target",
+                "device:linux-id",
+                "--approval-policy",
+                "auto",
+                "--source-workspace",
+                "ws-linux",
+                "build release",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&argv).is_ok(),
+                "expected outbound CLI args to parse: {argv:?}"
+            );
+        }
     }
 }
 
@@ -2439,7 +2515,10 @@ mod harness_profile_compatibility_tests {
             let cli =
                 Cli::try_parse_from(["openbitfun", "--harness-profile", id.as_str()]).unwrap();
             assert_eq!(
-                agent_type_with_harness_profile("Cowork".into(), cli.harness_profile.as_deref()),
+                agent_type_with_harness_profile(
+                    "DeepResearch".into(),
+                    cli.harness_profile.as_deref()
+                ),
                 id.as_str()
             );
         }
@@ -2452,8 +2531,8 @@ mod harness_profile_compatibility_tests {
             "Minimal"
         );
         assert_eq!(
-            agent_type_with_harness_profile("Cowork".to_string(), Some("balanced")),
-            "Cowork"
+            agent_type_with_harness_profile("DeepResearch".to_string(), Some("balanced")),
+            "DeepResearch"
         );
     }
 

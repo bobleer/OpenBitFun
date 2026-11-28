@@ -11,14 +11,14 @@ title_en: "AI sessions & multi-mode collaboration"
 
 > 功能 / Feature
 
-围绕项目开展持久对话：按任务挑选「标准 / 极致 / 办公协作 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，用 @ 挂载文件与历史会话、用 /goal 持续推进目标，还能直接生成图片与 Office 文档。
+围绕项目开展持久对话：按任务挑选「标准 / 极致 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，用 @ 挂载文件与历史会话、用 /goal 持续推进目标，还能直接生成图片与 Office 文档。
 
-Collaborate in durable project sessions: switch between Standard, Ultimate, Cowork, Deep Research, Paper Writing, Computer Use, or Creative modes, attach files and past sessions with @, drive multi-turn goals with /goal, and generate images or Office files.
+Collaborate in durable project sessions: switch between Standard, Ultimate, Deep Research, Paper Writing, Computer Use, or Creative modes, attach files and past sessions with @, drive multi-turn goals with /goal, and generate images or Office files.
 
 ## 适用场景 / When to use it
 
-- 不确定该选哪个模式？日常写代码修 Bug 选「标准」最均衡；跨模块重构或疑难杂症选「极致」；只想快速问答不需要调工具选「极简」；整理汇报写 Office 文档选「办公协作」；调研文献写论文选「深度研究 / 论文写作」；跨桌面软件点击操作选「电脑操作」；想给 OpenBitFun 自己改界面加小功能就选「创造」。
-  - Wondering which mode to pick? Choose Standard for everyday coding, Ultimate for deep multi-file architecture work, Minimal for fast tool-free Q&A, Cowork for docs and spreadsheets, Deep Research or Paper Writing for synthesis and papers, Computer Use for desktop GUI tasks, or Creative to customize OpenBitFun’s own live UI.
+- 不确定该选哪个模式？日常写代码、修 Bug、整理文档选「标准」最均衡；跨模块重构或疑难杂症选「极致」；只想快速问答不需要调工具选「极简」；日常办公自动化与多设备调度选「助理」；调研文献写论文选「深度研究 / 论文写作」；跨桌面软件点击操作选「电脑操作」；想给 OpenBitFun 自己改界面加小功能就选「创造」。
+  - Wondering which mode to pick? Choose Standard for everyday coding and documents, Ultimate for deep multi-file architecture work, Minimal for fast tool-free Q&A, Assistant (Claw) for daily office work and multi-device automation, Deep Research or Paper Writing for synthesis and papers, Computer Use for desktop GUI tasks, or Creative to customize OpenBitFun’s own live UI.
 - 智能体写完一长段方案，你有五处细节想让它一起改：直接用鼠标划选对应句子点「添加批注」，写完 5 条批注后一次性提交，比来回追问五轮省心得多。
   - Have five small tweaks on a long AI design doc? Highlight each phrase, click Annotate to attach numbered notes, and submit the whole batch in a single turn.
 - 想让智能体「把所有失败单测修到全绿为止」：输入 `/goal 修复当前模块全部失败单测并通过验证`，智能体会自己跨多轮持续执行，直到目标真正达成。
@@ -36,8 +36,8 @@ Collaborate in durable project sessions: switch between Standard, Ultimate, Cowo
   - Why & how: Filter sidebar sessions by Unread, Needs attention, Running, Worktree, or Environment; fork a conversation from any turn to explore an alternative approach safely, or export transcripts.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 按会话自由切换模型、思考强度、内置工作模式、记忆开关与审批模式
   - Switch the model, reasoning effort, work mode, memory toggle, and approval mode per session
-  - 说明：在聊天输入框底部随时切换「标准 / 极致 / 极简 / 办公协作 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，调整推理强度（Reasoning Effort），或把当前会话临时设为自动审批。
-  - Why & how: Use the composer bar to switch between Standard, Ultimate, Minimal, Cowork, Deep Research, Paper Writing, Computer Use, or Creative modes, tune reasoning effort, or adjust session approval behavior on the fly.
+  - 说明：在聊天输入框底部随时切换「标准 / 极致 / 极简 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，调整推理强度（Reasoning Effort），或把当前会话临时设为自动审批。
+  - Why & how: Use the composer bar to switch between Standard, Ultimate, Minimal, Deep Research, Paper Writing, Computer Use, or Creative modes, tune reasoning effort, or adjust session approval behavior on the fly.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在输入框用 @ 挂载文件、目录、历史会话与技能，并用 / 或 $ 触发斜杠指令
   - Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $
   - 说明：输入 @ 可一处搜索项目文件、文件夹、其他历史会话（把过往结论带进新对话）、可用 Skills、MCP 与图片；行首输入 / 可调用 /goal、/btw、/compact、/usage、/init 或外部命令（含 Shell 预览确认），句中输入 $ 或 / 可直接点名某个 Skill。
@@ -111,8 +111,8 @@ Collaborate in durable project sessions: switch between Standard, Ultimate, Cowo
 
 1. 在侧边栏项目名旁点「新建会话」（或按 ⌘Shift+A / Ctrl+Shift+A 进入会话后按 ⌘N / Ctrl+N）
    Click New session beside your project in the sidebar (or press ⌘Shift+A / Ctrl+Shift+A, then ⌘N / Ctrl+N)
-2. 在输入框下方选择适合当前任务的模式（如日常开发选「标准」，深度攻关选「极致」，写文档选「办公协作」）与模型
-   Pick the mode that fits your task in the composer bar (Standard for daily coding, Ultimate for deep problem-solving, Cowork for documents) and choose a model
+2. 在输入框下方选择适合当前任务的模式（如日常开发与文档选「标准」，深度攻关选「极致」）与模型
+   Pick the mode that fits your task in the composer bar (Standard for daily coding and documents, Ultimate for deep problem-solving) and choose a model
 3. 输入 @ 添加相关文件、目录或过往会话作为上下文，描述你想达成的效果；长任务可在开头加 `/goal `
    Type @ to attach relevant files, folders, or past sessions, then describe what you need — prefix with `/goal ` for persistent multi-turn objectives
 4. 运行过程中可随时发送新消息引导方向、审批权限卡片，或划选回复内容添加批注与侧边提问

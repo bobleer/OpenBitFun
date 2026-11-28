@@ -1026,7 +1026,6 @@ const CODE_AGENT_IDS: &[&str] = &[
     "OpenBitFun",
     "Minimal",
     "Standard",
-    "Cowork",
     "Claw",
     "Ultimate",
     "SwarmPlanner",

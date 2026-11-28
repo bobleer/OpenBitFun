@@ -38,7 +38,7 @@ Manage AI providers and subscription accounts in one place, assign Primary, Fast
   - Sign in to Codex, ZCode, OpenCode, Grok, Hermes, and multi-account subscription pools
   - 说明：支持浏览器或设备码授权登录（含智谱国内版与 Z.ai 国际版 ZCode），可在卡片上直观查看 OpenCode 与 Grok 实时额度面板，并将多个账号编成订阅池在限流时自动故障轮换。
   - Why & how: Sign in via browser or device code (including ZCode CN and Z.ai Intl), view live OpenCode and Grok quota panels, and group multiple accounts into a subscription pool that rotates automatically on rate limits.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 选择主模型、快速模型、经济模型以及图像理解、图像生成和语音识别默认模型
+- **智能体可直接控制 / Direct Agent control** · 选择主模型、快速模型、经济模型以及图像理解、图像生成和语音识别默认模型
   - Choose Primary, Fast, Economy, image-understanding, image-generation, and speech-recognition defaults
   - 说明：主模型承担主力编码与推理，快速模型负责自动标题与即时交互，经济模型承接轻量后台或智能路由分流；主模型不含对应多模态能力时，可单独指定视觉、生图与语音模型。
   - Why & how: Primary drives core coding and reasoning, Fast powers snappy helpers like session titles, and Economy handles lightweight background or routed turns, complemented by dedicated vision, image-generation, and speech slots.
@@ -46,11 +46,11 @@ Manage AI providers and subscription accounts in one place, assign Primary, Fast
   - Choose reasoning presets or a custom thinking budget per model
   - 说明：针对支持思考链的模型调节推理强度挡位，让复杂重构获得充分推演，或让日常简单问答更快返回首包。
   - Why & how: Adjust reasoning effort per model so complex refactors get deep deliberation while everyday questions respond quickly.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 配置智能模式路由：联动主模型、经济模型与路由分类模型
+- **智能体可直接控制 / Direct Agent control** · 配置智能模式路由：联动主模型、经济模型与路由分类模型
   - Configure Smart Mode routing with Primary, Economy, and router classifier models
   - 说明：当执行宿主支持模型路由时，可在“智能模式”弹窗中绑定主模型、经济模型与路由分类模型并一键测试连通性，在会话中选择智能模式后即可按任务复杂度自动分流。
   - Why & how: When the execution host supports model routing, open the Smart Mode dialog to pair Primary, Economy, and router classifier models with built-in connectivity checks so turns automatically route by complexity.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 管理多成员模型池、路由策略、健康状态与会话模型选择
+- **智能体可直接控制 / Direct Agent control** · 管理多成员模型池、路由策略、健康状态与会话模型选择
   - Manage multi-member model pools, routing strategies, health status, and session selection
   - 说明：将多个已启用模型组合成池并设定按序故障转移或轮询策略，既可在会话选择器中直接选用，也能查看成员冷却状态并手动重试恢复。
   - Why & how: Group enabled models into a pool with ordered failover or round-robin routing, select the pool in chat or for subagents, and inspect or retry cooled-down members.
@@ -74,7 +74,7 @@ Manage AI providers and subscription accounts in one place, assign Primary, Fast
   - Let an agent inspect models and capabilities available under the current configuration
   - 说明：智能体调用 ListModels 获取当前真实启用的模型列表与多模态标签，避免编造不存在的模型名称。
   - Why & how: Agents call ListModels to inspect enabled models and multimodal capabilities at runtime instead of guessing model IDs.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看 models.dev 目录同步状态、手动刷新并打开本地缓存目录
+- **智能体可直接控制 / Direct Agent control** · 查看 models.dev 目录同步状态、手动刷新并打开本地缓存目录
   - Inspect models.dev catalog sync status, refresh manually, and reveal the local cache folder
   - 说明：同步最新的模型上下文长度、视觉/工具支持与推理挡位元数据，无外网环境时自动沿用本地缓存。
   - Why & how: Keep context-window sizes, vision/tool support flags, and reasoning metadata up to date while seamlessly falling back to the local cache offline.
@@ -96,7 +96,12 @@ Manage AI providers and subscription accounts in one place, assign Primary, Fast
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看模型目录、默认槽位与路由状态 / List model catalog and routing | 读取已配置模型目录、primary/fast 默认模型、任务路由与健康状态。 | Read the configured model catalog, primary/fast defaults, task model routing, and routing status. |
+| 查看模型池与成员健康状态 / List model pools and status | 读取已配置的模型池列表，并可查询指定池的成员可用状态。 | List configured model pools and optionally inspect one pool’s member health statuses. |
+| 创建或更新模型池 / Save model pool | 新增或更新模型池及其负载均衡/回退成员配置。 | Create or update a model pool definition. |
+| 删除模型池 / Delete model pool | 按 poolId 删除已配置的模型池。 | Delete a configured model pool by poolId. |
+| 配置子任务专属模型路由 / Set task-specific model | 为指定内部任务（如提交说明、标题、记忆）绑定继承或固定模型。 | Route a specific task (e.g. git_commit, session_title, memory) to inherit or a fixed model. |
+| 切换默认主力与快速模型 / Set default primary/fast models | 更新默认 primary 主力模型与 fast 快速模型 ID（不涉及凭证读写）。 | Update default primary and/or fast model IDs without touching credentials. |
 
 ## 可配置选项 / Configurable options
 

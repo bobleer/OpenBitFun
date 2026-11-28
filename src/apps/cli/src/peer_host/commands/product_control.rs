@@ -19,6 +19,8 @@ pub(crate) async fn invoke(_state: &PeerHostState, args: &Value) -> Result<Value
         .map_err(|error| format!("Invalid ProductControl request: {error}"))?;
     // Source is trusted transport metadata, never caller-controlled behavior.
     request.source = ProductControlSource::Peer;
+    // A peer host executes locally and never re-forwards to another peer.
+    request.target = None;
 
     if request.capability_id.as_deref() == Some("feature.remote-connect") {
         if request.action == ProductControlAction::Execute {
@@ -28,12 +30,18 @@ pub(crate) async fn invoke(_state: &PeerHostState, args: &Value) -> Result<Value
             )?
             .ensure_direct_peer_safe()?;
         }
-        return openbitfun_core::agentic::tools::openbitfun_control_host::invoke_openbitfun_control(request).await;
+        return openbitfun_core::agentic::tools::openbitfun_control_host::invoke_openbitfun_control(
+            request,
+        )
+        .await;
     }
 
     match request.action {
         ProductControlAction::List | ProductControlAction::Search => discover(&request),
         ProductControlAction::Get => {
+            if openbitfun_core::agentic::tools::openbitfun_control_host::openbitfun_control_host_available() {
+                return openbitfun_core::agentic::tools::openbitfun_control_host::invoke_openbitfun_control(request).await;
+            }
             let capability_id = request
                 .capability_id
                 .as_deref()
@@ -54,10 +62,57 @@ pub(crate) async fn invoke(_state: &PeerHostState, args: &Value) -> Result<Value
             "product_control_presentation_unavailable: The CLI Peer host has no live presentation surface"
                 .to_string(),
         ),
-        ProductControlAction::Execute => Err(
-            "product_control_native_operation_unavailable: The requested operation requires a native product-host or presentation provider that the CLI Peer host does not implement"
-                .to_string(),
-        ),
+        ProductControlAction::Execute => {
+            let capability_id = request
+                .capability_id
+                .as_deref()
+                .ok_or_else(|| "capabilityId is required for execute".to_string())?;
+            let operation_id = request
+                .operation_id
+                .as_deref()
+                .ok_or_else(|| "operationId is required for execute".to_string())?;
+            let cap = openbitfun_product_domains::product_control::capability(capability_id)?;
+            let op = cap
+                .operations
+                .iter()
+                .find(|entry| entry.id == operation_id)
+                .ok_or_else(|| "Unknown product-control operation".to_string())?;
+            let openbitfun_product_domains::product_control::ProductCapabilityOperationHandler::Provider {
+                provider_id,
+                operation_id: provider_op_id,
+            } = &op.handler
+            else {
+                return Err(
+                    "product_control_native_operation_unavailable: The CLI Peer host cannot execute presentation actions"
+                        .to_string(),
+                );
+            };
+            if let Some((cli_available, peer_safe, _)) =
+                openbitfun_product_domains::product_capability_ops::lookup_capability_op(
+                    provider_id,
+                    provider_op_id,
+                )
+            {
+                if !peer_safe {
+                    return Err(format!(
+                        "product_control_peer_refused: '{provider_id}:{provider_op_id}' is controller-local and cannot be invoked over Peer transport"
+                    ));
+                }
+                if !cli_available {
+                    return Err(format!(
+                        "product_control_native_operation_unavailable: '{provider_id}:{provider_op_id}' requires the Desktop host and is unavailable on CLI Peer host"
+                    ));
+                }
+                return openbitfun_core::agentic::tools::openbitfun_control_host::invoke_openbitfun_control(
+                    request,
+                )
+                .await;
+            }
+            Err(
+                "product_control_native_operation_unavailable: The requested operation requires a native product-host or presentation provider that the CLI Peer host does not implement"
+                    .to_string(),
+            )
+        }
     }
 }
 

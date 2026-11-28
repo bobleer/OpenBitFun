@@ -960,8 +960,8 @@ mod tests {
             vec!["Standard".to_string()]
         );
         assert_eq!(
-            agent_profile_member_mode_ids_for("Cowork"),
-            vec!["Cowork".to_string()]
+            agent_profile_member_mode_ids_for("Claw"),
+            vec!["Claw".to_string()]
         );
     }
 }

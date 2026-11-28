@@ -67,12 +67,14 @@ pub use controller::{
 };
 #[cfg(all(feature = "agent-runtime", feature = "ssh-remote"))]
 pub use device_controller::{
-    answer_device as answer_device_dispatch, append_device as append_device_dispatch,
-    cancel_device as cancel_device_dispatch, continue_device_job as continue_device_dispatch_job,
+    answer_device as answer_device_dispatch, answer_device_questions,
+    append_device as append_device_dispatch, cancel_device as cancel_device_dispatch,
+    continue_device_job as continue_device_dispatch_job,
     list_device_jobs as list_device_dispatch_jobs, probe_device as probe_device_dispatch_target,
+    probe_device_with_workspace, publish_device_branch,
     query_device_job as query_device_dispatch_job, status_device as get_device_dispatch_status,
-    submit_device as submit_device_dispatch, sync_device_result as sync_device_dispatch_result,
-    DeviceDispatchRpc,
+    status_device_summary, submit_device as submit_device_dispatch, submit_device_from_source,
+    sync_device_result as sync_device_dispatch_result, DeviceDispatchRpc,
 };
 #[cfg(all(feature = "agent-runtime", feature = "ssh-remote"))]
 pub use peer_import::{

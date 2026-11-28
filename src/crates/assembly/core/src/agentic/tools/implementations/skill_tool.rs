@@ -1271,7 +1271,7 @@ Use the remote project skill.
     async fn stable_key_loads_the_exact_builtin_skill() {
         let context = crate::agentic::tools::framework::ToolUseContext {
             tool_call_id: None,
-            agent_type: Some("Cowork".to_string()),
+            agent_type: Some("Standard".to_string()),
             session_id: None,
             dialog_turn_id: None,
             workspace: None,

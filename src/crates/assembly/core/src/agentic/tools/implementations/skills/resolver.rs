@@ -69,20 +69,23 @@ mod tests {
         let presentation = builtin_skill("ppt-design");
         let browser = builtin_skill("agent-browser");
 
-        assert!(!resolve_skill_default_enabled_for_mode(
+        assert!(resolve_skill_default_enabled_for_mode(
             &presentation,
             "Standard"
         ));
-        // Agentic and Cowork use ControlHub's browser domain by default, so
+        assert!(resolve_skill_default_enabled_for_mode(
+            &presentation,
+            "Claw"
+        ));
+        // Standard, Claw, and Ultimate use ControlHub's browser domain by default, so
         // agent-browser remains opt-in for those modes.
         assert!(!resolve_skill_default_enabled_for_mode(
             &browser, "Standard"
         ));
-        assert!(resolve_skill_default_enabled_for_mode(
-            &presentation,
-            "Cowork"
+        assert!(!resolve_skill_default_enabled_for_mode(&browser, "Claw"));
+        assert!(!resolve_skill_default_enabled_for_mode(
+            &browser, "Ultimate"
         ));
-        assert!(!resolve_skill_default_enabled_for_mode(&browser, "Cowork"));
     }
 
     #[test]
@@ -102,21 +105,21 @@ mod tests {
 
     #[test]
     fn overrides_apply_on_top_of_defaults() {
-        let presentation = builtin_skill("ppt-design");
+        let browser = builtin_skill("agent-browser");
         let mut overrides = UserModeSkillOverrides::default();
         let disabled_project = HashSet::new();
 
         let disabled_state =
-            resolve_skill_state_for_mode(&presentation, "Standard", &overrides, &disabled_project);
+            resolve_skill_state_for_mode(&browser, "Standard", &overrides, &disabled_project);
         assert!(!disabled_state.effective_enabled);
         assert_eq!(
             disabled_state.reason,
             ModeSkillStateReason::BuiltinPolicyDisabled
         );
 
-        overrides.enabled_skills.push(presentation.key.clone());
+        overrides.enabled_skills.push(browser.key.clone());
         let enabled_state =
-            resolve_skill_state_for_mode(&presentation, "Standard", &overrides, &disabled_project);
+            resolve_skill_state_for_mode(&browser, "Standard", &overrides, &disabled_project);
         assert!(enabled_state.effective_enabled);
         assert_eq!(
             enabled_state.reason,

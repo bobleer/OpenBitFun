@@ -1499,7 +1499,7 @@ function availability(available, reason, requiredCapabilities = []) {
   return result;
 }
 
-function definitionAvailability(kind, handler) {
+function definitionAvailability(kind, handler, risk = 'write') {
   const desktop = availability(true);
   const peer = (...requiredCapabilities) => availability(
     true,
@@ -1540,6 +1540,92 @@ function definitionAvailability(kind, handler) {
       detachedDispatch: availability(
         !nestedSubmit,
         'A detached dispatch job cannot dispatch further work',
+      ),
+    };
+  }
+  if (handler?.kind === 'provider' && handler.providerId === 'fleet') {
+    const readOnly = [
+      'navigator',
+      'device-detail',
+      'list-models',
+      'list-workspaces',
+      'list-sessions',
+      'read-session',
+      'list-prompts',
+      'attention',
+      'recent-sessions',
+      'search-sessions',
+    ].includes(handler.operationId);
+    return {
+      desktop,
+      cli: availability(true),
+      peer: peer('product_control_native_v1'),
+      remoteControl: remote,
+      detachedDispatch: availability(
+        readOnly,
+        'A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations',
+      ),
+    };
+  }
+  const sharedCapabilityProviders = new Set([
+    'workspace-ops',
+    'skills-ops',
+    'acp-ops',
+    'ecosystem-ops',
+    'review-ops',
+    'ai-policy-ops',
+    'agent-assistant-ops',
+    'automation-data-ops',
+  ]);
+  if (handler?.kind === 'provider' && sharedCapabilityProviders.has(handler.providerId)) {
+    const desktopOnlyOps = new Set([
+      'workspace-ops:discover-environments',
+      'workspace-ops:test-connection',
+      'workspace-ops:connect',
+      'workspace-ops:disconnect',
+      'workspace-ops:transfer-file',
+      'skills-ops:search-market',
+      'skills-ops:install-market-skill',
+      'acp-ops:list-clients',
+      'acp-ops:probe-client',
+      'acp-ops:install-client',
+      'acp-ops:set-acp-permission-mode',
+      'review-ops:launch-deep-review',
+      'review-ops:launch-pr-review',
+      'review-ops:launch-remediation',
+      'review-ops:list-review-records',
+      'review-ops:generate-commit-message',
+      'review-ops:accept-or-reject-file',
+      'automation-data-ops:computer-use-status',
+      'automation-data-ops:request-os-permission',
+      'automation-data-ops:launch-browser',
+      'automation-data-ops:disconnect-browser',
+      'automation-data-ops:control-session-status',
+      'automation-data-ops:stop-control-session',
+      'automation-data-ops:browse-miniapp-market',
+      'automation-data-ops:install-market-miniapp',
+      'automation-data-ops:call-miniapp-worker',
+      'automation-data-ops:list-insights',
+      'automation-data-ops:load-insights-report',
+      'automation-data-ops:generate-insights',
+      'automation-data-ops:cancel-insights',
+      'automation-data-ops:inspect-snapshot-storage',
+      'automation-data-ops:clean-snapshot-storage',
+      'automation-data-ops:export-diagnostics-bundle',
+    ]);
+    const key = `${handler.providerId}:${handler.operationId}`;
+    const cliAvailable = !desktopOnlyOps.has(key);
+    const readOnly = risk === 'read';
+    return {
+      desktop,
+      cli: availability(cliAvailable, 'This operation requires the Desktop product host'),
+      peer: peer('product_control_native_v1'),
+      remoteControl: remote,
+      detachedDispatch: availability(
+        cliAvailable && readOnly,
+        cliAvailable
+          ? 'A detached dispatch job may inspect product state but cannot execute mutating operations'
+          : 'This operation requires the Desktop product host',
       ),
     };
   }
@@ -1623,7 +1709,7 @@ function buildResolvedDefinitions(capabilities) {
         executionHost: operation.handler.kind === 'productAction'
           ? 'presentationSurface'
           : 'productHost',
-        availability: definitionAvailability('operation', operation.handler),
+        availability: definitionAvailability('operation', operation.handler, operation.risk),
         inputSchema: operation.inputSchema,
         outputSchema: outputSchema(),
         valueSource: operation.handler.kind === 'provider'

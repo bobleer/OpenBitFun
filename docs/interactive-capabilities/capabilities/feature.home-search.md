@@ -26,11 +26,11 @@ Jump into agents, apps, skills, and devices from Home, press ⌘K / Ctrl+K to se
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在「首页」总览活跃度热力图、已关联设备，并快捷启动智能体、助理、小应用与技能
+- **智能体可直接控制 / Direct Agent control** · 在「首页」总览活跃度热力图、已关联设备，并快捷启动智能体、助理、小应用与技能
   - Review your activity heatmap and connected devices on Home, with quick actions for Agents, Assistants, Mini Apps, and Skills
   - 说明：首页汇集了累计与单日峰值 Token、连续使用天数热力图、同账号在线设备卡片，以及创建智能体、创建个人助理、启动已安装小应用和浏览技能市场的直达按钮。
   - Why & how: Home brings together token and streak metrics, an activity heatmap, same-account device cards, and one-click launchers to create agents or assistants, open Mini Apps, and discover Skills.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 用全局搜索（⌘K / Ctrl+K 或 Alt+F）跨项目检索消息、文件、功能与设置，或输入 > 运行命令
+- **智能体可直接控制 / Direct Agent control** · 用全局搜索（⌘K / Ctrl+K 或 Alt+F）跨项目检索消息、文件、功能与设置，或输入 > 运行命令
   - Search across messages, sessions, files, features, and settings with ⌘K / Ctrl+K, or type > to run commands
   - 说明：不管焦点在编辑器还是聊天框，按下快捷键即可呼出全局搜索；可在「全部 / 命令 / 内容」间切换范围，若当前接入了 Peer 对端设备，搜索也会自动针对当前显示设备执行。
   - Why & how: Open Global Search from any focus scope, filter by All, Commands (>), or Content, and jump straight to matching conversations, files, actions, or settings on the active device.
@@ -60,7 +60,8 @@ Jump into agents, apps, skills, and devices from Home, press ⌘K / Ctrl+K to se
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看首页个人总览指标 / Inspect Home personal overview | 读取活跃度、设备、智能体、助理、小应用与技能等首页汇总数据。 | Read Home summary metrics for activity, devices, agents, assistants, MiniApps, and Skills. |
+| 全文检索会话历史消息 / Search session messages | 在指定工作区或全部工作区的历史会话消息中按关键词全文检索。 | Full-text search historical session messages in a workspace or across workspaces. |
 
 ## 可配置选项 / Configurable options
 

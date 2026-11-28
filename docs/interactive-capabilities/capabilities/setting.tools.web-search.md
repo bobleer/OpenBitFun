@@ -26,7 +26,7 @@ Choose the runtime search provider backing the agent WebSearch tool—from zero-
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在 Exa MCP（免费）、Exa Search API、Tavily、DeepSeek、Keenable 与自定义 HTTP 服务间选择搜索服务
+- **智能体可直接控制 / Direct Agent control** · 在 Exa MCP（免费）、Exa Search API、Tavily、DeepSeek、Keenable 与自定义 HTTP 服务间选择搜索服务
   - Choose Exa MCP (free), Exa Search API, Tavily, DeepSeek, Keenable, or Custom HTTP service
   - 说明：当智能体判断本地仓库信息不足、需要核实最新外部文档或网页事实时会自动调用所选服务；切换后记得点击页面上的“保存更改”。
   - Why & how: Powers the `WebSearch` tool whenever an agent needs fresh documentation, release notes, or online facts; remember to click Save changes after switching.
@@ -60,7 +60,8 @@ Choose the runtime search provider backing the agent WebSearch tool—from zero-
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查看联网搜索配置与凭证就绪状态 / Inspect web search status | 查看当前联网搜索服务商配置与凭证是否已就绪（不回显密钥）。 | Inspect active web search provider settings and credential readiness without revealing secrets. |
+| 切换联网搜索服务商配置 / Configure web search provider | 设置联网搜索服务商、自定义 HTTP 端点与协议类型。 | Configure web search provider, custom HTTP endpoint, and protocol. |
 
 ## 可配置选项 / Configurable options
 

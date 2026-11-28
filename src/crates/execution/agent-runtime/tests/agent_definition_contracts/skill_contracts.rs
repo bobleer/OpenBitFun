@@ -451,18 +451,16 @@ fn project_skill(dir_name: &str) -> SkillInfo {
 #[test]
 fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
     assert_eq!(builtin_skill_group_key("create-agent"), Some("meta"));
-    for mode in ["Standard", "Creative", "Cowork", "DeepResearch"] {
+    for mode in ["Standard", "Ultimate", "Claw", "Creative", "DeepResearch"] {
         assert_eq!(
             resolve_builtin_default_enabled("create-agent", mode),
             Some(true)
         );
     }
-    for mode in ["Ultimate", "SwarmWorker"] {
-        assert_eq!(
-            resolve_builtin_default_enabled("create-agent", mode),
-            Some(false)
-        );
-    }
+    assert_eq!(
+        resolve_builtin_default_enabled("create-agent", "SwarmWorker"),
+        Some(false)
+    );
     assert_eq!(builtin_skill_group_key("ppt-design"), Some("office"));
     for removed in ["docx", "pdf", "pptx", "xlsx"] {
         assert_eq!(builtin_skill_group_key(removed), None);
@@ -482,24 +480,25 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
     assert_eq!(builtin_skill_group_key("plan"), Some("planning"));
     assert_eq!(builtin_skill_group_key("unknown-skill"), None);
 
-    assert_eq!(
-        resolve_builtin_default_enabled("ppt-design", "Standard"),
-        Some(false)
-    );
-    assert_eq!(
-        resolve_builtin_default_enabled("ppt-design", "Cowork"),
-        Some(true)
-    );
-    for mode in ["Standard", "Claw", "Creative", "Cowork", "DeepResearch"] {
+    for mode in ["Standard", "Ultimate", "Claw"] {
         assert_eq!(
-            resolve_builtin_default_enabled("commit-push-pr", mode),
-            Some(true)
+            resolve_builtin_default_enabled("ppt-design", mode),
+            Some(true),
+            "ppt-design should default on in {mode}"
         );
     }
-    for mode in ["Ultimate", "SwarmWorker"] {
+    for mode in ["Standard", "Ultimate", "Creative", "DeepResearch"] {
         assert_eq!(
             resolve_builtin_default_enabled("commit-push-pr", mode),
-            Some(false)
+            Some(true),
+            "commit-push-pr should default on in {mode}"
+        );
+    }
+    for mode in ["Claw", "SwarmWorker"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("commit-push-pr", mode),
+            Some(false),
+            "commit-push-pr should default off in {mode}"
         );
     }
     assert_eq!(
@@ -511,7 +510,7 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
         Some(false)
     );
     assert_eq!(
-        resolve_builtin_default_enabled("miniapp-dev", "Cowork"),
+        resolve_builtin_default_enabled("miniapp-dev", "Claw"),
         Some(false)
     );
     assert_eq!(
@@ -530,21 +529,24 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
         resolve_builtin_default_enabled("openbitfun-frontend-dev", "Standard"),
         Some(false)
     );
-    assert_eq!(
-        resolve_builtin_default_enabled("agent-browser", "Standard"),
-        Some(false)
-    );
-    assert_eq!(
-        resolve_builtin_default_enabled("agent-browser", "Ultimate"),
-        Some(true)
-    );
+    for mode in ["Standard", "Claw", "Ultimate"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("agent-browser", mode),
+            Some(false),
+            "agent-browser should default off in ControlHub-enabled mode {mode}"
+        );
+    }
     assert_eq!(
         resolve_builtin_default_enabled("plan", "Ultimate"),
         Some(true)
     );
     assert_eq!(
         resolve_builtin_default_enabled("find-skills", "Ultimate"),
-        Some(false)
+        Some(true)
+    );
+    assert_eq!(
+        resolve_builtin_default_enabled("debug", "Ultimate"),
+        Some(true)
     );
     assert_eq!(
         resolve_builtin_default_enabled("agent-browser", "SwarmWorker"),
@@ -556,7 +558,8 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
     );
     for (mode_id, expected) in [
         ("Standard", true),
-        ("Cowork", true),
+        ("Claw", true),
+        ("Ultimate", false),
         ("Creative", true),
         ("DeepResearch", true),
         ("ComputerUse", false),
@@ -569,9 +572,8 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
     }
     for (mode_id, expected) in [
         ("Standard", true),
-        ("Standard", true),
         ("Claw", true),
-        ("Cowork", true),
+        ("Ultimate", true),
         ("Creative", true),
         ("ComputerUse", false),
         ("DeepResearch", false),
@@ -726,18 +728,17 @@ fn user_config_skill_root_resolution_matches_platform_contract() {
 
 #[test]
 fn skill_resolution_applies_builtin_and_user_override_rules() {
-    let presentation = builtin_skill("ppt-design");
+    let browser = builtin_skill("agent-browser");
     let custom = custom_user_skill("my-custom-skill");
     let disabled_project = HashSet::new();
 
     assert!(!resolve_skill_default_enabled_for_mode(
-        &presentation,
-        "Standard"
+        &browser, "Standard"
     ));
     assert!(resolve_skill_default_enabled_for_mode(&custom, "Standard"));
 
     let default_state = resolve_skill_state_for_mode(
-        &presentation,
+        &browser,
         "Standard",
         &UserModeSkillOverrides::default(),
         &disabled_project,
@@ -749,9 +750,9 @@ fn skill_resolution_applies_builtin_and_user_override_rules() {
     );
 
     let mut overrides = UserModeSkillOverrides::default();
-    overrides.enabled_skills.push(presentation.key.clone());
+    overrides.enabled_skills.push(browser.key.clone());
     let enabled_state =
-        resolve_skill_state_for_mode(&presentation, "Standard", &overrides, &disabled_project);
+        resolve_skill_state_for_mode(&browser, "Standard", &overrides, &disabled_project);
     assert!(enabled_state.effective_enabled);
     assert_eq!(
         enabled_state.reason,
@@ -1324,7 +1325,7 @@ fn explicit_invocation_reaches_default_hidden_agent_browser() {
         priority: 10,
     };
 
-    for mode_id in ["Standard", "Standard", "Claw", "Cowork"] {
+    for mode_id in ["Standard", "Claw", "Ultimate"] {
         assert_eq!(
             resolve_builtin_default_enabled("agent-browser", mode_id),
             Some(false),
@@ -1397,7 +1398,7 @@ fn workspace_skill_disable_blocks_all_modes_without_reclassifying_the_source() {
     skill.key = "project::agents::shared-review".into();
     skill.source_id = "agent-skills".into();
     let disabled = HashSet::from([skill.key.clone()]);
-    for mode in ["Standard", "Cowork", "Ultimate"] {
+    for mode in ["Standard", "Claw", "Ultimate"] {
         assert!(!is_skill_globally_enabled(&skill, &disabled));
         let info = build_mode_skill_infos(
             vec![skill.clone()],

@@ -151,7 +151,7 @@ mod tests {
     fn snapshot_retains_parent_agent_type_state() {
         let mut parent = parent_session();
         parent.last_user_dialog_agent_type = Some("Standard".to_string());
-        parent.last_submitted_agent_type = Some("Cowork".to_string());
+        parent.last_submitted_agent_type = Some("Ultimate".to_string());
 
         let snapshot =
             ForkAgentContextSnapshot::from_parent_session(&parent, Vec::new()).expect("snapshot");
@@ -162,7 +162,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.last_submitted_agent_type.as_deref(),
-            Some("Cowork")
+            Some("Ultimate")
         );
     }
 

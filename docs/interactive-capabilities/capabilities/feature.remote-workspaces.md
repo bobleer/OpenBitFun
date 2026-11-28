@@ -26,7 +26,7 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 保存、测试与管理常用 SSH 连接配置
+- **智能体可直接控制 / Direct Agent control** · 保存、测试与管理常用 SSH 连接配置
   - Save, test, and manage reusable SSH connection profiles
   - 说明：把常用的开发机、测试服存为连接配置，打开项目前可一键连通性自检，随时更新或清理旧主机。
   - Why & how: Save frequently used dev servers as profiles, run one-click connection checks before opening a folder, and edit or remove stale hosts anytime.
@@ -34,7 +34,7 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
   - Authenticate via passwords, keys, certificates, ~/.ssh/config, and jump hosts
   - 说明：兼容企业常见的堡垒机/跳板机链路与本地 SSH 配置，密码与私钥通过受保护凭据通道提交，不会暴露给模型。
   - Why & how: Works with bastion/jump-host chains and existing ~/.ssh/config entries while keeping passwords and private keys inside the protected credential flow.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 自动发现远程 Docker 容器并进入容器内开发
+- **智能体可直接控制 / Direct Agent control** · 自动发现远程 Docker 容器并进入容器内开发
   - Discover remote Docker containers and work directly inside a container
   - 说明：连上宿主机后可直接列出运行中的容器，把指定容器作为独立开发环境打开，工具链与依赖完全对齐容器镜像。
   - Why & how: List running containers on a host and open any container as your active workspace so tools and dependencies match the container image.
@@ -42,7 +42,7 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
   - Open a Windows WSL distribution directly as a Linux workspace
   - 说明：自动识别本机已安装的 Ubuntu、Debian 等 WSL 发行版，选定 Linux 用户与目录后即可享受原生 Linux 终端与工具体验。
   - Why & how: Detect installed WSL distributions on Windows and pick your Linux user and folder so terminals and agents run natively inside Linux.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 打开、关闭或移除远程工作区并查看远端系统信息
+- **智能体可直接控制 / Direct Agent control** · 打开、关闭或移除远程工作区并查看远端系统信息
   - Open, close, or remove remote workspaces and inspect host details
   - 说明：在侧边栏清晰区分本地与连接环境项目，随时查看远端系统架构信息，关闭项目不会误删远端磁盘文件。
   - Why & how: Distinguish local and connected workspaces clearly in the sidebar, check remote OS details, and close workspaces safely without deleting remote files.
@@ -50,7 +50,7 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
   - Browse, search, edit, rename, and delete files directly on the remote host
   - 说明：无论是你在编辑器里手动改代码，还是让 AI 用 Read / Edit / Grep 搜索修改，所有读写都直接作用于远端文件系统。
   - Why & how: Both manual edits in the workbench and agent tools like Read, Edit, and Grep operate directly on the remote filesystem.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在本机与远端之间上传、下载文件或压缩包并可随时取消
+- **智能体可直接控制 / Direct Agent control** · 在本机与远端之间上传、下载文件或压缩包并可随时取消
   - Upload and download files or archives between local and remote hosts
   - 说明：支持把本机素材传上服务器，或把远端生成的构建产物、日志打包下载回本地电脑，大文件传输中途可随时取消。
   - Why & how: Send local assets to the server or download remote build artifacts and logs back to your computer, with live cancellation for large transfers.
@@ -62,7 +62,7 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
   - Detect remote listening ports and start or stop local port forwarding
   - 说明：不用手敲复杂的 ssh -L 命令，AI 可直接查出远端正在运行的端口并映射到本地，调完随时关闭释放端口。
   - Why & how: Skip manual ssh -L flags—let the agent list active remote ports, forward the one you need to localhost, and stop it cleanly when done.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看实时 SSH 连接状态，按需断开单个或全部连接
+- **智能体可直接控制 / Direct Agent control** · 查看实时 SSH 连接状态，按需断开单个或全部连接
   - Monitor live SSH connection state and disconnect one or all sessions
   - 说明：一眼掌握当前远端链路是否在线，切换网络或结束工作后可干净断开指定主机或全部 SSH 会话。
   - Why & how: Check at a glance whether a remote link is healthy and cleanly disconnect individual or all SSH sessions when switching networks.
@@ -84,7 +84,13 @@ Open projects directly on a remote SSH server, inside a Docker container, or in 
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 列出已保存的远程连接 / List saved remote connections | 读取已保存的 SSH、Docker 与 WSL 远程连接配置列表（不含明文密码）。 | List saved SSH, Docker, and WSL connection profiles without exposing secrets. |
+| 发现 SSH 配置、Docker 容器与 WSL / Discover SSH config, Docker, and WSL | 扫描本机 ~/.ssh/config 主机、Docker 容器与 WSL 发行版以便一键连接。 | Discover local ~/.ssh/config hosts, Docker containers, and WSL distributions. |
+| 测试远程连接可达性 / Test remote connection | 测试给定 SSH/容器连接配置的连通性与认证状态。 | Test reachability and authentication for an SSH/container connection config. |
+| 建立远程连接 / Connect remote host | 建立到指定 SSH 主机、Docker 容器或 WSL 的活动连接。 | Establish an active connection to an SSH host, Docker container, or WSL distro. |
+| 断开远程连接 / Disconnect remote host | 断开指定 connectionId 的活动远程连接。 | Disconnect an active remote connection by connectionId. |
+| 打开远程工作区 / Open remote workspace | 在已连接的 SSH/Docker/WSL 环境中打开指定远程路径作为工作区。 | Open a remote directory path on a connected SSH/Docker/WSL host as a workspace. |
+| 在本地与远程连接间传输文件 / Transfer file over remote connection | 在控制端本机路径与已连接的远程工作区路径之间上传或下载文件。 | Upload or download a file between a local host path and a connected remote workspace path. |
 
 ## 可配置选项 / Configurable options
 

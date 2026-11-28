@@ -292,10 +292,23 @@ impl SessionMessageTool {
 
 #[derive(Debug, Clone, Deserialize)]
 enum SessionMessageAgentType {
-    #[serde(rename = "Standard", alias = "Standard", alias = "AGENTIC")]
+    #[serde(
+        rename = "Standard",
+        alias = "standard",
+        alias = "agentic",
+        alias = "AGENTIC",
+        alias = "Cowork",
+        alias = "cowork",
+        alias = "COWORK"
+    )]
     Agentic,
-    #[serde(rename = "Cowork", alias = "cowork", alias = "COWORK")]
-    Cowork,
+    #[serde(
+        rename = "Ultimate",
+        alias = "ultimate",
+        alias = "Ultra",
+        alias = "ultra"
+    )]
+    Ultimate,
     #[serde(
         rename = "DeepResearch",
         alias = "deepresearch",
@@ -308,7 +321,7 @@ impl SessionMessageAgentType {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Agentic => "Standard",
-            Self::Cowork => "Cowork",
+            Self::Ultimate => "Ultimate",
             Self::DeepResearch => "DeepResearch",
         }
     }
@@ -338,8 +351,8 @@ Usage:
 - Reusing an existing session: provide "session_id" and "message". You may omit "workspace"; the tool will resolve it from the target session when possible.
 
 Allowed agent types when creating a session:
-- "Standard": Coding-focused agent for implementation, debugging, and code changes.
-- "Cowork": Collaborative agent for office-style work such as research, documentation, presentations, etc.
+- "Standard": General-purpose agent for implementation, debugging, documents, and project work.
+- "Ultimate": Swarm root planner for complex multi-file architecture and coordinated parallel tasks.
 - "DeepResearch": Research agent for systematic investigation and evidence-driven reports.
 "#
                 .to_string(),
@@ -376,7 +389,7 @@ Allowed agent types when creating a session:
                 },
                 "agent_type": {
                     "type": "string",
-                    "enum": ["Standard", "Cowork", "DeepResearch"],
+                    "enum": ["Standard", "Ultimate", "DeepResearch"],
                     "description": "Required when session_id is omitted. Not allowed when sending to an existing session."
                 }
             },

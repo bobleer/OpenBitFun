@@ -1619,7 +1619,7 @@ async fn remote_connect_dialog_runtime_preserves_explicit_turn_without_restore()
             session_id: "session-1".to_string(),
             content: "from bot".to_string(),
             display_content: None,
-            agent_type: Some("Cowork".to_string()),
+            agent_type: Some("Ultimate".to_string()),
             image_contexts: Vec::new(),
             policy: RemoteDialogSubmissionPolicy::for_source(RemoteConnectSubmissionSource::Bot),
             turn_id: Some("turn-bot".to_string()),
@@ -1647,7 +1647,7 @@ async fn remote_connect_dialog_runtime_preserves_explicit_turn_without_restore()
     );
 
     let submitted = host.submitted();
-    assert_eq!(submitted.resolved_agent_type, "Cowork");
+    assert_eq!(submitted.resolved_agent_type, "Ultimate");
     assert_eq!(submitted.turn_id, "turn-bot");
     assert_eq!(submitted.policy.source, RemoteConnectSubmissionSource::Bot);
 }
@@ -2698,8 +2698,8 @@ fn remote_connect_agent_type_mapping_preserves_current_mobile_aliases() {
     assert_eq!(resolve_remote_agent_type(Some("MINIMAL")), "Minimal");
     assert_eq!(resolve_remote_agent_type(Some("ultimate")), "Ultimate");
     assert_eq!(resolve_remote_agent_type(Some("Ultimate")), "Ultimate");
-    assert_eq!(resolve_remote_agent_type(Some("cowork")), "Cowork");
-    assert_eq!(resolve_remote_agent_type(Some("Cowork")), "Cowork");
+    assert_eq!(resolve_remote_agent_type(Some("cowork")), "Standard");
+    assert_eq!(resolve_remote_agent_type(Some("Cowork")), "Standard");
     assert_eq!(
         resolve_remote_agent_type(Some("PaperWriting")),
         "PaperWriting"

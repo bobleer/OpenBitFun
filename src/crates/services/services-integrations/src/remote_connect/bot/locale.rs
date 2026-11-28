@@ -59,7 +59,6 @@ pub struct BotStrings {
     // ── Menu item labels (≤ 14 chars target) ─────────────────────
     pub item_new_session: &'static str,
     pub item_new_code_session: &'static str,
-    pub item_new_cowork_session: &'static str,
     pub item_resume_session: &'static str,
     pub item_switch_assistant: &'static str,
     pub item_switch_workspace: &'static str,
@@ -256,7 +255,6 @@ const STRINGS_ZH: BotStrings = BotStrings {
 
     item_new_session: "新建会话",
     item_new_code_session: "新建编码会话",
-    item_new_cowork_session: "新建协作会话",
     item_resume_session: "恢复会话",
     item_switch_assistant: "切换助理",
     item_switch_workspace: "切换工作区",
@@ -350,7 +348,7 @@ const STRINGS_ZH: BotStrings = BotStrings {
     error_prefix: "错误：",
     send_failed_prefix: "发送失败：",
 
-    mode_switched_to_expert: "已切换到专业模式，可创建编码 / 协作会话。",
+    mode_switched_to_expert: "已切换到专业模式，可创建编码会话。",
     mode_switched_to_assistant: "已切换到助理模式，适合日常持续对话。",
     mode_already_expert: "当前已在专业模式。",
     mode_already_assistant: "当前已在助理模式。",
@@ -443,7 +441,6 @@ const STRINGS_ZH_TW: BotStrings = BotStrings {
 
     item_new_session: "新建會話",
     item_new_code_session: "新建編碼會話",
-    item_new_cowork_session: "新建協作會話",
     item_resume_session: "恢復會話",
     item_switch_assistant: "切換助理",
     item_switch_workspace: "切換工作區",
@@ -537,7 +534,7 @@ const STRINGS_ZH_TW: BotStrings = BotStrings {
     error_prefix: "錯誤：",
     send_failed_prefix: "發送失敗：",
 
-    mode_switched_to_expert: "已切換到專業模式，可創建編碼 / 協作會話。",
+    mode_switched_to_expert: "已切換到專業模式，可創建編碼會話。",
     mode_switched_to_assistant: "已切換到助理模式，適合日常持續對話。",
     mode_already_expert: "當前已在專業模式。",
     mode_already_assistant: "當前已在助理模式。",
@@ -630,7 +627,6 @@ Open Remote Connect in OpenBitFun Desktop and send the 6-digit pairing code here
 
     item_new_session: "New Session",
     item_new_code_session: "New Code Session",
-    item_new_cowork_session: "New Cowork Session",
     item_resume_session: "Resume Session",
     item_switch_assistant: "Switch Assistant",
     item_switch_workspace: "Switch Workspace",
@@ -725,7 +721,7 @@ Open Remote Connect in OpenBitFun Desktop and send the 6-digit pairing code here
     error_prefix: "Error: ",
     send_failed_prefix: "Send failed: ",
 
-    mode_switched_to_expert: "Switched to Expert mode. You can create code or cowork sessions.",
+    mode_switched_to_expert: "Switched to Expert mode. You can create code sessions.",
     mode_switched_to_assistant: "Switched to Assistant mode. Best for ongoing conversations.",
     mode_already_expert: "Already in Expert mode.",
     mode_already_assistant: "Already in Assistant mode.",

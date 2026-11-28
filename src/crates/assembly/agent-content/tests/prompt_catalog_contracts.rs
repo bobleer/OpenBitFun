@@ -22,10 +22,6 @@ const CATALOG_PROMPT_SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../prompts/agents/computer_use_mode.md"),
     ),
     (
-        "cowork_mode",
-        include_bytes!("../prompts/agents/cowork_mode.md"),
-    ),
-    (
         "creative_mode",
         include_bytes!("../prompts/agents/creative_mode.md"),
     ),
@@ -372,7 +368,12 @@ fn creative_prompt_fetches_creative_skills_on_demand_and_keeps_product_owners() 
 
 #[test]
 fn computer_use_delegation_preserves_user_scope_in_parents_and_child() {
-    for name in ["claw_mode", "standard_mode", "cowork_mode", "creative_mode"] {
+    for name in [
+        "claw_mode",
+        "standard_mode",
+        "ultimate_mode",
+        "creative_mode",
+    ] {
         let prompt = agent_prompt(name).unwrap();
         assert!(prompt.contains("{COMPUTER_USE_GUIDANCE}"), "{name}");
         assert!(
@@ -406,8 +407,8 @@ fn computer_use_delegation_preserves_user_scope_in_parents_and_child() {
 fn main_desktop_prompts_use_direct_visual_batches_without_mandatory_delegation() {
     for name in [
         "claw_mode",
-        "cowork_mode",
         "standard_mode",
+        "ultimate_mode",
         "creative_mode",
         "computer_use_mode",
     ] {

@@ -17,7 +17,7 @@ Inspect local file snapshot usage by workspace and clean up eligible session his
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 预览并清理会话文件快照
+- **智能体可直接控制 / Direct Agent control** · 预览并清理会话文件快照
   - Preview and clean up session file snapshots
   - 说明：选择工作区和未活跃时长，核对会话及预计释放空间后确认清理。
   - Why & how: Choose workspaces and an inactivity period, review the affected sessions and estimated space, then confirm cleanup.
@@ -35,7 +35,8 @@ Inspect local file snapshot usage by workspace and clean up eligible session his
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 检查快照存储占用空间 / Inspect snapshot storage usage | 统计文件快照存储目录的磁盘占用与可清理候选项。 | Inspect snapshot storage disk usage and cleanable candidates. |
+| 清理过期快照存储 / Clean snapshot storage | 按候选项清理过期文件快照以释放磁盘空间。 | Clean selected stale file snapshots to reclaim disk space. |
 
 ## 可配置选项 / Configurable options
 

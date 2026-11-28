@@ -25,6 +25,14 @@ impl Agent for OpenBitFunAgent {
             "OpenBitFunControl".into(),
             "GetToolSpec".into(),
             "AskUserQuestion".into(),
+            "ListWorkspaces".into(),
+            "ListModels".into(),
+            "SessionControl".into(),
+            "SessionMessage".into(),
+            "SessionHistory".into(),
+            "Worktree".into(),
+            "Cron".into(),
+            "ControlHub".into(),
         ]
     }
     fn user_context_policy(&self) -> UserContextPolicy {

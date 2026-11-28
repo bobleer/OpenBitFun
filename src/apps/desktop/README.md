@@ -450,7 +450,7 @@ and the human cursor were untouched. The measured 466 ms includes observation,
 not model reasoning. This proves the tested controls, not universal support for
 every application.
 
-Claw, Cowork, Standard and Creative agents can use ComputerUse directly; the
+Claw, Standard, Ultimate and Creative agents can use ComputerUse directly; the
 ComputerUse subagent is optional. Known input sequences can use `app_batch` with
 one final observation. Every step is checked before the first input, including
 image identities, coordinate ranges and grid indices. A partial failure retains completed input receipts so

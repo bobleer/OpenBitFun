@@ -26,15 +26,15 @@ Browse and customize specialized agents, tailor each role’s allowed tools and 
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 按内置、个人、项目与外部来源分类浏览当前环境可用的全部智能体
+- **智能体可直接控制 / Direct Agent control** · 按内置、个人、项目与外部来源分类浏览当前环境可用的全部智能体
   - Browse built-in, personal, project, and external agents available in the current environment
   - 说明：在智能体中心一目了然区分主对话模式智能体与可被委派的子智能体，并支持按作用范围或关键词快速筛选。
   - Why & how: Filter by level and type in the Agents gallery to see built-in modes, delegatable subagents, personal roles, and project-owned agents.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 创建自定义主对话智能体，设定专属名称、职责说明与系统提示词
+- **智能体可直接控制 / Direct Agent control** · 创建自定义主对话智能体，设定专属名称、职责说明与系统提示词
   - Create custom primary agents with their own name, description, and role instructions
   - 说明：把你反复使用的角色设定、输出风格和工作边界沉淀成独立模式，新建会话时即可直接选用。
   - Why & how: Turn recurring role prompts, output conventions, and guardrails into a reusable custom mode selectable right in the chat composer.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看详情、随时微调提示词、热重载配置或删除不再需要的自定义智能体
+- **智能体可直接控制 / Direct Agent control** · 查看详情、随时微调提示词、热重载配置或删除不再需要的自定义智能体
   - Inspect, edit instructions, hot-reload, or remove custom agents anytime
   - 说明：调整完提示词或外部修改配置文件后无需重启客户端，重新加载即可在下一轮对话生效。
   - Why & how: Refine a custom agent’s prompt or reload definitions from disk without restarting OpenBitFun.
@@ -72,7 +72,11 @@ Browse and customize specialized agents, tailor each role’s allowed tools and 
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 列出所有模式与子智能体 / List modes and subagents | 获取内置模式、自定义智能体以及可管理子智能体清单。 | List built-in modes, custom agents, and manageable subagents. |
+| 查看自定义智能体或子智能体详情 / Inspect agent definition | 读取指定自定义智能体或子智能体的完整提示词、工具与模型配置。 | Inspect full prompt, tools, and model settings for one custom agent or subagent. |
+| 创建自定义智能体或子智能体 / Create custom agent or subagent | 固化可复用的自定义模式或子智能体定义（含提示词、工具集与模型）。 | Create a reusable custom mode or subagent with prompt, tools, and model. |
+| 更新自定义智能体或子智能体 / Update custom agent or subagent | 修改已有自定义智能体或子智能体的提示词、工具清单或模型。 | Update an existing custom agent or subagent definition. |
+| 删除自定义智能体或子智能体 / Delete custom agent or subagent | 删除指定的自定义智能体或子智能体。 | Delete a custom agent or subagent by ID. |
 
 ## 可配置选项 / Configurable options
 

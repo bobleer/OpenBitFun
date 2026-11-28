@@ -17,8 +17,7 @@ pub(crate) use definitions::external::ExternalProvidedAgent;
 pub use definitions::hidden::{CodeReviewAgent, DeepReviewAgent, OpenBitFunAgent};
 use definitions::modes::PaperWritingAgent;
 pub use definitions::modes::{
-    ClawMode, CoworkMode, CreativeHarness, DeepResearchMode, MinimalHarness, StandardHarness,
-    UltimateHarness,
+    ClawMode, CreativeHarness, DeepResearchMode, MinimalHarness, StandardHarness, UltimateHarness,
 };
 pub use definitions::review::{ReviewFixerAgent, ReviewJudgeAgent, ReviewWorkerAgent};
 pub use definitions::shared::ReadonlySubagent;
@@ -118,6 +117,13 @@ pub fn standard_harness_tools() -> Vec<String> {
         "Skill".to_string(),
         "AskUserQuestion".to_string(),
         "ReviewPlatform".to_string(),
+        "Worktree".to_string(),
+        "GetFileDiff".to_string(),
+        "Playbook".to_string(),
+        "ListWorkspaces".to_string(),
+        "SessionControl".to_string(),
+        "SessionMessage".to_string(),
+        "SessionHistory".to_string(),
         "OpenBitFunControl".to_string(),
         "ControlHub".to_string(),
         // A MiniApp is a Web page this product hosts, so operating one belongs
@@ -358,11 +364,76 @@ mod desktop_tool_tests {
     }
 
     #[test]
+    fn primary_modes_expose_control_plane_and_coding_modes_expose_git_tools() {
+        let primary_modes: Vec<Box<dyn Agent>> = vec![
+            Box::new(StandardHarness::new()),
+            Box::new(UltimateHarness::new()),
+            Box::new(CreativeHarness::new()),
+            Box::new(ClawMode::new()),
+        ];
+        for mode in primary_modes {
+            let tools = mode.default_tools();
+            for required in [
+                "Playbook",
+                "ListWorkspaces",
+                "SessionControl",
+                "SessionMessage",
+                "SessionHistory",
+                "OpenBitFunControl",
+                "ControlHub",
+                "Cron",
+                "PortForward",
+                "view_image",
+                "analyze_image",
+                "generate_image",
+            ] {
+                assert!(
+                    tools.iter().any(|name| name == required),
+                    "{} should expose {required} by default",
+                    mode.id()
+                );
+            }
+        }
+        let coding_modes: Vec<Box<dyn Agent>> = vec![
+            Box::new(StandardHarness::new()),
+            Box::new(UltimateHarness::new()),
+            Box::new(CreativeHarness::new()),
+        ];
+        for mode in coding_modes {
+            let tools = mode.default_tools();
+            for required in ["Worktree", "ReviewPlatform", "GetFileDiff"] {
+                assert!(
+                    tools.iter().any(|name| name == required),
+                    "{} should expose coding tool {required} by default",
+                    mode.id()
+                );
+            }
+        }
+        let claw_tools = ClawMode::new().default_tools();
+        for coding_only in ["Worktree", "ReviewPlatform", "GetFileDiff"] {
+            assert!(
+                !claw_tools.iter().any(|name| name == coding_only),
+                "Claw should exclude repo-only coding tool {coding_only} by default"
+            );
+        }
+        let assistant_tools = OpenBitFunAgent.default_tools();
+        for required in [
+            "OpenBitFunControl",
+            "ListWorkspaces",
+            "ListModels",
+            "Worktree",
+            "Cron",
+        ] {
+            assert!(assistant_tools.iter().any(|name| name == required));
+        }
+    }
+
+    #[test]
     fn main_desktop_modes_include_computer_use() {
         let modes: Vec<Box<dyn Agent>> = vec![
             Box::new(ClawMode::new()),
-            Box::new(CoworkMode::new()),
             Box::new(StandardHarness::new()),
+            Box::new(UltimateHarness::new()),
             Box::new(CreativeHarness::new()),
         ];
         for mode in modes {

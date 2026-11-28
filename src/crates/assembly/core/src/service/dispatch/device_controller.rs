@@ -72,6 +72,52 @@ pub trait DeviceDispatchRpc: Send + Sync {
     async fn invoke(&self, device_id: &str, command: &str, args: Value) -> anyhow::Result<Value>;
 }
 
+pub async fn probe_device_with_workspace(
+    rpc: &dyn DeviceDispatchRpc,
+    device_id: &str,
+    workspace_id: Option<&str>,
+) -> anyhow::Result<DispatchSshProbe> {
+    if device_id.trim().is_empty() {
+        anyhow::bail!("Device dispatch requires a deviceId");
+    }
+    let args = match workspace_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(workspace_id) => json!({ "workspaceId": workspace_id }),
+        None => json!({}),
+    };
+    let protocol = rpc.invoke(device_id, "dispatch_target_probe", args).await?;
+    let protocol_error = dispatch_ssh::validate_dispatch_protocol(&protocol, None)
+        .err()
+        .map(|error| error.to_string());
+    let readiness = openbitfun_services_core::dispatch_contract::DispatchProbeReadiness::evaluate(
+        true,
+        Some(&protocol),
+        protocol_error.as_deref(),
+    );
+    Ok(DispatchSshProbe {
+        readiness,
+        cli_installed: true,
+        cli_path: None,
+        os: protocol
+            .get("os")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        arch: protocol
+            .get("arch")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        install_supported: false,
+        install_error: None,
+        protocol_error,
+        release: None,
+        protocol: Some(protocol),
+        // An account device runs its own already-installed CLI; this
+        // controller installs nothing for it.
+        prebuilt_incompatible: None,
+    })
+}
+
 pub async fn probe_device(
     rpc: &dyn DeviceDispatchRpc,
     request: DispatchProbeTargetRequest,
@@ -125,6 +171,300 @@ pub async fn probe_device(
         // controller installs nothing for it.
         prebuilt_incompatible: None,
     })
+}
+
+fn protocol_has_capability(protocol: &Value, capability: &str) -> bool {
+    protocol
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|entry| entry.as_str() == Some(capability))
+        })
+}
+
+/// Submit a detached job to an account device whose workspace is resolved on
+/// the target (`workspace_target_source_v1` / `workspace_peer_import_v1`) rather
+/// than branched from a local checkout on this controller.
+pub async fn submit_device_from_source(
+    rpc: &dyn DeviceDispatchRpc,
+    store: &OutboundDispatchStore,
+    display_name: String,
+    source: openbitfun_product_domains::detached_dispatch_control::DetachedDispatchSource,
+    request: DispatchSubmitRequest,
+) -> anyhow::Result<Value> {
+    use openbitfun_product_domains::detached_dispatch_control::DetachedDispatchSource;
+    use openbitfun_services_core::dispatch_contract::{
+        DISPATCH_TARGET_PROVISION_SOURCE_COMMAND, DISPATCH_USER_QUESTION_MAILBOX_CAPABILITY,
+        DISPATCH_WORKSPACE_PEER_IMPORT_CAPABILITY, DISPATCH_WORKSPACE_TARGET_SOURCE_CAPABILITY,
+    };
+
+    validate_submit_request(&request)?;
+    let DispatchTargetRequest::Device { device_id, .. } = &request.target else {
+        anyhow::bail!("Source-provisioned dispatch requires an account device target");
+    };
+    if device_id.trim().is_empty() {
+        anyhow::bail!("Device dispatch requires a deviceId");
+    }
+
+    let initial_protocol = rpc
+        .invoke(device_id, "dispatch_target_probe", json!({}))
+        .await
+        .context("probe device dispatch protocol before source provisioning")?;
+    dispatch_ssh::validate_dispatch_protocol(&initial_protocol, Some(&request.approval_policy))?;
+    if !protocol_has_capability(
+        &initial_protocol,
+        DISPATCH_WORKSPACE_TARGET_SOURCE_CAPABILITY,
+    ) {
+        anyhow::bail!(
+            "Target device does not advertise {DISPATCH_WORKSPACE_TARGET_SOURCE_CAPABILITY}; update its OpenBitFun CLI or submit with a local workspacePath"
+        );
+    }
+    if matches!(source, DetachedDispatchSource::Job { .. })
+        && !protocol_has_capability(&initial_protocol, DISPATCH_WORKSPACE_PEER_IMPORT_CAPABILITY)
+    {
+        anyhow::bail!(
+            "Target device does not advertise {DISPATCH_WORKSPACE_PEER_IMPORT_CAPABILITY}; update the target host to import another job's branch"
+        );
+    }
+
+    let branch = format!("openbitfun/dispatch/{}", request.job_id);
+    let source_json = serde_json::to_value(&source)?;
+    let provision = invoke_device_workspace_operation(
+        rpc,
+        device_id,
+        DISPATCH_TARGET_PROVISION_SOURCE_COMMAND,
+        json!({
+            "protocolVersion": DISPATCH_PROTOCOL_VERSION,
+            "jobId": request.job_id,
+            "source": source_json,
+            "branch": branch,
+        }),
+        "Target source workspace provisioning",
+    )
+    .await?;
+    let workspace_path = provisioned_path(&provision).ok_or_else(|| {
+        anyhow!("Device dispatch target did not return a provisioned workspacePath")
+    })?;
+    let base_commit = provision
+        .get("baseCommit")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let provisioned_branch = provision
+        .get("branch")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or(branch);
+    let remote_url = provision
+        .get("remoteUrl")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let protocol = rpc
+        .invoke(
+            device_id,
+            "dispatch_target_probe",
+            json!({ "workspacePath": workspace_path }),
+        )
+        .await
+        .context("probe device immediately before source dispatch submission")?;
+    dispatch_ssh::validate_dispatch_protocol(&protocol, Some(&request.approval_policy)).and_then(
+        |_| {
+            validate_submission_preflight(
+                &protocol,
+                request.model.as_deref(),
+                request.reasoning_preset.as_deref(),
+            )
+        },
+    )?;
+    let canonical_workspace = protocol
+        .pointer("/workspace/path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or(&workspace_path)
+        .to_string();
+
+    let resolved_target = DispatchTarget::Device {
+        device_id: device_id.clone(),
+        workspace_path: canonical_workspace.clone(),
+        display_name,
+    };
+    let mut record = OutboundDispatchRecord::new(
+        request.job_id.clone(),
+        resolved_target,
+        request.session_id.clone(),
+        canonical_workspace.clone(),
+        &request.prompt,
+        "submitting",
+    )?
+    .with_submission_metadata(
+        request.title.clone(),
+        request.agent_type.clone(),
+        request.approval_policy.clone(),
+        request.model.clone(),
+        request.reasoning_preset.clone(),
+    );
+    record.base_commit = base_commit;
+    record.branch = Some(provisioned_branch);
+    record.remote_url = remote_url;
+    let bound_record = store.bind_if_absent(&record).await?;
+    if bound_record.session_id != request.session_id
+        || !same_target_identity(&bound_record.target, &record.target)
+    {
+        anyhow::bail!("Dispatch jobId is already bound to another target or session");
+    }
+
+    let mut payload = json!({
+        "protocolVersion": DISPATCH_PROTOCOL_VERSION,
+        "jobId": request.job_id,
+        "sessionId": request.session_id,
+        "workspacePath": canonical_workspace,
+        "agentType": request.agent_type,
+        "prompt": request.prompt,
+        "approvalPolicy": request.approval_policy,
+    });
+    if protocol_has_capability(&protocol, DISPATCH_USER_QUESTION_MAILBOX_CAPABILITY) {
+        payload["userQuestions"] = Value::Bool(true);
+    }
+    if let Some(model) = request.model.filter(|value| !value.trim().is_empty()) {
+        payload["model"] = Value::String(model);
+    }
+    if let Some(preset) = request
+        .reasoning_preset
+        .filter(|value| !value.trim().is_empty())
+    {
+        payload["reasoningPreset"] = Value::String(preset);
+    }
+    if let Some(title) = request.title.filter(|value| !value.trim().is_empty()) {
+        payload["title"] = Value::String(title);
+    }
+
+    let response = match rpc
+        .invoke(device_id, "dispatch_target_submit", payload)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = store
+                .update_progress(&record.job_id, 0, "submission_unknown")
+                .await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = validate_submit_ack(&response, &record.job_id, &record.session_id) {
+        let _ = store
+            .update_progress(&record.job_id, 0, "submission_unknown")
+            .await;
+        return Err(error);
+    }
+    let state = response
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("queued")
+        .to_string();
+    store.update_progress(&record.job_id, 0, state).await?;
+    Ok(response)
+}
+
+/// Answer a pending user question on an account-device dispatch job.
+pub async fn answer_device_questions(
+    rpc: &dyn DeviceDispatchRpc,
+    store: &OutboundDispatchStore,
+    job_id: &str,
+    request_id: &str,
+    answers: Value,
+) -> anyhow::Result<Value> {
+    if job_id.trim().is_empty() || request_id.trim().is_empty() {
+        anyhow::bail!("Dispatch question answer requires jobId and requestId");
+    }
+    let record = load_device_record(store, job_id).await?;
+    let DispatchTarget::Device { device_id, .. } = &record.target else {
+        unreachable!("load_device_record validates target kind")
+    };
+    rpc.invoke(
+        device_id,
+        "dispatch_target_answer",
+        json!({
+            "jobId": job_id,
+            "requestId": request_id,
+            "answers": answers,
+        }),
+    )
+    .await
+}
+
+/// Read status with `summaryOnly: true` when the target advertises
+/// `status_summary_only_v1`, falling back cleanly to ordinary status.
+pub async fn status_device_summary(
+    rpc: &dyn DeviceDispatchRpc,
+    store: &OutboundDispatchStore,
+    job_id: &str,
+) -> anyhow::Result<Value> {
+    use openbitfun_services_core::dispatch_contract::DISPATCH_STATUS_SUMMARY_ONLY_CAPABILITY;
+    let record = load_device_record(store, job_id).await?;
+    let DispatchTarget::Device { device_id, .. } = &record.target else {
+        unreachable!("load_device_record validates target kind")
+    };
+    let protocol = rpc
+        .invoke(device_id, "dispatch_target_probe", json!({}))
+        .await
+        .ok();
+    let summary_only = protocol
+        .as_ref()
+        .is_some_and(|p| protocol_has_capability(p, DISPATCH_STATUS_SUMMARY_ONLY_CAPABILITY));
+    let args = if summary_only {
+        json!({ "jobId": job_id, "cursor": record.last_cursor, "summaryOnly": true })
+    } else {
+        json!({ "jobId": job_id, "cursor": record.last_cursor })
+    };
+    let response = rpc
+        .invoke(device_id, "dispatch_target_status", args)
+        .await
+        .map_err(|error| super::classify_target_status_error(job_id, error))?;
+    let state = response
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or(record.last_state.as_str())
+        .to_string();
+    store
+        .update_progress(&record.job_id, record.last_cursor, state)
+        .await?;
+    Ok(response)
+}
+
+/// Push a finished account-device dispatch job's branch to its Git remote
+/// (`workspace_publish_v1`).
+pub async fn publish_device_branch(
+    rpc: &dyn DeviceDispatchRpc,
+    store: &OutboundDispatchStore,
+    job_id: &str,
+    remote: Option<&str>,
+) -> anyhow::Result<Value> {
+    use openbitfun_services_core::dispatch_contract::{
+        DISPATCH_TARGET_PUBLISH_COMMAND, DISPATCH_WORKSPACE_PUBLISH_CAPABILITY,
+    };
+    let record = load_device_record(store, job_id).await?;
+    let DispatchTarget::Device { device_id, .. } = &record.target else {
+        unreachable!("load_device_record validates target kind")
+    };
+    let protocol = rpc
+        .invoke(device_id, "dispatch_target_probe", json!({}))
+        .await?;
+    if !protocol_has_capability(&protocol, DISPATCH_WORKSPACE_PUBLISH_CAPABILITY) {
+        anyhow::bail!(
+            "Target device does not advertise {DISPATCH_WORKSPACE_PUBLISH_CAPABILITY}; update its OpenBitFun CLI or sync the result locally first"
+        );
+    }
+    let mut payload = json!({
+        "protocolVersion": DISPATCH_PROTOCOL_VERSION,
+        "jobId": job_id,
+    });
+    if let Some(remote) = remote.map(str::trim).filter(|value| !value.is_empty()) {
+        payload["remote"] = Value::String(remote.to_string());
+    }
+    rpc.invoke(device_id, DISPATCH_TARGET_PUBLISH_COMMAND, payload)
+        .await
 }
 
 pub async fn submit_device(

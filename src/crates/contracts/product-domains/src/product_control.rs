@@ -79,6 +79,12 @@ impl ProductControlAction {
 #[serde(rename_all = "camelCase")]
 pub struct ProductControlRequest {
     pub action: ProductControlAction,
+    /// Optional target runtime device selector (`"self"`, `"local"`, device ID,
+    /// `device:<id>`, or exact device name/alias). Omitted or `"self"` executes
+    /// on this host; any other selector routes `get`/`configure`/`execute` to
+    /// that peer device via `fleet_call(target, "product_control_invoke", ...)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1154,6 +1160,7 @@ mod tests {
     fn request(action: ProductControlAction, query: Option<&str>) -> ProductControlRequest {
         ProductControlRequest {
             action,
+            target: None,
             query: query.map(str::to_string),
             capability_id: None,
             item_id: None,

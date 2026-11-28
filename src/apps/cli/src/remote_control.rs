@@ -19,6 +19,12 @@ use openbitfun_core::service::remote_connect::{
 use openbitfun_product_domains::detached_dispatch_control::{
     DetachedDispatchControlRequest, DETACHED_DISPATCH_CONTROL_PROVIDER,
 };
+use openbitfun_product_domains::fleet_control::{
+    FleetControlRequest, FLEET_CONTROL_CAPABILITY, FLEET_CONTROL_PROVIDER,
+};
+use openbitfun_product_domains::product_capability_ops::{
+    is_capability_op_provider, lookup_capability_op, ProductCapabilityOpRequest,
+};
 use openbitfun_product_domains::product_control::{
     capability, discover, validate_operation_arguments, ProductCapabilityOperationHandler,
     ProductControlAction, ProductControlDeliveryProfile, ProductControlFuture, ProductControlPort,
@@ -210,6 +216,26 @@ struct CliProductControlPort {
     dispatch_worker: bool,
 }
 
+struct CliCommandDispatcher;
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::product_control_providers::LocalCommandDispatcher
+    for CliCommandDispatcher
+{
+    async fn invoke(&self, command: &str, args: Value) -> Result<Value, String> {
+        crate::peer_host::handle_obp_call(command, args).await
+    }
+}
+
+fn targets_remote_device(target: Option<&str>) -> bool {
+    target
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| {
+            !value.eq_ignore_ascii_case("self") && !value.eq_ignore_ascii_case("local")
+        })
+}
+
 impl ProductControlPort for CliProductControlPort {
     fn invoke<'a>(&'a self, request: ProductControlRequest) -> ProductControlFuture<'a> {
         Box::pin(async move {
@@ -217,6 +243,21 @@ impl ProductControlPort for CliProductControlPort {
                 .runtime
                 .upgrade()
                 .ok_or("CLI product host is unavailable")?;
+            if targets_remote_device(request.target.as_deref()) {
+                if self.dispatch_worker && request.action != ProductControlAction::Get {
+                    return Err(
+                        "product_control_dispatch_worker_readonly: A detached dispatch worker cannot mutate another device"
+                            .into(),
+                    );
+                }
+                let target = request.target.clone();
+                return crate::fleet_host::forward_agent_product_control(
+                    &runtime,
+                    target.as_deref(),
+                    request,
+                )
+                .await;
+            }
             match request.action {
                 ProductControlAction::List | ProductControlAction::Search => discover(&request),
                 ProductControlAction::Get => {
@@ -228,6 +269,49 @@ impl ProductControlPort for CliProductControlPort {
                         .await?
                         .inspect(id, ProductControlDeliveryProfile::Cli)
                         .await?;
+                    let cap = capability(id)?;
+                    let has_shared_ops = cap.operations.iter().any(|operation| {
+                        matches!(
+                            &operation.handler,
+                            ProductCapabilityOperationHandler::Provider { provider_id, .. }
+                                if is_capability_op_provider(provider_id)
+                        )
+                    });
+                    if has_shared_ops {
+                        let worker = self.dispatch_worker;
+                        let mut any_available = false;
+                        result["operationAvailability"] = Value::Object(
+                            cap.operations
+                                .iter()
+                                .map(|operation| {
+                                    let status = match &operation.handler {
+                                        ProductCapabilityOperationHandler::Provider {
+                                            provider_id,
+                                            operation_id,
+                                        } => match lookup_capability_op(provider_id, operation_id) {
+                                            Some((true, _, readonly)) => {
+                                                if worker && !readonly {
+                                                    json!({"status":"unavailable", "reason":"A detached dispatch worker cannot execute mutating product operations"})
+                                                } else {
+                                                    any_available = true;
+                                                    json!({"status":"available", "owner":"cli-host"})
+                                                }
+                                            }
+                                            Some((false, _, _)) => json!({"status":"unavailable", "reason":"This operation requires the Desktop product host"}),
+                                            None => json!({"status":"unavailable", "reason":"CLI has no provider for this operation"}),
+                                        },
+                                        ProductCapabilityOperationHandler::ProductAction { .. } => {
+                                            json!({"status":"unavailable", "reason":"CLI has no live presentation surface"})
+                                        }
+                                    };
+                                    (operation.id.clone(), status)
+                                })
+                                .collect(),
+                        );
+                        if any_available {
+                            result["controlAvailability"] = json!({"status":"available", "adapter":"cli-host", "readBack":true, "actions":{"execute":{"status":"available"}}});
+                        }
+                    }
                     if id == "feature.detached-dispatch" {
                         let worker = self.dispatch_worker;
                         result["operationAvailability"] = Value::Object(
@@ -237,6 +321,27 @@ impl ProductControlPort for CliProductControlPort {
                                 .map(|operation| {
                                     let status = if worker && operation.id == "submit" {
                                         json!({"status":"unavailable", "reason":"A detached dispatch job cannot dispatch further work"})
+                                    } else {
+                                        json!({"status":"available", "owner":"cli-host"})
+                                    };
+                                    (operation.id.clone(), status)
+                                })
+                                .collect(),
+                        );
+                        result["controlAvailability"] = json!({"status":"available", "adapter":"cli-host", "readBack":true, "actions":{"execute":{"status":"available"}}});
+                    }
+                    if id == FLEET_CONTROL_CAPABILITY {
+                        let worker = self.dispatch_worker;
+                        result["operationAvailability"] = Value::Object(
+                            capability(id)?
+                                .operations
+                                .iter()
+                                .map(|operation| {
+                                    let status = if worker
+                                        && operation.risk
+                                            != openbitfun_product_domains::product_control::ProductControlRisk::Read
+                                    {
+                                        json!({"status":"unavailable", "reason":"A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"})
                                     } else {
                                         json!({"status":"available", "owner":"cli-host"})
                                     };
@@ -322,6 +427,40 @@ impl ProductControlPort for CliProductControlPort {
                         .await
                         .map_err(|error| format!("{error:#}"));
                     }
+                    if provider_id == FLEET_CONTROL_PROVIDER {
+                        let command = FleetControlRequest::from_operation(
+                            operation_id,
+                            request.arguments.as_ref(),
+                        )?;
+                        if self.dispatch_worker {
+                            command.ensure_allowed_in_dispatch_worker()?;
+                        }
+                        return crate::fleet_host::execute_agent_fleet_control(&runtime, command)
+                            .await;
+                    }
+                    if is_capability_op_provider(provider_id) {
+                        let command = ProductCapabilityOpRequest::from_provider_operation(
+                            provider_id,
+                            operation_id,
+                            request.arguments.as_ref(),
+                        )?;
+                        if !command.is_cli_available() {
+                            return Err(format!(
+                                "product_control_native_operation_unavailable: '{provider_id}:{operation_id}' requires the Desktop host and is not available on headless CLI"
+                            ));
+                        }
+                        if self.dispatch_worker {
+                            command.ensure_allowed_in_dispatch_worker()?;
+                        }
+                        crate::peer_host::ensure_peer_host_ready(runtime.as_ref())
+                            .await
+                            .map_err(|error| format!("CLI host state is unavailable: {error:#}"))?;
+                        return openbitfun_core::service::product_control_providers::execute_capability_op(
+                            &CliCommandDispatcher,
+                            command,
+                        )
+                        .await;
+                    }
                     if provider_id != REMOTE_CONTROL_PROVIDER {
                         return Err("product_control_native_operation_unavailable: CLI has no provider for this operation".into());
                     }
@@ -341,6 +480,7 @@ impl ProductControlPort for CliProductControlPort {
 #[cfg(test)]
 mod product_control_binding_tests {
     use openbitfun_product_domains::detached_dispatch_control::DETACHED_DISPATCH_CONTROL_PROVIDER;
+    use openbitfun_product_domains::fleet_control::FLEET_CONTROL_PROVIDER;
     use openbitfun_product_domains::product_control::{
         ProductCapabilityOperationHandler, ProductControlDeliveryProfile, ProductControlRegistry,
     };
@@ -352,8 +492,10 @@ mod product_control_binding_tests {
         let catalog = openbitfun_product_domains::product_control::catalog().unwrap();
         for capability in &catalog.capabilities {
             for operation in &capability.operations {
-                let ProductCapabilityOperationHandler::Provider { provider_id, .. } =
-                    &operation.handler
+                let ProductCapabilityOperationHandler::Provider {
+                    provider_id,
+                    operation_id,
+                } = &operation.handler
                 else {
                     continue;
                 };
@@ -363,7 +505,13 @@ mod product_control_binding_tests {
                 if definition.availability[&ProductControlDeliveryProfile::Cli].available {
                     assert!(
                         provider_id == REMOTE_CONTROL_PROVIDER
-                            || provider_id == DETACHED_DISPATCH_CONTROL_PROVIDER,
+                            || provider_id == DETACHED_DISPATCH_CONTROL_PROVIDER
+                            || provider_id == FLEET_CONTROL_PROVIDER
+                            || openbitfun_product_domains::product_capability_ops::lookup_capability_op(
+                                provider_id,
+                                operation_id,
+                            )
+                            .is_some_and(|(cli, _, _)| cli),
                         "CLI-available provider {provider_id} for {}:{} has no CLI binding",
                         capability.id,
                         operation.id

@@ -30,7 +30,7 @@ Install ready-made tools from the Mini App Market, or ask an agent in plain lang
   - List, inspect source, create, update, or delete installed Mini Apps
   - 说明：既能在应用库可视化管理、从本地目录导入，也能在聊天里直接让 AI 创建新应用或无损升级已有应用。
   - Why & how: Manage apps visually or let the agent list, inspect, compile, patch, and remove installed Mini Apps directly.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 浏览小应用市场、查看应用详情与包信息，一键安装或升级版本
+- **智能体可直接控制 / Direct Agent control** · 浏览小应用市场、查看应用详情与包信息，一键安装或升级版本
   - Browse the Mini App Market, inspect listings, and install or update releases
   - 说明：探索社区分享的各类效率与创意应用，查看截图、权限说明与更新日志，有新版本时一键升级。
   - Why & how: Explore community-built tools, check screenshots, permissions, and release notes, and install or update with one click.
@@ -42,7 +42,7 @@ Install ready-made tools from the Mini App Market, or ask an agent in plain lang
   - Grant scoped folder or workspace access and review permission diffs before applying
   - 说明：小应用默认受沙盒约束，只有经过你点头授权的路径或工作区才能读写；草稿若新增了权限要求会高亮提醒你审查。
   - Why & how: Mini Apps stay sandboxed by default—grant access only to chosen paths or workspaces, and review clear diffs whenever a draft requests new permissions.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 运行小应用前端与后台 Worker、自动安装依赖并管理运行状态
+- **智能体可直接控制 / Direct Agent control** · 运行小应用前端与后台 Worker、自动安装依赖并管理运行状态
   - Run Mini App UI and background Workers, manage dependencies, and stop workers
   - 说明：不仅能画前端界面，还支持运行后台 Worker 处理数据、安装声明的依赖包、从文件同步重编译或随时停止后台任务。
   - Why & how: Beyond static UI, Mini Apps can run background JS Workers, install declared dependencies, recompile on sync, and stop workers cleanly.
@@ -101,6 +101,9 @@ Install ready-made tools from the Mini App Market, or ask an agent in plain lang
 | 创建小应用 / Create a MiniApp | 直接提交名称和源码，编译并保存到客户端；无需源码仓库或构建工具。 | Compile and install a name and source directly in the client, without a repository or build tools. |
 | 修改小应用 / Update a MiniApp | 按应用 ID 修改指定字段，保留未提供的源码和用户数据，通知已打开的应用刷新。expectedVersion 可防止覆盖新的修改。 | Patch specified fields by app ID, preserve omitted source and user data, and notify open runtimes. expectedVersion guards against stale edits. |
 | 删除小应用 / Delete a MiniApp | 按应用 ID 停止后台任务并删除应用；仅在用户明确要求删除时使用。 | Stop the worker and delete an installed app by ID, only on an explicit deletion request. |
+| 浏览或搜索 MiniApp 市场 / Browse MiniApp marketplace | 按关键词或分类检索市场中可安装的 MiniApp 列表。 | Browse or search installable MiniApps in the marketplace. |
+| 从市场安装 MiniApp / Install MiniApp from marketplace | 按 slug 与 releaseNumber 安装或更新市场中的 MiniApp。 | Install or update a marketplace MiniApp by slug and releaseNumber. |
+| 直接调用 MiniApp 后台 Worker / Call MiniApp worker method | 直接向指定 MiniApp 的后台 Worker 发起 RPC 方法调用并获取结果。 | Invoke an RPC method on a MiniApp’s background worker directly. |
 
 ## 可配置选项 / Configurable options
 

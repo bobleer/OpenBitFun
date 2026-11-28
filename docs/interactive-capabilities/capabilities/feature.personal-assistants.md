@@ -26,7 +26,7 @@ Create long-lived AI companions with their own workspace, memory, and Markdown p
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在助理空间一览全部个人助理、查看人设与能力摘要，并一键创建新助理
+- **智能体可直接控制 / Direct Agent control** · 在助理空间一览全部个人助理、查看人设与能力摘要，并一键创建新助理
   - Browse all your personal assistants, review their persona and capability summaries, and create new ones in one click
   - 说明：新创建的助理会自动使用开箱即用的默认模板初始化，随后你可以按喜好慢慢雕琢它的名字、头像与性格。
   - Why & how: New assistants spin up instantly with sensible defaults so you can start chatting right away or customize their identity whenever you like.
@@ -34,11 +34,11 @@ Create long-lived AI companions with their own workspace, memory, and Markdown p
   - Hide inactive assistants from the sidebar while keeping their persona and history intact, and reopen them anytime
   - 说明：在侧边栏关闭助理只会停下正在运行的轮次并收起分组，所有人设文档与历史对话都安全保存在助理空间中。
   - Why & how: Closing an assistant in the sidebar cancels any in-flight turn and declutters your list without deleting its persona files or past sessions.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 将最常用的伙伴设为「主助理」、删除不再需要的副助理，或一键重置为初始状态
+- **智能体可直接控制 / Direct Agent control** · 将最常用的伙伴设为「主助理」、删除不再需要的副助理，或一键重置为初始状态
   - Designate your Primary Assistant, remove extra assistants, or reset an assistant workspace back to defaults
   - 说明：设为主助理后，新建助理会话与手机远控都会优先使用它；主助理受保护不可直接误删，如需重来可先切换主助理或使用重置。
   - Why & how: Your Primary Assistant becomes the default companion for quick assistant chats; non-primary assistants can be deleted, and any assistant can be reset to clean defaults.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 定制助理昵称、角色设定与说话气质，并挑选官方插画头像、Emoji 或自定义字符
+- **智能体可直接控制 / Direct Agent control** · 定制助理昵称、角色设定与说话气质，并挑选官方插画头像、Emoji 或自定义字符
   - Edit an assistant’s name, role archetype, and conversational vibe, and pick a preset avatar, emoji, or custom glyph
   - 说明：给每个助理起个好记的名字、配上辨识度高的头像，在侧边栏和标签栏里一眼就能认出正在和谁对话。
   - Why & how: Give each companion a memorable name, vibe, and distinct avatar so you can tell them apart instantly in the sidebar and session tabs.
@@ -72,7 +72,12 @@ Create long-lived AI companions with their own workspace, memory, and Markdown p
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 列出所有个人助理工作区 / List personal assistants | 列出全部个人助理工作区及其当前主助理标记。 | List all personal assistant workspaces and the primary assistant. |
+| 新建个人助理 / Create personal assistant | 创建新的独立个人助理工作区与持久化记忆空间。 | Create a new persistent personal assistant workspace. |
+| 设置个人助理身份与人设 / Update assistant identity | 修改指定个人助理的名称、角色、风格或头像表情。 | Update a personal assistant’s name, role, creature, vibe, or emoji. |
+| 设为主个人助理 / Set primary assistant | 将指定个人助理设为默认主助理。 | Mark a personal assistant workspace as primary. |
+| 重置个人助理工作区 / Reset personal assistant | 重置指定个人助理的默认文件与状态。 | Reset a personal assistant workspace to its default state. |
+| 删除个人助理 / Delete personal assistant | 永久删除指定个人助理工作区。 | Delete a personal assistant workspace. |
 
 ## 可配置选项 / Configurable options
 

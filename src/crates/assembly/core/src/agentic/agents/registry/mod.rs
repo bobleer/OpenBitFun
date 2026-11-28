@@ -139,6 +139,16 @@ impl AgentRegistry {
                 }
             }
         }
+        // Upgrade compatibility: persisted pre-removal Cowork sessions keep
+        // running transparently on the built-in Standard harness without
+        // re-exposing Cowork as a selectable mode.
+        if agent_type.trim().eq_ignore_ascii_case("cowork") {
+            if let Some(entry) = self.read_agents().get("Standard").cloned() {
+                if entry.source == types::AgentSource::Builtin {
+                    return Some(entry);
+                }
+            }
+        }
         let canonical = canonical_review_worker_agent_type(agent_type);
         (canonical != agent_type)
             .then(|| self.read_agents().get(canonical).cloned())

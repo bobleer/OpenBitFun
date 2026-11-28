@@ -31,7 +31,7 @@ const ExamplePlugin: Plugin = async (input) => {
       }
       config.agent = {
         ...(config.agent ?? {}),
-        Cowork: {
+        Standard: {
           mode: "primary",
           description: "Demo agent for exercising the OpenBitFun OpenCode plugin bridge",
           prompt: "Use the openbitfun_demo_echo tool when the user asks you to echo text.",

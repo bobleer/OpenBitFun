@@ -4,7 +4,6 @@ use crate::agents::{resolve_mode_config_profile_id, STANDARD_HARNESS_CONFIG_ID};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillModeId {
     CodingShared,
-    Cowork,
     Claw,
     Creative,
     ComputerUse,
@@ -18,7 +17,6 @@ impl SkillModeId {
     fn parse(mode_id: &str) -> Self {
         match mode_id.trim() {
             STANDARD_HARNESS_CONFIG_ID => Self::CodingShared,
-            "Cowork" => Self::Cowork,
             "Claw" => Self::Claw,
             "Creative" => Self::Creative,
             "ComputerUse" => Self::ComputerUse,
@@ -80,17 +78,22 @@ const DISABLE_DEBUGGING: SkillPolicyRule = SkillPolicyRule {
     effect: PolicyEffect::Disable,
 };
 
-// ControlHub's browser domain is the default browser-automation path for modes
-// that carry it. Ultra and SwarmWorker do not, so their narrow policies below
-// expose agent-browser instead.
-const DISABLE_COMPUTER_USE: SkillPolicyRule = SkillPolicyRule {
-    selector: SkillSelector::Group(BuiltinSkillGroup::ComputerUse),
+const DISABLE_COORDINATION: SkillPolicyRule = SkillPolicyRule {
+    selector: SkillSelector::Group(BuiltinSkillGroup::Coordination),
     effect: PolicyEffect::Disable,
 };
 
-const ENABLE_OFFICE: SkillPolicyRule = SkillPolicyRule {
-    selector: SkillSelector::Group(BuiltinSkillGroup::Office),
-    effect: PolicyEffect::Enable,
+const DISABLE_COMMIT_PUSH_PR: SkillPolicyRule = SkillPolicyRule {
+    selector: SkillSelector::DirName("commit-push-pr"),
+    effect: PolicyEffect::Disable,
+};
+
+// ControlHub's browser domain is the default browser-automation path for modes
+// that carry it. SwarmWorker does not, so its narrow policy below exposes
+// agent-browser instead.
+const DISABLE_COMPUTER_USE: SkillPolicyRule = SkillPolicyRule {
+    selector: SkillSelector::Group(BuiltinSkillGroup::ComputerUse),
+    effect: PolicyEffect::Disable,
 };
 
 const ENABLE_META: SkillPolicyRule = SkillPolicyRule {
@@ -103,18 +106,8 @@ const ENABLE_COORDINATION: SkillPolicyRule = SkillPolicyRule {
     effect: PolicyEffect::Enable,
 };
 
-const ENABLE_PLANNING: SkillPolicyRule = SkillPolicyRule {
-    selector: SkillSelector::Group(BuiltinSkillGroup::Planning),
-    effect: PolicyEffect::Enable,
-};
-
 const ENABLE_AGENT_BROWSER: SkillPolicyRule = SkillPolicyRule {
     selector: SkillSelector::DirName("agent-browser"),
-    effect: PolicyEffect::Enable,
-};
-
-const ENABLE_PLAN: SkillPolicyRule = SkillPolicyRule {
-    selector: SkillSelector::DirName("plan"),
     effect: PolicyEffect::Enable,
 };
 
@@ -136,7 +129,6 @@ const OPEN_META_ONLY_POLICY: ModeSkillPolicy = ModeSkillPolicy {
 const AGENTIC_POLICY: ModeSkillPolicy = ModeSkillPolicy {
     builtin_default: PolicyEffect::Enable,
     rules: &[
-        DISABLE_OFFICE,
         DISABLE_COMPUTER_USE,
         DISABLE_MINIAPP,
         DISABLE_CREATION,
@@ -148,11 +140,11 @@ const AGENTIC_POLICY: ModeSkillPolicy = ModeSkillPolicy {
 const CLAW_POLICY: ModeSkillPolicy = ModeSkillPolicy {
     builtin_default: PolicyEffect::Enable,
     rules: &[
-        DISABLE_OFFICE,
         DISABLE_COMPUTER_USE,
         DISABLE_MINIAPP,
         DISABLE_CREATION,
         DISABLE_DEBUGGING,
+        DISABLE_COMMIT_PUSH_PR,
         ENABLE_GENERATE_IMAGE,
         ENABLE_VISUALIZE,
     ],
@@ -163,26 +155,21 @@ const CREATIVE_POLICY: ModeSkillPolicy = ModeSkillPolicy {
     rules: &[DISABLE_OFFICE, DISABLE_COMPUTER_USE, DISABLE_DEBUGGING],
 };
 
-const COWORK_POLICY: ModeSkillPolicy = ModeSkillPolicy {
-    builtin_default: PolicyEffect::Disable,
-    rules: &[
-        ENABLE_OFFICE,
-        ENABLE_META,
-        ENABLE_COORDINATION,
-        ENABLE_PLANNING,
-        ENABLE_GENERATE_IMAGE,
-        ENABLE_VISUALIZE,
-    ],
-};
-
 const DEEP_RESEARCH_POLICY: ModeSkillPolicy = ModeSkillPolicy {
     builtin_default: PolicyEffect::Disable,
     rules: &[ENABLE_META, ENABLE_COORDINATION, ENABLE_GENERATE_IMAGE],
 };
 
 const ULTRA_POLICY: ModeSkillPolicy = ModeSkillPolicy {
-    builtin_default: PolicyEffect::Disable,
-    rules: &[ENABLE_PLAN, ENABLE_AGENT_BROWSER],
+    builtin_default: PolicyEffect::Enable,
+    rules: &[
+        DISABLE_COORDINATION,
+        DISABLE_COMPUTER_USE,
+        DISABLE_MINIAPP,
+        DISABLE_CREATION,
+        ENABLE_GENERATE_IMAGE,
+        ENABLE_VISUALIZE,
+    ],
 };
 
 const SWARM_WORKER_POLICY: ModeSkillPolicy = ModeSkillPolicy {
@@ -196,7 +183,6 @@ fn policy_for_mode(mode_id: &str) -> ModeSkillPolicy {
         SkillModeId::CodingShared => AGENTIC_POLICY,
         SkillModeId::Claw => CLAW_POLICY,
         SkillModeId::Creative => CREATIVE_POLICY,
-        SkillModeId::Cowork => COWORK_POLICY,
         SkillModeId::DeepResearch => DEEP_RESEARCH_POLICY,
         SkillModeId::Ultra => ULTRA_POLICY,
         SkillModeId::SwarmWorker => SWARM_WORKER_POLICY,
@@ -237,7 +223,7 @@ mod tests {
 
     #[test]
     fn visualize_defaults_to_conversational_workflows() {
-        for mode in ["Standard", "Creative", "Cowork", "Claw"] {
+        for mode in ["Standard", "Ultimate", "Creative", "Claw"] {
             assert_eq!(
                 resolve_builtin_default_enabled("visualize", mode),
                 Some(true)
@@ -253,13 +239,13 @@ mod tests {
 
     #[test]
     fn image_generation_defaults_on_in_main_workflows_and_remains_opt_in_for_specialist_agents() {
-        for mode in ["Standard", "Claw", "Creative", "Cowork", "DeepResearch"] {
+        for mode in ["Standard", "Ultimate", "Claw", "Creative", "DeepResearch"] {
             assert_eq!(
                 resolve_builtin_default_enabled("generate-image", mode),
                 Some(true)
             );
         }
-        for mode in ["Ultimate", "SwarmWorker", "ComputerUse", "SomeUnknownMode"] {
+        for mode in ["SwarmWorker", "ComputerUse", "SomeUnknownMode"] {
             assert_eq!(
                 resolve_builtin_default_enabled("generate-image", mode),
                 Some(false)
@@ -268,13 +254,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_browser_defaults_on_only_for_ultra_and_swarm_worker() {
+    fn agent_browser_defaults_on_only_for_swarm_worker() {
         for mode_id in [
             "Standard",
-            "Standard",
             "Claw",
+            "Ultimate",
             "Creative",
-            "Cowork",
             "ComputerUse",
             "DeepResearch",
             "Team",
@@ -289,13 +274,11 @@ mod tests {
             );
         }
 
-        for mode_id in ["Ultimate", "SwarmWorker"] {
-            assert_eq!(
-                resolve_builtin_default_enabled("agent-browser", mode_id),
-                Some(true),
-                "agent-browser should be available in {mode_id}"
-            );
-        }
+        assert_eq!(
+            resolve_builtin_default_enabled("agent-browser", "SwarmWorker"),
+            Some(true),
+            "agent-browser should be available in SwarmWorker"
+        );
     }
 
     #[test]
@@ -303,14 +286,65 @@ mod tests {
         for spec in BUILTIN_SKILL_SPECS {
             assert_eq!(
                 resolve_builtin_default_enabled(spec.dir_name, "Ultimate"),
-                Some(matches!(spec.dir_name, "plan" | "agent-browser")),
-                "Ultra has unexpected default exposure for {}",
+                Some(matches!(
+                    spec.dir_name,
+                    "plan"
+                        | "debug"
+                        | "commit-push-pr"
+                        | "find-skills"
+                        | "writing-skills"
+                        | "create-agent"
+                        | "generate-image"
+                        | "visualize"
+                        | "ppt-design"
+                )),
+                "Ultimate has unexpected default exposure for {}",
                 spec.dir_name
             );
             assert_eq!(
                 resolve_builtin_default_enabled(spec.dir_name, "SwarmWorker"),
                 Some(spec.dir_name == "agent-browser"),
                 "SwarmWorker has unexpected default exposure for {}",
+                spec.dir_name
+            );
+        }
+    }
+
+    #[test]
+    fn claw_and_standard_expose_expected_builtin_skills_by_default() {
+        for spec in BUILTIN_SKILL_SPECS {
+            assert_eq!(
+                resolve_builtin_default_enabled(spec.dir_name, "Standard"),
+                Some(matches!(
+                    spec.dir_name,
+                    "plan"
+                        | "multitask"
+                        | "debug"
+                        | "commit-push-pr"
+                        | "find-skills"
+                        | "writing-skills"
+                        | "create-agent"
+                        | "generate-image"
+                        | "visualize"
+                        | "ppt-design"
+                )),
+                "Standard has unexpected default exposure for {}",
+                spec.dir_name
+            );
+            assert_eq!(
+                resolve_builtin_default_enabled(spec.dir_name, "Claw"),
+                Some(matches!(
+                    spec.dir_name,
+                    "plan"
+                        | "multitask"
+                        | "find-skills"
+                        | "writing-skills"
+                        | "create-agent"
+                        | "generate-image"
+                        | "visualize"
+                        | "ppt-design"
+                )),
+                "Claw has unexpected default exposure for {}",
                 spec.dir_name
             );
         }
@@ -334,22 +368,20 @@ mod tests {
     }
 
     #[test]
-    fn debug_skill_defaults_on_only_in_agentic() {
-        for mode_id in ["Standard", "Standard"] {
+    fn debug_skill_defaults_on_only_in_coding_modes() {
+        for mode_id in ["Standard", "Ultimate"] {
             assert_eq!(
                 resolve_builtin_default_enabled("debug", mode_id),
                 Some(true),
-                "debug should default on for agentic profile identity {mode_id}"
+                "debug should default on for coding mode {mode_id}"
             );
         }
 
         for mode_id in [
             "Claw",
             "Creative",
-            "Cowork",
             "ComputerUse",
             "DeepResearch",
-            "Ultimate",
             "SwarmWorker",
             "Team",
             "SomeUnknownMode",
@@ -357,21 +389,14 @@ mod tests {
             assert_eq!(
                 resolve_builtin_default_enabled("debug", mode_id),
                 Some(false),
-                "debug should default off outside agentic: {mode_id}"
+                "debug should default off outside Standard/Ultimate: {mode_id}"
             );
         }
     }
 
     #[test]
-    fn multitask_skill_replaces_multitask_mode_in_coding_workflows() {
-        for mode_id in [
-            "Standard",
-            "Standard",
-            "Claw",
-            "Cowork",
-            "Creative",
-            "DeepResearch",
-        ] {
+    fn multitask_skill_replaces_multitask_mode_in_non_swarm_workflows() {
+        for mode_id in ["Standard", "Claw", "Creative", "DeepResearch"] {
             assert_eq!(
                 resolve_builtin_default_enabled("multitask", mode_id),
                 Some(true),
@@ -390,9 +415,7 @@ mod tests {
 
     #[test]
     fn plan_skill_defaults_on_for_planning_capable_workflows() {
-        for mode_id in [
-            "Standard", "Standard", "Claw", "Cowork", "Creative", "Ultimate",
-        ] {
+        for mode_id in ["Standard", "Claw", "Creative", "Ultimate"] {
             assert_eq!(
                 resolve_builtin_default_enabled("plan", mode_id),
                 Some(true),
@@ -421,10 +444,8 @@ mod tests {
         for skill in ["miniapp-dev", "openbitfun-frontend-dev"] {
             for mode_id in [
                 "Standard",
-                "Standard",
                 "Claw",
                 "Creative",
-                "Cowork",
                 "ComputerUse",
                 "DeepResearch",
                 "Ultimate",

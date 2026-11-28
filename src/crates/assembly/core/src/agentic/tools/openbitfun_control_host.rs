@@ -38,6 +38,7 @@ mod tests {
     fn host_request_uses_the_frontend_camel_case_contract() {
         let serialized = serde_json::to_value(OpenBitFunControlHostRequest {
             action: ProductControlAction::Open,
+            target: None,
             query: None,
             capability_id: Some("setting.application.input".to_string()),
             item_id: Some("shortcut-browser".to_string()),

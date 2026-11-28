@@ -19,45 +19,45 @@ Send long-running coding, test, or refactoring jobs from your current Git worksp
 
 - 临近下班要把全量测试修绿：在输入框切到办公室常开主机一键派发，直接合上笔记本去坐地铁，到家打开就能验收改动
   - Heading out for the evening? Dispatch a full test-and-fix run to your always-on office workstation, shut your laptop lid, and review the finished diff from home
-- 本机正在录制演示或跑高负载构建，把另一个耗时的模块迁移任务派发给空闲的 Mac Studio 或远程 Linux 主机并行处理
-  - Keep your primary machine responsive during demos or heavy builds by offloading a parallel module migration to a spare Mac or Linux server
-- 在命令行用 `openbitfun dispatch outbound submit` 批量向远端机器投递巡检或修复任务，随时按 Job ID 查询增量状态
-  - Use `openbitfun dispatch outbound submit` in scripts or terminal workflows to queue durable jobs and poll incremental JSON status by job ID
+- 跨端编译打包：在本机工作区会话中把 Windows 和 Linux 编译任务派发到同账号对应设备，用 wait 等待完工后，直接用 fetch-file 把二进制产物拉回本机目录
+  - Cross-platform builds: dispatch Windows and Linux builds from your Mac session, wait for completion, fix failures with continue, and stream compiled binaries back locally with fetch-file
+- 在命令行用 `openbitfun dispatch outbound submit` / `wait` / `fetch-file` 批量向远端机器投递任务并回收结果
+  - Use `openbitfun dispatch outbound submit`, `wait`, and `fetch-file` in scripts or terminal workflows to orchestrate durable multi-host builds
 
 ## 完整功能清单 / Everything included
 
-- **智能体可直接控制 / Direct Agent control** · 列出同账号下的所有设备与本机已保存的 SSH 目标
-  - List same-account devices and saved SSH dispatch targets
-  - 说明：一次看清哪些同账号电脑当前在线（含系统与机型信息）以及哪些 SSH 主机可直接投递任务。
-  - Why & how: See every device on your account—with live online status, OS, and model info—alongside saved SSH hosts ready to accept jobs.
+- **智能体可直接控制 / Direct Agent control** · 列出并探测同账号下的所有设备与本机已保存的 SSH 目标
+  - List and probe same-account devices and saved SSH dispatch targets
+  - 说明：一次看清哪些同账号电脑当前在线（含系统与机型信息），并在派发前探测目标机的系统架构、CLI 就绪度与支持的能力位。
+  - Why & how: See every device on your account alongside saved SSH hosts, and probe a target's OS, arch, CLI readiness, and advertised capabilities before submitting.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在派发前按需将任务所选的模型配置同步给目标主机
   - Sync required model configuration to the target before job submission
   - 说明：确保远端机器拥有执行本次任务所需的模型通道配置，避免任务启动后才发现远端没配模型。
   - Why & how: Ensure the target host has the model configuration needed for your task before the run begins.
-- **智能体可直接控制 / Direct Agent control** · 从当前 Git 工作区向设备或 SSH 目标提交可离线运行的持久任务
-  - Submit a durable Git-worktree job to a same-account device or SSH target
-  - 说明：基于当前仓库基准提交在目标机创建隔离 Worktree 启动任务，明确指定审批策略后即可放心断线。
-  - Why & how: Branch an isolated Git worktree from your current base ref on the target host, set an explicit approval policy, and let the job run unattended.
-- **智能体可直接控制 / Direct Agent control** · 查看本机或目标机持有的派发任务列表、实时进度与错误详情
-  - List dispatched jobs and inspect live status, incremental events, and errors
-  - 说明：既能查本机投递出去的所有任务，也能直接询问目标机器当前正在跑哪些任务及其最新增量输出。
-  - Why & how: Check all jobs submitted from this machine or query a target directly for the jobs it owns, including cursor-based event updates.
+- **智能体可直接控制 / Direct Agent control** · 从本机 Git 工作区或目标端来源向设备或 SSH 目标提交可离线运行的持久任务
+  - Submit a durable job to a same-account device or SSH target from a local Git checkout or target source
+  - 说明：既可从本机仓库基准提交创建目标隔离 Worktree，也可直接基于目标机已有工作区、Git 远端或另一台设备的任务分支派发。
+  - Why & how: Branch an isolated Git worktree from a local checkout or provision directly from a target workspace, Git remote, or peer job branch, and let it run unattended.
+- **智能体可直接控制 / Direct Agent control** · 查看、等待并汇总派发任务列表、实时进度与结构化结果
+  - List, wait on, and summarize dispatched jobs with live status and diff stats
+  - 说明：查本机或目标机的任务列表、阻塞等待多个并行任务状态变化或完工，并获取包含提交数、diff 统计与最终回复的结构化摘要。
+  - Why & how: Inspect outbound or target-owned jobs, wait on multiple parallel jobs until blocked or finished, and fetch compact structured result summaries.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 断线重连后自动保存、追加并完整恢复任务对话记录
   - Save, append, and reload reconnectable job execution transcripts
   - 说明：控制端关机或切网期间产生的每一轮思考与工具输出都会由目标端持久记录，重连后无缝回填到会话界面。
   - Why & how: Every model turn and tool output produced while you were offline stays persisted on the target and streams back cleanly when you reopen the session.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 远程批复目标端等待中的权限请求并继续推进任务
-  - Answer pending target-side permission requests remotely and continue work
-  - 说明：当远程任务遇到需要人工确认的高风险命令时，会在权限信箱中挂起等待，你在本机点一下允许即可让远端接着往下跑。
-  - Why & how: When a remote job pauses on a guarded action in Remote approval mode, review and approve it from your controller to resume execution immediately.
+- **智能体可直接控制 / Direct Agent control** · 远程批复目标端权限或追问、纠偏运行中任务并继续下一轮
+  - Answer target permissions/questions, steer active jobs, and queue follow-up turns
+  - 说明：对等待中的权限请求或问题直接远程回复，向运行中任务追加纠偏指令，或在任务完成后复用同一 Worktree 继续下一轮修复。
+  - Why & how: Resolve pending permission requests or user questions remotely, steer a running turn with append, or continue a finished job in the same session and worktree.
 - **智能体可直接控制 / Direct Agent control** · 随时远程取消本机派发的正在运行任务
   - Cancel an active dispatch job submitted from this host
   - 说明：发现方向不对或不再需要时一键叫停，目标端会安全终止进程并保留已产生的执行记录供排查。
   - Why & how: Stop a dispatched run cleanly whenever plans change—the target halts execution while keeping the recorded history intact.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 将目标机完成的代码改动安全同步回本机工作区
-  - Sync completed target-side code changes back to your local workspace
-  - 说明：目标机全程在自己的本地磁盘高速编译读写，完工后再按需把分支或改动同步回你的电脑审阅合并。
-  - Why & how: Let the target machine compile and edit at full native disk speed, then bring the resulting changes back to your local repo when ready.
+- **智能体可直接控制 / Direct Agent control** · 同步目标端 Git 改动回本机、流式拉取编译产物或推送任务分支
+  - Sync Git changes locally, stream binary artifacts back, or publish job branches
+  - 说明：将目标机代码提交快速同步回本机 baseline worktree，流式分块拉取任意构建二进制/产物到本机路径并校验 SHA-256，或直接推送任务分支到远端 Git。
+  - Why & how: Fast-forward target Git commits back to your local baseline worktree, stream compiled binaries or job artifacts to a local path with SHA-256 verification, or push finished branches to a Git remote.
 
 ## 怎么用 / How to use it
 
@@ -77,8 +77,17 @@ Send long-running coding, test, or refactoring jobs from your current Git worksp
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
 | 列出派发目标 / List dispatch targets | 读取同账户下所有 OpenBitFun 设备（含本机，带 isCurrentDevice 标记、在线状态、型号与系统）以及本机已保存的 SSH 连接。回答“有几台设备”或派发前先调用；未登录账户时 devices 为空并说明原因。 | Read every OpenBitFun device on this account (including this one, marked isCurrentDevice, with online state, model and OS) plus this host's saved SSH connections. Call it before stating how many devices exist or before submitting; when signed out, devices is empty with a reason. |
-| 派发任务 / Submit a dispatch job | 把任务提交到另一台同账户设备（名称、别名或 device:<id>）或 SSH 目标（ssh:<connectionId>）。目标在自己的 Git worktree 中从 baseRef（默认 HEAD）开始执行，本机可以断开。仅在用户明确要求派发时调用，并明确选择 approvalPolicy；离线设备直接报错，不会在本机执行。 | Submit work to another same-account device (name, alias, or device:<id>) or SSH target (ssh:<connectionId>). The target runs in its own Git worktree branched from baseRef (default HEAD) and this host may disconnect. Call only when the user asked to dispatch, and choose approvalPolicy explicitly; an offline device is an error, never a local run. |
-| 查询派发任务 / Read dispatch job status | 按 jobId 读取本机派发任务的状态与增量事件；cursor 传上次返回值以只取新事件。 | Read state and incremental events of a job submitted from this host; pass the previous cursor to read only new events. |
+| 探测派发目标 / Probe a dispatch target | 在派发前探测目标设备或 SSH 主机的操作系统、架构、CLI 安装状态及能力位（如 query_file_chunks_v1、workspace_target_source_v1、workspace_publish_v1）。 | Probe a target device or SSH host before submitting to inspect its OS, architecture, CLI readiness, and advertised capabilities. |
+| 派发任务 / Submit a dispatch job | 把任务提交到另一台同账户设备（名称、别名或 device:<id>）或 SSH 目标（ssh:<connectionId>）。可传本机 Git workspacePath 或目标端 source（workspace/remote/job）。明确选择 approvalPolicy（auto/reject-and-report/remote）；离线设备直接报错，不会在本机兜底。 | Submit work to another same-account device (name, alias, or device:<id>) or SSH target (ssh:<connectionId>). Supply either a local Git workspacePath or a target-resolved source (workspace/remote/job) and an explicit approvalPolicy; offline devices fail loudly without local fallback. |
+| 查询派发任务 / Read dispatch job status | 按 jobId 读取本机派发任务的状态、待批复权限/追问与增量事件；cursor 传上次返回值，或设 summaryOnly: true 仅查状态摘要。 | Read state, pending prompts, and incremental events of a job submitted from this host; pass the previous cursor or set summaryOnly: true for a compact status check. |
+| 等待派发任务 / Wait for dispatch jobs | 阻塞等待一个或多个 jobId 达到状态变化、阻塞等待确认、任一完工或全部完工，替代高频轮询 status。 | Wait for one or more job IDs until state_change, any_blocked, any_terminal, or all_terminal (or timeoutSeconds), avoiding repetitive status polling. |
+| 获取任务结果摘要 / Read dispatch result summary | 读取指定任务的结构化结果摘要（状态、分支、提交数、git diff --numstat 及裁剪后的最终回复）。 | Fetch a structured result summary for a job: state, branch, commit counts, git diff --numstat, and bounded final reply. |
+| 继续下一轮任务 / Continue a finished dispatch job | 向已结束的派发任务发送下一轮指令，复用目标端同一个会话上下文与 Git worktree 继续修复或构建。 | Queue a follow-up turn on a finished dispatch job, reusing its target session context and Git worktree. |
+| 纠偏运行中任务 / Steer an active dispatch job | 向正在运行的派发任务追加一条纠偏或补充消息。 | Append a steering message to a currently running dispatch job. |
+| 回复派发任务权限或问题 / Answer a dispatch prompt or question | 远程回复目标任务挂起的权限请求（reply: once/always/reject）或用户追问（answers）。 | Answer a pending permission request (reply) or user question (answers) on a dispatch job. |
+| 同步派发代码结果 / Sync dispatch Git result locally | 将目标机任务分支上的 Git 可见改动打包同步回本机 baseline worktree，并返回本机 worktree 路径与最新 commit。 | Fetch and fast-forward target Git changes back into this controller's baseline worktree and return baselineWorktreePath and syncedHeadCommit. |
+| 流式拉取任务文件或二进制产物 / Stream a job file or binary artifact locally | 通过 query_file_chunks_v1 从目标任务工作区或输出目录流式分块下载文件（含编译产出的二进制）到本机绝对路径 localPath，并做 revision 一致性与 SHA-256 校验。 | Stream any file (including compiled binaries) from a dispatch job's workspace or output directory directly to an absolute localPath on this host with revision and SHA-256 verification. |
+| 推送任务分支到远端仓库 / Publish a dispatch job branch | 将已完成的同账号设备任务分支推送到目标仓库的 Git remote（非强推，需目标支持 workspace_publish_v1）。 | Push a finished account-device job branch to its Git remote without force (requires workspace_publish_v1). |
 | 列出派发任务 / List dispatch jobs | 不带 target 时列出本机提交过的任务；带 target 时直接询问该目标正在持有的任务。 | Without target, list jobs submitted from this host; with target, ask that target for the jobs it owns. |
 | 取消派发任务 / Cancel a dispatch job | 取消本机提交的指定任务；目标端停止执行并保留记录。 | Cancel a job submitted from this host; the target stops it and keeps its record. |
 
@@ -103,12 +112,12 @@ Send long-running coding, test, or refactoring jobs from your current Git worksp
 
 - 目标离线会明确报错：当指定设备不在线时，OpenBitFun 会立即提示不可达，绝不会静默改在本机偷偷运行。
   - Explicit offline errors: if the chosen target is offline, OpenBitFun fails clearly instead of silently running the job on your local machine.
-- 提示词尽量一次说清：后台派发运行在无交互宿主上，不支持中途弹出多选追问（AskUserQuestion），把约束和偏好写在开头最稳妥。
-  - Front-load key decisions: headless dispatch jobs disable interactive AskUserQuestion prompts, so include branch, scope, and constraints right in your prompt.
-- 防无限套娃保护：已经由远程派发启动的任务可以查询状态，但不会再次向外层层派发新任务。
-  - No nested fan-out loops: a running dispatch worker can report status cleanly but is prevented from recursively dispatching further jobs.
+- 二进制产物用 fetch-file，源码改动用 sync-result：sync-result 只同步 Git 跟踪文件，编译产物应直接通过 fetch-file 流式拉回。
+  - Use fetch-file for compiled binaries and sync-result for Git changes: sync-result only bundles Git-visible commits, while fetch-file streams arbitrary workspace artifacts.
+- 防无限套娃保护：已经由远程派发启动的任务可以查询状态和拉取产物，但不会再次向外层层派发新任务。
+  - No nested fan-out loops: a running dispatch worker can observe jobs cleanly but is prevented from recursively dispatching further jobs.
 
-关联条目 / Related: `feature.remote-connect`, `feature.remote-workspaces`, `feature.git`
+关联条目 / Related: `feature.fleet`, `feature.remote-connect`, `feature.remote-workspaces`, `feature.git`
 
 智能体会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
 

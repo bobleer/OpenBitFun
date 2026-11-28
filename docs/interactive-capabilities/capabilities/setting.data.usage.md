@@ -26,7 +26,7 @@ Review your local AI usage through an activity heatmap, summary cards, Input + O
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 通过顶部使用活跃度热力图回顾每日 AI 协作密度
+- **智能体可直接控制 / Direct Agent control** · 通过顶部使用活跃度热力图回顾每日 AI 协作密度
   - Review daily AI collaboration intensity on the top Activity Heatmap
   - 说明：在调用统计页顶部按日历网格展示长期调用活跃度，哪几天高强度编码冲刺、哪几天空闲一目了然。
   - Why & how: Displays a calendar-style heatmap at the top of Call Statistics so you can spot high-intensity coding streaks and usage patterns over time.
@@ -38,7 +38,7 @@ Review your local AI usage through an activity heatmap, summary cards, Input + O
   - Automatically match hourly or daily trend granularity to the selected time range
   - 说明：查看“最近 24 小时”与“今天”时趋势图自动按小时聚合；切换到“本周、本月、全部时间”时自动改为按天聚合，省去手动来回切换。
   - Why & how: Last 24 Hours and Today automatically plot hourly buckets, while This Week, This Month, and All Time automatically aggregate by day.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看总 Token、输入/输出 Token、请求次数以及缓存 Token 与缓存命中率
+- **智能体可直接控制 / Direct Agent control** · 查看总 Token、输入/输出 Token、请求次数以及缓存 Token 与缓存命中率
   - Inspect total tokens, input/output tokens, request count, cached tokens, and cache-hit rate
   - 说明：顶部主卡片直观汇总总消耗、输入输出结构与请求数，并在详情区列出缓存命中率与缓存读取 Token，帮你判断长上下文复用效果。
   - Why & how: Top cards summarize total tokens, input/output split, and total requests, while the details section surfaces Cached Tokens and Cache Hit Rate.
@@ -70,7 +70,8 @@ Review your local AI usage through an activity heatmap, summary cards, Input + O
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 打开对应界面 / Open the UI | 进入 OpenBitFun 中对应的功能界面。 | Open the matching feature in OpenBitFun. |
+| 查询 Token 用量与成本分布统计 / Query token usage statistics | 按时间范围、模型与工作区统计 Token 消耗与缓存命中情况。 | Query token usage, cache hits, and per-model/workspace breakdowns. |
+| 查询每日活跃热力图与连续天数 / Query activity heatmap | 获取按时区归日的活跃度热力图与连续活跃天数。 | Query the day-keyed activity heatmap and streak statistics. |
 
 ## 可配置选项 / Configurable options
 

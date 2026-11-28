@@ -929,6 +929,7 @@ mod tests {
         let typed = executor
             .configure(&ProductControlRequest {
                 action: ProductControlAction::Configure,
+                target: None,
                 query: None,
                 capability_id: Some("setting.tools.execution".to_string()),
                 item_id: None,

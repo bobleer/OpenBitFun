@@ -1,5 +1,5 @@
 {
-  "digest": "3ed78c6ff3e1a9cdd54af58d888ee083cfdd4ab2b2a16f56f1270290a8a2b1f8",
+  "digest": "0baa7e0a981143fcddb900c7e0a7162ce6f567fc78d247927ac722e24cd6095e",
   "capabilities": [
     {
       "id": "feature.home-search",
@@ -87,8 +87,8 @@
       "kind": "feature",
       "titleZh": "AI 会话与多模式协作",
       "titleEn": "AI sessions & multi-mode collaboration",
-      "summaryZh": "围绕项目开展持久对话：按任务挑选「标准 / 极致 / 办公协作 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，用 @ 挂载文件与历史会话、用 /goal 持续推进目标，还能直接生成图片与 Office 文档。",
-      "summaryEn": "Collaborate in durable project sessions: switch between Standard, Ultimate, Cowork, Deep Research, Paper Writing, Computer Use, or Creative modes, attach files and past sessions with @, drive multi-turn goals with /goal, and generate images or Office files.",
+      "summaryZh": "围绕项目开展持久对话：按任务挑选「标准 / 极致 / 深度研究 / 论文写作 / 电脑操作 / 创造」等模式，用 @ 挂载文件与历史会话、用 /goal 持续推进目标，还能直接生成图片与 Office 文档。",
+      "summaryEn": "Collaborate in durable project sessions: switch between Standard, Ultimate, Deep Research, Paper Writing, Computer Use, or Creative modes, attach files and past sessions with @, drive multi-turn goals with /goal, and generate images or Office files.",
       "searchTerms": [
         "feature.ai-assistant",
         "AI 会话与多模式协作",
@@ -106,7 +106,6 @@
         "前端定制",
         "标准模式",
         "极致模式",
-        "办公协作",
         "深度研究",
         "论文写作",
         "电脑操作",
@@ -126,17 +125,16 @@
         "frontend customization",
         "Standard mode",
         "Ultimate mode",
-        "Cowork",
         "Deep Research",
         "Paper Writing",
         "Computer Use",
         "annotations",
         "side question",
-        "内置「标准、极致、极简、办公协作、深度研究、论文写作、电脑操作、创造、助理」等模式，各司其职",
+        "内置「标准、极致、极简、深度研究、论文写作、电脑操作、创造、助理」等模式，各司其职",
         "输入框键入 @ 即可联合引用文件、目录、历史会话、Skills、MCP 与图片；键入 / 触发 /goal、/btw、/compact、/init",
         "运行中随时插话引导（Steer）或排队追加消息；选中任意回复文字可批量「添加批注」或发起不跑题的「侧边提问」",
         "原生支持生成图片与免安装 Office 读写 Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）",
-        "Built-in modes tailored to every job: Standard, Ultimate, Minimal, Cowork, Deep Research, Paper Writing, Computer Use, Creative, and Assistant",
+        "Built-in modes tailored to every job: Standard, Ultimate, Minimal, Deep Research, Paper Writing, Computer Use, Creative, and Assistant",
         "Type @ to attach files, folders, past sessions, Skills, MCP servers, or images; type / for /goal, /btw, /compact, and /init",
         "Steer or queue follow-ups mid-run, or highlight any reply text to batch-submit numbered annotations or ask a side question",
         "Generate images natively and create or revise Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files without Office installed",
@@ -2511,22 +2509,22 @@
         "Disconnect or close your laptop freely while the target works in an isolated Git worktree",
         "Replay missed events incrementally by cursor on reconnect and answer pending permissions remotely",
         "Sync completed changes back cleanly without turning your controller into a fragile file proxy",
-        "列出同账号下的所有设备与本机已保存的 SSH 目标",
-        "List same-account devices and saved SSH dispatch targets",
+        "列出并探测同账号下的所有设备与本机已保存的 SSH 目标",
+        "List and probe same-account devices and saved SSH dispatch targets",
         "在派发前按需将任务所选的模型配置同步给目标主机",
         "Sync required model configuration to the target before job submission",
-        "从当前 Git 工作区向设备或 SSH 目标提交可离线运行的持久任务",
-        "Submit a durable Git-worktree job to a same-account device or SSH target",
-        "查看本机或目标机持有的派发任务列表、实时进度与错误详情",
-        "List dispatched jobs and inspect live status, incremental events, and errors",
+        "从本机 Git 工作区或目标端来源向设备或 SSH 目标提交可离线运行的持久任务",
+        "Submit a durable job to a same-account device or SSH target from a local Git checkout or target source",
+        "查看、等待并汇总派发任务列表、实时进度与结构化结果",
+        "List, wait on, and summarize dispatched jobs with live status and diff stats",
         "断线重连后自动保存、追加并完整恢复任务对话记录",
         "Save, append, and reload reconnectable job execution transcripts",
-        "远程批复目标端等待中的权限请求并继续推进任务",
-        "Answer pending target-side permission requests remotely and continue work",
+        "远程批复目标端权限或追问、纠偏运行中任务并继续下一轮",
+        "Answer target permissions/questions, steer active jobs, and queue follow-up turns",
         "随时远程取消本机派发的正在运行任务",
         "Cancel an active dispatch job submitted from this host",
-        "将目标机完成的代码改动安全同步回本机工作区",
-        "Sync completed target-side code changes back to your local workspace",
+        "同步目标端 Git 改动回本机、流式拉取编译产物或推送任务分支",
+        "Sync Git changes locally, stream binary artifacts back, or publish job branches",
         "帮我看看现在有哪些在线设备和 SSH 主机可以派发任务？",
         "把“跑通集成测试并修复报错”派发到我的办公室 Mac 上运行",
         "查一下刚才派发的任务跑到哪一步了",
@@ -2546,8 +2544,8 @@
       "items": [
         {
           "id": "targets",
-          "titleZh": "列出同账号下的所有设备与本机已保存的 SSH 目标",
-          "titleEn": "List same-account devices and saved SSH dispatch targets"
+          "titleZh": "列出并探测同账号下的所有设备与本机已保存的 SSH 目标",
+          "titleEn": "List and probe same-account devices and saved SSH dispatch targets"
         },
         {
           "id": "model-sync",
@@ -2556,13 +2554,13 @@
         },
         {
           "id": "submit",
-          "titleZh": "从当前 Git 工作区向设备或 SSH 目标提交可离线运行的持久任务",
-          "titleEn": "Submit a durable Git-worktree job to a same-account device or SSH target"
+          "titleZh": "从本机 Git 工作区或目标端来源向设备或 SSH 目标提交可离线运行的持久任务",
+          "titleEn": "Submit a durable job to a same-account device or SSH target from a local Git checkout or target source"
         },
         {
           "id": "status-list",
-          "titleZh": "查看本机或目标机持有的派发任务列表、实时进度与错误详情",
-          "titleEn": "List dispatched jobs and inspect live status, incremental events, and errors"
+          "titleZh": "查看、等待并汇总派发任务列表、实时进度与结构化结果",
+          "titleEn": "List, wait on, and summarize dispatched jobs with live status and diff stats"
         },
         {
           "id": "transcript",
@@ -2571,8 +2569,8 @@
         },
         {
           "id": "permission-continuation",
-          "titleZh": "远程批复目标端等待中的权限请求并继续推进任务",
-          "titleEn": "Answer pending target-side permission requests remotely and continue work"
+          "titleZh": "远程批复目标端权限或追问、纠偏运行中任务并继续下一轮",
+          "titleEn": "Answer target permissions/questions, steer active jobs, and queue follow-up turns"
         },
         {
           "id": "cancel",
@@ -2581,8 +2579,94 @@
         },
         {
           "id": "result-sync",
-          "titleZh": "将目标机完成的代码改动安全同步回本机工作区",
-          "titleEn": "Sync completed target-side code changes back to your local workspace"
+          "titleZh": "同步目标端 Git 改动回本机、流式拉取编译产物或推送任务分支",
+          "titleEn": "Sync Git changes locally, stream binary artifacts back, or publish job branches"
+        }
+      ]
+    },
+    {
+      "id": "feature.fleet",
+      "kind": "feature",
+      "titleZh": "多设备 Fleet 协同",
+      "titleEn": "Multi-Device Fleet Collaboration",
+      "summaryZh": "在同一个输入框里统一调度本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：浏览所有设备的工作区、模型目录与待审批提示，直接跨设备创建、驱动、查看或取消会话，并按需把远端工作区文件拉回本机。",
+      "summaryEn": "Orchestrate this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: browse devices, workspaces, account-wide models, and pending prompts; create, drive, read, or cancel sessions on any host; and pull workspace files locally.",
+      "searchTerms": [
+        "feature.fleet",
+        "多设备 Fleet 协同",
+        "Multi-Device Fleet Collaboration",
+        "连接与发布",
+        "Connect & publish",
+        "Fleet",
+        "多设备协同",
+        "互联互控",
+        "跨设备会话",
+        "分布式运行时",
+        "OpenBitFun Link",
+        "设备列表",
+        "跨设备拉取文件",
+        "跨设备模型",
+        "fleet",
+        "multi-device",
+        "distributed runtime",
+        "cross-device session",
+        "openbitfun link",
+        "device mesh",
+        "pull remote file",
+        "fleet models",
+        "fleet prompts",
+        "本机（self）与同账号所有在线设备对称建模，跨会话、跨工作区、跨设备一套动作搞定",
+        "直接读取全账号设备拓扑、Link 路由延迟、已打开工作区、运行中会话与全网可用模型目录",
+        "在任意在线设备（含本机）上创建会话、发送指令、查看紧凑回合摘要、取消任务并统一回应权限/提问",
+        "支持从任意已打开工作区按 base64 拉取文件落盘到本机并校验 SHA-256",
+        "Treats this local device (self) and every online same-account peer symmetrically for seamless cross-session, cross-workspace, and cross-device work",
+        "Inspect account-wide topology, Link routes, opened workspaces, running sessions, and available chat models in one call",
+        "Create, message, inspect, and cancel sessions—and answer pending permission prompts or questions—on any local or peer runtime",
+        "Pull files from any device's workspace directly to a local destination path with SHA-256 verification",
+        "查看全账号设备拓扑、单机详情、工作区清单与全网模型目录",
+        "Inspect account-wide devices, device details, workspaces, and fleet model catalog",
+        "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
+        "List, create, message, read, and cancel sessions on this device or any online peer",
+        "统一查看并回复全账号设备上的待审批权限与提问",
+        "Inspect and answer pending permission prompts and user questions across all devices",
+        "从本机或同账号设备的工作区拉取文件到本机",
+        "Pull a file from any device's workspace to this host",
+        "列出我账号下所有在线设备和它们当前打开的工作区（包括这台电脑）",
+        "在我的 Windows 电脑和 Linux 服务器上同时启动编译会话，本机也同步编一份 macOS",
+        "看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认",
+        "把 Windows 电脑那个工作区里的构建日志拉到我本机 /tmp/win-build.log",
+        "List every device on my account (including this computer) and their opened workspaces",
+        "Start build sessions on my Windows and Linux machines while also building macOS locally",
+        "Check if any session across my devices is waiting for permission approval",
+        "Pull the build log from my Windows workspace to /tmp/win-build.log on this machine"
+      ],
+      "destination": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      },
+      "items": [
+        {
+          "id": "topology-and-models",
+          "titleZh": "查看全账号设备拓扑、单机详情、工作区清单与全网模型目录",
+          "titleEn": "Inspect account-wide devices, device details, workspaces, and fleet model catalog"
+        },
+        {
+          "id": "cross-device-sessions",
+          "titleZh": "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
+          "titleEn": "List, create, message, read, and cancel sessions on this device or any online peer"
+        },
+        {
+          "id": "fleet-prompts",
+          "titleZh": "统一查看并回复全账号设备上的待审批权限与提问",
+          "titleEn": "Inspect and answer pending permission prompts and user questions across all devices"
+        },
+        {
+          "id": "workspace-file-pull",
+          "titleZh": "从本机或同账号设备的工作区拉取文件到本机",
+          "titleEn": "Pull a file from any device's workspace to this host"
         }
       ]
     },

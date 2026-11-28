@@ -6201,19 +6201,19 @@ mod tests {
     #[cfg(feature = "tools-image-analysis")]
     #[tokio::test]
     async fn builtin_miniapp_image_input_keeps_the_normal_analysis_tool_path() {
-        use crate::agentic::agents::{Agent, CoworkMode};
+        use crate::agentic::agents::{Agent, StandardHarness};
         use crate::agentic::tools::{implementations::AnalyzeImageTool, Tool};
 
         let messages = vec![Message::user_multimodal(
             "Compare these references".into(),
             vec![crate::agentic::image_analysis::attachments::test_image(); 5],
         )];
-        let agent = CoworkMode::new();
+        let agent = StandardHarness::new();
         // Select the real image tool explicitly: the minimal runtime test
         // registry deliberately excludes optional product tool groups.
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(AnalyzeImageTool::new())];
         let mut context = crate::agentic::tools::ToolUseContext::for_tool_listing(None, None);
-        context.agent_type = Some("Cowork".into());
+        context.agent_type = Some("Standard".into());
         let miniapp_restrictions = crate::agentic::tools::miniapp_agent_run_tool_restrictions(
             Some(&serde_json::json!({ "surface": "miniapp_agent" })),
             Some("miniapp-agent:builtin-ppt-live:run-1"),

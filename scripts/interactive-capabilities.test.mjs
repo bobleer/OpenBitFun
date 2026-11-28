@@ -243,6 +243,8 @@ test('every product Agent tool is mapped to a user capability or explicitly clas
     'Task', 'GetToolSpec', 'CallDeferredTool', 'PagePublish', 'PageDeploy',
     // Host tools of the retired Tauri desktop shell; hidden when no host is installed.
     'DesktopCard', 'FrontendWorkbench',
+    // Generative native UI card tool stays out of default manifests while desktop runner support is deferred.
+    'NativeUI',
   ]));
   assert.equal([...delegatedTools].filter((tool) => excludedTools.has(tool)).length, 0);
 

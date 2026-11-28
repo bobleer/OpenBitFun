@@ -496,7 +496,7 @@ const LINEAGE_SETTLEMENT_RETRY_MAX: Duration = Duration::from_secs(1);
 pub(crate) struct ChatMode {
     config: CliConfig,
     keymap: ResolvedKeymap,
-    /// Current agent type (e.g. "Standard", "Cowork", "DeepResearch")
+    /// Current agent type (e.g. "Standard", "Ultimate", "DeepResearch")
     agent_type: String,
     workspace: Option<String>,
     local_cwd: std::path::PathBuf,
