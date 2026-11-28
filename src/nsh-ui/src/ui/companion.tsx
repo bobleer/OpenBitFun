@@ -7,7 +7,7 @@
 // Everything it shows comes from `companionStore.ts`; colors come only from
 // the palette (the selection ring), the pet itself is its artwork.
 
-import { cleanup, effect, Image, reduceMotion, signal, Text, untracked, View } from "nsh";
+import { cleanup, effect, Image, platform, reduceMotion, signal, Text, untracked, View } from "nsh";
 import { Menu } from "nsh/desktop";
 import {
   companionBusy,
@@ -332,6 +332,7 @@ function PetSessionBubbleCard(props: {
  */
 export function PetWindowContent(props: PetWindowContentProps) {
   const bubbles = () => petSessionBubbles();
+  const isWindows = platform.os === "windows";
   return (
     <View
       accessibilityLabel="pet-window"
@@ -385,7 +386,9 @@ export function PetWindowContent(props: PetWindowContentProps) {
               { label: tr("pet.hide"), onSelect: () => props.onHide() },
               { label: tr("pet.settings"), onSelect: () => props.onSettings() },
             ],
-            event.pagePosition,
+            // The non-activating pet panel can leave another NSH window focused.
+            // Anchor to the pointer on Windows so that window cannot offset the menu.
+            isWindows ? undefined : event.pagePosition,
           )
         }
         activeStyle={tactileActiveStyle(0.96)}

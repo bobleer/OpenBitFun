@@ -262,6 +262,22 @@ test("turning the pet off elsewhere closes its window", async () => {
   expect(app.window("openbitfun-pet").state()).toBe(null);
 });
 
+test("right-clicking the Windows pet can hide it", async () => {
+  const state = freshState(true);
+  const { host, posts } = presenceHost(state);
+  const app = await open(PRESENCE, { ...DESKTOP, platform: "windows", host: { handlers: host.handlers } });
+
+  await app.waitFor("label:pet-open-inbox");
+  await app.press("label:pet-open-inbox");
+  await app.waitUntil(() => posts.some(post => post.action === "openInbox"));
+  await app.rightClick("label:pet-open-inbox");
+  await app.chooseMenuItem("Hide desktop avatar");
+
+  await app.waitUntil(() => posts.some(post => post.action === "close" && post.id === "openbitfun-pet"));
+  expect(state.petEnabled).toBe(false);
+  expect(app.window("openbitfun-pet").state()).toBe(null);
+});
+
 test("a phone or a browser opens no window: cards show inline in Library and the pet page says Desktop only", async () => {
   const state = freshState(true);
   const { host } = presenceHost(state);
@@ -366,8 +382,14 @@ test("the native desktop announces the pet operations, answers them, and Setting
   const ops = ((wire.invokes.find(call => call.command === "host_shell_attach")?.args.request ?? {}) as { ops?: string[] }).ops ?? [];
   for (const op of ["pet.show", "pet.hide", "pet.resize"]) expect(ops).toContain(op);
 
-  // The pet window opens on the native desktop; `hide_agent_companion_desktop_pet` closes it.
+  // The pet menu opens Settings › Pet from any scene.
   await app.waitUntil(() => app.window("openbitfun-pet").state() !== null);
+  expect(app.shows("label:pet-enabled")).toBe(false);
+  await app.rightClick("label:pet-open-inbox");
+  await app.chooseMenuItem("Desktop avatar settings…");
+  await app.waitFor("label:pet-enabled");
+
+  // The backend can ask the native desktop to close the floating window.
   const hide = wire.shellRequest("pet.hide", {});
   await app.host.send("openbitfun.wireEvents", hide.batch);
   await app.waitUntil(() =>
@@ -379,10 +401,7 @@ test("the native desktop announces the pet operations, answers them, and Setting
   expect(reply.ok).toBe(true);
   await app.waitUntil(() => app.window("openbitfun-pet").state() === null);
 
-  // Settings › Pet: the switches and the character grid of this device.
-  await app.press("Settings");
-  await app.press("nav-settings-page-pet");
-  await app.waitFor("label:pet-enabled");
+  // Settings › Pet shows the switches and the character grid of this device.
   await app.waitFor("label:pet-choose-bitblob");
   await app.waitFor("label:pet-import");
   expect(app.shows("text:Built-in characters and packs imported from petdex.dev.")).toBe(true);
