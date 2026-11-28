@@ -730,16 +730,16 @@ function Thread(props: { height: number }) {
             <View
               role="button"
               accessibilityLabel={tr("session.jumpLatest")}
+              tooltip={tr("session.jumpLatest")}
               onPress={() => {
                 following.set(true);
                 scrollRef?.scrollToEnd({ animated: true });
               }}
               style={{
-                flexDirection: "row",
+                width: compactLayout() ? layout.touchTarget : controlHeight.md,
+                height: compactLayout() ? layout.touchTarget : controlHeight.md,
                 alignItems: "center",
-                gap: space.xs,
-                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-                paddingHorizontal: space.md,
+                justifyContent: "center",
                 borderRadius: radii.pill,
                 borderWidth: 1,
                 borderColor: palette().border,
@@ -750,11 +750,10 @@ function Thread(props: { height: number }) {
                 ...pressTransition(MOTION_DURATION.fast),
               }}
               hoverStyle={{ backgroundColor: palette().panelHover }}
-              activeStyle={tactileActiveStyle(0.97)}
+              activeStyle={tactileActiveStyle(0.95)}
               focusVisibleStyle={focusRingStyle()}
             >
-              <Icon name="arrow-down" size={12} color={palette().textSecondary} />
-              <Text style={textStyle("caption", { color: palette().textSecondary })}>{tr("session.jumpLatest")}</Text>
+              <Icon name="arrow-down" size={14} color={palette().textSecondary} />
             </View>
           </View>
         </If>

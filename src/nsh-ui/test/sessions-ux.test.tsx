@@ -2218,14 +2218,18 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   await app.waitFor("accept-prompt-suggestion");
   expect(app.shows("dismiss-prompt-suggestion")).toBe(false);
 
-  // Clicking the Tab/Use accept pill fills the composer and clears the suggestion overlay.
+  // Clicking the Tab accept button fills the composer and hides the button while text is present;
+  // deleting the accepted text restores the suggestion and Tab button.
+  expect(app.shows("label:accept-prompt-suggestion >> text:Tab")).toBe(true);
   await app.press("accept-prompt-suggestion");
   await app.waitUntil(() => app.value("composer") === "Run the focused unit tests next");
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
 
-  // Clear composer and verify a stale sourceTurnId does NOT show.
   await app.clear("composer");
   await app.waitUntil(() => app.value("composer") === "");
+  await app.waitFor("accept-prompt-suggestion");
+
+  // A stale sourceTurnId does NOT show.
   await app.host.send("openbitfun.event", {
     event: "agentic://prompt-suggestion",
     payload: {
@@ -2237,7 +2241,7 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
 
   // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears, hides once user starts typing,
-  // and accepts on Tab or ArrowRight while the composer is focused without moving focus to the Tab pill.
+  // accepts on Tab or ArrowRight while focused, and returns if the accepted text is deleted.
   persistedSuggestion = undefined;
   await app.host.send("openbitfun.event", {
     event: "agentic://prompt-suggestion",
@@ -2257,21 +2261,15 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   await app.waitUntil(() => app.value("composer") === "Summarize the diff for review");
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
 
-  // ArrowRight also accepts when the focused composer is empty again.
+  // Deleting the Tab-accepted text restores the suggestion and allows accepting via Tab/ArrowRight again.
   await app.clear("composer");
-  await app.host.send("openbitfun.event", {
-    event: "agentic://prompt-suggestion",
-    payload: {
-      sessionId: "session-1",
-      sourceTurnId: "turn-2",
-      suggestion: "Check the build output",
-    },
-  });
+  await app.waitUntil(() => app.value("composer") === "");
   await app.waitFor("accept-prompt-suggestion");
   await app.keyboard.press("right");
-  await app.waitUntil(() => app.value("composer") === "Check the build output");
+  await app.waitUntil(() => app.value("composer") === "Summarize the diff for review");
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
   await app.clear("composer");
+  await app.waitFor("accept-prompt-suggestion");
 
   // 3. Starting a new turn clears any active suggestion immediately.
   await app.host.send("openbitfun.event", {
@@ -2288,6 +2286,24 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
     payload: { sessionId: "session-1", turnId: "turn-3", userInput: "Do something else" },
   });
   await app.waitFor("accept-prompt-suggestion", { state: "gone" });
+
+  // 4. Compact layout also renders the unified "Tab" keycap (never "Use" / "采用") without inflating to 44x44.
+  persistedSuggestion = {
+    sourceTurnId: "turn-2",
+    suggestion: "Run the focused unit tests next",
+  };
+  const compactApp = await open("../App.tsx", {
+    width: 640,
+    height: 820,
+    platform: "macos" as const,
+    host: { handlers: backend.handlers },
+  });
+  await openSession(compactApp, "NSH skeleton");
+  await compactApp.waitFor("label:accept-prompt-suggestion >> text:Tab");
+  expect(compactApp.shows("label:accept-prompt-suggestion >> text:Use")).toBe(false);
+  const compactTabBox = compactApp.layout("label:accept-prompt-suggestion");
+  expect(compactTabBox).not.toBeNull();
+  expect(compactTabBox!.height).toBeLessThan(32);
 });
 
 test("per-turn snapshot file changes start collapsed, expand on click, and open the diff review modal", async () => {

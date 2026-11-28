@@ -776,7 +776,7 @@ export function ActiveFlowText(props: {
 }
 
 /**
- * Shared live elapsed duration caption (` · 2s`, ` · 3s`, …) anchored to a turn
+ * Shared live elapsed duration caption (`2s`, `3s`, …) anchored to a turn
  * or tool start timestamp so phase transitions (waiting → thinking → tool) keep
  * one continuous clock without resetting or vanishing.
  */
@@ -820,7 +820,7 @@ export function ElapsedDurationText(props: {
     const running = props.active ? props.active() : true;
     if (!running || elapsedSec() < minSeconds) return "";
     const formatted = formatDuration(elapsedSec() * 1000);
-    return formatted ? `${props.prefix ?? " · "}${formatted}` : "";
+    return formatted ? `${props.prefix ?? ""}${formatted}` : "";
   });
 
   return (

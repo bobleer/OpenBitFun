@@ -406,6 +406,7 @@ import {
   textSize,
   textStyle,
   textTracking,
+  touchSlop,
 } from "../theme";
 import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
@@ -677,10 +678,8 @@ const activePromptSuggestion = computed<string>(() => {
 function acceptActivePromptSuggestion(): boolean {
   const suggestion = activePromptSuggestion();
   if (!suggestion) return false;
-  const sessionId = activeSessionId();
   composerText.set(suggestion);
   composerCaretPos.set(suggestion.length);
-  clearPromptSuggestion(sessionId, activeSessionDevice());
   queueMicrotask(() => {
     composerInputRef?.focus();
     composerInputRef?.setSelection(suggestion.length, suggestion.length);
@@ -3093,7 +3092,7 @@ function ThinkingBlock(props: {
             </If>
           </TranscriptRowIconSlot>
         </MorphSlot>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <MorphSlot morphKey={labelText} mode="rise" duration={150}>
             <ActiveFlowText
               active={() => Boolean(props.live)}
@@ -3811,7 +3810,7 @@ function TurnWaitingIndicator(props: {
       <TranscriptRowIconSlot>
         <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
       </TranscriptRowIconSlot>
-      <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 1, minWidth: 0 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 1, minWidth: 0 }}>
         <ActiveFlowText
           active={() => true}
           text={() => tr("state.thinking")}
@@ -4432,25 +4431,25 @@ function WelcomeStudio() {
   );
 }
 
-/** Subtle elevated floating scroll-to-bottom control (Codex / Claude Desktop aesthetic). */
+/** Subtle elevated floating circular scroll-to-bottom control. */
 function LatestPill(props?: { onPress?: () => void; accessibilityLabel?: string }) {
   const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
+  const size = () => (compactLayout() ? layout.touchTarget : controlHeight.md);
   return (
     <View
       role="button"
       accessibilityLabel={props?.accessibilityLabel ?? "Latest"}
+      tooltip={tr("sessions.latest")}
       onPress={props?.onPress ?? jumpToTranscriptEnd}
       style={[
         {
           position: "absolute",
           bottom: space.md,
           alignSelf: "center",
-          flexDirection: "row",
+          width: size(),
+          height: size(),
           alignItems: "center",
-          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-          gap: space.xs,
-          paddingHorizontal: space.md,
-          paddingVertical: space.chip,
+          justifyContent: "center",
           borderRadius: radii.pill,
           borderWidth: 1,
           borderColor: palette().borderStrong,
@@ -4465,18 +4464,10 @@ function LatestPill(props?: { onPress?: () => void; accessibilityLabel?: string 
         motion.style,
       ]}
       hoverStyle={{ backgroundColor: palette().panelHover }}
-      activeStyle={tactileActiveStyle(0.97)}
+      activeStyle={tactileActiveStyle(0.95)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <Icon name="arrow-down" size={12} color={palette().text} />
-      <Text
-        style={{
-          ...textStyle("caption", { color: palette().text }),
-          fontWeight: "500",
-        }}
-      >
-        {tr("sessions.latest")}
-      </Text>
+      <Icon name="arrow-down" size={14} color={palette().text} />
     </View>
   );
 }
@@ -7692,7 +7683,7 @@ function SessionComposer(props: SessionComposerProps) {
             />
           }
           editor={
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
               <If when={richDraft()} else={<Input
                 ref={el => {
                   localInputRef = el;
@@ -7799,6 +7790,7 @@ function SessionComposer(props: SessionComposerProps) {
                   focusable={false}
                   accessibilityLabel="accept-prompt-suggestion"
                   tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
+                  hitSlop={touchSlop(editorLineHeight())}
                   onPress={acceptPromptSuggestion}
                   style={{
                     boxSizing: "border-box",
@@ -7806,18 +7798,20 @@ function SessionComposer(props: SessionComposerProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
-                    width: compactLayout() ? layout.touchTarget : 32,
-                    height: compactLayout() ? layout.touchTarget : editorLineHeight(),
-                    borderRadius: radii.pill,
+                    minWidth: 34,
+                    height: editorLineHeight(),
+                    paddingHorizontal: space.chip,
+                    borderRadius: radii.sm,
+                    borderCurve: "continuous",
                     borderWidth: 1,
-                    borderColor: palette().borderSubtle,
+                    borderColor: palette().border,
                     backgroundColor: palette().surfaceSubtle,
                     cursor: "pointer",
                     userSelect: "none",
                     ...pressTransition(MOTION_DURATION.fast),
                   }}
                   hoverStyle={{
-                    backgroundColor: palette().panelHover,
+                    backgroundColor: palette().buttonSecondaryHover,
                     borderColor: palette().borderStrong,
                   }}
                   activeStyle={tactileActiveStyle(0.95)}
@@ -7825,14 +7819,16 @@ function SessionComposer(props: SessionComposerProps) {
                 >
                   <Text
                     style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(10.5),
-                      lineHeight: textLineHeight(10.5, 1.15),
+                      color: palette().textSecondary,
+                      fontSize: textSize(11),
+                      lineHeight: textLineHeight(11, 1.15),
                       fontWeight: "500",
-                      fontFamily: compactLayout() ? undefined : fontMono(),
+                      fontFamily: fontMono(),
+                      letterSpacing: 0.2,
+                      numberOfLines: 1,
                     }}
                   >
-                    {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
+                    {"Tab"}
                   </Text>
                 </View>
               </If>

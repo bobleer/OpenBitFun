@@ -75,6 +75,11 @@ test("an open group of 120 steps mounts only the rows near the viewport, also af
   await app.waitFor(step(1));
   expect(mountedSteps()).toBeLessThan(TOOLS_PER_TURN / 2);
 
+  await app.waitFor("label:Latest");
+  const latestBox = app.layout("label:Latest");
+  expect(latestBox).not.toBeNull();
+  expect(latestBox!.width).toBe(latestBox!.height);
+  expect(app.shows("label:Latest >> text:Latest")).toBe(false);
   await app.press("Latest");
   await app.waitFor("Answer 6");
 });
