@@ -11,7 +11,8 @@
       "hosts": [
         "super.openbitfun.com",
       "tiles.versatiles.org",
-      "photon.komoot.io"
+      "photon.komoot.io",
+      "raw.githubusercontent.com"
       ],
       "http": [
         {

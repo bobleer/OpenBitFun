@@ -14,13 +14,6 @@ import figureScript from "../assets/vendor/figure-renderer.js?url";
 import figureImageLoader from "../assets/vendor/figure-image-loader.js?url";
 import atlasStyle from "../assets/vendor/figure-atlas/regional-map.css?url";
 import atlasNotices from "../assets/vendor/figure-atlas/NOTICES.txt?url";
-import borders from "../assets/vendor/figure-atlas/borders.json?url";
-import lakes from "../assets/vendor/figure-atlas/lakes.json?url";
-import land from "../assets/vendor/figure-atlas/land.json?url";
-import places from "../assets/vendor/figure-atlas/places.json?url";
-import provinces from "../assets/vendor/figure-atlas/provinces.json?url";
-import rivers from "../assets/vendor/figure-atlas/rivers.json?url";
-import seas from "../assets/vendor/figure-atlas/seas.json?url";
 import routingStrategies from "../assets/model-pools/routing-strategies-v1.png";
 import codingShowcase from "../assets/vendor/space-showcases/coding-footprint.webp";
 import divinationShowcase from "../assets/vendor/space-showcases/daily-divination.webp";
@@ -31,7 +24,7 @@ import { poolStrategyArtwork } from "../../../nsh-ui/src/poolStrategyArtwork";
 
 setRendererAssets({
   mermaidScript, katexScript, katexStyle, echartsScript, pdfScript, figureScript, figureImageLoader,
-  figureAtlas: { stylesheet: atlasStyle, notices: atlasNotices, borders, lakes, land, places, provinces, rivers, seas },
+  figureAtlas: { stylesheet: atlasStyle, notices: atlasNotices },
   spaceShowcases: { "builtin-coding-selfie": codingShowcase, "builtin-daily-divination": divinationShowcase,
     "builtin-gomoku": gomokuShowcase, "builtin-ppt-live": pptShowcase, "builtin-regex-playground": regexShowcase },
 });

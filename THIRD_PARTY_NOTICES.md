@@ -9,15 +9,16 @@ release packages.
 OpenBitFun uses Apache ECharts 6.0.0 and zrender 6.0.0 for inline charts.
 ECharts is distributed under the Apache License 2.0 and includes portions of
 d3.js under the BSD 3-Clause license. zrender uses the BSD 3-Clause license.
-The NSH figure renderer embeds the upstream license and notice texts in its
-generated script, together with the MIT licenses for Zod, parse5, React, React DOM,
-and Scheduler. The React runtime is included in the isolated figure renderer asset.
+NSH uses the same ECharts distribution for transcript figures and declarative
+previews. The generated figure renderer carries the upstream license and notice
+texts and the MIT licenses for Zod, parse5, React, React DOM, and Scheduler.
+The React runtime is included in the isolated figure renderer asset.
 
 ## D3 geographic projections
 
-The offline map renderer includes d3-geo 3.1.1, d3-array, InternMap and TopoJSON
-Client 3.1.0. NSH packages their copyright and license texts with the regional
-atlas as `figure-atlas/NOTICES.txt`. The atlas uses the bundled Natural Earth data.
+The map renderer includes d3-geo 3.1.1, d3-array, InternMap and TopoJSON
+Client 3.1.0. NSH packages their copyright and license texts as
+`figure-atlas/NOTICES.txt` and loads the published Natural Earth layers on demand.
 Street-map snapshots decode vector tiles with `@mapbox/vector-tile`,
 `@mapbox/point-geometry` and `pbf`. Their licenses ship in the same asset, and
 the street-map view includes OpenStreetMap and VersaTiles attribution.

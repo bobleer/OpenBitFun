@@ -1,7 +1,4 @@
-import { init, use, type ECharts } from 'echarts/core';
-import { BarChart, LineChart, PieChart, ScatterChart, FunnelChart, BoxplotChart, HeatmapChart, SankeyChart, CustomChart } from 'echarts/charts';
-import { AriaComponent, DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, MarkPointComponent, TitleComponent, TooltipComponent, VisualMapComponent } from 'echarts/components';
-import { SVGRenderer } from 'echarts/renderers';
+import type { ECharts } from 'echarts';
 import { numberFormatterAtLocale } from '../../../shared/i18n/formatNumber';
 import { chartInspection } from './chartInspection';
 import { chartOptions } from './chartOptions';
@@ -10,10 +7,6 @@ import { filterVisualTable, parseBoundChart, parseVisualDocument, type BoundChar
 import { decodeFigureReaderState, MAX_FIGURE_READER_BYTES, type FigureChartState, type FigureReaderEvent, type FigureReaderState } from './readerState';
 import { mountLegacyView, mountWidget } from './mountWidget';
 import type { WidgetMessages } from './widgetI18n';
-
-use([BarChart, LineChart, PieChart, ScatterChart, FunnelChart, BoxplotChart, HeatmapChart, SankeyChart, CustomChart,
-  AriaComponent, DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, MarkPointComponent,
-  TitleComponent, TooltipComponent, VisualMapComponent, SVGRenderer]);
 
 export interface FigureLabels {
   previewTitle?: string;
@@ -196,7 +189,7 @@ function renderDeclaration(root: HTMLElement, source: string, labels: FigureLabe
     legend.className = 'viz-controls';
     section.append(legend, plot, output);
 
-    const chart = init(plot, document.documentElement.dataset.scheme === 'dark' ? 'dark' : undefined, { renderer: 'svg' });
+    const chart = window.echarts.init(plot, document.documentElement.dataset.scheme === 'dark' ? 'dark' : undefined, { renderer: 'svg' });
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(plot);
     charts.push({ chart, observer });

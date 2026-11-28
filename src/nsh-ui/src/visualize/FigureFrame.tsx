@@ -13,6 +13,7 @@ import { rendererAssets } from "../documentRenderers";
 import { currentLocale, tr } from "../i18n";
 import { composerText } from "../state";
 import { palette, radii, resolvedScheme, space } from "../theme";
+import { readEchartsScript } from "../ui/documentRendererAssets";
 import { pushToast } from "../ui/overlays";
 import { appearanceScript, figureDocument, figureStyleVariables, parseFigureMessage, usesEcharts } from "./figureDocument";
 
@@ -25,23 +26,6 @@ const figureStates = new Map<string, unknown>();
 /** Last measured height by figure, so a remount does not jump. */
 const figureHeights = new Map<string, number>();
 
-let echartsLoad: Promise<string> | null = null;
-
-function loadEcharts(): Promise<string> {
-  const url = rendererAssets()?.echartsScript;
-  if (!url) return Promise.reject(new Error("this app ships no ECharts"));
-  if (!echartsLoad) {
-    echartsLoad = fetch(url).then(response => {
-      if (!response.ok) throw new Error(`ECharts answered ${response.status}`);
-      return response.text();
-    });
-    echartsLoad.catch(() => {
-      echartsLoad = null;
-    });
-  }
-  return echartsLoad;
-}
-
 function currentVars(): Record<string, string> {
   return figureStyleVariables(palette(), resolvedScheme() === "dark", FONT_SANS);
 }
@@ -52,10 +36,9 @@ export function FigureFrame(props: { figureKey: string; source: string; onUnavai
   let ref: WebViewRef | undefined;
 
   if (charts() === undefined) {
-    loadEcharts().then(
-      script => charts.set(script),
-      () => charts.set(null),
-    );
+    const url = rendererAssets()?.echartsScript;
+    if (url) readEchartsScript(url).then(script => charts.set(script), () => charts.set(null));
+    else charts.set(null);
   }
 
   // Built once per load: a theme change is applied in place, keeping the figure's own state.

@@ -51,12 +51,12 @@ export function InlineFigureCard(props: {
   let revision = 0;
   let frame: WebViewRef | undefined;
   let streetRequest: AbortController | undefined;
-  let imageRequest: AbortController | undefined;
+  let previewRequest: AbortController | undefined;
   let lastImages: { key: string; source: string; values: LoadedFigureImages } | undefined;
   cleanup(() => {
     revision += 1;
     streetRequest?.abort();
-    imageRequest?.abort();
+    previewRequest?.abort();
     lastImages = undefined;
     resourceReader()?.dispose();
     sessionReader()?.dispose();
@@ -85,7 +85,7 @@ export function InlineFigureCard(props: {
   function close() {
     revision += 1;
     cancelStreetRequest();
-    imageRequest?.abort();
+    previewRequest?.abort();
     lastImages = undefined;
     clearPreviewBindings();
     state.set({ kind: "closed" });
@@ -97,9 +97,9 @@ export function InlineFigureCard(props: {
     const uri = props.figure.path;
     const session = props.captureSession?.();
     const request = ++revision;
-    imageRequest?.abort();
-    const images = new AbortController();
-    imageRequest = images;
+    previewRequest?.abort();
+    const loading = new AbortController();
+    previewRequest = loading;
     cancelStreetRequest();
     clearPreviewBindings();
     sourcesOpen.set(false);
@@ -114,11 +114,12 @@ export function InlineFigureCard(props: {
       if (!sameSource()) { close(); return; }
       const prior = lastImages?.key === readerKey && lastImages.source === source ? lastImages.values : undefined;
       const localized = hasFigureDeclaration(source) ? null
-        : await localizeFigureImages(source, bindings, images.signal, imageLoader.set, prior);
+        : await localizeFigureImages(source, bindings, loading.signal, imageLoader.set, prior);
       if (request !== revision) return;
       if (!sameSource()) { close(); return; }
       const document = await untracked(() => createFigurePreviewDocument(source, readerKey, !!session, title(), {
         bindings: localized?.bindings ?? bindings,
+        signal: loading.signal,
       }));
       if (request === revision) {
         if (!sameSource()) { close(); return; }
@@ -135,7 +136,7 @@ export function InlineFigureCard(props: {
     } catch {
       if (request === revision) state.set({ kind: "failed" });
     } finally {
-      if (imageRequest === images) imageRequest = undefined;
+      if (previewRequest === loading) previewRequest = undefined;
     }
   }
 
