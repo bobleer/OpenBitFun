@@ -347,6 +347,55 @@ test("an opened card reads its turn whole once, and a failed read is said and re
   expect(wholeReads().length).toBe(2);
 });
 
+test("an expanded WebFetch shows the fetched title and a single URL", async () => {
+  const backend = createBackend({
+    sessions: [{ sessionId: "session-webfetch", sessionName: "Fetched pages", lastUpdated: 1763100000000,
+      messageCount: 2, agentType: "Standard" }],
+  });
+  const url = "https://example.com/article";
+  const untitledUrl = "https://example.com/data.json";
+  const title = "Article title from WebFetch";
+  const base = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (args.action !== "get_session_transcript_view" || args.request?.session_id !== "session-webfetch") return base(data);
+    const summary = args.request.tool_detail === "summary";
+    const fetchedTurn: TranscriptTurnView = {
+      ...turn("", false),
+      items: [
+        { kind: "tool", roundIndex: 0, tool: {
+          id: "web-page", name: "WebFetch", input: { url }, status: "completed", success: true,
+          result: summary ? { url, content: "Article preview…" } : { url, title, content: "Article body" },
+          detailOmitted: summary,
+        } },
+        { kind: "text", id: "between-fetches", roundIndex: 0, text: "The article is ready." },
+        { kind: "tool", roundIndex: 0, tool: {
+          id: "web-data", name: "WebFetch", input: { url: untitledUrl, format: "json" }, status: "completed", success: true,
+          result: { url: untitledUrl, title: null, content: '{"ready":true}' },
+        } },
+      ],
+    };
+    return { ok: true, transport: "dev", value: {
+      sessionId: "session-webfetch", mode: summary ? "full" : "before", turns: [fetchedTurn], cursor: null, hasEarlier: false,
+    } };
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Fetched pages");
+  await app.waitFor(`text:${url}`);
+  expect(app.shows(`label:web-result-${url}`)).toBe(false);
+  await app.press("label:tool-card-WebFetch >> nth=0");
+  await app.waitFor(`text:${title}`);
+  await app.waitFor(`label:web-result-${url}`);
+  const texts = app.texts();
+  expect(texts.filter(text => text === url)).toHaveLength(1);
+  expect(texts.indexOf(title)).toBeLessThan(texts.indexOf(url));
+  expect(texts.indexOf(url)).toBeLessThan(texts.indexOf("Article body"));
+
+  await app.press("label:tool-card-WebFetch >> nth=1");
+  await app.waitFor(`label:web-result-${untitledUrl}`);
+  expect(app.texts().filter(text => text === untitledUrl)).toHaveLength(1);
+});
+
 test("review reports render structured findings after hydration and preserve legacy results", async () => {
   const backend = createBackend({
     sessions: [

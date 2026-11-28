@@ -977,6 +977,7 @@ function webResultsOf(call: ToolCallView): WebResultRow[] {
 }
 
 function WebLinkRow(props: { row: WebResultRow }) {
+  const hasTitle = () => Boolean(props.row.title && props.row.title !== props.row.url);
   return (
     <View
       role="button"
@@ -1004,22 +1005,24 @@ function WebLinkRow(props: { row: WebResultRow }) {
           lineHeight: textLineHeight(13, 1.35),
           fontWeight: "500",
           numberOfLines: 1,
-          textOverflow: "ellipsis",
+          textOverflow: hasTitle() ? "ellipsis" : "ellipsis-middle",
         }}
       >
-        {props.row.title}
+        {hasTitle() ? props.row.title : props.row.url}
       </Text>
-      <Text
-        style={{
-          color: palette().textMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.3),
-          numberOfLines: 1,
-          textOverflow: "ellipsis-middle",
-        }}
-      >
-        {props.row.url}
-      </Text>
+      <If when={hasTitle()}>
+        <Text
+          style={{
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.3),
+            numberOfLines: 1,
+            textOverflow: "ellipsis-middle",
+          }}
+        >
+          {props.row.url}
+        </Text>
+      </If>
       <If when={props.row.snippet}>
         <Text
           style={{
@@ -1278,6 +1281,14 @@ function ToolImagePreview(props: { src: string }) {
 
 function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind; reviewTarget?: ReviewTarget | null }) {
   const kind = () => props.kind;
+  const fetchedPage = computed(() => {
+    if (kind() !== "webfetch") return null;
+    const url = firstStringOf(inputRecord(props.call), ["url"]);
+    if (!url) return null;
+    const result = resultRecord(props.call.result);
+    const title = result ? firstStringOf(result, ["title"]).trim() : "";
+    return { url, title, snippet: "" };
+  });
   const report = computed(() => kind() === "review" && !props.call.detailOmitted && !props.call.error && props.call.success !== false
     ? codeReviewReport(props.call.result) : null);
   const loadingReport = () => kind() === "review" && toolDetailState(props.call) === "loading";
@@ -1304,8 +1315,8 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind; r
           </Each>
         </View>
       </If>
-      <If when={kind() === "webfetch" ? firstStringOf(inputRecord(props.call), ["url"]) : ""}>
-        {url => <WebLinkRow row={{ url: url(), title: url(), snippet: "" }} />}
+      <If when={fetchedPage()}>
+        {page => <WebLinkRow row={page()} />}
       </If>
       <If when={kind() === "task" ? firstStringOf(inputRecord(props.call), ["prompt"]) : ""}>
         {prompt => (
@@ -1633,7 +1644,10 @@ export function ToolCard(props: {
 
   const activelyRunning = computed(() => state() === "running" && !waiting());
   const titleLabel = computed(() => toolTitleOf(props.call, state(), kind()));
-  const targetLabel = computed(() => toolTargetOf(props.call, kind()));
+  const targetLabel = computed(() => {
+    if (kind() === "webfetch" && expanded() && expandable() && firstStringOf(inputRecord(props.call), ["url"])) return "";
+    return toolTargetOf(props.call, kind());
+  });
 
   return <ToolCardFrame
     name={props.call.name} prominent={prominent()} expanded={expanded()} canExpand={expandable()}
