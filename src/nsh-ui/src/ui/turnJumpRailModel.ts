@@ -79,18 +79,13 @@ export function maxBarsForRailHeight(viewportHeight: number | undefined): number
 }
 
 /**
- * Maps turn count inside a bar to crisp, monotonically increasing visual height.
+ * Maps turn count inside a bar to crisp visual geometry:
+ * - Single turn: 2 px thin bar with 1 px corner radius.
+ * - Grouped turns: 4 px bar (2× height) with the exact same 1 px corner radius.
  */
 export function barMetricsForCount(count: number): { barHeight: number; barRadius: number } {
-  if (count <= 1) return { barHeight: 2, barRadius: 999 };
-  if (count <= 5) return { barHeight: 6, barRadius: 3 };
-  if (count <= 10) return { barHeight: 8, barRadius: 3 };
-  if (count <= 20) return { barHeight: 11, barRadius: 3.5 };
-  if (count <= 50) return { barHeight: 14, barRadius: 3.5 };
-  if (count <= 100) return { barHeight: 17, barRadius: 4 };
-  if (count <= 250) return { barHeight: 20, barRadius: 4 };
-  if (count <= 500) return { barHeight: 24, barRadius: 4.5 };
-  return { barHeight: 26, barRadius: 4.5 };
+  if (count <= 1) return { barHeight: 2, barRadius: 1 };
+  return { barHeight: 4, barRadius: 1 };
 }
 
 /**

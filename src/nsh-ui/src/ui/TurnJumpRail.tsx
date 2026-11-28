@@ -40,7 +40,6 @@ import { MOTION_DURATION, enterMotion, paintTransition, pressTransition, tactile
 import { listRowHoverBg, registerEscapeDismiss } from "./overlays";
 import { focusRingStyle } from "./primitives";
 import {
-  activeProgressInBucket,
   buildTurnJumpBuckets,
   maxBarsForRailHeight,
   subRangesForBucket,
@@ -118,7 +117,6 @@ export function TurnJumpRail(props: TurnJumpRailProps) {
   const visible = computed(() => !compactLayout() && props.rows().length >= 2);
   const maxBars = computed(() => maxBarsForRailHeight(railHeight()));
   const buckets = computed(() => buildTurnJumpBuckets(props.rows(), { maxBars: maxBars() }));
-  const hasGroupedBuckets = computed(() => buckets().some(bucket => bucket.grouped));
 
   const resolvedActiveIndex = computed(() => {
     const list = props.rows();
@@ -261,11 +259,10 @@ export function TurnJumpRail(props: TurnJumpRailProps) {
           const id = () => bucket().id;
           const isGrouped = () => bucket().grouped;
           const isHighlighted = () => activePopoverId() === id();
-          const activeProgress = () => activeProgressInBucket(bucket(), resolvedActiveIndex());
-          const isActive = () => activeProgress() !== null;
-          const slotHeight = () => {
-            if (!hasGroupedBuckets()) return 12;
-            return Math.max(10, bucket().barHeight + 6);
+          const isActive = () => {
+            const active = resolvedActiveIndex();
+            const b = bucket();
+            return active >= b.startIndex && active <= b.endIndex;
           };
           const tickLabel = () => {
             const b = bucket();
@@ -294,7 +291,7 @@ export function TurnJumpRail(props: TurnJumpRailProps) {
               onPress={() => handleTickPress(bucket(), tickRef)}
               style={{
                 width: 24,
-                height: slotHeight(),
+                height: 12,
                 justifyContent: "center",
                 alignItems: "flex-start",
                 cursor: "pointer",
@@ -302,35 +299,23 @@ export function TurnJumpRail(props: TurnJumpRailProps) {
               }}
               focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
             >
-              <If
-                when={isGrouped()}
-                else={
-                  <View
-                    style={{
-                      width: 9,
-                      height: 2,
-                      borderRadius: radii.pill,
-                      transformOrigin: "left center",
-                      pointerEvents: "none",
-                      backgroundColor: isHighlighted() || isActive() ? palette().text : palette().borderStrong,
-                      opacity: isHighlighted() ? 1 : isActive() ? 0.9 : 0.55,
-                      transform: isHighlighted()
-                        ? [{ scaleX: 2.0 }, { scaleY: 1.75 }]
-                        : isActive()
-                          ? [{ scaleX: 1.45 }, { scaleY: 1.25 }]
-                          : [{ scaleX: 1 }, { scaleY: 1 }],
-                      ...pressTransition(MOTION_DURATION.fast),
-                    }}
-                  />
-                }
-              >
-                <GroupedRailBar
-                  barHeight={() => bucket().barHeight}
-                  barRadius={() => bucket().barRadius}
-                  highlighted={isHighlighted}
-                  activeProgress={activeProgress}
-                />
-              </If>
+              <View
+                style={{
+                  width: 9,
+                  height: bucket().barHeight,
+                  borderRadius: bucket().barRadius,
+                  transformOrigin: "left center",
+                  pointerEvents: "none",
+                  backgroundColor: isHighlighted() || isActive() ? palette().text : palette().borderStrong,
+                  opacity: isHighlighted() ? 1 : isActive() ? 0.9 : 0.55,
+                  transform: isHighlighted()
+                    ? [{ scaleX: 2.0 }, { scaleY: isGrouped() ? 1 : 1.75 }]
+                    : isActive()
+                      ? [{ scaleX: 1.45 }, { scaleY: isGrouped() ? 1 : 1.25 }]
+                      : [{ scaleX: 1 }, { scaleY: 1 }],
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+              />
             </View>
           );
         }}
@@ -431,69 +416,6 @@ export function TurnJumpRail(props: TurnJumpRailProps) {
         </If>
       </View>
     </If>
-  );
-}
-
-function GroupedRailBar(props: {
-  barHeight: () => number;
-  barRadius: () => number;
-  highlighted: () => boolean;
-  activeProgress: () => number | null;
-}) {
-  const isActive = () => props.activeProgress() !== null;
-  const width = () => (props.highlighted() ? 15 : isActive() ? 12 : 9);
-  const thumbHeight = () => Math.max(3, Math.round(props.barHeight() * 0.3));
-  const thumbTop = () => {
-    const progress = props.activeProgress() ?? 0;
-    return Math.round(progress * Math.max(0, props.barHeight() - thumbHeight()));
-  };
-
-  return (
-    <View
-      style={{
-        width: width(),
-        height: props.barHeight(),
-        borderRadius: props.barRadius(),
-        borderCurve: "continuous",
-        position: "relative",
-        overflow: "hidden",
-        pointerEvents: "none",
-        ...pressTransition(MOTION_DURATION.fast),
-      }}
-    >
-      <View
-        style={{
-          position: "absolute",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          left: 0,
-          backgroundColor: !isActive() && props.highlighted() ? palette().text : palette().borderStrong,
-          opacity: isActive()
-            ? props.highlighted()
-              ? 0.45
-              : 0.35
-            : props.highlighted()
-              ? 0.92
-              : 0.45,
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-      />
-      <If when={isActive()}>
-        <View
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            top: thumbTop(),
-            height: thumbHeight(),
-            borderRadius: radii.pill,
-            backgroundColor: palette().text,
-            opacity: props.highlighted() ? 1 : 0.92,
-          }}
-        />
-      </If>
-    </View>
   );
 }
 

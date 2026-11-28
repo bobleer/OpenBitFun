@@ -35,6 +35,8 @@ test("bucketing invariants hold across every turn count from 1 to 1,500 and tigh
         expect(b.startIndex).toBe(cursor);
         expect(b.endIndex).toBe(cursor + b.count - 1);
         expect(b.grouped).toBe(b.count > 1);
+        expect(b.barHeight).toBe(b.grouped ? 4 : 2);
+        expect(b.barRadius).toBe(1);
         if (i > 0) {
           expect(b.barHeight).toBeLessThanOrEqual(buckets[i - 1]!.barHeight);
         }
