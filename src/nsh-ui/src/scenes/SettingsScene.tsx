@@ -47,6 +47,7 @@ import {
   type UsageActivityView,
 } from "../usageActivity";
 import { StateMark, deviceGlyphIcon, stateColor } from "../ui/fleet";
+import { CaptionDragStrip, SceneCaptionInset } from "../ui/titleBar";
 import { AccountDevicesPage } from "./AccountDevicesPage";
 import { ExternalAppHooks, ExternalAppSkills, type ExternalAppHookBatchState } from "./ExternalAppAssets";
 import { ExternalAppBatchHeader } from "./ExternalAppBatch";
@@ -9887,6 +9888,7 @@ function SettingsPageViewport(props: { pageId: SettingsPageId; deviceId: string 
   // The parent keys this viewport by page and device. Save offsets only in the
   // active device context, and let an explicit section request win over an offset.
   const { pageId, deviceId } = props;
+  const captionInset = SceneCaptionInset();
   if (settingsScrollDevice !== deviceId) {
     settingsScrollDevice = deviceId;
     settingsPageOffsets.clear();
@@ -9929,7 +9931,8 @@ function SettingsPageViewport(props: { pageId: SettingsPageId; deviceId: string 
       }}>
       <View onLayout={event => { contentHeight = event.bounds.size.height; queueMicrotask(restore); }} style={{
         width: "100%", maxWidth: SETTINGS_CONTENT_MAX + settingsGutter() * 2, minWidth: 0,
-        paddingHorizontal: settingsGutter(), paddingTop: settingsCompact() ? space.lg : space.xl,
+        paddingHorizontal: settingsGutter(),
+        paddingTop: captionInset() > 0 ? space.sm : settingsCompact() ? space.lg : space.xl,
         paddingBottom: space.x5l, gap: settingsCompact() ? space.x3l : space.x3l + space.xs,
       }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
@@ -10047,7 +10050,8 @@ export function SettingsScene() {
         </View>
       </If>
       {/* The page clips to its own column so a long unbroken value never draws over the list. */}
-      <View style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+      <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", overflow: "hidden" }}>
+        <CaptionDragStrip testID="settings-caption-drag-strip" />
         <If when={showList()} else={
           <Each of={[currentPage()]} key={entry => JSON.stringify([entry.deviceId, entry.pageId])}>
             {entry => <SettingsPageViewport pageId={entry().pageId} deviceId={entry().deviceId} />}

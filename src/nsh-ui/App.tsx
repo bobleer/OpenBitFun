@@ -56,7 +56,7 @@ import {
   windowPlatform,
   windowShellId,
 } from "./src/bridge";
-import { CaptionActionStrip, SceneCaptionInset } from "./src/ui/titleBar";
+import { CaptionActionStrip, SceneAtWindowTop, SceneCaptionInset } from "./src/ui/titleBar";
 import { installSystemBack } from "./src/navigationHistory";
 import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
@@ -2239,9 +2239,9 @@ const sidebarDocked = computed(() => drawerOpen() && !compactShell() && !overlay
 const nativeWindowsCanvas = computed(() => nativeWindow() && windowPlatform() === "windows");
 const floatingCanvas = computed(() => !compactShell() && !nativeWindowsCanvas());
 const canvasEdgeInset = computed(() => floatingCanvas() ? layout.canvasInset : 0);
-const canvasLeftInset = computed(() => compactShell() || sidebarDocked() ? 0 : layout.canvasInset);
-// Keep the floating canvas's existing docking threshold. On Windows only the left gutter can remain.
-const canvasWidthAllowance = computed(() => nativeWindowsCanvas() ? canvasLeftInset() : 2 * layout.canvasInset);
+const canvasLeftInset = computed(() => !floatingCanvas() || sidebarDocked() ? 0 : layout.canvasInset);
+// Keep the floating canvas's existing docking threshold. On Windows the canvas meets the frame on every edge.
+const canvasWidthAllowance = computed(() => floatingCanvas() ? 2 * layout.canvasInset : 0);
 
 function auxFillsScene(): boolean {
   return auxPaneMaximized() || compactShell();
@@ -2295,9 +2295,25 @@ const auxAtCanvasRight = computed(() =>
 function showSceneTopBar(): boolean {
   if (!sidebarDocked() || pageDrawsWindowControls()) return true;
   if (!windowControlsRightInsetPx()) return false;
-  // Notices and scrolling pages have no fixed first row to share with the caption.
+  // Notices sit above the scene and have no caption inset of their own.
   if (lastError() || connectionState() === "failed" || connectionState() === "reconnecting") return true;
-  return !auxAtCanvasRight() && sceneGroupKey() !== "sessions" && !WORKSPACE_TOOL_SCENES.includes(activeScene());
+  return false;
+}
+
+function sceneAtWindowTop(): boolean {
+  return usesNativeDragRegions() && !compactShell() && !showSceneTopBar();
+}
+
+function showCaptionDivider(): boolean {
+  if (windowControlsRightInsetPx() <= 0 || compactShell()) return false;
+  if (auxPaneOpen() && auxAsSheet() && auxPaneSide() === "right") return true;
+  if (showSceneTopBar()) return false;
+  if (auxAtCanvasRight()) return true;
+  const group = sceneGroupKey();
+  if (group === "sessions") return true;
+  if (WORKSPACE_TOOL_SCENES.includes(activeScene())) return true;
+  if (group === "openbitfun" && Boolean(activeConversationId())) return true;
+  return false;
 }
 
 function canvasCaptionInset(): number {
@@ -2307,7 +2323,7 @@ function canvasCaptionInset(): number {
 }
 
 function sceneCaptionInset(): number {
-  if (auxPaneOpen() && (auxFillsScene() || auxPaneSide() === "right")) return 0;
+  if (auxAtCanvasRight()) return 0;
   return canvasCaptionInset();
 }
 
@@ -2356,6 +2372,7 @@ const sheetAuxWidth = computed(() => Math.max(AUX_MIN_WIDTH, Math.min(sheetAuxMa
 function SceneTopBar() {
   return (
     <View
+      testID="scene-top-bar"
       {...titlebarBarProps()}
       style={{
         height: layout.topBarHeight,
@@ -2368,6 +2385,8 @@ function SceneTopBar() {
         alignItems: "center",
         gap: space.sm,
         backgroundColor: palette().canvas,
+        borderBottomWidth: 1,
+        borderColor: palette().borderSubtle,
       }}
     >
       <If when={!drawerOpen()}>
@@ -3178,6 +3197,7 @@ function StudioApp() {
 
       {/* The Windows canvas meets the native frame; the other desktop shells use a floating canvas. */}
       <View
+        testID="shell-canvas"
         style={{
           flex: 1,
           minWidth: 0,
@@ -3188,12 +3208,10 @@ function StudioApp() {
           marginLeft: canvasLeftInset(),
           paddingLeft: compactShell() ? safeArea().left : 0,
           paddingRight: compactShell() ? safeArea().right : 0,
-          borderRadius: compactShell() ? 0 : layout.canvasRadius,
-          borderTopRightRadius: floatingCanvas() ? layout.canvasRadius : 0,
-          borderBottomRightRadius: floatingCanvas() ? layout.canvasRadius : 0,
+          borderRadius: floatingCanvas() ? layout.canvasRadius : 0,
           borderCurve: "continuous",
           borderWidth: floatingCanvas() ? 1 : 0,
-          borderLeftWidth: compactShell() ? 0 : 1,
+          borderLeftWidth: floatingCanvas() ? 1 : sidebarDocked() ? 1 : 0,
           borderColor: palette().borderSubtle,
           backgroundColor: palette().canvas,
           boxShadow: floatingCanvas() ? palette().shadowSceneEdge : undefined,
@@ -3239,9 +3257,11 @@ function StudioApp() {
                 >
                   {/* Keyed by canonical scene group so switching primary routes gets a crisp 110ms GPU settle without remounting Library sub-tabs. */}
                   <SceneCaptionInset.Provider value={sceneCaptionInset}>
-                    <SmoothSwap swapKey={sceneGroupKey} skipInitial>
-                      {group => sceneElementForGroup(group)}
-                    </SmoothSwap>
+                    <SceneAtWindowTop.Provider value={sceneAtWindowTop}>
+                      <SmoothSwap swapKey={sceneGroupKey} skipInitial>
+                        {group => sceneElementForGroup(group)}
+                      </SmoothSwap>
+                    </SceneAtWindowTop.Provider>
                   </SceneCaptionInset.Provider>
                 </ErrorBoundary>
               </View>
@@ -3329,8 +3349,9 @@ function StudioApp() {
       <If when={overlayNav() && drawerOpen()}>
         <OverlaySidebarDrawer />
       </If>
-      <If when={windowControlsRightInsetPx() > 0}>
+      <If when={showCaptionDivider()}>
         <View
+          testID="window-caption-divider"
           focusable={false}
           style={{
             position: "absolute",

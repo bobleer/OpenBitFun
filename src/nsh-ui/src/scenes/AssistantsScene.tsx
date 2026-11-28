@@ -97,6 +97,7 @@ import {
   inputFontSans,
 } from "../theme";
 import { stateColor } from "../ui/fleet";
+import { SceneCaptionInset } from "../ui/titleBar";
 import { Icon } from "../ui/icons";
 import {
   AssistantAvatar,
@@ -1249,6 +1250,7 @@ function personaImageWorkspace(assistant: AssistantWorkspaceView): MarkdownImage
 }
 
 function PersonaStudioPane() {
+  const captionInset = SceneCaptionInset();
   return (
     <View style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: palette().canvas }}>
       <If
@@ -1277,7 +1279,7 @@ function PersonaStudioPane() {
             <View
               style={{
                 paddingHorizontal: studioGutter(),
-                paddingTop: studioCompact() ? 12 : 24,
+                paddingTop: captionInset() > 0 ? space.sm : studioCompact() ? 12 : 24,
                 borderBottomWidth: 1,
                 borderColor: palette().borderSubtle,
                 backgroundColor: palette().canvas,

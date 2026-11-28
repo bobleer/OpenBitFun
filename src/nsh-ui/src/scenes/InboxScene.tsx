@@ -23,7 +23,7 @@ import {
   inboxIsLocal,
   markInboxRead,
 } from "../localInboxStore";
-import { invokeCommand, invokeRawCommand } from "../bridge";
+import { invokeCommand, invokeRawCommand, windowControlsRightInsetPx } from "../bridge";
 import { pendingPermissions } from "../permissionStore";
 import { questionPrompts } from "../userQuestionStore";
 import { tr } from "../i18n";
@@ -31,6 +31,7 @@ import { openConversation } from "../superagentStore";
 import { navigateScene, showDevice, selectSession } from "../state";
 import { compactLayout, elevationScrim, elevationShadow, layout, palette, radii, space, textStyle } from "../theme";
 import { AttentionTray } from "../ui/attention";
+import { CaptionDragStrip, SceneCaptionInset } from "../ui/titleBar";
 import { IconButton, Button } from "../ui/primitives";
 import { pushToast, registerEscapeDismiss } from "../ui/overlays";
 import { drawerEnterMotion } from "../ui/motion";
@@ -146,33 +147,37 @@ function InboxHeader(props: { sheet?: boolean }) {
 /** The Inbox page: 720 wide, top 32 (16 on a phone), title, 24, the groups. */
 export function InboxScene() {
   startAttentionStore();
+  const captionInset = SceneCaptionInset();
   return (
-    <Scroll smoothWheel testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
-      <View
-        style={{
-          width: "100%",
-          flexGrow: 1,
-          maxWidth: layout.pageWidth + 2 * (compactLayout() ? layout.phoneGutter : layout.pageGutter),
-          alignSelf: "center",
-          paddingTop: compactLayout() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
-          paddingBottom: space.x5l,
-          paddingHorizontal: compactLayout() ? layout.phoneGutter : layout.pageGutter,
-          gap: layout.titleToSection,
-        }}
-      >
-        <InboxHeader />
-        <View style={{ flexGrow: inboxGroups().length === 0 && !inboxLoading() ? 1 : 0, justifyContent: inboxGroups().length === 0 && !inboxLoading() ? "center" : "flex-start" }}>
-          <AttentionTray
-            groups={inboxGroups()}
-            loading={inboxLoading()}
-            sendPrompt={sendPrompt()}
-            onOpen={openAttentionEntry}
-            onDevice={openDevice}
-            onAnswered={answeredToast}
-          />
+    <View style={{ flex: 1, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}>
+      <CaptionDragStrip testID="inbox-caption-drag-strip" />
+      <Scroll smoothWheel testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
+        <View
+          style={{
+            width: "100%",
+            flexGrow: 1,
+            maxWidth: layout.pageWidth + 2 * (compactLayout() ? layout.phoneGutter : layout.pageGutter),
+            alignSelf: "center",
+            paddingTop: captionInset() > 0 ? space.sm : compactLayout() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
+            paddingBottom: space.x5l,
+            paddingHorizontal: compactLayout() ? layout.phoneGutter : layout.pageGutter,
+            gap: layout.titleToSection,
+          }}
+        >
+          <InboxHeader />
+          <View style={{ flexGrow: inboxGroups().length === 0 && !inboxLoading() ? 1 : 0, justifyContent: inboxGroups().length === 0 && !inboxLoading() ? "center" : "flex-start" }}>
+            <AttentionTray
+              groups={inboxGroups()}
+              loading={inboxLoading()}
+              sendPrompt={sendPrompt()}
+              onOpen={openAttentionEntry}
+              onDevice={openDevice}
+              onAnswered={answeredToast}
+            />
+          </View>
         </View>
-      </View>
-    </Scroll>
+      </Scroll>
+    </View>
   );
 }
 
@@ -200,7 +205,9 @@ function SheetPanel() {
             {
               width: compactLayout() ? "100%" : SHEET_WIDTH,
               height: "100%",
-              paddingTop: safeArea().top,
+              paddingTop: compactLayout()
+                ? safeArea().top
+                : Math.max(safeArea().top, windowControlsRightInsetPx() > 0 ? layout.topBarHeight : 0),
               paddingBottom: safeArea().bottom,
               backgroundColor: palette().canvas,
               borderLeftWidth: compactLayout() ? 0 : 1,
@@ -218,7 +225,8 @@ function SheetPanel() {
               style={{
                 flexGrow: 1,
                 paddingHorizontal: compactLayout() ? layout.phoneGutter : space.xxl,
-                paddingVertical: compactLayout() ? space.lg : space.xxl,
+                paddingTop: compactLayout() ? space.lg : windowControlsRightInsetPx() > 0 ? space.sm : space.xxl,
+                paddingBottom: compactLayout() ? space.lg : space.xxl,
                 gap: space.xl,
               }}
             >

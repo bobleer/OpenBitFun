@@ -24,7 +24,7 @@ import type {
   ViewToken,
 } from "nsh";
 import { DiffView, Input, TextView } from "nsh/base";
-import { CaptionActionStrip, SceneCaptionInset } from "../ui/titleBar";
+import { CaptionActionStrip, SceneAtWindowTop, SceneCaptionInset } from "../ui/titleBar";
 import { fleetActive, invokeCommand } from "../bridge";
 import { primaryComposerDraft, secondaryComposerDraft, stageComposerChange, type ComposerDraftTarget } from "../composerDraftStore";
 import {
@@ -1537,6 +1537,7 @@ function SessionHeaderBar(props: {
   subline?: JSX.Element;
 }) {
   const sceneInset = SceneCaptionInset();
+  const atWindowTop = SceneAtWindowTop();
   const captionInset = () => props.paneToRight?.() ? 0 : sceneInset();
   const focusLabel = () =>
     typeof props.focusAccessibilityLabel === "function"
@@ -1546,6 +1547,7 @@ function SessionHeaderBar(props: {
   return (
     <View
       testID={props.testID}
+      desktop={atWindowTop() ? { windowDrag: true } : undefined}
       style={{
         position: "relative",
         height: props.tall?.() ? 64 : layout.topBarHeight,

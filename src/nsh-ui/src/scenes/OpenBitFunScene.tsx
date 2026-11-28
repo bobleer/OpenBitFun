@@ -49,6 +49,7 @@ import {
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { Icon } from "../ui/icons";
+import { CaptionDragStrip, SceneAtWindowTop, SceneCaptionInset } from "../ui/titleBar";
 import { MarkdownImageView, openMarkdownImageInLightbox } from "../ui/markdownMedia";
 import {
   CitationChip,
@@ -296,52 +297,55 @@ function NewConversation(props: { height: number }) {
     workingNow().needsYou.length === 0 &&
     workingNow().working.length === 0;
   return (
-    <Scroll
-      smoothWheel
-      testID="sa-new-conversation"
-      style={{ flex: 1, minHeight: 0 }}
-      contentStyle={{
-        flexGrow: 1,
-        alignItems: "center",
-        paddingHorizontal: gutter(),
-        paddingTop: compactLayout() ? space.xxl : space.x3l,
-        paddingBottom: space.x3l,
-      }}
-    >
-      <If when={!compactLayout()}>
-        <View style={{ flexGrow: 22, minHeight: space.x3l }} />
-      </If>
-      <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.xxl }}>
-        <Text
-          style={{
-            ...textStyle(compactLayout() ? "pageTitle" : "display"),
-            textAlign: compactLayout() ? "left" : "center",
-          }}
-        >
-          {tr("sa.hero")}
-        </Text>
-        <View style={{ gap: space.md }}>
-          <Composer maxFieldHeight={maxComposerHeight(props.height)} />
-          <If when={superagentPhase() === "ready"}>
-            <SuggestionChips
-              suggestions={(superagentStatus()?.suggestions ?? []).slice(0, 3)}
-              onPick={text => composerDraft.set(text)}
-            />
+    <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
+      <CaptionDragStrip testID="openbitfun-caption-drag-strip" />
+      <Scroll
+        smoothWheel
+        testID="sa-new-conversation"
+        style={{ flex: 1, minHeight: 0 }}
+        contentStyle={{
+          flexGrow: 1,
+          alignItems: "center",
+          paddingHorizontal: gutter(),
+          paddingTop: compactLayout() ? space.xxl : space.x3l,
+          paddingBottom: space.x3l,
+        }}
+      >
+        <If when={!compactLayout()}>
+          <View style={{ flexGrow: 22, minHeight: space.x3l }} />
+        </If>
+        <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.xxl }}>
+          <Text
+            style={{
+              ...textStyle(compactLayout() ? "pageTitle" : "display"),
+              textAlign: compactLayout() ? "left" : "center",
+            }}
+          >
+            {tr("sa.hero")}
+          </Text>
+          <View style={{ gap: space.md }}>
+            <Composer maxFieldHeight={maxComposerHeight(props.height)} />
+            <If when={superagentPhase() === "ready"}>
+              <SuggestionChips
+                suggestions={(superagentStatus()?.suggestions ?? []).slice(0, 3)}
+                onPick={text => composerDraft.set(text)}
+              />
+            </If>
+          </View>
+          <View style={{ paddingTop: space.sm }}>
+            <WorkingNowList needsYou={workingNow().needsYou} working={workingNow().working} />
+          </View>
+          {/* wave22-p3: desktop cards inline on phones and in browsers. */}
+          <CardsStrip />
+          <If when={showEmpty()}>
+            <EmptyStateCard title={tr("sa.emptyTitle")} subtitle={tr("sa.emptyBody")} />
           </If>
         </View>
-        <View style={{ paddingTop: space.sm }}>
-          <WorkingNowList needsYou={workingNow().needsYou} working={workingNow().working} />
-        </View>
-        {/* wave22-p3: desktop cards inline on phones and in browsers. */}
-        <CardsStrip />
-        <If when={showEmpty()}>
-          <EmptyStateCard title={tr("sa.emptyTitle")} subtitle={tr("sa.emptyBody")} />
+        <If when={!compactLayout()}>
+          <View style={{ flexGrow: 78 }} />
         </If>
-      </View>
-      <If when={!compactLayout()}>
-        <View style={{ flexGrow: 78 }} />
-      </If>
-    </Scroll>
+      </Scroll>
+    </View>
   );
 }
 
@@ -567,17 +571,21 @@ function ThinkingLine() {
 }
 
 function ConversationHeader() {
+  const captionInset = SceneCaptionInset();
+  const atWindowTop = SceneAtWindowTop();
   const menuOpen = signal(false);
   let anchor: ViewRef | undefined;
   const title = () => conversationView()?.conversation.title || tr("sa.newConversation");
   return (
     <View
       testID="sa-conversation-header"
+      desktop={atWindowTop() ? { windowDrag: true } : undefined}
       style={{
         flexDirection: "row",
         alignItems: "center",
         minHeight: compactLayout() ? layout.phoneTopBarHeight : layout.topBarHeight,
-        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
+        paddingLeft: compactLayout() ? space.lg : space.xxl,
+        paddingRight: captionInset() > 0 ? captionInset() + space.sm : compactLayout() ? space.lg : space.xxl,
         gap: space.md,
         flexShrink: 0,
       }}

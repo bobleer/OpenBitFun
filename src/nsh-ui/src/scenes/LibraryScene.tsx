@@ -15,6 +15,7 @@ import type { MessageKey } from "../locales/en-US";
 import { deviceContext, LIBRARY_TABS, libraryTab, selectDeviceContext, type LibraryTab } from "../state";
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { deviceException, deviceGlyphIcon } from "../ui/fleet";
+import { CaptionDragStrip, SceneCaptionInset } from "../ui/titleBar";
 import { Icon } from "../ui/icons";
 import { MOTION_DURATION, SmoothSwap, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
@@ -173,11 +174,12 @@ function scopeOfflineNotice(): string {
 }
 
 function LibraryHeader() {
+  const captionInset = SceneCaptionInset();
   return (
     <View
       style={{
         ...libraryColumnStyle(),
-        paddingTop: studioCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
+        paddingTop: captionInset() > 0 ? space.sm : studioCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
         gap: space.md,
         flexShrink: 0,
       }}
@@ -248,6 +250,7 @@ export function LibraryScene() {
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
+      <CaptionDragStrip testID="library-caption-drag-strip" />
       {/* An open assistant replaces the list with its own editor and header. */}
       <If when={!(libraryTab() === "assistants" && assistantDetailShown())}>
         <LibraryHeader />

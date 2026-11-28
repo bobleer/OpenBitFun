@@ -9,7 +9,7 @@ import { tr } from "../i18n";
 import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { activeScene, activeWorkspace, activeWorkspaceKey, navigateScene, showDevice } from "../state";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
-import { SceneCaptionInset } from "./titleBar";
+import { SceneAtWindowTop, SceneCaptionInset } from "./titleBar";
 import { DeviceBadge, deviceException } from "./fleet";
 import { SegmentedTabs, type SegmentedTabOption } from "./primitives";
 
@@ -52,10 +52,12 @@ function headerTitle(): string {
 
 export function ToolPaneHeader() {
   const captionInset = SceneCaptionInset();
+  const atWindowTop = SceneAtWindowTop();
   const device = () => fleetDeviceById(activeWorkspaceKey()?.deviceId);
   return (
     <View
       testID="tool-pane-header"
+      desktop={atWindowTop() ? { windowDrag: true } : undefined}
       style={{
         minHeight: layout.topBarHeight,
         paddingLeft: compactLayout() ? layout.phoneGutter : space.xxl,
