@@ -38,16 +38,26 @@ export function PromptReferenceCapsule(props: {
     ? tr("doc.mermaidDiagram") : props.reference.label;
   const tooltip = () => {
     const context = props.reference.context;
-    if (context?.type === "code-snippet") return codeSnippetLocation(context);
-    if (context?.type === "pull-request") return context.pullRequestTitle ?? label();
-    if (context?.diagramTitle) return context.diagramTitle;
+    const visible = label().trim();
+    if (context?.type === "code-snippet") {
+      const location = codeSnippetLocation(context);
+      return location && location !== visible ? location : "";
+    }
+    if (context?.type === "pull-request") {
+      const title = context.pullRequestTitle?.trim() ?? "";
+      return title && title !== visible ? title : "";
+    }
+    if (context?.diagramTitle) {
+      const title = context.diagramTitle.trim();
+      return title && title !== visible ? title : "";
+    }
     const detail = props.reference.detail?.trim();
-    return detail && detail !== label() ? `${label()} · ${detail}` : label();
+    return detail && detail !== visible ? `${visible} · ${detail}` : "";
   };
   return (
     <View
       accessibilityLabel={`${props.labelPrefix}-${props.reference.kind}-${props.reference.label}`}
-      tooltip={<TooltipBubble text={tooltip()} />}
+      tooltip={tooltip() ? <TooltipBubble text={tooltip()} /> : undefined}
       style={{
         flexDirection: "row", alignItems: "center", gap: space.xs,
         maxWidth: 224, paddingHorizontal: space.chip, marginHorizontal: space.hair,

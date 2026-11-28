@@ -2973,3 +2973,35 @@ test("multi-command live turn keeps settled history calm above one active row wi
   await app.waitFor("Here are the 5 commits from this week.");
   await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
 });
+
+test("session actions menu matches sidebar session row height and composer mode/model chips omit redundant hover tooltips", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("agent-picker");
+  await app.waitFor("bot-capsule-trigger");
+
+  // Hovering the visible mode and model chips must not echo "Agent: ..." or "Model: ..." tooltips.
+  await app.hover("agent-picker");
+  await app.wait(600);
+  expect(app.texts().some(text => /^Agent:/i.test(text))).toBe(false);
+
+  await app.hover("bot-capsule-trigger");
+  await app.wait(600);
+  expect(app.texts().some(text => /^Model:/i.test(text))).toBe(false);
+
+  // Every row in the session header ⋯ popover matches the height of a session row in the sidebar.
+  const sessionRow = app.layout("id:sidebar-session-session-1 >> nth=0");
+  expect(sessionRow?.height).toBeGreaterThan(0);
+
+  await app.press("thread-actions-trigger");
+  await app.waitFor("session-delete-trigger");
+  expect(app.layout("session-menu-copy-id-session-1")?.height).toBe(sessionRow?.height);
+  expect(app.layout("session-menu-export-session-1")?.height).toBe(sessionRow?.height);
+  expect(app.layout("session-menu-storage-session-1")?.height).toBe(sessionRow?.height);
+  expect(app.layout("session-delete-trigger")?.height).toBe(sessionRow?.height);
+
+  await app.press("session-delete-trigger");
+  await app.waitFor("session-delete-inline-confirm");
+  expect(app.layout("session-delete-inline-confirm")?.height).toBe(sessionRow?.height);
+});

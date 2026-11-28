@@ -254,7 +254,7 @@ export function sessionMenuItems(
       label: tr("session.revealStorage"),
       icon: "folder-open",
       disabled: !local,
-      hint: local ? undefined : tr("session.revealOnlyHere"),
+      tooltip: local ? undefined : tr("session.revealOnlyHere"),
       accessibilityLabel: `session-menu-storage-${key}`,
       onSelect: () => void revealSessionStorage(target),
     },

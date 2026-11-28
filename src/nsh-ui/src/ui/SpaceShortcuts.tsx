@@ -45,7 +45,7 @@ export function SpaceShortcuts(props: { onNavigate?: () => void }) {
                   active={activeShortcutId() === item().id}
                   accessibilityLabel={`space-shortcut-${item().id}`}
                   disabled={Boolean(spaceOpenBlockedReason())}
-                  tooltip={spaceOpenBlockedReason() || item().name}
+                  tooltip={spaceOpenBlockedReason() || undefined}
                   touchSized={compactLayout()}
                   onPress={() => {
                     const owner = deviceContext();

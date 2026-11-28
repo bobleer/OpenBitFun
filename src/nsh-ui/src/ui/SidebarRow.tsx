@@ -1,7 +1,8 @@
 import { Text, View, type JSX } from "nsh";
-import { layout, palette, radii, space, textStyle } from "../theme";
+import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { Icon, type IconName } from "./icons";
 import { MOTION_DURATION, paintTransition } from "./motion";
+import { TooltipBubble } from "./primitives";
 
 export function SidebarRow(props: {
   label: string;
@@ -15,12 +16,17 @@ export function SidebarRow(props: {
   touchSized?: boolean;
   onPress: () => void;
 }) {
+  const tip = () => {
+    const trimmed = props.tooltip?.trim() ?? "";
+    if (!trimmed || trimmed === props.label.trim() || compactLayout()) return undefined;
+    return <TooltipBubble text={trimmed} />;
+  };
   return (
     <View
       role="button"
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       accessibilityState={{ selected: props.active, disabled: props.disabled }}
-      tooltip={props.tooltip}
+      tooltip={tip()}
       onPress={props.disabled ? undefined : props.onPress}
       style={{
         height: props.touchSized ? layout.touchTarget : layout.navItemHeight,

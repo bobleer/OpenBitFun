@@ -61,7 +61,7 @@ import {
   tactileActiveStyle,
 } from "./motion";
 import { ModalFormContext, type ModalFormBinding } from "./modalForm";
-import { focusRingStyle } from "./primitives";
+import { TooltipBubble, focusRingStyle } from "./primitives";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
 const dialog = designTokens.metrics.dialog;
@@ -595,6 +595,8 @@ export interface DropdownMenuItem {
   icon?: IconName;
   /** Optional second-line muted description below `label`. */
   hint?: string;
+  /** Optional hover tooltip helper (keeps the menu row single-line). */
+  tooltip?: string;
   /** Compact single-line right-aligned muted hint on the same row as `label`. */
   trailingHint?: string;
   shortcut?: string;
@@ -789,7 +791,9 @@ function MenuSurface(props: {
                         role="menuitem"
                         focusable={false}
                         disabled={item().disabled}
+                        tooltip={item().tooltip && !compactLayout() ? <TooltipBubble text={item().tooltip!} /> : undefined}
                         accessibilityLabel={item().accessibilityLabel ?? item().label}
+                        accessibilityHint={item().tooltip}
                         accessibilityState={{
                           disabled: Boolean(item().disabled),
                           selected: Boolean(item().active),

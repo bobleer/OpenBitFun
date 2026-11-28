@@ -201,7 +201,6 @@ import {
 import {
   CONTEXT_LENGTH_PRESETS,
   activeModelId,
-  activeModelDetail,
   activeModelLabel,
   activeReasoningId,
   activeReasoningLabel,
@@ -2205,7 +2204,7 @@ function ThreadActionsSurface(props: {
                 <ThreadMenuAction
                   icon={item().icon ?? "more"}
                   label={item().label}
-                  hint={item().hint}
+                  tooltip={item().tooltip ?? item().hint}
                   disabled={item().disabled}
                   accessibilityLabel={item().accessibilityLabel}
                   onPress={() => {
@@ -2235,7 +2234,8 @@ function ThreadActionsSurface(props: {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : controlHeight.md,
+                  height: compactLayout() || sessionsCompact() ? layout.touchTarget : layout.navItemHeight,
+                  minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : layout.navItemHeight,
                   paddingHorizontal: space.xs,
                   gap: space.xs,
                   borderRadius: POPOVER_ROW_RADIUS,
@@ -2306,19 +2306,31 @@ function ThreadMenuAction(props: {
   icon: IconName;
   label: string;
   hint?: string;
+  tooltip?: string;
   danger?: boolean;
   disabled?: boolean;
   accessibilityLabel?: string;
   onPress: () => void;
 }) {
+  const helperText = () => (props.tooltip ?? props.hint)?.trim() || "";
+  const rowHeight = () => (compactLayout() || sessionsCompact() ? layout.touchTarget : layout.navItemHeight);
   return (
     <View
       role="menuitem"
+      disabled={props.disabled}
+      tooltip={helperText() && !compactLayout() ? <TooltipBubble text={helperText()} /> : undefined}
       accessibilityLabel={props.accessibilityLabel}
+      accessibilityHint={helperText() || undefined}
+      accessibilityState={{ disabled: Boolean(props.disabled) }}
       onPress={() => {
         if (!props.disabled) props.onPress();
       }}
-      style={popoverRowStyle(false, props.disabled)}
+      style={{
+        ...popoverRowStyle(false, props.disabled),
+        height: rowHeight(),
+        minHeight: rowHeight(),
+        paddingVertical: 0,
+      }}
       hoverStyle={
         props.disabled ? {} : { backgroundColor: props.danger ? palette().dangerSoft : listRowHoverBg() }
       }
@@ -2332,8 +2344,6 @@ function ThreadMenuAction(props: {
         iconColor={props.danger ? palette().danger : palette().textSecondary}
         title={props.label}
         titleColor={props.danger ? palette().danger : palette().text}
-        subtitle={props.hint}
-        subtitleLines={2}
       />
     </View>
   );
@@ -8346,11 +8356,6 @@ function AgentPickerTrigger(props: {
           }}
           role="button"
           accessibilityLabel={label}
-          tooltip={
-            <TooltipBubble
-              text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
-            />
-          }
           onPress={() => {
             props.onFocusPane?.();
             agentPickerAnchor.set(triggerRef);
@@ -8402,11 +8407,6 @@ function AgentPickerTrigger(props: {
     >
       <View
         accessibilityLabel={label}
-        tooltip={
-          <TooltipBubble
-            text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
-          />
-        }
         style={{
           height: chatComposerMetrics.controlHeight,
           minWidth: 0,
@@ -8596,7 +8596,7 @@ async function selectReasoningForPickerTarget(modelId: string, presetId: string 
   selectModelForPickerTarget(modelId, { reasoningPreset: presetId, keepOpen: true });
 }
 
-/** Compact icon-anchored Model pill (reasoning & context settings live inside its picker). */
+/** Compact Model pill (reasoning & context settings live inside its picker). */
 function ModelReasoningCapsule(props: {
   primary: boolean;
   modelAnchor?: Signal<ViewRef | null>;
@@ -8614,24 +8614,24 @@ function ModelReasoningCapsule(props: {
   cleanup(() => {
     if (props.modelAnchor?.() === modelTriggerRef) props.modelAnchor?.set(null);
   });
-  const resolvedText = computed(() => {
+  const resolvedLabel = computed(() => {
     if (props.btwMode) {
       const override = sideQuestionModelOverride();
       if (override) {
         const remote = fleetChoiceOf(override);
         if (remote) {
           const text = fleetModelText(remote.choice);
-          return remote.device.isThisDevice ? text : { label: `${text.label} · ${remote.device.name}`, detail: text.detail };
+          return remote.device.isThisDevice ? text.label : `${text.label} · ${remote.device.name}`;
         }
         const match = chatModels().find(option => option.id === override || option.modelName === override);
-        if (match) return { label: match.label, detail: match.detail };
-        return { label: override, detail: "" };
+        if (match) return match.label;
+        return override;
       }
-      return modelTextForSession(activeSessionId(), activeSessionDevice());
+      return modelTextForSession(activeSessionId(), activeSessionDevice()).label;
     }
     return props.sessionId
-      ? modelTextForSession(props.sessionId(), props.deviceId?.())
-      : { label: activeModelLabel(), detail: activeModelDetail() };
+      ? modelTextForSession(props.sessionId(), props.deviceId?.()).label
+      : activeModelLabel();
   });
   const reasoningId = computed(() =>
     props.showReasoning === false
@@ -8647,13 +8647,6 @@ function ModelReasoningCapsule(props: {
     const id = reasoningId();
     return Boolean(id && id !== "default");
   });
-  const contextTokens = computed(() =>
-    props.btwMode
-      ? null
-      : props.sessionId
-        ? contextLengthForSession(props.sessionId(), props.deviceId?.())
-        : contextLengthForSession(activeSessionId(), activeSessionDevice()),
-  );
   const explicitContext = computed(() =>
     props.btwMode
       ? null
@@ -8667,15 +8660,6 @@ function ModelReasoningCapsule(props: {
     if (reasoningElevated()) parts.push(reasoningLabel());
     const explicit = explicitContext();
     if (explicit !== null) parts.push(formatContextLengthLabel(explicit));
-    return parts.join(" · ");
-  });
-  const tooltipText = computed(() => {
-    const base = resolvedText().detail ? `${resolvedText().label} · ${resolvedText().detail}` : resolvedText().label;
-    if (props.btwMode) return tr("sessions.modelLabel", { name: base });
-    const parts = [tr("sessions.modelLabel", { name: base })];
-    if (reasoningElevated()) parts.push(tr("sessions.reasoningLabel", { name: reasoningLabel() }));
-    const ctx = contextTokens();
-    if (ctx !== null) parts.push(`${tr("models.contextLength")}: ${formatContextLengthLabel(ctx)}`);
     return parts.join(" · ");
   });
   const currentTarget = (): ComposerModelTarget =>
@@ -8706,7 +8690,6 @@ function ModelReasoningCapsule(props: {
         }}
         role="button"
         accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
-        tooltip={compactLayout() ? undefined : <TooltipBubble text={tooltipText()} />}
         onPress={() => {
           props.onFocusPane?.();
           modelPickerTarget.set(currentTarget());
@@ -8756,7 +8739,6 @@ function ModelReasoningCapsule(props: {
         activeStyle={tactileActiveStyle(0.96)}
         focusVisibleStyle={focusRingStyle(-1)}
       >
-        <Icon name="cpu" size={13} color={palette().textMuted} />
         <Text
           style={{
             flexShrink: 1,
@@ -8770,7 +8752,7 @@ function ModelReasoningCapsule(props: {
             textOverflow: "ellipsis",
           }}
         >
-          {resolvedText().label}
+          {resolvedLabel()}
         </Text>
         <If when={metaBadge()}>
           {meta => (

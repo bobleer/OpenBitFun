@@ -145,9 +145,14 @@ test("a session of another device is archived and renamed there, and its folder 
 
   await app.hover("id:sidebar-session-session-9 >> nth=0");
   await app.press("sidebar-session-actions-session-9");
-  // The storage folder lives on linux-box: the item is there, disabled, with its reason.
+  // The storage folder lives on linux-box: the item stays single-line, disabled, with its reason in a hover helper tooltip.
+  const sidebarSessionRow = app.layout("id:sidebar-session-session-9 >> nth=0");
+  const sidebarStorageItem = app.layout("session-menu-storage-session-9");
   expect(app.enabled("session-menu-storage-session-9")).toBe(false);
-  expect(app.shows("text:Only for sessions on this device")).toBe(true);
+  expect(app.shows("text:Only for sessions on this device")).toBe(false);
+  expect(sidebarStorageItem?.height).toBe(sidebarSessionRow?.height);
+  await app.hover("session-menu-storage-session-9");
+  await app.waitFor("text:Only for sessions on this device");
   await app.press("session-menu-archive-session-9");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "archive_session"));
   expect(host.fleetCalls.find(call => call.command === "archive_session")).toMatchObject({
@@ -166,6 +171,20 @@ test("a session of another device is archived and renamed there, and its folder 
     target: "dev-b",
     args: { request: { sessionId: "session-9", title: "Build 1.2", workspaceId: "workspace-9" } },
   });
+
+  // Opening the remote session and its header ⋯ popover matches the session row height and keeps the disabled reason in a hover helper.
+  await app.press("id:sidebar-session-session-9 >> nth=0");
+  await app.waitFor("thread-actions-trigger");
+  await app.press("thread-actions-trigger");
+  await app.waitFor("session-menu-storage-session-9");
+  const headerCopyId = app.layout("session-menu-copy-id-session-9");
+  const headerStorage = app.layout("session-menu-storage-session-9");
+  expect(headerCopyId?.height).toBe(sidebarSessionRow?.height);
+  expect(headerStorage?.height).toBe(sidebarSessionRow?.height);
+  expect(app.enabled("session-menu-storage-session-9")).toBe(false);
+  expect(app.shows("text:Only for sessions on this device")).toBe(false);
+  await app.hover("session-menu-storage-session-9");
+  await app.waitFor("text:Only for sessions on this device");
 });
 
 test("a workspace row's ⋯ keeps the old workspace menu: terminal, rename, path, assistant reset with a confirmation, close", async () => {

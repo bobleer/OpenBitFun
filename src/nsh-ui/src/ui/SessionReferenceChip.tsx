@@ -18,7 +18,11 @@ export function SessionReferenceChip(props: {
       backgroundColor: palette().surfaceTertiary, maxWidth: 224, minHeight: controlHeight.sm }}>
       <View role={hasAction() ? "button" : undefined} onPress={props.onOpen}
         accessibilityLabel={hasAction() ? tr("sessions.openSessionReference", { name: props.reference.sessionName }) : undefined}
-        tooltip={<TooltipBubble text={props.reference.workspaceLabel} />}
+        tooltip={
+          props.reference.workspaceLabel && props.reference.workspaceLabel !== props.reference.sessionName
+            ? <TooltipBubble text={props.reference.workspaceLabel} />
+            : undefined
+        }
         focusVisibleStyle={hasAction() ? focusRingStyle() : undefined}
         style={{ flexDirection: "row", alignItems: "center", minWidth: 0, flexShrink: 1, gap: space.xs,
           paddingHorizontal: space.sm, cursor: hasAction() ? "pointer" : "default" }}>
