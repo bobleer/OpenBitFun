@@ -54,8 +54,8 @@ use crate::{
 };
 
 use super::manual::{
-    ManualConnectorHost, collect_bind_addrs, convert_idn_to_ascii, resolve_remote_addr,
-    resolve_url_addrs,
+    ManualConnectorHost, ManualInterfaceAddrs, collect_bind_addrs, convert_idn_to_ascii,
+    resolve_remote_addr, resolve_url_addrs,
 };
 
 mod udp;
@@ -63,6 +63,10 @@ mod udp;
 const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT: Duration = Duration::from_secs(300);
 const INVALID_SERVICE_BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// OpenBitFun: brief Happy-Eyeballs head start for same-LAN direct candidates
+/// so devices on one network connect over the LAN before public/hairpin paths
+/// are dialed.
+const DIRECT_LAN_HEAD_START: Duration = Duration::from_millis(200);
 const DIRECT_TASK_LOOP_INTERVAL_MS: u64 = 5000;
 const MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
@@ -449,6 +453,8 @@ where
             }
         });
 
+        let local_addrs = self.host.interface_addrs().await.ok();
+
         while !available_listeners.is_empty() {
             let mut tasks = JoinSet::new();
             let current_scheme = available_listeners
@@ -456,15 +462,50 @@ where
                 .expect("non-empty listener list")
                 .scheme()
                 .to_owned();
+            let mut lan_urls = Vec::new();
+            let mut wan_urls = Vec::new();
+            let mut seen_urls = HashSet::new();
             while available_listeners
                 .last()
                 .is_some_and(|listener| listener.scheme() == current_scheme)
             {
                 let listener = available_listeners.pop().expect("listener should exist");
-                self.spawn_direct_connect_tasks(dst_peer_id, &ip_list, &listener, &mut tasks)
-                    .await;
+                self.collect_direct_connect_urls(
+                    &ip_list,
+                    &listener,
+                    local_addrs.as_ref(),
+                    &mut seen_urls,
+                    &mut lan_urls,
+                    &mut wan_urls,
+                )
+                .await;
             }
-            let _ = tasks.join_all().await;
+            for url in lan_urls {
+                tasks.spawn(Self::try_connect_to_url(self.clone(), dst_peer_id, url));
+            }
+            if !tasks.is_empty() && !wan_urls.is_empty() {
+                let _ = crate::foundation::time::timeout(DIRECT_LAN_HEAD_START, async {
+                    while tasks.join_next().await.is_some() {
+                        if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                            break;
+                        }
+                    }
+                })
+                .await;
+            }
+            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                tasks.abort_all();
+                return Ok(());
+            }
+            for url in wan_urls {
+                tasks.spawn(Self::try_connect_to_url(self.clone(), dst_peer_id, url));
+            }
+            while tasks.join_next().await.is_some() {
+                if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                    tasks.abort_all();
+                    return Ok(());
+                }
+            }
             if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
                 return Ok(());
             }
@@ -472,12 +513,14 @@ where
         Ok(())
     }
 
-    async fn spawn_direct_connect_tasks(
+    async fn collect_direct_connect_urls(
         self: &Arc<Self>,
-        dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
         listener: &Url,
-        tasks: &mut JoinSet<anyhow::Result<()>>,
+        local_addrs: Option<&ManualInterfaceAddrs>,
+        seen_urls: &mut HashSet<String>,
+        lan_urls: &mut Vec<String>,
+        wan_urls: &mut Vec<String>,
     ) {
         let Ok(mut addrs) = resolve_mapped_listener_addrs(
             listener,
@@ -502,6 +545,16 @@ where
                 || (!is_udp && self.protected_tcp_ports.contains(target.port()));
             port_is_protected && self.host.is_local_ip(&target.ip())
         };
+        let mut push_url = |ip: IpAddr, url: String| {
+            if !seen_urls.insert(url.clone()) {
+                return;
+            }
+            if is_lan_direct_ip(ip, local_addrs) {
+                lan_urls.push(url);
+            } else {
+                wan_urls.push(url);
+            }
+        };
 
         match listener_host {
             Some(SocketAddr::V4(socket_addr)) if socket_addr.ip().is_unspecified() => {
@@ -516,11 +569,7 @@ where
                     }
                     let mut url = listener.clone();
                     if url.set_ip_host(target.ip()).is_ok() {
-                        tasks.spawn(Self::try_connect_to_url(
-                            self.clone(),
-                            dst_peer_id,
-                            url.to_string(),
-                        ));
+                        push_url(target.ip(), url.to_string());
                     }
                 }
             }
@@ -528,11 +577,7 @@ where
                 if (!socket_addr.ip().is_loopback() || self.options.testing)
                     && !should_deny_target(&SocketAddr::V4(socket_addr)) =>
             {
-                tasks.spawn(Self::try_connect_to_url(
-                    self.clone(),
-                    dst_peer_id,
-                    listener.to_string(),
-                ));
+                push_url(IpAddr::V4(*socket_addr.ip()), listener.to_string());
             }
             Some(SocketAddr::V6(socket_addr)) if socket_addr.ip().is_unspecified() => {
                 let mut candidates = HashSet::new();
@@ -553,11 +598,7 @@ where
                     }
                     let mut url = listener.clone();
                     if url.set_ip_host(target.ip()).is_ok() {
-                        tasks.spawn(Self::try_connect_to_url(
-                            self.clone(),
-                            dst_peer_id,
-                            url.to_string(),
-                        ));
+                        push_url(target.ip(), url.to_string());
                     }
                 }
             }
@@ -573,11 +614,7 @@ where
                 if (!socket_addr.ip().is_loopback() || self.options.testing)
                     && !should_deny_target(&SocketAddr::V6(socket_addr)) =>
             {
-                tasks.spawn(Self::try_connect_to_url(
-                    self.clone(),
-                    dst_peer_id,
-                    listener.to_string(),
-                ));
+                push_url(IpAddr::V6(*socket_addr.ip()), listener.to_string());
             }
             _ => {}
         }
@@ -1208,6 +1245,53 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
         && !ip.is_unspecified()
 }
 
+/// OpenBitFun: RFC 2544 benchmarking range (`198.18.0.0/15`), commonly bound by
+/// local proxy TUN interfaces (fake-IP), never a LAN destination.
+fn is_benchmark_fake_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 198 && (b & 0xfe) == 18
+}
+
+/// OpenBitFun: whether a direct-connect target belongs to the local network
+/// (private/link-local/loopback IPv4, same `/24` as a non-private local IPv4
+/// interface, link-local/ULA/loopback IPv6, or same `/64` as a local IPv6
+/// interface).
+fn is_lan_direct_ip(ip: IpAddr, local: Option<&ManualInterfaceAddrs>) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if is_benchmark_fake_ipv4(v4) {
+                return false;
+            }
+            if v4.is_private() || v4.is_link_local() || v4.is_loopback() {
+                return true;
+            }
+            local.is_some_and(|addrs| {
+                addrs.interface_ipv4s.iter().any(|local_v4| {
+                    !is_benchmark_fake_ipv4(*local_v4)
+                        && !local_v4.is_private()
+                        && !local_v4.is_loopback()
+                        && local_v4.octets()[..3] == v4.octets()[..3]
+                })
+            })
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_lan_direct_ip(IpAddr::V4(v4), local);
+            }
+            if v6.is_unicast_link_local() || v6.is_unique_local() || v6.is_loopback() {
+                return true;
+            }
+            local.is_some_and(|addrs| {
+                addrs.interface_ipv6s.iter().any(|local_v6| {
+                    !local_v6.is_loopback()
+                        && !local_v6.is_unspecified()
+                        && local_v6.segments()[..4] == v6.segments()[..4]
+                })
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1269,5 +1353,45 @@ mod tests {
         let set = ExpiringSet::default();
         set.insert(7u32, Duration::ZERO);
         assert!(!set.contains(&7));
+    }
+
+    #[test]
+    fn classifies_lan_direct_candidates_across_v4_and_v6() {
+        let local = ManualInterfaceAddrs {
+            interface_ipv4s: vec![
+                "192.168.1.38".parse().unwrap(),
+                "198.18.0.0".parse().unwrap(),
+                "7.249.253.33".parse().unwrap(),
+            ],
+            interface_ipv6s: vec!["2408:8206:4824:92b0:426:effa:71e:f37d".parse().unwrap()],
+            public_ipv6: Some("2408:8206:4824:92b0:7174:3f94:88d3:a544".parse().unwrap()),
+        };
+
+        assert!(is_lan_direct_ip(
+            "192.168.1.79".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_lan_direct_ip(
+            "7.249.253.138".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_lan_direct_ip(
+            "123.119.146.178".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_lan_direct_ip(
+            "198.18.0.1".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_lan_direct_ip(
+            "2408:8206:4824:92b0:4d1:ef4f:ddb6:e041".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(!is_lan_direct_ip(
+            "2408:8206:4824:92b1:4d1:ef4f:ddb6:e041".parse().unwrap(),
+            Some(&local)
+        ));
+        assert!(is_lan_direct_ip("fe80::1".parse().unwrap(), Some(&local)));
+        assert!(is_lan_direct_ip("fd00::1".parse().unwrap(), Some(&local)));
     }
 }

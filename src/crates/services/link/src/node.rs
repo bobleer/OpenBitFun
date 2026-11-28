@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinHandle;
 
 use crate::status::{
-    direct_route_for, local_subnets, nat_type_name, LocalSubnet, MeshPeer, MeshRelayNode,
+    direct_route_for, local_subnets, nat_type_name, LocalSubnets, MeshPeer, MeshRelayNode,
     MeshRoute, MeshState, MeshStatus, NodeRole,
 };
 use crate::stream::{LinkListener, LinkStream};
@@ -76,7 +76,7 @@ struct Inner {
     status: watch::Sender<MeshStatus>,
     seen: Mutex<HashMap<String, MeshPeer>>,
     obp_port: Mutex<Option<u16>>,
-    subnets: Mutex<Option<(std::time::Instant, Vec<LocalSubnet>)>>,
+    subnets: Mutex<Option<(std::time::Instant, LocalSubnets)>>,
     refresh_wake: Notify,
 }
 
@@ -564,20 +564,32 @@ impl Inner {
         };
 
         // Direct connections by peer id: (route, latency ms, loss, tunnel).
+        // Prefer measured connections over unmeasured (0 us) ones, then LAN
+        // over WAN direct tunnels, then lowest latency.
         let mut direct_by_peer = HashMap::new();
         for peer in &direct {
             let best = peer
                 .conns
                 .iter()
                 .filter(|conn| !conn.is_closed)
-                .min_by_key(|conn| conn.stats.map(|stats| stats.latency_us).unwrap_or(u64::MAX));
-            if let Some(conn) = best {
-                let remote = conn
-                    .tunnel
-                    .as_ref()
-                    .and_then(|tunnel| tunnel.remote_addr.as_ref())
-                    .map(|url| url.url.clone())
-                    .unwrap_or_default();
+                .map(|conn| {
+                    let remote = conn
+                        .tunnel
+                        .as_ref()
+                        .and_then(|tunnel| tunnel.remote_addr.as_ref())
+                        .map(|url| url.url.clone())
+                        .unwrap_or_default();
+                    let route_kind = direct_route_for(&remote, &subnets);
+                    let latency_us = conn.stats.map(|stats| stats.latency_us).unwrap_or(0);
+                    let rank = (
+                        latency_us == 0,
+                        route_kind != MeshRoute::DirectLan,
+                        if latency_us > 0 { latency_us } else { u64::MAX },
+                    );
+                    (rank, conn, route_kind)
+                })
+                .min_by_key(|(rank, _, _)| *rank);
+            if let Some((_, conn, route_kind)) = best {
                 let tunnel = conn
                     .tunnel
                     .as_ref()
@@ -586,7 +598,7 @@ impl Inner {
                 direct_by_peer.insert(
                     peer.peer_id,
                     (
-                        remote,
+                        route_kind,
                         conn.stats.map(|stats| stats.latency_us as f64 / 1000.0),
                         f64::from(conn.loss_rate),
                         tunnel,
@@ -636,12 +648,9 @@ impl Inner {
             .flatten();
             let (route_kind, latency_ms, loss_rate, tunnel) =
                 match direct_by_peer.get(&route.peer_id) {
-                    Some((remote, latency, loss, tunnel)) => (
-                        direct_route_for(remote, &subnets),
-                        *latency,
-                        Some(*loss),
-                        tunnel.clone(),
-                    ),
+                    Some((route_kind, latency, loss, tunnel)) => {
+                        (*route_kind, *latency, Some(*loss), tunnel.clone())
+                    }
                     None => (
                         if relay_ids.contains(&route.next_hop_peer_id) {
                             MeshRoute::RelayedServer

@@ -481,13 +481,22 @@ test("this-device marker renders as an inverted pill capsule on the chrome surfa
   expect(pillStyle?.backgroundColor).not.toBe(textStyleVal.color);
 });
 
-test("temporary dev route tag shows P2P/Relay and latency on the right side of peer device headers", async () => {
+test("temporary dev route tag shows LAN/P2P/Relay and latency on the right side of peer device headers", async () => {
   const nav = navigator();
   nav.devices = nav.devices.map(device => {
     const id = (device as { deviceId?: string }).deviceId;
     if (id === "dev-a") return { ...device, route: { kind: "local" } };
     if (id === "dev-b") return { ...device, route: { kind: "direct_lan", latencyMs: 12 } };
     return device;
+  });
+  nav.devices.push({
+    ...fleetDeviceRow(
+      "dev-p2p",
+      "studio",
+      [{ workspaceId: "ws-p", name: "app", rootPath: "/app", isHostCurrent: true, sessions: [] }],
+      { hostKind: "desktop" },
+    ),
+    route: { kind: "direct_ipv4", latencyMs: 34 },
   });
   nav.devices.push({
     ...fleetDeviceRow(
@@ -500,10 +509,12 @@ test("temporary dev route tag shows P2P/Relay and latency on the right side of p
   });
   const { app } = await openFleet(nav);
   await app.waitFor("id:sidebar-device-dev-route-dev-b");
+  await app.waitFor("id:sidebar-device-dev-route-dev-p2p");
   await app.waitFor("id:sidebar-device-dev-route-dev-relay");
 
   expect(app.shows("id:sidebar-device-dev-route-dev-a")).toBe(false);
-  expect(app.shows("text:P2P · 12ms")).toBe(true);
+  expect(app.shows("text:LAN · 12ms")).toBe(true);
+  expect(app.shows("text:P2P · 34ms")).toBe(true);
   expect(app.shows("text:Relay · 48ms")).toBe(true);
 
   const sectionBox = app.layout("label:sidebar-device-dev-relay");

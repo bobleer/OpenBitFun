@@ -272,56 +272,125 @@ pub(crate) fn nat_type_name(value: i32) -> Option<&'static str> {
     })
 }
 
-/// An IPv4 network this machine is attached to (address, netmask).
-pub(crate) type LocalSubnet = (std::net::Ipv4Addr, std::net::Ipv4Addr);
+/// The IPv4 and IPv6 local subnets this machine's interfaces are attached to.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LocalSubnets {
+    pub(crate) v4: Vec<(std::net::Ipv4Addr, std::net::Ipv4Addr)>,
+    pub(crate) v6: Vec<(std::net::Ipv6Addr, std::net::Ipv6Addr)>,
+}
 
-/// The IPv4 networks of this machine's interfaces.
-pub(crate) fn local_subnets() -> Vec<LocalSubnet> {
+/// RFC 2544 benchmarking space (`198.18.0.0/15`), commonly used by local proxy
+/// TUN interfaces (e.g. Clash/Mihomo fake-IP) rather than a real LAN.
+fn is_benchmark_fake_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 198 && (b & 0xfe) == 18
+}
+
+/// Minimum contiguous prefix length for a local interface mask to count as a
+/// LAN subnet, excluding VPN catch-all routes like `0.0.0.0/0`, `0.0.0.0/1`,
+/// `::/0`, or `2000::/3`.
+const MIN_LOCAL_V4_PREFIX: u32 = 8;
+const MIN_LOCAL_V6_PREFIX: u32 = 32;
+
+fn is_valid_v4_lan_mask(mask: std::net::Ipv4Addr) -> bool {
+    let bits = u32::from(mask);
+    let prefix = bits.leading_ones();
+    prefix >= MIN_LOCAL_V4_PREFIX && bits.trailing_zeros() + prefix == 32
+}
+
+fn is_valid_v6_lan_mask(mask: std::net::Ipv6Addr) -> bool {
+    let bits = u128::from(mask);
+    let prefix = bits.leading_ones();
+    prefix >= MIN_LOCAL_V6_PREFIX && bits.trailing_zeros() + prefix == 128
+}
+
+/// The IPv4 and IPv6 networks of this machine's interfaces.
+pub(crate) fn local_subnets() -> LocalSubnets {
     use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
-    NetworkInterface::show()
-        .map(|interfaces| {
-            interfaces
-                .into_iter()
-                .flat_map(|interface| interface.addr)
-                .filter_map(|addr| match addr {
-                    Addr::V4(v4) => v4.netmask.map(|mask| (v4.ip, mask)),
-                    Addr::V6(_) => None,
-                })
-                .filter(|(ip, _)| !ip.is_loopback())
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut subnets = LocalSubnets::default();
+    let Ok(interfaces) = NetworkInterface::show() else {
+        return subnets;
+    };
+    for interface in interfaces {
+        for addr in interface.addr {
+            match addr {
+                Addr::V4(v4) => {
+                    if v4.ip.is_loopback()
+                        || v4.ip.is_unspecified()
+                        || is_benchmark_fake_ipv4(v4.ip)
+                    {
+                        continue;
+                    }
+                    if let Some(mask) = v4.netmask.filter(|mask| is_valid_v4_lan_mask(*mask)) {
+                        subnets.v4.push((v4.ip, mask));
+                    }
+                }
+                Addr::V6(v6) => {
+                    if v6.ip.is_loopback() || v6.ip.is_unspecified() {
+                        continue;
+                    }
+                    if let Some(mask) = v6.netmask.filter(|mask| is_valid_v6_lan_mask(*mask)) {
+                        subnets.v6.push((v6.ip, mask));
+                    }
+                }
+            }
+        }
+    }
+    subnets
 }
 
 /// Classifies a direct tunnel by the address it reaches the peer at: an
-/// address on one of this machine's networks, or a private one, is the LAN.
-pub(crate) fn direct_route_for(remote: &str, subnets: &[LocalSubnet]) -> MeshRoute {
+/// address on one of this machine's IPv4 or IPv6 networks, or a private/local
+/// one, is the LAN.
+pub(crate) fn direct_route_for(remote: &str, subnets: &LocalSubnets) -> MeshRoute {
     let host = url_host(remote);
     match host.parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V6(v6)) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
-                classify_v4(v4, subnets)
-            } else if v6.is_unicast_link_local() || v6.is_unique_local() {
+                classify_v4(v4, &subnets.v4)
+            } else if v6.is_unicast_link_local()
+                || v6.is_unique_local()
+                || v6.is_loopback()
+                || on_local_v6_subnet(v6, &subnets.v6)
+            {
                 MeshRoute::DirectLan
             } else {
                 MeshRoute::DirectIpv6
             }
         }
-        Ok(std::net::IpAddr::V4(v4)) => classify_v4(v4, subnets),
+        Ok(std::net::IpAddr::V4(v4)) => classify_v4(v4, &subnets.v4),
         Err(_) => MeshRoute::DirectIpv4,
     }
 }
 
-fn classify_v4(v4: std::net::Ipv4Addr, subnets: &[LocalSubnet]) -> MeshRoute {
+fn classify_v4(
+    v4: std::net::Ipv4Addr,
+    subnets: &[(std::net::Ipv4Addr, std::net::Ipv4Addr)],
+) -> MeshRoute {
+    if is_benchmark_fake_ipv4(v4) {
+        return MeshRoute::DirectIpv4;
+    }
     let on_local_network = subnets.iter().any(|(ip, mask)| {
-        let mask = u32::from(*mask);
-        mask != 0 && u32::from(*ip) & mask == u32::from(v4) & mask
+        is_valid_v4_lan_mask(*mask)
+            && !is_benchmark_fake_ipv4(*ip)
+            && (u32::from(*ip) & u32::from(*mask)) == (u32::from(v4) & u32::from(*mask))
     });
     if on_local_network || v4.is_private() || v4.is_link_local() || v4.is_loopback() {
         MeshRoute::DirectLan
     } else {
         MeshRoute::DirectIpv4
     }
+}
+
+fn on_local_v6_subnet(
+    v6: std::net::Ipv6Addr,
+    subnets: &[(std::net::Ipv6Addr, std::net::Ipv6Addr)],
+) -> bool {
+    let remote = u128::from(v6);
+    subnets.iter().any(|(ip, mask)| {
+        is_valid_v6_lan_mask(*mask)
+            && (u128::from(*ip) & u128::from(*mask)) == (remote & u128::from(*mask))
+    })
 }
 
 /// `tcp://[::1]:11010` -> `::1`, `udp://10.0.0.2:11010` -> `10.0.0.2`.
@@ -363,24 +432,32 @@ mod tests {
 
     #[test]
     fn classifies_direct_tunnels_by_address() {
-        let none: &[LocalSubnet] = &[];
+        let none = LocalSubnets::default();
         assert_eq!(
-            direct_route_for("udp://192.168.1.20:11010", none),
+            direct_route_for("udp://192.168.1.20:11010", &none),
             MeshRoute::DirectLan
         );
         assert_eq!(
-            direct_route_for("tcp://10.0.0.2:1", none),
+            direct_route_for("tcp://10.0.0.2:1", &none),
             MeshRoute::DirectLan
         );
         assert_eq!(
-            direct_route_for("udp://203.0.113.9:40000", none),
+            direct_route_for("udp://203.0.113.9:40000", &none),
             MeshRoute::DirectIpv4
         );
-        // A public-range address on one of this machine's own networks.
-        let corporate = [(
-            "7.249.253.33".parse().unwrap(),
-            "255.255.254.0".parse().unwrap(),
-        )];
+        // Proxy fake-IP / RFC 2544 benchmark space is not treated as a LAN.
+        assert_eq!(
+            direct_route_for("tcp://198.18.0.5:11010", &none),
+            MeshRoute::DirectIpv4
+        );
+        // A public-range address on one of this machine's own IPv4 networks.
+        let corporate = LocalSubnets {
+            v4: vec![(
+                "7.249.253.33".parse().unwrap(),
+                "255.255.254.0".parse().unwrap(),
+            )],
+            v6: Vec::new(),
+        };
         assert_eq!(
             direct_route_for("tcp://7.249.252.10:1", &corporate),
             MeshRoute::DirectLan
@@ -389,16 +466,62 @@ mod tests {
             direct_route_for("tcp://7.249.250.10:1", &corporate),
             MeshRoute::DirectIpv4
         );
+        // Global IPv6 on the same local /64 subnet (e.g. home broadband SLAAC)
+        // is direct over the LAN, while another /64 stays DirectIpv6.
+        let home_v6 = LocalSubnets {
+            v4: Vec::new(),
+            v6: vec![(
+                "2408:8206:4824:92b0:426:effa:71e:f37d".parse().unwrap(),
+                "ffff:ffff:ffff:ffff::".parse().unwrap(),
+            )],
+        };
         assert_eq!(
-            direct_route_for("udp://[2001:db8::5]:11010", none),
-            MeshRoute::DirectIpv6
-        );
-        assert_eq!(
-            direct_route_for("tcp://[fe80::1]:11010", none),
+            direct_route_for(
+                "tcp://[2408:8206:4824:92b0:4d1:ef4f:ddb6:e041]:11010",
+                &home_v6
+            ),
             MeshRoute::DirectLan
         );
         assert_eq!(
-            direct_route_for("udp://[::ffff:192.168.0.3]:1", none),
+            direct_route_for(
+                "tcp://[2408:8206:4824:92b1:4d1:ef4f:ddb6:e041]:11010",
+                &home_v6
+            ),
+            MeshRoute::DirectIpv6
+        );
+        // VPN catch-all masks (::/0 or 2000::/3) must not mark remote IPv6 as LAN.
+        let vpn_catch_all = LocalSubnets {
+            v4: vec![(
+                "198.18.0.1".parse().unwrap(),
+                "255.255.0.0".parse().unwrap(),
+            )],
+            v6: vec![(
+                "2408:8206:4824:92b0::1".parse().unwrap(),
+                "e000::".parse().unwrap(),
+            )],
+        };
+        assert_eq!(
+            direct_route_for("tcp://198.18.0.2:11010", &vpn_catch_all),
+            MeshRoute::DirectIpv4
+        );
+        assert_eq!(
+            direct_route_for("udp://[2001:db8::5]:11010", &vpn_catch_all),
+            MeshRoute::DirectIpv6
+        );
+        assert_eq!(
+            direct_route_for("udp://[2001:db8::5]:11010", &none),
+            MeshRoute::DirectIpv6
+        );
+        assert_eq!(
+            direct_route_for("tcp://[fe80::1]:11010", &none),
+            MeshRoute::DirectLan
+        );
+        assert_eq!(
+            direct_route_for("tcp://[::1]:11010", &none),
+            MeshRoute::DirectLan
+        );
+        assert_eq!(
+            direct_route_for("udp://[::ffff:192.168.0.3]:1", &none),
             MeshRoute::DirectLan
         );
         assert_eq!(MeshRoute::RelayedServer.path(), MeshPath::Relayed);

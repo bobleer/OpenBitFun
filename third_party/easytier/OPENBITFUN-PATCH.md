@@ -173,6 +173,16 @@ network namespaces).
     upstream to sleep 5–10 s (up to two `BOOTSTRAP_WAIT_ROUNDS`) with no
     virtual IP and stalling OBP bind and outbound peer dials on startup.
 
+13. **LAN-first direct connect head start** (`connectivity/direct/mod.rs`).
+    `try_direct_connect_with_ip_list` partitions each scheme's candidates into
+    same-LAN (private/link-local/loopback IPv4, same-`/24` non-private local
+    IPv4, link-local/ULA/loopback IPv6, or same-`/64` IPv6; excluding RFC 2544
+    `198.18.0.0/15` proxy fake-IPs) and WAN targets, giving LAN candidates a
+    200 ms Happy-Eyeballs head start and aborting remaining dials once a direct
+    connection succeeds. Why: upstream raced private LAN and public/hairpin
+    addresses together, letting NAT-hairpin or cross-network endpoints win
+    between two devices on the same network.
+
 The data plane (`DataPlaneTcpStream`/`DataPlaneTcpListener`,
 `CoreInstance::data_plane_tcp_connect/bind`) is used unchanged: it is
 upstream's in-process virtual TCP over the node's smoltcp stack.

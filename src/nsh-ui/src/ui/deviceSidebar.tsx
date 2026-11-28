@@ -527,8 +527,8 @@ function DeviceState(props: { node: DeviceTreeNode }) {
   );
 }
 
-// TEMPORARY (dev diagnostics): show peer P2P/Relay mode and latency on the right
-// of each sidebar device header to inspect Link routing during development.
+// TEMPORARY (dev diagnostics): show peer LAN/P2P/Relay mode and latency on the
+// right of each sidebar device header to inspect Link routing during development.
 // Set to `false` or comment out `<DevRouteTag />` before cutting a release.
 const SHOW_DEV_ROUTE_TAG = true;
 
@@ -537,11 +537,13 @@ function devRouteText(node: DeviceTreeNode): string {
   const kind = node.routeKind;
   if (kind === "local") return "";
   const mode =
-    kind === "direct_lan" || kind === "direct_ipv4" || kind === "direct_ipv6"
-      ? "P2P"
-      : kind === "relayed_server" || kind === "relayed_peer"
-        ? "Relay"
-        : "";
+    kind === "direct_lan"
+      ? "LAN"
+      : kind === "direct_ipv4" || kind === "direct_ipv6"
+        ? "P2P"
+        : kind === "relayed_server" || kind === "relayed_peer"
+          ? "Relay"
+          : "";
   const latency =
     typeof node.routeLatencyMs === "number" && Number.isFinite(node.routeLatencyMs) && node.routeLatencyMs >= 0
       ? `${Math.max(1, Math.round(node.routeLatencyMs))}ms`
