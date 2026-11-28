@@ -6,7 +6,7 @@ import { rendererAssets } from "../documentRenderers";
 import { readFigureReaderState } from "../figureReaderStore";
 import { currentLocale, tr } from "../i18n";
 import { palette, radii, resolvedScheme, space, textSize, textStyle } from "../theme";
-import { readRendererAsset, resolveBrowserAsset } from "./documentRendererAssets";
+import { readEchartsScript, readRendererAsset, resolveBrowserAsset } from "./documentRendererAssets";
 import { materializeFigureAtlas } from "./figureAtlas";
 import { buildFigureBindingGuest, figureBindingRelay, type FigureSourceRow } from "./figureBindingGuest";
 
@@ -141,8 +141,8 @@ function loadNativeRenderer(asset: string): Promise<string> {
 }
 
 async function declarationPreview(source: string, key: string, followUp: boolean, previewTitle: string): Promise<FigurePreviewDocument> {
-  const asset = rendererAssets()?.figureScript;
-  if (!asset) throw new Error("This app has no declarative figure renderer");
+  const assets = rendererAssets();
+  if (!assets?.figureScript || !assets.echartsScript) throw new Error("This app has no declarative figure renderer");
   const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
   const reader = { key, nonce };
   const state = await readFigureReaderState(key);
@@ -201,13 +201,16 @@ async function declarationPreview(source: string, key: string, followUp: boolean
   const data = `<body><main id="${DATA_ROOT}" data-source="${encode(source)}" data-labels="${escapeAttr(JSON.stringify(labels))}"` +
     ` data-reader="${escapeAttr(JSON.stringify({ nonce, state, followUp }))}"></main>`;
   if (platform.os === "web") {
-    const script = await resolveBrowserAsset(asset);
-    const html = documentHead(escapeAttr(new URL(script).origin), style) + data;
-    return { html: `${html}<script src="${escapeAttr(script)}"></script></body></html>`, reader };
+    const scripts = await Promise.all([assets.echartsScript, assets.figureScript].map(resolveBrowserAsset));
+    const origins = [...new Set(scripts.map(script => new URL(script).origin))].join(" ");
+    const html = documentHead(escapeAttr(origins), style) + data;
+    return { html: `${html}${scripts.map(script => `<script src="${escapeAttr(script)}"></script>`).join("")}</body></html>`, reader };
   }
-  const script = await loadNativeRenderer(asset);
+  const scripts = await Promise.all([readEchartsScript(assets.echartsScript), loadNativeRenderer(assets.figureScript)]);
+  const script = scripts.join("\n;\n");
   const html = documentHead("'unsafe-inline'", style) + data;
-  if (platform.os === "windows" && html.length + script.length > 1_900_000) {
+  // The combined scripts exceed WebView2's UTF-16 HTML navigation limit.
+  if (platform.os === "windows") {
     return { html: `${html}</body></html>`, reader, inject: `if (document.getElementById('${DATA_ROOT}')?.dataset.source) {\n${script}\n}` };
   }
   const inline = script.replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
@@ -216,7 +219,7 @@ async function declarationPreview(source: string, key: string, followUp: boolean
 
 export async function createFigurePreviewDocument(
   source: string, readerKey: string, followUp: boolean, title: string,
-  options: { bindings?: unknown; online?: AbortSignal } = {},
+  options: { bindings?: unknown; signal?: AbortSignal; online?: AbortSignal } = {},
 ): Promise<FigurePreviewDocument> {
   const atlas = await materializeFigureAtlas(source, { readerKey, online: options.online });
   if (!atlas && hasFigureDeclaration(source)) return declarationPreview(source, readerKey, followUp, title);

@@ -17,3 +17,14 @@ export async function readRendererAsset(url: string): Promise<string> {
     clearTimeout(timer);
   }
 }
+
+let echartsScript: { url: string; load: Promise<string> } | undefined;
+
+/** The same full ECharts distribution is used by both native figure views. */
+export function readEchartsScript(url: string): Promise<string> {
+  if (echartsScript?.url === url) return echartsScript.load;
+  const load = readRendererAsset(url);
+  echartsScript = { url, load };
+  void load.catch(() => { if (echartsScript?.load === load) echartsScript = undefined; });
+  return load;
+}

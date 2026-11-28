@@ -9,6 +9,8 @@ import { currentLocale, normalizeLocale, tr, trForLocale } from "../i18n";
 import { readRendererAsset, resolveBrowserAsset } from "./documentRendererAssets";
 
 const MAX_FIGURE_BYTES = 1024 * 1024;
+// The published Natural Earth layers are immutable and contain no figure or user data.
+const ATLAS_LAYERS_URL = "https://raw.githubusercontent.com/openBitFun/OpenBitFun/6445275da6af446d47b66688198791a244649990/third_party/visualize/atlas/";
 const STREET_CREDIT = '<small class="text-muted"><a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a> · VersaTiles</small>';
 const STREET_ORIGINS = new Set(["https://tiles.versatiles.org", "https://photon.komoot.io"]);
 
@@ -70,9 +72,21 @@ function requestStreetData(cancel: AbortSignal): typeof fetch {
   };
 }
 
+async function fetchAtlasLayer(layer: RegionalAtlasLayer, signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(ATLAS_LAYERS_URL + layer + ".json", {
+    signal,
+    credentials: "omit",
+    redirect: "error",
+    referrerPolicy: "no-referrer",
+  });
+  if (!response.ok) throw new Error(`Regional map layer answered ${response.status}`);
+  return response.json();
+}
+
 /** Materializes sealed map declarations without changing the saved snapshot. */
 export async function materializeFigureAtlas(source: string, options: {
   readerKey?: string;
+  signal?: AbortSignal;
   online?: AbortSignal;
 } = {}): Promise<AtlasPreview | null> {
   if (!/data-visual-atlas/i.test(source)) return null;
@@ -92,6 +106,9 @@ export async function materializeFigureAtlas(source: string, options: {
   const online = options.online && requestStreetData(options.online);
 
   const assets = rendererAssets()?.figureAtlas;
+  const layerSignal = AbortSignal.any(
+    [AbortSignal.timeout(30_000), options.signal, options.online].filter(signal => signal !== undefined),
+  );
   const layerCache = new Map<RegionalAtlasLayer, Promise<unknown>>();
   async function readAsset(asset: string) {
     return readRendererAsset(platform.os === "web" ? await resolveBrowserAsset(asset) : asset);
@@ -99,7 +116,7 @@ export async function materializeFigureAtlas(source: string, options: {
   function readLayer(layer: RegionalAtlasLayer) {
     let pending = layerCache.get(layer);
     if (!pending) {
-      pending = readAsset(assets![layer]).then(text => JSON.parse(text) as unknown);
+      pending = fetchAtlasLayer(layer, layerSignal);
       layerCache.set(layer, pending);
     }
     return pending;

@@ -11,9 +11,8 @@
 //
 // This module has no runtime imports, so an entry can load it first.
 import type { ImageAsset } from "nsh";
-import type { RegionalAtlasLayer } from "../../shared/visualize/regionalProjection";
 
-export type FigureAtlasAssets = Record<RegionalAtlasLayer | "stylesheet" | "notices", string>;
+export type FigureAtlasAssets = { stylesheet: string; notices: string };
 
 export interface DocumentRendererAssets {
   /** `mermaid.min.js`. */
@@ -32,7 +31,7 @@ export interface DocumentRendererAssets {
   figureScript?: string;
   /** Trusted CORS image reader, used outside the figure preview. */
   figureImageLoader?: string;
-  /** Local map layers and the FlowChat map stylesheet. */
+  /** Map stylesheet and third-party notices. Map data is fetched on demand. */
   figureAtlas?: FigureAtlasAssets;
   /** Screenshots shipped with built-in Spaces. */
   spaceShowcases?: Readonly<Record<string, ImageAsset>>;

@@ -42,6 +42,31 @@ test("street maps with bound data cannot send unresolved stop names to a public 
   expect(result?.html.includes('needs saved stop coordinates')).toBe(true);
 });
 
+test("regional atlas previews fetch only the fixed public map layers", async () => {
+  const requests: string[] = [];
+  const empty = { type: "FeatureCollection", features: [] };
+  const app = await open("./fixtures/figureAtlasApp.tsx", {
+    ...DESKTOP,
+    network: {
+      "https://raw.githubusercontent.com/figure-test/map.css": { body: "" },
+      "https://raw.githubusercontent.com/openBitFun/OpenBitFun/*/third_party/visualize/atlas/*.json": request => {
+        const url = new URL(request.url);
+        requests.push(url.href);
+        if (!url.pathname.endsWith("/land.json")) return { body: empty };
+        return { body: {
+          type: "Polygon",
+          coordinates: [[[119, 29], [119, 31], [121, 31], [121, 29], [119, 29]]],
+        } };
+      },
+    },
+  });
+  await app.waitFor("map rendered");
+  expect(requests.map(url => new URL(url).pathname.split("/").pop()).sort()).toEqual([
+    "borders.json", "lakes.json", "land.json", "provinces.json", "rivers.json", "seas.json",
+  ]);
+  expect(requests.every(url => !new URL(url).search && /OpenBitFun\/[a-f0-9]{40}\//.test(url))).toBe(true);
+});
+
 test("bound figure guests receive only compatible, declared saved values", () => {
   const source = '<!-- vis-bindings\n' + JSON.stringify({
     title: { type: "json", value: "Report" },

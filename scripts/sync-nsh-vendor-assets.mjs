@@ -111,24 +111,25 @@ export function prepareFigureRendererAsset({ check = false } = {}) {
   return [relative(root, target)];
 }
 
-/** Stages the offline atlas in the format each NSH package consumes. */
-export function prepareFigureAtlasAssets({ check = false } = {}) {
-  const atlas = 'third_party/visualize/atlas';
+/** Stages the shared map styling and notices for the online map renderer. */
+export function prepareFigureMapAssets({ check = false } = {}) {
   const target = join(VENDOR_SOURCE, 'figure-atlas');
-  const sources = [
-    ...['borders', 'lakes', 'land', 'places', 'provinces', 'rivers', 'seas'].map(layer => [atlas, layer + '.json']),
-    ['src/shared/visualize', 'regional-map.css'],
-  ];
   const stale = [];
-  for (const [dir, name] of sources) {
-    const source = join(root, dir, name);
-    const output = join(target, name);
-    if (sameFile(source, output)) continue;
-    stale.push(relative(root, output));
+  const stylesheet = join(root, 'src/shared/visualize/regional-map.css');
+  const outputStyle = join(target, 'regional-map.css');
+  if (!sameFile(stylesheet, outputStyle)) {
+    stale.push(relative(root, outputStyle));
     if (!check) {
       mkdirSync(target, { recursive: true });
-      copyFileSync(source, output);
+      copyFileSync(stylesheet, outputStyle);
     }
+  }
+  // Remove the generated map copies left by older builds.
+  for (const layer of ['borders', 'lakes', 'land', 'places', 'provinces', 'rivers', 'seas']) {
+    const oldLayer = join(target, layer + '.json');
+    if (!existsSync(oldLayer)) continue;
+    stale.push(relative(root, oldLayer));
+    if (!check) rmSync(oldLayer);
   }
   const d3Geo = require.resolve('d3-geo');
   const d3Array = createRequire(d3Geo).resolve('d3-array');
@@ -175,7 +176,7 @@ function sameFile(left, right) {
 /** Brings every app copy in line with the source; returns the paths that differed. */
 export function syncVendorAssets({ check = false } = {}) {
   const stale = [
-    ...preparePdfRendererAsset({ check }), ...prepareFigureRendererAsset({ check }), ...prepareFigureAtlasAssets({ check }),
+    ...preparePdfRendererAsset({ check }), ...prepareFigureRendererAsset({ check }), ...prepareFigureMapAssets({ check }),
   ];
   const syncDirectory = (source, target) => {
     const sourceFiles = listFiles(source);

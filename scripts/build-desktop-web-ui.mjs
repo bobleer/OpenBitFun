@@ -24,7 +24,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_FILE, readUiBundleManifest, writeUiBundleManifest } from './write-ui-bundle-manifest.mjs';
-import { prepareFigureAtlasAssets, prepareFigureRendererAsset, preparePdfRendererAsset } from './sync-nsh-vendor-assets.mjs';
+import { prepareFigureMapAssets, prepareFigureRendererAsset, preparePdfRendererAsset } from './sync-nsh-vendor-assets.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_OUT_DIR = path.join(ROOT, 'target', 'desktop-nsh', 'web');
@@ -193,7 +193,7 @@ function prepareDesktopRendererAssets(rootDir) {
   if (rootDir === ROOT) {
     preparePdfRendererAsset();
     prepareFigureRendererAsset();
-    prepareFigureAtlasAssets();
+    prepareFigureMapAssets();
   }
 }
 
