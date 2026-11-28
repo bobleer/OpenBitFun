@@ -1697,27 +1697,63 @@ function SceneErrorCard(props: { error: unknown; reset: () => void; area: "scene
 /** Live target edge shown as a drop-zone preview while dragging AuxPane's header. */
 const auxDockDropPreview = signal<AuxPaneSide | null>(null);
 
-function resolveAuxDockTarget(dx: number, dy: number, moveX: number, moveY: number): AuxPaneSide | null {
+interface PanPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * Resolve the pointer's surface coordinates from a PanResponder callback.
+ * When the last touch/button lifts (`onPanResponderRelease`), NSH runs
+ * `onResponderEnd` with zero active touches and resets `state.moveX`/`moveY`
+ * to `0`, so release handling reads the lifted event's `pageX`/`pageY` (with
+ * fallback to the last move point or `x0 + dx`, `y0 + dy`).
+ */
+function panPointerPosition(
+  e: { pageX?: number; pageY?: number },
+  state: { numberActiveTouches: number; moveX: number; moveY: number; x0: number; y0: number; dx: number; dy: number },
+  fallback: PanPoint | null = null,
+): PanPoint | null {
+  if (state.numberActiveTouches > 0 && Number.isFinite(state.moveX) && Number.isFinite(state.moveY)) {
+    return { x: state.moveX, y: state.moveY };
+  }
+  const hasOrigin = Number.isFinite(state.x0) && Number.isFinite(state.y0);
+  const derived = hasOrigin ? { x: state.x0 + state.dx, y: state.y0 + state.dy } : null;
+  if (Number.isFinite(e.pageX) && Number.isFinite(e.pageY)) {
+    const px = e.pageX as number;
+    const py = e.pageY as number;
+    // Guard against a host reporting (0, 0) on release when the gesture ended elsewhere.
+    if (px === 0 && py === 0 && derived && Math.hypot(derived.x, derived.y) > 4) {
+      return fallback ?? derived;
+    }
+    return { x: px, y: py };
+  }
+  return fallback ?? derived;
+}
+
+function resolveAuxDockTarget(dx: number, dy: number, pos: PanPoint | null): AuxPaneSide | null {
   if (Math.hypot(dx, dy) < 32) return null;
   const w = shellWidth();
   const h = shellHeight();
   const current = auxPaneSide();
-  if (h > 0 && moveY > 0) {
-    if (moveY >= h * 0.66) return "bottom";
+  if (h > 0 && pos && pos.y >= h * 0.66) {
+    return "bottom";
   }
   if (current !== "bottom" && dy > 72 && Math.abs(dy) >= Math.abs(dx) * 0.8) {
     return "bottom";
   }
-  if (current === "bottom" && dy < -60) {
-    if (w > 0 && moveX > 0 && moveX < w * 0.42) return "left";
-    return "right";
-  }
-  if (w > 0 && moveX > 0) {
+  if (w > 0 && pos) {
     const navOffset = sidebarDocked() ? dockedNavWidth() : 0;
     const canvasW = Math.max(1, w - navOffset);
-    const relX = (moveX - navOffset) / canvasW;
+    const relX = (pos.x - navOffset) / canvasW;
+    if (current === "bottom" && dy < -60) {
+      return relX < 0.5 ? "left" : "right";
+    }
     if (relX <= 0.3) return "left";
     if (relX >= 0.68) return "right";
+  }
+  if (current === "bottom" && dy < -60) {
+    return dx < 0 ? "left" : "right";
   }
   if (dx < -100 && current === "right") return "left";
   if (dx > 100 && current === "left") return "right";
@@ -1726,6 +1762,14 @@ function resolveAuxDockTarget(dx: number, dy: number, moveX: number, moveY: numb
 
 function AuxPane(props: { captionInset?: () => number } = {}) {
   const draggingHeader = signal(false);
+  let lastDragPos: PanPoint | null = null;
+  cleanup(() => {
+    if (draggingHeader()) {
+      draggingHeader.set(false);
+      auxDockDropPreview.set(null);
+    }
+    lastDragPos = null;
+  });
   const expand = () => {
     const tab = AUX_TABS.find(item => item.id === auxPaneTab());
     toggleAuxPane();
@@ -1735,15 +1779,20 @@ function AuxPane(props: { captionInset?: () => number } = {}) {
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_e, state) => !compactShell() && Math.hypot(state.dx, state.dy) > 8,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: () => {
+    onPanResponderGrant: (e, state) => {
       draggingHeader.set(true);
+      lastDragPos = panPointerPosition(e, state);
     },
-    onPanResponderMove: (_e, state) => {
-      const target = resolveAuxDockTarget(state.dx, state.dy, state.moveX, state.moveY);
+    onPanResponderMove: (e, state) => {
+      const pos = panPointerPosition(e, state, lastDragPos);
+      if (pos) lastDragPos = pos;
+      const target = resolveAuxDockTarget(state.dx, state.dy, pos);
       auxDockDropPreview.set(target);
     },
-    onPanResponderRelease: (_e, state) => {
-      const target = resolveAuxDockTarget(state.dx, state.dy, state.moveX, state.moveY) ?? auxDockDropPreview();
+    onPanResponderRelease: (e, state) => {
+      const pos = panPointerPosition(e, state, lastDragPos);
+      const target = resolveAuxDockTarget(state.dx, state.dy, pos);
+      lastDragPos = null;
       draggingHeader.set(false);
       auxDockDropPreview.set(null);
       if (target && target !== auxPaneSide()) {
@@ -1751,6 +1800,7 @@ function AuxPane(props: { captionInset?: () => number } = {}) {
       }
     },
     onPanResponderTerminate: () => {
+      lastDragPos = null;
       draggingHeader.set(false);
       auxDockDropPreview.set(null);
     },

@@ -713,3 +713,62 @@ test("primary, split, and BTW composers paste text via controlled selection inse
   await app.paste("side-question-input", { text: "note" });
   await app.waitUntil(() => app.value("side-question-input") === "btw: note");
 });
+
+test("dragging AuxPane header from bottom docks to left or right accurately and preserves bottom zone on diagonal drags", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  const readSide = () => {
+    const raw = app.storage()["openbitfun.nsh.shell-layout.v1"];
+    return raw ? (JSON.parse(raw) as { auxPaneSide?: string }).auxPaneSide : undefined;
+  };
+
+  // Open AuxPane on the right, then dock it at the bottom.
+  await app.press("session-tool-files");
+  await app.waitFor("aux-split-handle-right");
+  await app.press("aux-dock-toggle");
+  await app.waitFor("aux-split-handle-bottom");
+  await app.waitUntil(() => readSide() === "bottom");
+
+  // Drag from bottom up-left into the left side of the canvas -> must dock on the left, not flip to right on release.
+  await app.drag("aux-dock-drag-handle", { x: -450, y: -300 });
+  await app.waitFor("aux-split-handle-left");
+  expect(app.shows("aux-split-handle-right")).toBe(false);
+  expect(app.shows("aux-split-handle-bottom")).toBe(false);
+  await app.waitUntil(() => readSide() === "left");
+
+  // Drag diagonally down-right from left header into the bottom drop zone -> must dock at bottom, not flip to right.
+  await app.drag("aux-dock-drag-handle", { x: 700, y: 650 });
+  await app.waitFor("aux-split-handle-bottom");
+  expect(app.shows("aux-split-handle-right")).toBe(false);
+  await app.waitUntil(() => readSide() === "bottom");
+
+  // Drag from bottom into the left half of the canvas (past old w * 0.42 threshold) -> still docks on the left.
+  await app.drag("aux-dock-drag-handle", { x: -200, y: -300 });
+  await app.waitFor("aux-split-handle-left");
+  await app.waitUntil(() => readSide() === "left");
+
+  // Dock back to bottom, then drag all the way past the left edge (pageX <= 0) -> still docks on the left.
+  await app.press("aux-dock-toggle");
+  await app.waitFor("aux-split-handle-bottom");
+  await app.drag("aux-dock-drag-handle", { x: -900, y: -300 });
+  await app.waitFor("aux-split-handle-left");
+  await app.waitUntil(() => readSide() === "left");
+
+  // Dock back to bottom, then drag up-right -> docks on the right.
+  await app.press("aux-dock-toggle");
+  await app.waitFor("aux-split-handle-bottom");
+  await app.drag("aux-dock-drag-handle", { x: 300, y: -300 });
+  await app.waitFor("aux-split-handle-right");
+  expect(app.shows("aux-split-handle-left")).toBe(false);
+  await app.waitUntil(() => readSide() === "right");
+
+  // Drag diagonally down-left from right header into the bottom drop zone -> must dock at bottom, not flip to left.
+  await app.drag("aux-dock-drag-handle", { x: -750, y: 650 });
+  await app.waitFor("aux-split-handle-bottom");
+  expect(app.shows("aux-split-handle-left")).toBe(false);
+  await app.waitUntil(() => readSide() === "bottom");
+});
