@@ -562,8 +562,8 @@ test("a persisted round keeps its order and every tool card shows its result", a
   // Only plain text shows at top level; tool calls fold in their chronological positions.
   expect(app.texts()).not.toContain("cargo test -p core");
   expect(app.texts()).not.toContain("missing.rs");
-  // A failed folded group surfaces a quiet Failed marker before opening.
-  await app.waitFor("Failed");
+  // Agent trial-and-error steps never surface alarming Failed badges on folded groups.
+  expect(app.texts()).not.toContain("Failed");
 
   await app.press("label:explore-group-explore:tool:tool-1");
   await app.waitFor("cargo test -p core");
@@ -581,10 +581,15 @@ test("a persisted round keeps its order and every tool card shows its result", a
   await app.waitFor("test result: ok. 12 passed");
   expect(app.texts()).toContain("Output");
 
-  // Expanding the failed group reveals the failed Read step and its host error.
+  // Expanding the group reveals the Read step and its diagnostic output neutrally without Failed/Error badges.
   await app.press("label:explore-group-explore:tool:tool-2");
+  await app.waitFor("missing.rs");
+  expect(app.texts()).not.toContain("Failed");
   await app.press("tool-card-Read");
   await app.waitFor("No such file");
+  expect(app.texts()).toContain("Result");
+  expect(app.texts()).not.toContain("Failed");
+  expect(app.texts()).not.toContain("Error");
 });
 
 test("a live round cuts its text at each tool call and shows the tool's result", async () => {
@@ -3075,7 +3080,7 @@ test("only plain text renders outside folds: OpenBitFunControl, failed tools, th
   });
   await send("agentic://tool-event", {
     roundId: "r-3",
-    toolEvent: { event_type: "Completed", tool_id: "bash-1", tool_name: "ExecCommand", result: { output: "main" } },
+    toolEvent: { event_type: "Completed", tool_id: "bash-1", tool_name: "ExecCommand", result: { output: "not found", exit_code: 1 } },
   });
   await send("agentic://tool-event", {
     roundId: "r-3",
@@ -3104,17 +3109,33 @@ test("only plain text renders outside folds: OpenBitFunControl, failed tools, th
   expect(collapsedText).not.toContain("cat /tmp/head");
   expect(collapsedText).not.toContain("Pull root is /root.");
   expect(collapsedText).not.toContain("Checking packed refs.");
+  // Failed intermediate tools and non-zero command exits never display Failed/Error/exit badges.
+  expect(app.texts()).not.toContain("Failed");
+  expect(app.texts()).not.toContain("Error");
+  expect(app.texts()).not.toContain("exit 1");
   expect(app.shows("label:tool-card-OpenBitFunControl")).toBe(false);
   expect(app.shows("label:tool-card-ExecCommand")).toBe(false);
 
-  // Expanding Phase 1 reveals all 3 OpenBitFunControl steps and the thinking block in order.
+  // Expanding Phase 1 reveals all 3 OpenBitFunControl steps and the thinking block neutrally.
   await app.press("label:explore-group-explore:tool:obf-1");
   await app.waitFor("label:tool-card-OpenBitFunControl >> nth=2");
   expect(app.texts().join("\n")).not.toContain('{"action":"execute"');
+  expect(app.texts()).not.toContain("Failed");
+  expect(app.texts()).not.toContain("Error");
 
-  // Expanding Phase 2 reveals both OpenBitFunControl calls, the command, and the thinking block.
+  // Expanding the retried step still preserves its output neutrally under Result without Error/Failed badges.
+  await app.press("label:tool-card-OpenBitFunControl >> nth=1");
+  await app.waitFor("root path mismatch");
+  expect(app.texts()).toContain("Result");
+  expect(app.texts()).not.toContain("Failed");
+  expect(app.texts()).not.toContain("Error");
+
+  // Expanding Phase 2 reveals both OpenBitFunControl calls, the non-zero command, and the thinking block without error tags.
   await app.press("label:explore-group-explore:tool:obf-4");
   await app.waitFor("cat /tmp/head");
+  expect(app.texts()).not.toContain("Failed");
+  expect(app.texts()).not.toContain("Error");
+  expect(app.texts()).not.toContain("exit 1");
 });
 
 test("session actions menu matches sidebar session row height and composer mode/model chips omit redundant hover tooltips", async () => {

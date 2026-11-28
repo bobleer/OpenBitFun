@@ -453,14 +453,13 @@ export function toolTitleOf(call: ToolCallView, state: ToolRunState, kind: ToolK
   return tr(state === "running" || state === "confirmation" ? keys.running : keys.done);
 }
 
-function statusTone(state: ToolRunState): "danger" | "accent" | "success" | "warning" | "muted" {
+function statusTone(state: ToolRunState): "accent" | "success" | "warning" | "muted" {
   switch (state) {
-    case "failed":
-      return "danger";
     case "running":
       return "accent";
     case "confirmation":
       return "warning";
+    case "failed":
     case "cancelled":
       return "muted";
     default:
@@ -561,12 +560,12 @@ function SmallCopyButton(props: { copyKey: string; text: string }) {
   );
 }
 
-function SectionLabel(props: { label: string; danger?: boolean; children?: JSX.Element }) {
+function SectionLabel(props: { label: string; children?: JSX.Element }) {
   return (
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.sm }}>
       <Text
         style={{
-          color: props.danger ? stateColor("failed") : palette().textMuted,
+          color: palette().textMuted,
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
@@ -580,18 +579,16 @@ function SectionLabel(props: { label: string; danger?: boolean; children?: JSX.E
 }
 
 /** A bounded monospace block with its own copy button. */
-function MonoBlock(props: { copyKey: string; label: string; text: string; danger?: boolean; maxHeight?: number }) {
+function MonoBlock(props: { copyKey: string; label: string; text: string; maxHeight?: number }) {
   return (
     <View style={{ gap: space.xs }}>
-      <SectionLabel label={props.label} danger={props.danger}>
+      <SectionLabel label={props.label}>
         <SmallCopyButton copyKey={props.copyKey} text={props.text} />
       </SectionLabel>
       <View
         style={{
           borderRadius: radii.md,
           borderCurve: "continuous",
-          borderLeftWidth: props.danger ? 2 : 0,
-          borderColor: stateColor("failed"),
           backgroundColor: palette().surfaceTertiary,
           overflow: "hidden",
         }}
@@ -604,7 +601,7 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
         >
           <Text
             style={{
-              color: props.danger ? stateColor("failed") : palette().textSecondary,
+              color: palette().textSecondary,
               fontFamily: fontMono(),
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 18 / 12),
@@ -620,19 +617,19 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
 }
 
 function ResultSection(props: { call: ToolCallView; cardId: string; label?: string }) {
+  const output = computed(() => {
+    const result = resultTextOf(props.call);
+    const detail = (props.call.error ?? "").trim();
+    if (!detail) return result;
+    if (!result || result === detail) return detail;
+    return `${result}\n${detail}`;
+  });
   return (
-    <>
-      <If when={props.call.error ?? ""}>
-        {error => (
-          <MonoBlock copyKey={`${props.cardId}-error`} label={tr("chat.tool.error")} text={error()} danger={true} />
-        )}
-      </If>
-      <If when={resultTextOf(props.call)}>
-        {text => (
-          <MonoBlock copyKey={`${props.cardId}-result`} label={props.label ?? tr("chat.tool.result")} text={text()} />
-        )}
-      </If>
-    </>
+    <If when={output()}>
+      {text => (
+        <MonoBlock copyKey={`${props.cardId}-result`} label={props.label ?? tr("chat.tool.result")} text={text()} />
+      )}
+    </If>
   );
 }
 
@@ -1141,20 +1138,14 @@ function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
               <Icon
                 name={row().icon}
                 size={14}
-                color={
-                  row().state === "failed"
-                    ? stateColor("failed")
-                    : row().state === "running"
-                      ? stateColor("working")
-                      : stateColor("idle")
-                }
+                color={row().state === "running" ? stateColor("working") : stateColor("idle")}
               />
             </TranscriptRowIconSlot>
             <Text
               style={{
                 flexShrink: 0,
                 maxWidth: "45%",
-                color: row().state === "failed" ? stateColor("failed") : palette().textSecondary,
+                color: palette().textSecondary,
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.35),
                 fontWeight: "500",
@@ -1436,7 +1427,7 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind; r
         />
       </If>
       <If when={(kind() === "grep" || kind() === "glob" || kind() === "ls") && Boolean(props.call.error)}>
-        <MonoBlock copyKey={`${props.cardId}-error`} label={tr("chat.tool.error")} text={props.call.error ?? ""} danger={true} />
+        <MonoBlock copyKey={`${props.cardId}-result`} label={tr("chat.tool.result")} text={props.call.error ?? ""} />
       </If>
     </View>
   );
@@ -1488,8 +1479,6 @@ function hasBody(call: ToolCallView, kind: ToolKind): boolean {
 
 function stateLabel(state: ToolRunState, call: ToolCallView): string {
   switch (state) {
-    case "failed":
-      return tr("chat.tool.failed");
     case "cancelled":
       return call.status?.toLowerCase() === "rejected" ? tr("chat.tool.rejected") : tr("chat.tool.cancelled");
     case "confirmation":
@@ -1619,19 +1608,12 @@ export function ToolCard(props: {
   );
   const stats = computed(() => (kind() === "edit" || kind() === "write" ? diffStatsOf(props.call) : null));
   const exitCode = computed(() => (kind() === "exec" ? exitCodeOf(props.call) : undefined));
-  const failed = computed(() => state() === "failed" || (state() !== "running" && (exitCode() ?? 0) !== 0));
   const muted = computed(() => state() === "cancelled");
   const waiting = computed(() => ["queued", "waiting"].includes(props.call.status?.toLowerCase() ?? ""));
-  const statusText = computed(() => {
-    const label = stateLabel(state(), props.call);
-    if (label) return label;
-    const code = exitCode();
-    return code !== undefined && code !== 0 && state() !== "running" ? tr("chat.tool.exitCode", { code }) : "";
-  });
-  const statusColor = computed(() => failed() ? stateColor("failed")
-    : state() === "confirmation" ? stateColor("needs_you") : palette().textMuted);
+  const statusText = computed(() => stateLabel(state(), props.call));
+  const statusColor = computed(() => (state() === "confirmation" ? stateColor("needs_you") : palette().textMuted));
   const hoverHint = computed(() => {
-    const duration = state() === "completed" ? formatDuration(props.call.durationMs) : "";
+    const duration = state() === "completed" || state() === "failed" ? formatDuration(props.call.durationMs) : "";
     const code = exitCode();
     return [filePath(), duration, code !== undefined && state() !== "running" ? tr("chat.tool.exitCode", { code }) : ""].filter(Boolean).join(" · ");
   });
@@ -1710,7 +1692,6 @@ export function ToolCard(props: {
       </If>
       <If when={statusText()}>
         {label => <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-          <If when={failed()}><Icon name="close" size={12} color={statusColor()} /></If>
           <Text style={{ ...textStyle(), flexShrink: 1, color: statusColor() }}>{label()}</Text>
         </View>}
       </If>
@@ -1824,21 +1805,6 @@ export function ExploreGroupCard(props: {
   );
   const awaitingNext = computed(() => Boolean(props.awaitingNext) && !hasRunningTool() && !waitingApproval());
   const running = computed(() => hasRunningTool() || hasLiveThinking() || awaitingNext());
-  const failedCount = computed(() => {
-    let failed = 0;
-    for (const item of resolvedItems()) {
-      if (item.kind !== "tool") continue;
-      const st = props.stateOf(item.call);
-      if (st === "failed") {
-        failed += 1;
-        continue;
-      }
-      if (st !== "running" && toolKindOf(item.call) === "exec" && (exitCodeOf(item.call) ?? 0) !== 0) {
-        failed += 1;
-      }
-    }
-    return failed;
-  });
 
   const counts = computed(() => activityCounts(resolvedItems()));
   const reads = computed(() => counts().reads);
@@ -1898,13 +1864,10 @@ export function ExploreGroupCard(props: {
     }
   });
 
-  const groupStatus = computed<{ label: string; color: string; failed: boolean } | null>(() => {
+  const groupStatus = computed<{ label: string; color: string } | null>(() => {
     if (running()) return null;
     if (waitingApproval()) {
-      return { label: tr("chat.tool.awaitingApproval"), color: stateColor("needs_you"), failed: false };
-    }
-    if (failedCount() > 0) {
-      return { label: tr("chat.tool.failed"), color: stateColor("failed"), failed: true };
+      return { label: tr("chat.tool.awaitingApproval"), color: stateColor("needs_you") };
     }
     return null;
   });
@@ -2030,9 +1993,6 @@ export function ExploreGroupCard(props: {
         <If when={groupStatus()}>
           {status => (
             <View style={{ flexShrink: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-              <If when={status().failed}>
-                <Icon name="close" size={12} color={status().color} />
-              </If>
               <Text
                 style={{
                   color: status().color,

@@ -132,3 +132,37 @@ test("an offline device's session says what it shows and disables the composer w
   expect(app.shows("id:session-breadcrumb-device >> text:· Offline")).toBe(true);
   expect(app.enabled("composer")).toBe(false);
 });
+
+test("the open session header never shows a Failed status badge", async () => {
+  const backend = createBackend();
+  const row = {
+    ...fleetSessionRow("dev-b", "ws-b", "s-b1", "Fix flaky test"),
+    status: "error",
+    failed: true,
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 2,
+      full: true,
+      devices: [
+        fleetDeviceRow(
+          "dev-a",
+          "MacBook",
+          [{ workspaceId: "workspace-1", name: "OpenBitFun", rootPath: "/repo", isHostCurrent: true, sessions: [] }],
+          { isClientDevice: true },
+        ),
+        fleetDeviceRow("dev-b", "linux-box", [{ workspaceId: "ws-b", name: "openbitfun", rootPath: "/home/b/repo", sessions: [row] }], {
+          hostKind: "cli",
+          state: "online",
+        }),
+      ],
+      removedDeviceIds: [],
+      totals: { running: 0, waiting: 0, unread: 0 },
+    },
+  });
+  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSession(app);
+  expect(app.shows("label:session-status-failed")).toBe(false);
+  expect(app.texts()).not.toContain("Failed");
+});

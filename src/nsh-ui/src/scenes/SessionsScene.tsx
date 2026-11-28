@@ -1295,7 +1295,6 @@ const headerState = computed<MarkState | null>(() => {
   const id = activeSessionId();
   const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
   if (row?.status === "waiting" || (row?.needsAttention && !row?.failed && row?.status !== "error")) return "needs_you";
-  if (row?.status === "error" || row?.failed) return "failed";
   if (row?.status === "running") return "working";
   return null;
 });
@@ -10971,7 +10970,6 @@ const secondaryHeaderState = computed<MarkState | null>(() => {
   if (pending && id && pending.sessionId === id && !secondaryTurnError()) return "working";
   const row = id ? fleetSessionRow(secondarySessionDevice(), id) : null;
   if (row?.status === "waiting" || (row?.needsAttention && !row?.failed && row?.status !== "error")) return "needs_you";
-  if (row?.status === "error" || row?.failed) return "failed";
   if (row?.status === "running") return "working";
   return null;
 });

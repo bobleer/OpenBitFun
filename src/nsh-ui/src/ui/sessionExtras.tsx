@@ -389,11 +389,11 @@ const BACKGROUND_STATUS_KEYS: Record<string, MessageKey> = {
   interrupted: "background.status.interrupted",
   killed: "background.status.killed",
   pruned: "background.status.pruned",
-  failed: "background.status.failed",
+  failed: "background.status.exited",
 };
 
 function backgroundStatusWord(command: BackgroundCommand): string {
-  if (command.status === "exited" && typeof command.exitCode === "number") {
+  if ((command.status === "exited" || command.status === "failed") && typeof command.exitCode === "number") {
     return tr("background.exitedWith", { code: command.exitCode });
   }
   const key = BACKGROUND_STATUS_KEYS[command.status];
