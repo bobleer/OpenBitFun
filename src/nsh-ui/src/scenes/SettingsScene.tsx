@@ -6117,16 +6117,11 @@ function ModelSection() {
   const groups = () => groupModelsByProvider(filteredModels(), defaultModels().primary);
   const hasActiveSearch = () => modelSearchQuery().trim().length > 0;
 
-  const isGroupExpanded = (group: ModelProviderGroup, index: number, total: number): boolean => {
-    if (hasActiveSearch()) return true;
-    const override = providerGroupExpanded()[group.key];
-    if (override !== undefined) return override;
-    return total <= 3 || index === 0;
-  };
+  const isGroupExpanded = (key: string): boolean => hasActiveSearch() || providerGroupExpanded()[key] === true;
 
   const allGroupsExpanded = () => {
     const list = groups();
-    return list.length > 0 && list.every((group, index) => isGroupExpanded(group, index, list.length));
+    return list.length > 0 && list.every(group => isGroupExpanded(group.key));
   };
 
   const toggleAllGroups = () => {
@@ -6239,7 +6234,7 @@ function ModelSection() {
 
         <Each of={groups()} key={group => group.key}>
           {(group, groupIndex) => {
-            const expanded = () => isGroupExpanded(group(), groupIndex(), groups().length);
+            const expanded = () => isGroupExpanded(group().key);
             return (
               <View style={{ position: "relative" }}>
                 <If when={groupIndex() !== 0}>

@@ -900,6 +900,7 @@ test("settings scene resolves model URL preview, tests connections, discovers re
   await app.waitFor("AI models");
 
   // Test an existing saved model row directly.
+  await app.press("provider-group-toggle-openai-api.openai.com");
   await app.press("model-test-model-1");
   await app.waitFor("Connected · 142 ms");
   expect(backend.connectionTestCalls).toHaveLength(1);
@@ -1420,16 +1421,22 @@ test("settings models page uses segmented sub-tabs, provider accordions, and com
   await app.press("default-models-more-slots");
   await app.waitFor("default-model-economy");
 
-  // With 4 provider groups (>3), only the primary provider group expands by default.
-  await app.waitFor("GPT-5");
-  expect(app.shows("model-enabled-m-openai")).toBe(true);
+  const openaiGroup = "provider-group-toggle-openai-api.openai.com";
+  await app.waitFor(openaiGroup);
+  for (const model of models) expect(app.shows(`model-enabled-${model.id}`)).toBe(false);
+
+  await app.press(openaiGroup);
+  await app.waitFor("model-enabled-m-openai");
   expect(app.shows("model-enabled-m-gemini")).toBe(false);
+  await app.press(openaiGroup);
+  await app.waitFor("model-enabled-m-openai", { state: "gone" });
 
   // Searching auto-expands matching provider groups.
   await app.type("models-filter-search", "Gemini");
   await app.waitFor("model-enabled-m-gemini");
   expect(app.shows("model-enabled-m-openai")).toBe(false);
   await app.clear("models-filter-search");
+  await app.waitFor("model-enabled-m-gemini", { state: "gone" });
 
   // Per-provider quick-add pre-fills format and baseUrl for that group.
   await app.press("provider-add-model-anthropic-api.anthropic.com");

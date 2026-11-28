@@ -1625,7 +1625,9 @@ test("settings scene lists the configured models and appends one", async () => {
   await app.press("Settings");
   await app.press("nav-settings-page-models");
   await app.waitFor("AI models");
-  await app.waitFor("Configured model");
+  await app.waitFor("provider-group-toggle-openai-api.openai.com");
+  expect(app.shows("model-actions-model-1")).toBe(false);
+  await app.press("provider-group-toggle-openai-api.openai.com");
 
   await app.press("add-model");
   // The name is a folded, optional field (it defaults to the model id).
@@ -1676,7 +1678,7 @@ test("a host older than the typed settings commands says so instead of writing w
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
-  await app.waitFor("Configured model");
+  await app.waitFor("provider-group-toggle-openai-api.openai.com");
   await app.press("add-model");
   await app.press("model-more-options");
   await app.type("model-name", "Work model");
@@ -1719,7 +1721,7 @@ test("an existing model opens in the form, prefilled, and saves in place", async
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
-  await app.waitFor("Configured model");
+  await app.press("provider-group-toggle-openai-api.openai.com");
   await app.press("model-actions-model-1");
   await app.press("model-edit-model-1");
   await app.waitFor("Edit Configured model");
@@ -1767,7 +1769,7 @@ test("a configured model takes its enabled flag and its limits from this page", 
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
-  await app.waitFor("Configured model");
+  await app.press("provider-group-toggle-openai-api.openai.com");
   await app.waitFor("model-enabled-model-1");
 
   // Disabling is a write of the whole list with that one entry changed, so the
@@ -1812,7 +1814,7 @@ test("the model form fills endpoint and protocol from a provider preset without 
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
-  await app.waitFor("Configured model");
+  await app.waitFor("provider-group-toggle-openai-api.openai.com");
   await app.press("add-model");
   await app.waitFor("Quick setup: pick a provider to fill its endpoint and protocol.");
 
@@ -1848,7 +1850,7 @@ test("a host without a model catalog still takes a model by hand", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
-  await app.waitFor("Configured model");
+  await app.waitFor("provider-group-toggle-openai-api.openai.com");
   await app.press("add-model");
   await app.waitFor("Base URL");
   expect(app.texts().some(text => text.startsWith("Quick setup:"))).toBe(false);

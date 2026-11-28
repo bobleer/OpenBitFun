@@ -50,6 +50,7 @@ test("Settings > Models leads each row with the model and follows with its provi
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.press("Settings");
   await app.press("nav-settings-page-models");
+  await app.press("models-toggle-all-groups");
   await app.waitFor("text:OpenAI #2");
   expect(app.shows("text:OpenAI #1")).toBe(true);
   expect(app.shows("text:gemini-2.5-pro")).toBe(true);
