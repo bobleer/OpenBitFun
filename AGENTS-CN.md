@@ -2,22 +2,23 @@
 
 # AGENTS-CN.md
 
-OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主交付（原生 NSH 桌面应用、CLI/TUI、server、mobile、installer）。
+OpenBitFun 2.0 由 Rust workspace 与一套共享 NSH UI（`src/nsh-ui`）组成，通过多种宿主交付：原生桌面端（`src/apps/desktop-nsh` 进程内加载 `src/apps/desktop`）、CLI/TUI（`src/apps/cli`）、原生移动端（[`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md)，iOS/Android；旧版 1.x Kotlin/HarmonyOS 应用留在 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)）、浏览器（加载设备自带的 NSH Web 包）以及服务端（`src/apps/server`、`src/apps/relay-server`）。桌面端已无 Tauri 运行时，也不再用 WebView 承载主 UI。
 
 仓库核心原则：**先保持产品逻辑平台无关，再通过平台适配层对外暴露能力**。
 
 ## 规则在哪里
 
-- 本文件维护仓库级规则。离改动文件最近的 `AGENTS.md` 负责局部边界、命令和 focused 验证；与本文件冲突时，以更近的指南为准。
+- 本文件只维护跨模块规则与稳定的仓库级入口。离改动文件最近的 `AGENTS.md` 负责局部边界、crate 清单、surface 命令和 focused 验证；与本文件冲突时，以更近的指南为准。
+- `AGENTS.md` 与 `AGENTS-CN.md` 在同一次改动中同步更新。
 - 提交与 PR 约定见 [`CONTRIBUTING_CN.md`](CONTRIBUTING_CN.md)。
 
 ## 分层
 
-依赖方向自上而下：crate 可以依赖更低层，不得依赖更高层，同层依赖保持最小。各层指南列出该层的 crate 和确切允许的依赖边。下表是物理 crate 布局；概念架构（4+1 视图）见 [`docs/architecture/product-architecture.md`](docs/architecture/product-architecture.md)。
+依赖方向自上而下：crate 可以依赖更低层，不得依赖更高层，同层依赖保持最小。各层指南列出该层的 crate 和确切允许的依赖边。下表是物理布局；概念架构（4+1 视图）见 [`docs/architecture/product-architecture.md`](docs/architecture/product-architecture.md)。
 
 | # | 层级 | 路径 | 负责 | 不得 | 指南 |
 |---|---|---|---|---|---|
-| 1 | 接口与入口层 | `src/apps/*`, `src/nsh-ui`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
+| 1 | 接口与入口层 | `src/apps/*`, `src/nsh-ui`, `src/miniapp-market-web`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
 | 2 | 产品组装层 | `src/crates/assembly` | 兼容导出、产品能力选择、product-full 接线、不可变内置 Agent 内容、adapter/service 注册和生态无关的来源协调 | 实现具体 adapter、OS 或 service 细节 | [AGENTS.md](src/crates/assembly/AGENTS.md) |
 | 3 | 适配层 | `src/crates/adapters` | 协议、transport、本地 IPC、WebDriver、AI provider 和外部 AI work source 的 adapter；外部 provider 转换 | 拥有产品能力选择或可复用 OS service 行为 | [AGENTS.md](src/crates/adapters/AGENTS.md) |
 | 4 | 服务实现层 | `src/crates/services` | 可复用的 OS、filesystem、terminal、MCP、remote、git、watch、process、network、session persistence 和 MiniApp runtime IO 实现 | 拥有协议/transport 投影或产品能力选择 | [AGENTS.md](src/crates/services/AGENTS.md) |
@@ -27,11 +28,36 @@ OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主�
 - 产品特性只组装用户侧命令、UI contribution、设置和默认策略。长程任务、scheduler、permission、session/workspace、memory、DFX、hook 和 event 事实留在各自既有的 owner。
 - 外部系统是边界资源，不是层级。只有已注册的 adapter、service 或 app-local provider 可以调用它们；其他代码消费 port 和稳定契约。
 
+## 前后端分离与 NSH 工程纪律
+
+OpenBitFun 2.0 切换至 NSH，核心目标是降低交互时的 CPU / GPU / 内存占用、提升响应速度与流畅度、保持桌面/移动/浏览器跨端 UI 一致性，并让远控成为同一 OBP 协议下的“又一个前端”。架构设计见 [`docs/architecture/unified-client-architecture.md`](docs/architecture/unified-client-architecture.md) 与 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。
+
+- **前后端严格契约分离**：
+  - 原生桌面端（`src/apps/desktop-nsh`）为追求低延迟与低内存，通过 C ABI（`backend_protocol::ffi`）进程内加载 `src/apps/desktop`，但这属于运行期部署形态，而非 Cargo 依赖耦合或内部实现共享。
+  - `src/nsh-ui` 只能通过 `src/nsh-ui/src/bridge.ts`（`BackendConnection`：类型化命令 + 带游标/序号的事件流，本地 FFI 与远程 WebSocket/Link 协议完全一致）访问后端，并通过 `WindowShell` / `nsh/*` API 访问本机宿主外壳。前端代码不得直接访问文件系统、本地进程、宿主环境变量或后端内部状态，也不得成为 Rust 编译输入。
+  - 后端不得直接操纵 UI 组件或假设本机存在桌面窗口。桌面专属宿主 adapter 放在 `src/apps/desktop` 并经类型化能力接口回流；窗口、托盘、通知、剪贴板和生命周期操作走 `host://shell-request` 通道，无宿主 shell 提供时必须显式拒绝。共享 crate（`src/crates/*`）保持宿主无关（如使用 `openbitfun_events::EventEmitter`）。
+- **前端只做展示与交互，状态与逻辑下沉后端**：
+  - **后端负责**：业务规则、领域状态、持久化、默认值、校验、能力/权限标记、排序/过滤/计数/分组投影、多步命令编排、文件/Git/连接监听、重连重试循环以及重型数据解析。通过 OBP 输出可直接渲染的 view model 并接收类型化意图（typed intent）。
+  - **前端仅负责**：声明式渲染、布局、原生外壳胶水、动画、展示层格式化、逐帧流式文本合并，以及纯瞬态交互状态（未发送草稿、选中态、滚动位置、面板展开/折叠、拖拽几何坐标）。
+  - 禁止在前端复制后端规则作为“客户端回退”（会导致桌面、手机、浏览器、CLI、IM Bot 行为漂移），也不要把帧率敏感的高频交互放到同步后端往返后面（远控延迟会直接导致卡顿）。
+- **核心逻辑与计算优先用 Rust，TS 严格限定在 NSH UI 层**：
+  - 所有领域逻辑、状态机、协议/传输/加密、文件/Git/搜索/进程 IO、数据投影以及 CPU/内存密集型计算全部落在 Rust 后端 crate（`src/crates/*`、`src/apps/desktop`、`src/apps/cli`），避免阻塞 NSH 单线程 JS 运行时并保证全端行为一致。
+  - `src/nsh-ui` 中的 TypeScript 严格限于声明式 NSH TSX 视图、signal 绑定、view model 渲染以及薄封装的 `BackendConnection` / `WindowShell` / `ControllerPort` 适配层。
+  - NSH 原生 Rust 模块（`src/apps/desktop-nsh/native`、`src/apps/mobile-nsh/native`）只做极薄的 OS/传输桥接（FFI、原生选择器、系统密钥链、Link controller），禁止把产品逻辑写进端侧 native 模块，否则原生桌面、手机、CLI 与浏览器（无法加载端侧 native 模块）会产生分叉。
+- **严控前端静态资源与包体预算**：
+  - `src/nsh-ui/assets` 下的每个资源都会同步进入桌面安装包、手机安装包、CLI 内嵌 Web UI 包以及浏览器通过 Link/CAS 拉取的远控包，直接放大安装体积、远控冷启动耗时与内存占用。
+  - 优先使用 NSH 原生组件、程序化矢量绘制（`<Canvas>` + `Path2D`）、设计 Token 和系统字体，尽量不新增静态资源文件（位图、精灵图、额外字体、vendored JS/CSS 运行时）。
+  - 禁止为了“不加文件”而把大体积二进制/图片以 base64 或大字面量内联进 `.ts/.tsx` 源码，这会更严重地拖慢 JS 解析并推高常驻堆内存。
+  - 仅在无原生 NSH 或矢量方案可替代时才引入资源或独立渲染器；必须按需懒加载、压缩体积，并由脚本从单一真源同步，禁止跨端手工复制。
+- **守住 NSH 渲染与内存预算**：
+  - 在 JSX 绑定中通过细粒度 signal 读取状态（NSH 组件只执行一次），长列表必须虚拟化（`<List>`），大载荷按需拉取（例如历史工具输出默认摘要，展开时再按 turn 拉全量，避免把数 MB 数据常驻前端内存）。
+  - NSH 原生组件能满足时禁止嵌入 `<WebView>`；定时器、轮询与事件订阅必须在 `cleanup()` 中释放。
+
 ## 命令
 
 ```bash
 pnpm install
-pnpm run desktop:dev               # 主要开发循环：构建并运行原生 NSH 桌面应用（desktop-nsh:*）
+pnpm run desktop:dev               # 主要开发循环：构建并运行原生 NSH 桌面应用
 pnpm run fmt:rs                    # 修改 Rust 后运行；只格式化已改动 / 已暂存的 .rs 文件
 pnpm run check:repo-hygiene        # 仓库内容与文件名规则
 pnpm run check:github-config       # GitHub workflow / 配置规则
@@ -46,7 +72,7 @@ pnpm run check:core-boundaries     # Cargo feature、依赖方向、模块 owner
 
 1. 运行最近的 `AGENTS.md` 中能覆盖该行为的最窄命令。
 2. 优先选择单 package、单 test target 或 module filter，并使用最小 feature。不要把 `product-full`、`all-features` 或 workspace 全量测试当成捷径。
-3. 只有对应契约变化时才运行仓库级检查：布局/内容规则用 `check:repo-hygiene`，workflow 用 `check:github-config`，Cargo feature、依赖方向或 test-target 布局用 `check:core-boundaries`。
+3. 只有对应契约变化时才运行仓库级检查（`check:repo-hygiene`、`check:github-config`、`check:core-boundaries`）。
 4. 大范围 build、workspace suite、打包和平台矩阵交给 CI，除非改动影响这些路径或需要复现 CI 故障。
 
 ## 每次改动都适用的规则
@@ -55,15 +81,9 @@ pnpm run check:core-boundaries     # Cargo feature、依赖方向、模块 owner
 
 修改 bug 相关代码前，只检查相关的本地代码和本地 Git 历史中是否已有修复，并结合已知的反馈版本和复现条件判断。开始前先说明检查结论。若已有修复，给出对应的代码或提交依据，不要重复实现。
 
-### 平台边界
-
-- 桌面客户端是原生 NSH 应用（`src/apps/desktop-nsh` + `src/nsh-ui`），后端库 `src/apps/desktop` 在进程内加载；没有 Tauri 运行时，也没有 WebView 承载的 UI。UI 代码只通过连接层（`src/nsh-ui/src/bridge.ts`）访问后端，通过 `nsh/*` API 访问宿主外壳。
-- 桌面端专属宿主 adapter 放在 `src/apps/desktop`，经类型化能力接口回流；窗口、托盘、通知、剪贴板和生命周期操作走 shell 通道（`host://shell-request`），没有 shell 提供该操作时明确拒绝。
-- 共享 core 避免使用宿主专属 API；使用 `openbitfun_events::EventEmitter` 和 `crate::host::HostHandle` 等共享抽象。
-
 ### 后端命令
 
-command 名称使用 `snake_case`，并接收一个结构化 `request`。在 `src/apps/desktop/src/lib.rs` 的 `backend_commands!` 中注册，处理函数前加 `// @backend-command` 标记，运行 `pnpm run desktop-nsh:generate-dispatch`，并添加注册表行。TypeScript 包装可以使用 `camelCase`。
+command 名称使用 `snake_case`，并接收一个结构化 `request`。在 `src/apps/desktop/src/lib.rs` 的 `backend_commands!` 中注册，处理函数前加 `// @backend-command` 标记，运行 `pnpm run desktop-nsh:generate-dispatch`，并在 Product Operation Registry 中补充对应行（见[远程场景](#远程场景)）。TypeScript 包装可以使用 `camelCase`。
 
 ```rust
 // @backend-command
@@ -86,35 +106,35 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 ### Rust 依赖
 
 - `[workspace.dependencies]` 只统一兼容版本，不提供宽泛的能力并集。每个 crate 只选择自身实际使用的 feature，仅测试所需的 feature 放入 `[dev-dependencies]`，受 feature 控制的服务能力挂在所属 crate 的 feature 上。
-- 第三方依赖的默认 feature 若不是所有 consumer 的契约，在 `[workspace.dependencies]` 统一关闭；成员继承该策略，只增加自身需要的切片。
+- 第三方依赖的默认 feature 若不是所有 consumer 的契约，在 `[workspace.dependencies]` 统一关闭；成员只增加自身需要的切片。
 - 仓内 crate 的受保护 `default` 为空时，不在每条依赖边重复写 `default-features = false`。ACP 这类有意保留兼容默认的 crate，窄 consumer 仍需显式关闭。
-- 被复制到独立 Docker 构建上下文的 manifest 无法继承 workspace 根，必须保留显式版本和默认策略。
+- 独立 Docker 构建上下文的 manifest 无法继承 workspace 根，必须保留显式版本和默认策略。
 - 根 workspace 和 workspace 成员禁止使用 `tokio/full`。
 - 细则见 [`docs/architecture/rust-build-dependency-boundaries.md`](docs/architecture/rust-build-dependency-boundaries.md)。修改 manifest 后用 `pnpm run check:core-boundaries` 验证。
 
 ### 日志
 
-日志只用英文，且不使用 emoji。前端（`src/nsh-ui`）：规则相同（见其 [AGENTS.md](src/nsh-ui/AGENTS.md)）。后端：[`src/crates/LOGGING.md`](src/crates/LOGGING.md)。
+日志只用英文，且不使用 emoji。前端（`src/nsh-ui`）：见其 [AGENTS.md](src/nsh-ui/AGENTS.md)。后端：[`src/crates/LOGGING.md`](src/crates/LOGGING.md)。
 
 ### 国际化
 
 - `src/shared/i18n/contract/locales.json` 统一管理 locale id、alias、fallback 规则和各形态默认语言。修改后运行 `pnpm run i18n:generate`。
 - 跨形态稳定标签放在 `src/shared/i18n/resources/shared/<locale>/terms.json`；流程文案留在所属产品形态。
-- 任何形态都不得导入其他形态的 locale catalog。`OpenBitFun-Installer` 和静态页面不得导入桌面 UI（`src/nsh-ui`）locale 资源；静态自包含页面使用生成的 page-scoped shared-term 文件。
+- 任何形态都不得导入其他形态的 locale catalog；静态自包含页面使用生成的 page-scoped shared-term 文件。
 - 用户可见的日期、时间和数字使用共享 i18n 格式化 helper，不直接调用 `Intl.*` 或 `toLocale*`。
-- 修改 locale 资源或用户可见文案后运行 `pnpm run i18n:audit`。它检查 key / 占位符一致性、静态与动态 key 证明，以及 literal fallback、直接 locale 格式化和源码硬编码 CJK 文案的零增长基线。
+- 修改 locale 资源或用户可见文案后运行 `pnpm run i18n:audit`（检查 key / 占位符一致性及零增长基线）。
 - 细则见 [`docs/architecture/i18n.md`](docs/architecture/i18n.md)。
 
 ### 主题与颜色 Token
 
-- 主题与颜色 baseline（`scripts/theme-color-governance-baseline*.json`）是 ratchet 契约，不是可随意修改的测试期望。不得通过提高 baseline、放宽 fixture/assertion 数量、增加宽泛 allowlist 或移除 CI 审计来让失败的审计通过。
+- 主题与颜色 baseline（`scripts/theme-color-governance-baseline*.json`）是 ratchet 契约，不是可随意修改的测试期望。不得通过提高 baseline、放宽计数、增加宽泛 allowlist 或移除 CI 审计来让失败的审计通过。
 - 实际债务减少时同步下调 baseline。确需新增颜色或 key 时，只增加最小 owner contract，并说明现有 semantic、component 或专用域 Token 为什么不能覆盖。
-- 修改 theme、CSS variable、widget payload、mobile、installer 或 CLI/TUI 颜色后，运行 `pnpm run theme:color-audit:all`。
+- 修改设计 Token、NSH 主题投影、Web 页面、MiniApp 外观或 CLI/TUI 颜色后，运行 `pnpm run theme:color-audit:all`。
 - 细则见 [`docs/architecture/theme-token-optimization.md`](docs/architecture/theme-token-optimization.md)。
 
 ### Agent loop
 
-不要把硬编码限制或模式判断作为处理 agent loop 循环问题的第一反应，例如仅按字符串或次数阻止重复工具调用；这会把 agent loop 变成脆弱的 workflow 引擎。应先定位根因：工具行为、模型交互、会话上下文封装、prompt/tool schema 设计，或状态同步问题。
+不要把硬编码限制或模式判断作为处理 agent loop 循环问题的第一反应（例如仅按字符串或次数阻止重复工具调用）；这会把 agent loop 变成脆弱的 workflow 引擎。应先定位根因：工具行为、模型交互、会话上下文封装、prompt/tool schema 设计，或状态同步问题。
 
 ### 文档与流程产物
 
@@ -126,88 +146,61 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 工作区、执行这一轮的 runtime、以及正在操作的人，可能分别位于不同机器。下面四种场景是每次改动都要一并覆盖的一等目标，不是事后再补的适配。
 
 产品模型：OpenBitFun 是一个分布式 Agent runtime，只有一个显示与操作界面。
-
-- **Runtime 节点**（后端 + 前端）是桌面端和 CLI。每个节点运行 Agent runtime、执行工作，并且都可以作为其他客户端接入的 fleet entry。
-- **其他所有客户端**（浏览器、手机 App、IM Bot）都只是前端。
-- **任何前端都能显示并操作账号下的任何 runtime。** 由哪台设备执行只是一个标签，不是需要切换进入的模式。见 [unified-client-architecture.md](docs/architecture/unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface) 中的 fleet 层。
-- **账号的云端 superagent（"OpenBitFun"）是主入口**：一个输入框、一个模型和一组管理工具，没有固定工作流。它默认开启，默认完全访问：它派发的任务自动批准，每台设备的开关 `superagent.acceptDispatch` 和 `superagent.allowAutoApproval` 可以把设备隔离出去或关闭自动批准。它是控制平面节点，不拥有任何工作区 runtime（[agent-runtime-deployment-design.md](docs/architecture/agent-runtime-deployment-design.md#10-cloud-superagent-control-plane-node)）。
-- OpenBitFun 服务器只能通过其域名经 HTTPS 访问。
+- **Runtime 节点**（桌面端与 CLI）运行 Agent runtime、执行工作，并作为对等的 fleet entry。
+- **纯前端客户端**（浏览器、NSH 手机 App、IM Bot）不拥有 runtime，通过一个 fleet entry 操作账号下的任意 runtime；由哪台设备执行只是标签，不是需要切换进入的模式。
+- **云端 superagent**（`openbitfun-superagent`）是不拥有工作区 runtime 的控制平面节点（当前 UI 入口在 `src/nsh-ui/src/productGates.ts` 默认关闭；每台设备通过 `superagent.acceptDispatch` 与 `superagent.allowAutoApproval` 控制派发与自动审批）。OpenBitFun 服务器只能通过其域名经 HTTPS 访问。
 
 | 场景 | 含义 | 设计入口 |
 |---|---|---|
-| 远程工作区 | 当前工作区位于 SSH 主机、跳板机链路或 Docker 容器；文件、终端、搜索和 Agent 子进程都必须在那一侧执行 | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md)、[remote-workspaces.md](docs/features/remote-workspaces.md) |
-| 远程控制 | 只有前端的客户端用账号（邮箱验证码）登录，通过一个 fleet entry（桌面或 CLI 宿主，自动选择并自动故障切换）操作账号下的所有 runtime：NSH 手机 App 经 OpenBitFun Link，浏览器经服务器网关（`https://<domain>/app/`，与设备端到端加密，运行设备自带的 Web UI 包）；飞书 / Telegram / 微信 Bot 通过设备网络上的 OBP（`mesh_route`）驱动会话，没有 relay 回退 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（fleet、设备网络、浏览器网关）、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect` |
-| 设备上下文（原 Peer Device Mode） | 任意前端操作账号下任意运行时：命令携带目标设备，由 fleet 路由到其所属设备（`fleet_call`），窗口装饰、更新器与本地 OS 自动化仍留在客户端自己的后端。2.0 已退役整个界面切换到某台 peer 的模式 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（fleet）、[peer-device-mode.md](docs/architecture/peer-device-mode.md)（不变量与历史） |
-| Dispatch 分离任务 | 控制端（桌面、CLI 或账号的云端 superagent）把持久化任务提交到另一台 OpenBitFun 宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
+| 远程工作区 | 工作区位于 SSH 主机、跳板机链路或 Docker 容器；文件、终端、搜索和 Agent 子进程都在那一侧执行 | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md)、[remote-workspaces.md](docs/features/remote-workspaces.md) |
+| 远程控制 | 纯前端客户端经自动选择并故障切换的 fleet entry 操作所有 runtime：手机走 OpenBitFun Link，浏览器走 HTTPS 网关（`/app/`，端到端加密，运行设备自带 Web UI 包），IM Bot 走设备网 OBP（`mesh_route`，无 relay 回退） | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect` |
+| Fleet / 设备上下文 | 产品命令以 `fleet_call {target, command, args}` 路由到所属设备执行，窗口装饰、更新器、账号身份和本机 OS 自动化留在控制端 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface)、[peer-device-mode.md](docs/architecture/peer-device-mode.md) |
+| Dispatch 分离任务 | 控制端（桌面、CLI 或云端 superagent）把持久化任务提交到目标宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
 四种场景共同适用的规则：
 
-- **远程路径要和功能一起设计。** 默认 UI、进程和文件系统在同一台机器上的能力属于未完成，而不是“第一阶段”。
-- **不支持要显式暴露。** 无法支持某个场景时，屏蔽入口或返回明确的不支持状态。静默回落本地、假成功、空载荷和通用错误都算回归；回落本地还会把本地内容泄露给远端控制方。
-- **阻塞式交互必须可以远程应答。** 新增的权限确认、对话框和选择器都要经既有的 dialog / 权限信箱编排送达当前操作端。只能靠桌面窗口解除的阻塞会让远程控制和 Dispatch 任务死锁。
-- **要能扛断线。** 远程形态会重连、按 cursor 重放并重新 hydrate；优先使用可恢复 cursor 和幂等变更，不要依赖“客户端恰好在线”才存在的状态。
-- **同一套 UI、同一个协议、前端只做显示。** 所有客户端（桌面、手机、浏览器、远程控制端）都是同一套 UI，通过 `BackendService`（命令分发 + 带序号的事件流）连接后端；中继只是管道，不做转换。业务规则、默认值、校验和数据投影属于后端，不要加到前端。见 [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)。
-- **远程工作区路径在任何客户端 OS 上都是 POSIX 路径。** 不得用宿主 `std::path` 语义切分或拼接，也不得把控制端的路径直接拿到 peer 宿主上复用。
+- **远程路径与功能一起设计。** 默认 UI、进程和文件系统在同一台机器上的能力属于未完成。
+- **不支持要显式暴露。** 屏蔽入口或返回明确的不支持状态；静默回落本地、假成功、空载荷和通用错误都算回归，且可能把本地内容泄露给远端控制方。
+- **阻塞式交互必须可远程应答。** 权限确认、对话框和选择器必须经既有的 dialog / 权限信箱编排送达当前操作端，避免远程控制和 Dispatch 任务死锁。
+- **要能扛断线。** 优先使用可恢复 cursor 和幂等变更，不要依赖“客户端恰好在线”才存在的状态。
+- **远程工作区路径在任何客户端 OS 上都是 POSIX 路径。** 不得用宿主 `std::path` 切分或拼接，也不得把控制端路径直接拿到 peer 宿主复用。
 
 各场景的具体约束：
 
-- **远程工作区**：每个已注册的后端命令在 Product Operation Registry（[`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)）中有且只有一行，声明其远程工作区立场。桌面端闭包测试与能力生成器会拒绝没有对应行的命令，新行不得使用 `Unaudited`（该存量清单只减不增）；被删除的命令保留一行 `retired(...)`，让旧客户端得到退役原因。修改该表后运行 `pnpm run capabilities:generate`。见 [remote-surface-contract.md](docs/architecture/remote-surface-contract.md)。
-- **远程控制**：IM Bot 通过 `RemoteCommand` wire 协议（经 Link 的 `obp_remote_command`）和 bot command router / menu 触达会话，不走桌面 UI。新增或迁移会话级能力时（工作区或助手选择、会话生命周期、模式、模型、审批、附件），要同步扩展这些形态，或让它们给出明确的不支持回复。
-- **Fleet**：经 fleet entry 发出的每个产品命令都以 `fleet_call {target, command, args}` 传输，并在拥有它的设备上执行。被转发且请求中携带 session、workspace 或 terminal id 的命令，需要在 [`remote_surface/fleet_routing.rs`](src/crates/contracts/product-domains/src/remote_surface/fleet_routing.rs) 中有一行 `ByOwner`；缺少时 `pnpm run desktop-nsh:check-dispatch` 会拒绝。Fleet 数据形状跨版本传输：宽松读取，新增字段带默认值。
-- **设备上下文（fleet 路由）**：产品命令默认路由到其所属设备执行。必须留在控制端的命令（窗口装饰、更新器、账号身份、本地 OS 自动化）在同一注册表行中声明为 `ControllerLocal`（fleet 将其路由为 `EntryLocal`）；桌面端 peer host、CLI peer host 和 NSH UI 路由（`src/nsh-ui/src/generated/peerSurface.ts`）都从它派生拒绝集合，`pnpm run check:core-boundaries` 会拒绝手写清单。CLI host 要执行的命令需要处理分支加行内 `cli_peer: HANDLED`；`src/apps/cli/src/peer_host/commands/mod.rs` 的闭包测试保持两者一致。Peer 能力是类型化的 `PeerHostCapability`，由注册表发布。改动 session、account 或 hydrate 路径前，先读 [peer-device-mode.md](docs/architecture/peer-device-mode.md) 中的多端互控 invariants。
-- **Dispatch 分离任务**：任务在目标端以 CLI delivery profile 无界面运行，没有交互宿主，也不保证控制端在线。控制端只是观察者，不是 runtime 或文件系统代理。不要引入依赖提交方常驻的行为。dispatch 协议版本和目标端必备 capability 属于兼容契约：新的目标端要求要走协商 capability，而不是默认假设。
+- **远程工作区**：每个已注册的后端命令在 Product Operation Registry（[`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)）中有且只有一行。新行不得使用 `Unaudited`；删除的命令保留 `retired(...)` 行。修改后运行 `pnpm run capabilities:generate`。见 [remote-surface-contract.md](docs/architecture/remote-surface-contract.md)。
+- **Fleet 与设备路由**：被转发且请求携带 session、workspace 或 terminal id 的命令，需要在 [`remote_surface/fleet_routing.rs`](src/crates/contracts/product-domains/src/remote_surface/fleet_routing.rs) 中有一行 `ByOwner`（由 `pnpm run desktop-nsh:check-dispatch` 校验）。必须留在控制端的命令在注册表行中声明为 `ControllerLocal`；桌面端 peer host、CLI peer host 与 `src/nsh-ui/src/generated/peerSurface.ts` 均由此派生拒绝集合（`pnpm run check:core-boundaries` 拒绝手写清单）。CLI 宿主处理的命令需同时具备处理分支与行内 `cli_peer: HANDLED`（由 `src/apps/cli/src/peer_host/commands/mod.rs` 闭包测试校验）。改动 session、account 或 hydrate 路径前先读 [peer-device-mode.md](docs/architecture/peer-device-mode.md)。
+- **远程控制（IM Bot）**：Bot 通过 `RemoteCommand`（经 Link 的 `obp_remote_command`）与 bot command router / menu 触达会话。新增或迁移会话级能力时，同步扩展这些入口或返回明确的不支持回复。
+- **Dispatch 分离任务**：任务在目标端以 CLI delivery profile 无界面运行，不依赖交互宿主或提交方常驻。新的目标端要求必须通过类型化 capability 协商，不能默认假设。
 
-说明改动在哪些远程场景下验证过。只跑本地测试不能作为远程行为的证据。
+说明改动在哪些远程场景下验证过；只跑本地测试不能作为远程行为的证据。
 
 ## 升级兼容性
 
-用户是原地升级的，而上述远程场景经常让两个不同版本的 OpenBitFun 连在同一条链路上。任何改动都必须保证已有安装无需手工修复即可继续工作。
+用户是原地升级的，远程场景也常把两个不同的 2.0 构建连在同一条链路上。任何改动都必须保证已有安装无需手工修复即可继续工作。
 
-OpenBitFun 2.0（本仓库）只在**会话记录与配置**上兼容 1.0：1.x 写下的会话、对话记录、工作区记录、连接配置和设置文件必须仍能读取。前端、远程控制、peer 与账号不与 1.x 客户端或宿主互通；1.x 的 relay（`remote.openbitfun.com/relay`、配对邀请、relay RPC 与 HostInvoke、`mobile-web`）只属于已发布的 1.x 客户端，2.0 的任何组件都不使用它。下文的 peer 与远程兼容指 2.0 与另一个 2.0 构建之间，仍按 capability 协商。
+OpenBitFun 2.0 仅在**落盘会话记录与配置**上兼容 1.x（会话、对话记录、工作区、连接配置、设置）。前端、远程控制、peer 与账号不与 1.x 互通，也不使用 1.x relay（`remote.openbitfun.com/relay`、`mobile-web`）。以下跨版本规则适用于 2.0 构建之间：
 
-- **落盘结构会被新旧两侧代码同时读取。** 对配置、设置、会话、连接配置、worktree 和 dispatch 记录：新增字段要带默认值，反序列化保持容错，绝不重新定义或收窄已落盘字段的语义，也绝不把旧数据给不出的字段变成必填。
-- **不要用删除或重置用户数据的方式来“恢复”解析不了的内容。** 保留记录、降级功能并给出明确状态。凭证缺失、配置读不出、超时或主机离线，都不构成丢弃会话、工作区或连接的理由。销毁性删除只能是用户的显式操作。
-- **跨版本边界要协商，不能假设。** OBP peer 与 fleet、dispatch 协议、浏览器网关、手机 App、IM Bot，对面都是你控制不了的 2.0 构建版本。先声明 capability 并在使用前检查（包版本相同不等于行为相同），并让旧版本一侧留在可用路径上，而不是直接判失败。
-- **改名就是一次迁移。** 在所有受支持的对端都不可能再发送旧名称、旧 id 或旧结构之前，必须继续兼容读取；被改名对象所引用的数据（vault 条目、工作区指针）要一并迁移。
-- **用测试证明。** 覆盖旧数据反序列化和旧载荷往返，而不只是新结构。只验证当前代码自己写出的数据，不算升级兼容性覆盖。
+- **落盘结构向后容错**：新增字段带默认值，反序列化保持容错，绝不重新定义或收窄已有字段语义，也不把旧数据给不出的字段变成必填。
+- **绝不以删除或重置用户数据来恢复解析/网络失败**：保留记录、降级功能并给出明确状态。销毁性删除只能是用户的显式操作。
+- **跨版本边界通过 capability 协商**：先声明再检查（版本相同不等于行为相同），让旧对端留在可用路径上。
+- **改名就是一次迁移**：在所有受支持对端都不再发送旧名称/id/结构前保持兼容读取，并一并迁移引用数据（vault 条目、工作区指针）。
+- **用测试证明**：覆盖旧数据反序列化与旧载荷往返，而不只是当前代码写出的数据。
 
 ## 修改前必读
 
-在下列范围修改前，先阅读所列文档。子项是硬性约束。
+在下列范围修改前，先阅读所列文档；子项是硬性约束。
 
-- **`openbitfun-core` 拆解、feature 或依赖边界、Rust 构建提速**：[`docs/architecture/product-architecture.md`](docs/architecture/product-architecture.md) 和 [`docs/architecture/rust-build-dependency-boundaries.md`](docs/architecture/rust-build-dependency-boundaries.md)。
-  - 不要把 DTO / contract 抽取误判为 runtime owner 已迁移。
-  - 产品表面可以有差异；共享稳定 facts 或 ports，不共享 UI、protocol、lifecycle 或平台实现。
-  - 迁移 runtime owner 必须有评审过的 port/provider 设计、旧路径兼容、行为等价测试；可能改变行为边界时还需要明确确认。
-- **Agent Runtime 部署、多 GUI/TUI/Remote 实例、共享 Session 控制、进程拓扑**：[`docs/architecture/agent-runtime-deployment-design.md`](docs/architecture/agent-runtime-deployment-design.md)。
-  - Rust Runtime 或 Node/Bun Plugin Host 不得默认按 client、workspace、session 或 plugin 分进程；依据负责的状态模块、执行与安全条件以及测量后的容量来决定。
-- **CLI/TUI 能力对齐、非交互输出契约、外部配置导入、插件管理体验、CLI Agent 行为、CLI 白标发行**：[`docs/architecture/cli-product-line-design.md`](docs/architecture/cli-product-line-design.md) 和 [`src/apps/cli/AGENTS.md`](src/apps/cli/AGENTS.md)。
-  - CLI/TUI 展示留在 app；可复用产品行为通过 Product Assembly、Agent Runtime、Tool/Harness、Runtime Services 或既有扩展边界承接。
-- **HarmonyOS PC CLI/TUI**：[`docs/architecture/platform-portability-design.md`](docs/architecture/platform-portability-design.md)。
-  - 这是未来平台目标，不是已实现支持。产品目标是真实 PC 系统终端；HAP、`hdc shell`、手机 Remote App 和远端代执行都不能替代。每项具体适配另立专题设计，现有移动端能力保持不变。
-- **产品定义、品牌发行、GUI/TUI 布局选择、产品内置扩展、定制构建任务**：[`docs/architecture/product-customization-blueprint.md`](docs/architecture/product-customization-blueprint.md)。
-  - 产品定制与用户运行时配置和插件分开。GUI 和 TUI 可以共享稳定产品事实，但不共享布局、组件、主题键、键位或 renderer schema。
-  - 产品组装结果和布局选择可以携带少量不可变的产品身份、数据隔离、故障恢复、升级完整性或法律保护项 ID。不得承载用户/来源级插件策略、安装、激活、更新、权限或动态健康状态。
-  - Product Profile、Brand Pack、GUI/TUI Surface Blueprint 和 Resolved Product Manifest 是已退役的设计术语，不是生产对象。不要为它们新建兼容格式；只实现被真实构建和运行时消费方使用的最小产品定义与组装结果字段。
-- **OpenCode 实时配置或插件执行**：[`docs/architecture/extensions/opencode-extension-compatibility.md`](docs/architecture/extensions/opencode-extension-compatibility.md) 和 [`src/crates/adapters/opencode-adapter/AGENTS.md`](src/crates/adapters/opencode-adapter/AGENTS.md)。
-  - 兼容矩阵描述的是目标与差距；不要把设计目标当成已可用能力。
-  - 不要把旧受管包路径（P0 静态预览入口）扩张为 OpenCode 目标运行模型。
-- **Agent Hooks**：[`docs/features/agent-hooks.zh-CN.md`](docs/features/agent-hooks.zh-CN.md)（[English](docs/features/agent-hooks.md)）。
-  - 原生用户 Hooks 实现 Codex Hook 契约，因此 <https://learn.chatgpt.com/docs/hooks> 是事件、载荷字段与决策结构的参考来源。不要另起炉灶。功能文档只覆盖 OpenBitFun 特有部分（文件位置、`app.hooks` 开关和差异表），新增或消除差异时必须同步更新。
-  - 引擎、Registry、Hook 来源与分发的归属见 [`agent-runtime`](src/crates/execution/agent-runtime/AGENTS.md) 和 [`core`](src/crates/assembly/core/AGENTS.md) 指南。
-- **生命周期证据、门禁、Artifact Graph、Project Profile、Deep Review 策略、OpenCode 兼容、目标项目治理**：先读 [`docs/sdlc-harness/README.md`](docs/sdlc-harness/README.md)，再读 [`docs/sdlc-harness/design.md`](docs/sdlc-harness/design.md)。变更影响模块边界或行为时，继续遵循 `docs/sdlc-harness/architecture/` 或 `docs/sdlc-harness/features/` 下的对应设计。
-  - 不要把 OpenBitFun 仓库自身的假设硬编码成目标项目规则；质量保护行为保持面向目标项目、基于证据、按风险分级、成本可控并可审计。
-
-## 维护这些指南
-
-- 本文件只保留跨模块规则和稳定的仓库级入口。模块 ownership 细节、surface 或 crate 专属命令和 focused test 清单属于最近的指南；只有真实开发流程需要时才在那里补充命令。
-- crate 清单由各层指南维护；不要在这里枚举 crate。
-- `AGENTS.md` 与 `AGENTS-CN.md` 在同一次改动中同步更新。
-
-## 移动端应用
-
-NSH 手机应用（iOS 与 Android，与桌面端相同的 `src/nsh-ui` 界面，通过 OpenBitFun Link
-控制账号下的设备）位于本仓库 [`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md)。
-旧版 Kotlin 与 HarmonyOS 应用及其 Kotlin 共享模块、原生 WebView 资源和移动端设计工具
-仍在 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)。
-手机 App 的主机侧协议契约（OBP、Link）仍由本仓库维护。
+- **`openbitfun-core` 拆解、feature/依赖边界、Rust 构建提速**：[`docs/architecture/product-architecture.md`](docs/architecture/product-architecture.md)、[`docs/architecture/rust-build-dependency-boundaries.md`](docs/architecture/rust-build-dependency-boundaries.md)。
+  - 不要把 DTO / contract 抽取误判为 runtime owner 迁移；迁移 runtime owner 必须有评审过的 port/provider 设计、旧路径兼容、行为等价测试，可能改变行为边界时需明确确认。
+- **Agent Runtime 部署、多宿主共享 Session 控制、进程拓扑**：[`docs/architecture/agent-runtime-deployment-design.md`](docs/architecture/agent-runtime-deployment-design.md)。
+  - Rust Runtime 或 Node/Bun Plugin Host 不得默认按 client、workspace、session 或 plugin 分进程；依据状态归属、执行与安全边界以及实测容量决定。
+- **CLI/TUI 能力对齐、非交互输出契约、外部配置导入、白标 CLI**：[`docs/architecture/cli-product-line-design.md`](docs/architecture/cli-product-line-design.md)、[`src/apps/cli/AGENTS.md`](src/apps/cli/AGENTS.md)。
+- **HarmonyOS PC CLI/TUI**：[`docs/architecture/platform-portability-design.md`](docs/architecture/platform-portability-design.md) —— 仅作未来目标（真实 PC 系统终端；HAP、`hdc shell`、手机 App 和远端代执行都不能替代）。
+- **产品定义、品牌发行、定制构建任务**：[`docs/architecture/product-customization-blueprint.md`](docs/architecture/product-customization-blueprint.md)。
+  - 产品定制与用户运行时配置和插件分开；GUI 和 TUI 只共享稳定产品事实，不共享布局、组件、主题键、键位或 renderer schema。组装结果只携带少量不可变产品身份/隔离/恢复/法律项 ID，不承载动态插件状态。
+- **OpenCode 实时配置或插件执行**：[`docs/architecture/extensions/opencode-extension-compatibility.md`](docs/architecture/extensions/opencode-extension-compatibility.md)、[`src/crates/adapters/opencode-adapter/AGENTS.md`](src/crates/adapters/opencode-adapter/AGENTS.md)。
+  - 不要把兼容目标当成已实现能力，也不要扩张旧的 P0 静态预览受管包路径。
+- **Agent Hooks**：[`docs/features/agent-hooks.zh-CN.md`](docs/features/agent-hooks.zh-CN.md)（[English](docs/features/agent-hooks.md)）；引擎与分发归属见 [`agent-runtime`](src/crates/execution/agent-runtime/AGENTS.md) 与 [`core`](src/crates/assembly/core/AGENTS.md)。
+  - 原生用户 Hooks 遵循 Codex Hook 契约（<https://learn.chatgpt.com/docs/hooks>），不要另起炉灶，新增或消除差异时同步更新差异表。
+- **SDLC Harness（生命周期证据、门禁、Artifact Graph、Project Profile、Deep Review、目标项目治理）**：[`docs/sdlc-harness/README.md`](docs/sdlc-harness/README.md)、[`docs/sdlc-harness/design.md`](docs/sdlc-harness/design.md)。
+  - 不要把 OpenBitFun 仓库假设硬编码为目标项目规则；质量保护保持面向目标项目、基于证据、按风险分级、成本可控并可审计。
