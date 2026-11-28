@@ -51,6 +51,7 @@ test("a saved Write plan reads its full metadata, opens in Files and shares Buil
   const { host, actions } = planHost(PROJECT_FILE, "session-1");
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app, "NSH skeleton");
+  await app.press("label:explore-group-explore:tool:plan-call");
   await app.waitFor("Verify the rollout notes");
   await app.waitFor("1 of 2 remaining");
   expect(app.shows("Confirm test evidence")).toBe(false);
@@ -82,6 +83,7 @@ test("live Write reveals the plan metadata across partial JSON and only offers a
   });
   await send("agentic://dialog-turn-started", {});
   await event("EarlyDetected", null);
+  await app.press("label:explore-group-explore:tool:live-plan-call");
   const payload = `+++ ${PROJECT_FILE}\n${PLAN}`;
   const partial = JSON.stringify({ payload });
   const breakAt = partial.indexOf("Release review");
@@ -106,6 +108,7 @@ test("a split pane builds its own plan without moving the primary session or sen
   await app.press("thread-actions-trigger");
   await app.press("session-split-open");
   await app.waitFor("id:secondary-session-pane");
+  await app.press("id:secondary-session-pane >> label:explore-group-explore:tool:plan-call");
   await app.waitFor("Verify the rollout notes");
   await app.type("secondary-composer", "Keep this secondary draft");
   await app.press("transcript-plan-build");
@@ -130,6 +133,7 @@ test("a legacy runtime plan uses its fleet owner and copies to the project witho
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, platform: "web", host: { handlers: host.handlers } });
   await app.press("id:sidebar-session-s-b1");
+  await app.press("label:explore-group-explore:tool:plan-call");
   await app.waitFor("Release review");
   files.set(PROJECT_FILE, "Existing project file");
   await app.press("transcript-plan-copy");

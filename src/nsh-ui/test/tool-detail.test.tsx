@@ -320,8 +320,9 @@ test("an opened card reads its turn whole once, and a failed read is said and re
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Summarized");
   await app.waitFor("Build finished", { timeout: 20_000 });
-  await app.waitFor("id:ambient-tool-card >> label:tool-card-GetThings");
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-Edit");
+  await app.press("label:explore-group-explore:tool:call-1");
+  await app.waitFor("id:tool-card >> label:tool-card-GetThings");
+  await app.waitFor("id:tool-card >> label:tool-card-Edit");
   expect(reads.length).toBeGreaterThan(0);
   expect(reads.every(read => read.tool_detail === "summary")).toBe(true);
   // The collapsed edit shows the host's counts, not ones taken from its preview.
@@ -381,6 +382,8 @@ test("an expanded WebFetch shows the fetched title and a single URL", async () =
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Fetched pages");
+  await app.waitFor("The article is ready.");
+  await app.press("label:explore-group-explore:tool:web-page");
   await app.waitFor(`text:${url}`);
   expect(app.shows(`label:web-result-${url}`)).toBe(false);
   await app.press("label:tool-card-WebFetch >> nth=0");
@@ -391,6 +394,7 @@ test("an expanded WebFetch shows the fetched title and a single URL", async () =
   expect(texts.indexOf(title)).toBeLessThan(texts.indexOf(url));
   expect(texts.indexOf(url)).toBeLessThan(texts.indexOf("Article body"));
 
+  await app.press("label:explore-group-explore:tool:web-data");
   await app.press("label:tool-card-WebFetch >> nth=1");
   await app.waitFor(`label:web-result-${untitledUrl}`);
   expect(app.texts().filter(text => text === untitledUrl)).toHaveLength(1);
@@ -448,7 +452,8 @@ test("review reports render structured findings after hydration and preserve leg
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Saved review");
-  const cards = "id:prominent-tool-card >> label:tool-card-submit_code_review";
+  await app.press("label:explore-group-explore:tool:report");
+  const cards = "id:tool-card >> label:tool-card-submit_code_review";
   await app.waitFor(cards);
   expect(wholeReads).toBe(0);
   expect(app.shows("id:code-review-report")).toBe(false);
@@ -552,6 +557,7 @@ test("saved fix progress comes from the Review owner and only unfinished items c
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app, "Review with fixes", { deviceId: "owner" });
+  await app.press(`label:explore-group-explore:tool:${reportToolId}`);
   await app.press("label:tool-card-submit_code_review");
   await app.press("label:review-select-fixes");
   await app.waitFor("Fix in progress");
@@ -643,6 +649,7 @@ for (const workspaceFallback of [false, true]) {
     });
     const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
     await openSession(app, "Original strict review", { deviceId: "review-owner" });
+    await app.press(`label:explore-group-explore:tool:${reportToolId}`);
     await app.press("label:tool-card-submit_code_review");
     await app.press("label:review-select-fixes");
     await app.waitFor("Fix session finished");
@@ -725,6 +732,7 @@ test("fixes require explicit selections and retry on the runtime that owns the R
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app, "Fixable review", { deviceId: "review-owner" });
+  await app.press("label:explore-group-explore:tool:saved-review-tool");
   await app.press("label:tool-card-submit_code_review");
   await app.press("label:review-select-fixes");
   await app.waitFor("Fix the write path");

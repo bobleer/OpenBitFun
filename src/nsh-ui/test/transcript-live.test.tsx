@@ -75,12 +75,13 @@ test("a Task card lists the subagent's steps from the transcript view", async ()
   // The subagent's own answer belongs to the card, not the transcript.
   expect(app.texts()).not.toContain("Every module is small.");
 
+  await app.press("label:explore-group-explore:tool:task-1");
   await app.press("tool-card-Task");
   await app.waitFor("11 steps");
   // Only the latest steps show at first; the rest are one press away.
   expect(app.texts()).toContain("module-9.ts");
   expect(app.texts().join("\n")).not.toContain("module-0.ts");
-  await app.press("label:subagent-steps-all-tool:task-1");
+  await app.press("label:subagent-steps-all-explore:tool:task-1|task-1");
   await app.waitFor("module-0.ts");
   expect(app.texts()).toContain("Every module is small.");
 });
@@ -121,7 +122,10 @@ test("a turn already running when the session opens is hydrated from the view", 
   await openSession(app, "NSH skeleton");
   await app.waitFor("Half of the answer");
   expect(app.texts()).toContain("Is it still running?");
-  expect(app.texts()).toContain("cargo test");
+  await app.waitFor("label:explore-group-explore:tool:t-run");
+  expect(app.texts().join("")).toContain("1 command");
+  await app.press("label:explore-group-explore:tool:t-run");
+  await app.waitFor("cargo test");
   // The surface knows the turn runs: the composer offers Stop.
   await app.waitFor("Stop");
 
@@ -227,6 +231,7 @@ test("streaming ParamsPartial chunks resolve semantic targets without leaking ra
     roundId: "r1",
     toolEvent: { event_type: "ParamsPartial", tool_id: "t-task", tool_name: "Task", params: '{"pro' },
   });
+  await app.press("label:explore-group-explore:tool:t-task");
   await app.waitFor("tool-card-Task");
   expect(app.texts().join("\n")).not.toContain('{"pro');
 

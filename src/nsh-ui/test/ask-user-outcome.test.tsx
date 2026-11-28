@@ -48,6 +48,7 @@ test("an answered live question replaces the pending editor with the host's repl
     toolEvent: { event_type: "Completed", tool_id: "live-question", tool_name: "AskUserQuestion",
       result: { status: "answered", questions: input.questions, answers: { "0": "live stable", "1": ["Types"] } } },
   });
+  await app.press("label:explore-group-explore:tool:live-question");
   await app.waitFor("id:question-reply-live-question >> text:live stable");
   expect(app.shows("id:question-card-live-question")).toBe(false);
 });
@@ -77,6 +78,7 @@ test("settled questions show host answers and only fetch omitted detail when ope
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
+  await app.press("label:explore-group-explore:tool:full-answer");
   await app.waitFor("id:question-reply-full-answer >> text:preview stable");
   expect(app.shows("id:question-reply-full-answer >> text:Which checks for preview?")).toBe(true);
   expect(wholeReads).toBe(0);
@@ -128,6 +130,7 @@ test("a timed-out split question retains its draft on failure and sends from the
   const primary = "id:primary-session-pane";
   const secondary = "id:secondary-session-pane";
   await app.press("id:sidebar-session-s-a1");
+  await app.press(`${primary} >> label:explore-group-explore:tool:shared-question`);
   await app.waitFor(`${primary} >> id:question-result-shared-question`);
   await app.type("composer", "Entry composer draft");
   await app.press("thread-actions-trigger");
@@ -153,6 +156,7 @@ test("a timed-out split question retains its draft on failure and sends from the
   await app.press("split-divider-swap");
   expect(app.value("composer")).toBe("Owner composer draft");
   expect(app.value("secondary-composer")).toBe("Entry composer draft");
+  await app.press(`${primary} >> label:explore-group-explore:tool:shared-question`);
   await app.press(`${primary} >> id:question-result-shared-question`);
   await app.press(`${primary} >> id:question-next-followup-shared-question`);
   expect(app.value(`${primary} >> id:question-followup-shared-question-1-text`)).toBe("Verify signatures");

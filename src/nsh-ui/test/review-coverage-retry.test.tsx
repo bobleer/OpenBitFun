@@ -60,6 +60,7 @@ test("incomplete coverage requires confirmation of the latest exact scope on the
   const { host, requests } = fixture(true);
   const app = await open("./fixtures/obpApp.tsx", { width: 1440, height: 900, host: { handlers: host.handlers } });
   await openSession(app, "Original review", { deviceId: OWNER });
+  await app.press(`label:explore-group-explore:tool:${REPORT}`);
   await app.press("label:tool-card-submit_code_review");
   await app.press("label:review-open-coverage-retry");
   await app.waitFor("stale.ts");
@@ -90,6 +91,7 @@ test("an older review owner leaves its saved report readable without offering in
   const { host, requests } = fixture(false);
   const app = await open("./fixtures/obpApp.tsx", { width: 1440, height: 900, host: { handlers: host.handlers } });
   await openSession(app, "Original review", { deviceId: OWNER });
+  await app.press(`label:explore-group-explore:tool:${REPORT}`);
   await app.press("label:tool-card-submit_code_review");
   await app.waitFor("One check timed out.");
   expect(app.shows("label:review-open-coverage-retry")).toBe(false);

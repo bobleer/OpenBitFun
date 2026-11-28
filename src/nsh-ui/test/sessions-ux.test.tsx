@@ -133,14 +133,19 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   await openSession(app, "Muse workflow");
   await app.waitFor("Inspect and update the pipeline.");
 
-  // Reasoning stays collapsed. A shell row and the consequential actions each
-  // retain their own disclosure controls.
+  // Reasoning stays collapsed; all non-text tool calls fold into one collapsed process group.
   await app.waitFor("Thinking summary");
   expect(app.texts()).not.toContain("Checking git status and cargo workspace before patching.");
-  await app.waitFor("id:ambient-tool-card >> text:Ran");
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-edit");
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-todo_write");
+  await app.waitFor("label:explore-group-explore:tool:turn-rich-1-0-tool-0");
+  expect(app.texts()).not.toContain("cargo test -p core");
+  expect(app.texts()).not.toContain("main.rs");
   await app.waitFor("Primary model · 1.2s");
+
+  // Expanding the process group reveals every tool step in chronological order.
+  await app.press("label:explore-group-explore:tool:turn-rich-1-0-tool-0");
+  await app.waitFor("id:tool-card >> text:Ran");
+  await app.waitFor("id:tool-card >> label:tool-card-edit");
+  await app.waitFor("id:tool-card >> label:tool-card-todo_write");
 
   await app.waitFor("cargo test -p core");
   await app.waitFor("Updated plan");
@@ -468,7 +473,8 @@ test("sessions scene repaints reactively across the shared dark and light palett
   });
 
   await openSession(app, "NSH skeleton");
-  // The idle shortcut hint is gone (visual spec §5); a tool row's target is muted text too.
+  // The idle shortcut hint is gone (visual spec §5); a folded tool row's target is muted text too.
+  await app.press("label:explore-group-explore:tool:turn-1-0-tool-0");
   await app.waitFor("NavPanel.tsx");
   expect(app.spanStyle("NavPanel.tsx").color).toBe("#858585ff");
 
@@ -553,6 +559,14 @@ test("a persisted round keeps its order and every tool card shows its result", a
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Ordered");
   await app.waitFor("All tests passed.");
+  // Only plain text shows at top level; tool calls fold in their chronological positions.
+  expect(app.texts()).not.toContain("cargo test -p core");
+  expect(app.texts()).not.toContain("missing.rs");
+  // A failed folded group surfaces a quiet Failed marker before opening.
+  await app.waitFor("Failed");
+
+  await app.press("label:explore-group-explore:tool:tool-1");
+  await app.waitFor("cargo test -p core");
   const texts = app.texts();
   const before = texts.indexOf("Let me run the tests.");
   const command = texts.indexOf("cargo test -p core");
@@ -567,8 +581,8 @@ test("a persisted round keeps its order and every tool card shows its result", a
   await app.waitFor("test result: ok. 12 passed");
   expect(app.texts()).toContain("Output");
 
-  // A failed call says so and shows the host's error.
-  await app.waitFor("Failed");
+  // Expanding the failed group reveals the failed Read step and its host error.
+  await app.press("label:explore-group-explore:tool:tool-2");
   await app.press("tool-card-Read");
   await app.waitFor("No such file");
 });
@@ -600,6 +614,9 @@ test("a live round cuts its text at each tool call and shows the tool's result",
   });
   await send("agentic://text-chunk", { roundId: "r1", text: " The build is clean." });
   await app.waitFor("The build is clean.");
+  expect(app.texts()).not.toContain("cargo build");
+  await app.press("label:explore-group-explore:tool:live-1");
+  await app.waitFor("cargo build");
   const texts = app.texts();
   expect(texts.indexOf("First I check the build.")).toBeLessThan(texts.indexOf("cargo build"));
   expect(texts.indexOf("cargo build")).toBeLessThan(texts.indexOf("The build is clean."));
@@ -612,14 +629,16 @@ test("a live round cuts its text at each tool call and shows the tool's result",
     toolEvent: { event_type: "ConfirmationNeeded", tool_id: "live-2", tool_name: "CallDeferredTool",
       params: { tool_name: "Edit", args: { file_path: "/repo/live.ts", old_string: "before", new_string: "after" } } },
   });
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-Edit");
+  await app.waitFor("label:explore-group-explore:tool:live-2");
   await app.waitFor("Awaiting approval");
+  await app.press("label:explore-group-explore:tool:live-2");
+  await app.waitFor("id:tool-card >> label:tool-card-Edit");
   await send("agentic://tool-event", {
     roundId: "r1",
     toolEvent: { event_type: "Completed", tool_id: "live-2", tool_name: "CallDeferredTool", result: { changed: true } },
   });
   await app.waitFor("Awaiting approval", { state: "gone" });
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-Edit");
+  await app.waitFor("id:tool-card >> label:tool-card-Edit");
   expect(app.shows("label:tool-card-CallDeferredTool")).toBe(false);
 });
 
@@ -1121,6 +1140,7 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   await app.waitFor("Question 1");
   const outputShown = () => app.texts().some(text => text.includes("step 1 done"));
   expect(outputShown()).toBe(false);
+  await app.press("label:explore-group-explore:tool:tool-0");
   await app.press("tool-card-ExecCommand >> nth=0");
   await app.waitUntil(outputShown);
 
@@ -1343,7 +1363,10 @@ test("/model switches models locally, bare /goal & /btw open dialogs, and visual
   await app.waitFor("id:inline-figure-p99-latency");
   expect(app.shows("id:inline-figure-p99-latency >> text:P99 Latency")).toBe(true);
 
-  // Skill({ command: "visualize" }) renders as Skills card, never shell "Ran".
+  // Skill({ command: "visualize" }) folds as a step (never misclassified as shell "Ran")
+  // and renders as Skills card when expanded.
+  expect(app.shows("text:Ran")).toBe(false);
+  await app.press("label:explore-group-explore:tool:tool-skill-1");
   expect(app.shows("text:Skills")).toBe(true);
   expect(app.shows("text:visualize")).toBe(true);
   expect(app.shows("text:Ran")).toBe(false);
@@ -2610,8 +2633,8 @@ test("markdownPreviewCut and markdownPreviewSlice bound oversized fenced code bl
 
 test("interleaved thinking and non-explore commands fold both live and settled without double spinners", async () => {
   const { turnItems } = await import("../src/format");
-  // Unit check: consecutive thinking + ExecCommand across rounds fold into one group,
-  // while a failed tool breaks the fold and stays visibly uncollapsed.
+  // Unit check: every non-text run between plain text folds into one group,
+  // including failed calls and single tools, so only plain text renders outside a fold.
   const foldedTurn = {
     turnId: "turn-fold-unit",
     user: { id: "u-fold", text: "Check build" },
@@ -2626,17 +2649,22 @@ test("interleaved thinking and non-explore commands fold both live and settled w
     ],
   };
   const projected = turnItems(foldedTurn);
-  expect(projected.map(i => i.kind)).toEqual(["explore", "tool", "text", "tool"]);
+  expect(projected.map(i => i.kind)).toEqual(["explore", "text", "explore"]);
   const group = projected[0]!;
   expect(group.kind).toBe("explore");
   if (group.kind === "explore") {
-    expect(group.items.map(i => i.kind)).toEqual(["thinking", "tool", "thinking", "tool"]);
-    expect(group.calls.map(c => c.id)).toEqual(["t-1", "t-2"]);
+    expect(group.items.map(i => i.kind)).toEqual(["thinking", "tool", "thinking", "tool", "tool"]);
+    expect(group.calls.map(c => c.id)).toEqual(["t-1", "t-2", "t-fail"]);
     expect(group.key).toBe("explore:tool:t-1");
+  }
+  const tailGroup = projected[2]!;
+  expect(tailGroup.kind).toBe("explore");
+  if (tailGroup.kind === "explore") {
+    expect(tailGroup.calls.map(c => c.id)).toEqual(["t-single"]);
   }
 
   // Live streaming UI check: thinking + ExecCommand across rounds folds live into one row
-  // and expanding reveals both Thinking and ExecCommand entries with no stuck "Thinking…" spinner.
+  // (including the active command), and expanding reveals every Thinking and ExecCommand step.
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
@@ -2697,22 +2725,22 @@ test("interleaved thinking and non-explore commands fold both live and settled w
     },
   });
 
-  // Settled prior steps (thinking-1, cmd-1, thinking-2) stay calmly folded in Row 1
-  // while the active running command (cmd-2) stays visible on the single active row below.
+  // All non-text steps (thinking-1, cmd-1, thinking-2, running cmd-2) stay folded inside one row.
   await app.waitFor("label:explore-group-explore:tool:cmd-1");
-  await app.waitFor("footprint -p 123");
-  expect(app.texts().join("")).toContain("Ran");
-  expect(app.texts().join("")).toContain("1 command");
+  expect(app.texts().join("")).toContain("Running");
+  expect(app.texts().join("")).toContain("2 commands");
   expect(app.texts().join("\n")).not.toContain("ps aux");
+  expect(app.texts().join("\n")).not.toContain("footprint -p 123");
   expect(app.shows("label:turn-waiting-indicator")).toBe(false);
 
-  // Expanding reveals the settled inner rows and confirms r-2 thinking is no longer stuck in "Thinking…" while cmd-2 runs.
+  // Expanding reveals all inner rows and confirms r-2 thinking is no longer stuck in "Thinking…" while cmd-2 runs.
   await app.press("label:explore-group-explore:tool:cmd-1");
   await app.waitFor("ps aux");
+  await app.waitFor("footprint -p 123");
   expect(app.texts()).not.toContain("Thinking…");
 
-  // Once cmd-2 finishes, it folds immediately into the settled group (now 2 commands, never lingering in "Running")
-  // and keeps the expanded group open to show both Thinking blocks and both Ran commands.
+  // Once cmd-2 finishes, the group settles immediately to "Ran 2 commands" (never lingering in "Running"
+  // or "Thinking…" while session-1 awaits approval) and keeps the expanded rail open.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2727,8 +2755,8 @@ test("interleaved thinking and non-explore commands fold both live and settled w
       },
     },
   });
-  await app.waitUntil(() => app.texts().join("").includes("2 commands"));
-  expect(app.texts()).not.toContain("Running");
+  await app.waitUntil(() => app.texts().includes("Ran") && !app.texts().includes("Running"));
+  expect(app.texts().join("")).toContain("2 commands");
   expect(app.texts()).not.toContain("Thinking…");
 });
 
@@ -2761,7 +2789,8 @@ test("sending a message immediately shows a waiting indicator until streaming st
   });
   await app.waitFor("label:turn-waiting-indicator");
 
-  // Hides once a tool starts running, then returns cleanly after the tool finishes while waiting for the next round.
+  // Hides once a tool starts running inside the folded group, and the folded group absorbs
+  // inter-round waiting in place ("Thinking…") with zero vertical bounce.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2776,7 +2805,9 @@ test("sending a message immediately shows a waiting indicator until streaming st
       },
     },
   });
+  await app.waitFor("label:explore-group-explore:tool:read-1");
   await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  expect(app.texts()).toContain("Exploring");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
@@ -2792,9 +2823,10 @@ test("sending a message immediately shows a waiting indicator until streaming st
       },
     },
   });
-  await app.waitFor("label:turn-waiting-indicator");
+  await app.waitUntil(() => app.texts().includes("Thinking…"));
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
 
-  // Hides while waiting on a user permission prompt, then resumes when resolved.
+  // Pauses while waiting on a user permission prompt, then resumes when resolved.
   await app.host.send("openbitfun.event", {
     event: "permission://event",
     payload: {
@@ -2809,19 +2841,22 @@ test("sending a message immediately shows a waiting indicator until streaming st
     },
   });
   await app.waitFor("allow-once-perm-wait-1");
-  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  await app.waitUntil(() => !app.texts().includes("Thinking…"));
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
 
   await app.press("allow-once-perm-wait-1");
   await app.waitFor("allow-once-perm-wait-1", { state: "gone" });
-  await app.waitFor("label:turn-waiting-indicator");
+  await app.waitUntil(() => app.texts().includes("Thinking…"));
 
-  // Hides as soon as assistant text begins streaming in the next round.
+  // Settles cleanly as soon as assistant text begins streaming in the next round.
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
     payload: { sessionId: "session-wait", turnId: "turn-wait-1", roundId: "r-2", contentType: "text", text: "Boot starts in main." },
   });
   await app.waitFor("Boot starts in main.");
-  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  await app.waitUntil(() => !app.texts().includes("Thinking…"));
+  expect(app.texts()).toContain("Explored");
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
 
   // Stays hidden once the turn completes.
   await app.host.send("openbitfun.event", {
@@ -2831,7 +2866,7 @@ test("sending a message immediately shows a waiting indicator until streaming st
   await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
 });
 
-test("multi-command live turn keeps settled history calm above one active row without double spinners", async () => {
+test("multi-command live turn stays in one steady folded row without leaking tools or double spinners", async () => {
   const backend = createBackend({
     sessions: [
       {
@@ -2852,8 +2887,10 @@ test("multi-command live turn keeps settled history calm above one active row wi
     payload: { sessionId: "session-multi-cmd", turnId: "turn-multi-1", userInput: "Summarize git changes" },
   });
   await app.waitFor("label:turn-waiting-indicator");
+  const initialRow = app.layout("label:turn-waiting-indicator");
+  expect(initialRow).not.toBeNull();
 
-  // Command 1 runs on the active row; waiting indicator hides.
+  // Command 1 starts directly inside the single folded group row at the same y; no raw command leaks.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2863,11 +2900,15 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Started", tool_id: "c1", tool_name: "ExecCommand", params: { command: "git status" } },
     },
   });
-  await app.waitFor("git status");
+  await app.waitFor("label:explore-group-explore:tool:c1");
   await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
   expect(app.texts()).toContain("Running");
+  expect(app.texts().join("")).toContain("1 command");
+  expect(app.texts()).not.toContain("git status");
+  const rowAfterCmd1Start = app.layout("label:explore-group-explore:tool:c1");
+  expect(rowAfterCmd1Start?.y).toBe(initialRow?.y);
 
-  // Command 1 finishes -> settled row above, waiting row below, zero "Running" left behind.
+  // Command 1 finishes -> same row morphs to "Thinking… 1 command" without spawning a second row.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2877,15 +2918,12 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Completed", tool_id: "c1", tool_name: "ExecCommand", result: { output: "clean" } },
     },
   });
-  await app.waitFor("label:turn-waiting-indicator");
-  expect(app.texts()).toContain("Ran");
+  await app.waitUntil(() => app.texts().includes("Thinking…"));
   expect(app.texts()).not.toContain("Running");
-  const row1AfterCmd1 = app.layout("label:tool-card-ExecCommand");
-  const row2AfterCmd1 = app.layout("label:turn-waiting-indicator");
-  expect(row1AfterCmd1).not.toBeNull();
-  expect(row2AfterCmd1).not.toBeNull();
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
+  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(initialRow?.y);
 
-  // Command 2 runs -> Command 1 stays settled above while Command 2 takes the single active row below at the same y.
+  // Command 2 runs -> ticks to "Running 2 commands" in place.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2895,13 +2933,13 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Started", tool_id: "c2", tool_name: "ExecCommand", params: { command: "git log -n 5" } },
     },
   });
-  await app.waitFor("git log -n 5");
-  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
-  expect(app.texts()).toContain("git status");
-  expect(app.texts()).toContain("Ran");
+  await app.waitUntil(() => app.texts().join("").includes("2 commands"));
   expect(app.texts()).toContain("Running");
+  expect(app.texts()).not.toContain("git log -n 5");
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
+  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(initialRow?.y);
 
-  // Command 2 completes -> immediately folds into settled "Ran 2 commands" + waiting indicator (no 380ms dual spinner).
+  // Command 2 completes -> same row shifts to "Thinking… 2 commands".
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2911,17 +2949,11 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Completed", tool_id: "c2", tool_name: "ExecCommand", result: { output: "5 commits" } },
     },
   });
-  await app.waitFor("label:explore-group-explore:tool:c1");
-  await app.waitFor("label:turn-waiting-indicator");
-  expect(app.texts().join("")).toContain("2 commands");
-  expect(app.texts()).toContain("Ran");
+  await app.waitUntil(() => app.texts().includes("Thinking…"));
   expect(app.texts()).not.toContain("Running");
-  const row1AfterCmd2 = app.layout("label:explore-group-explore:tool:c1");
-  const row2AfterCmd2 = app.layout("label:turn-waiting-indicator");
-  expect(row1AfterCmd2?.y).toBe(row1AfterCmd1?.y);
-  expect(row2AfterCmd2?.y).toBe(row2AfterCmd1?.y);
+  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(initialRow?.y);
 
-  // Command 3 starts -> folded history stays calmly settled at "Ran 2 commands" while Command 3 runs in the exact active slot.
+  // Command 3 starts and completes -> ticks to 3 commands at the exact same y.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2931,18 +2963,10 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Started", tool_id: "c3", tool_name: "ExecCommand", params: { command: "git diff --stat" } },
     },
   });
-  await app.waitFor("git diff --stat");
-  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
-  expect(app.shows("label:explore-group-explore:tool:c1")).toBe(true);
-  expect(app.texts().join("")).toContain("2 commands");
-  expect(app.texts()).toContain("Ran");
+  await app.waitUntil(() => app.texts().join("").includes("3 commands"));
   expect(app.texts()).toContain("Running");
-  const row1DuringCmd3 = app.layout("label:explore-group-explore:tool:c1");
-  const row2DuringCmd3 = app.layout("label:tool-card-ExecCommand");
-  expect(row1DuringCmd3?.y).toBe(row1AfterCmd1?.y);
-  expect(row2DuringCmd3?.y).toBe(row2AfterCmd1?.y);
+  expect(app.texts()).not.toContain("git diff --stat");
 
-  // Command 3 completes -> immediately folds into "Ran 3 commands" with zero lingering "Running" label.
   await app.host.send("openbitfun.event", {
     event: "agentic://tool-event",
     payload: {
@@ -2952,14 +2976,11 @@ test("multi-command live turn keeps settled history calm above one active row wi
       toolEvent: { event_type: "Completed", tool_id: "c3", tool_name: "ExecCommand", result: { output: "2 files" } },
     },
   });
-  await app.waitFor("label:turn-waiting-indicator");
-  expect(app.texts().join("")).toContain("3 commands");
-  expect(app.texts()).toContain("Ran");
+  await app.waitUntil(() => app.texts().includes("Thinking…"));
   expect(app.texts()).not.toContain("Running");
-  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(row1AfterCmd1?.y);
-  expect(app.layout("label:turn-waiting-indicator")?.y).toBe(row2AfterCmd1?.y);
+  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(initialRow?.y);
 
-  // Answer text takes the active row cleanly.
+  // Answer text takes the next row cleanly while the folded row settles to "Ran 3 commands".
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
     payload: {
@@ -2971,7 +2992,129 @@ test("multi-command live turn keeps settled history calm above one active row wi
     },
   });
   await app.waitFor("Here are the 5 commits from this week.");
-  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  await app.waitUntil(() => !app.texts().includes("Thinking…"));
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts().join("")).toContain("3 commands");
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
+});
+
+test("only plain text renders outside folds: OpenBitFunControl, failed tools, thinking, and commands fold uniformly both live and settled", async () => {
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "session-strict-fold",
+        sessionName: "Strict fold",
+        lastUpdated: 1763150000000,
+        messageCount: 0,
+        agentType: "Standard",
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Strict fold");
+  await app.waitFor("How can I help today?");
+
+  const send = (event: string, payload: Record<string, unknown>) =>
+    app.host.send("openbitfun.event", {
+      event,
+      payload: { sessionId: "session-strict-fold", turnId: "turn-strict-1", ...payload },
+    });
+
+  await send("agentic://dialog-turn-started", { userInput: "Inspect remote repos" });
+  // Phase 1 (before first plain text): list + failed execute + execute + thinking.
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: { event_type: "Started", tool_id: "obf-1", tool_name: "OpenBitFunControl", params: { action: "list" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: { event_type: "Completed", tool_id: "obf-1", tool_name: "OpenBitFunControl", result: { ok: true } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: {
+      event_type: "Started",
+      tool_id: "obf-2",
+      tool_name: "OpenBitFunControl",
+      params: { action: "execute", arguments: { localPath: "/tmp/try1" } },
+    },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: { event_type: "Failed", tool_id: "obf-2", tool_name: "OpenBitFunControl", error: "root path mismatch" },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: {
+      event_type: "Started",
+      tool_id: "obf-3",
+      tool_name: "OpenBitFunControl",
+      params: { action: "execute", arguments: { localPath: "/tmp/try2" } },
+    },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-1",
+    toolEvent: { event_type: "Completed", tool_id: "obf-3", tool_name: "OpenBitFunControl", result: { ok: true } },
+  });
+  await send("agentic://text-chunk", { roundId: "r-2", contentType: "thinking", text: "Pull root is /root." });
+  // Plain text between non-text phases.
+  await send("agentic://text-chunk", { roundId: "r-2", contentType: "text", text: "Adjusting pull root to /root." });
+
+  // Phase 2 (after plain text): execute + bash + failed execute + thinking + execute.
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Started", tool_id: "obf-4", tool_name: "OpenBitFunControl", params: { action: "execute" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Completed", tool_id: "obf-4", tool_name: "OpenBitFunControl", result: { ok: true } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Started", tool_id: "bash-1", tool_name: "ExecCommand", params: { command: "cat /tmp/head" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Completed", tool_id: "bash-1", tool_name: "ExecCommand", result: { output: "main" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Started", tool_id: "obf-5", tool_name: "OpenBitFunControl", params: { action: "execute" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-3",
+    toolEvent: { event_type: "Failed", tool_id: "obf-5", tool_name: "OpenBitFunControl", error: "missing ref" },
+  });
+  await send("agentic://text-chunk", { roundId: "r-4", contentType: "thinking", text: "Checking packed refs." });
+  await send("agentic://tool-event", {
+    roundId: "r-4",
+    toolEvent: { event_type: "Started", tool_id: "obf-6", tool_name: "OpenBitFunControl", params: { action: "execute" } },
+  });
+  await send("agentic://tool-event", {
+    roundId: "r-4",
+    toolEvent: { event_type: "Completed", tool_id: "obf-6", tool_name: "OpenBitFunControl", result: { ok: true } },
+  });
+
+  // Only the plain text is displayed directly; all phase-1 and phase-2 non-text steps fold into 2 groups.
+  await app.waitFor("Adjusting pull root to /root.");
+  await app.waitFor("label:explore-group-explore:tool:obf-1");
+  await app.waitFor("label:explore-group-explore:tool:obf-4");
+  const collapsedText = app.texts().join("\n");
+  expect(collapsedText).not.toContain("OpenBitFunControl");
+  expect(collapsedText).not.toContain("cat /tmp/head");
+  expect(collapsedText).not.toContain("Pull root is /root.");
+  expect(collapsedText).not.toContain("Checking packed refs.");
+  expect(app.shows("label:tool-card-OpenBitFunControl")).toBe(false);
+  expect(app.shows("label:tool-card-ExecCommand")).toBe(false);
+
+  // Expanding Phase 1 reveals all 3 OpenBitFunControl steps and the thinking block in order.
+  await app.press("label:explore-group-explore:tool:obf-1");
+  await app.waitFor("label:tool-card-OpenBitFunControl >> nth=2");
+  expect(app.texts().join("\n")).not.toContain('{"action":"execute"');
+
+  // Expanding Phase 2 reveals both OpenBitFunControl calls, the command, and the thinking block.
+  await app.press("label:explore-group-explore:tool:obf-4");
+  await app.waitFor("cat /tmp/head");
 });
 
 test("session actions menu matches sidebar session row height and composer mode/model chips omit redundant hover tooltips", async () => {

@@ -508,6 +508,7 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(bubbleLayout!.x + bubbleLayout!.width).toBeLessThanOrEqual(petLayout!.x + 1);
   // Short bubbles hug the pet tightly (right-aligned) and shrink below the max width; long titles cap at max width.
   expect(petLayout!.x - (bubbleLayout!.x + bubbleLayout!.width)).toBeLessThanOrEqual(PET_BUBBLE_GAP + 2);
+  expect(PET_BUBBLE_MAX_WIDTH).toBe(168);
   expect(bubbleLayout!.width).toBeGreaterThan(40);
   expect(bubbleLayout!.width).toBeLessThan(PET_BUBBLE_MAX_WIDTH);
   expect(longBubbleLayout!.width).toBeGreaterThan(bubbleLayout!.width);

@@ -421,6 +421,7 @@ test("a finished MCP tool with a UI opens its app from the session's device", as
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
+  await app.press("label:explore-group-explore:tool:mcp-1");
   await app.waitFor("tool-card-mcp__fs-server__chart");
   await app.press("tool-card-mcp__fs-server__chart");
   await app.waitUntil(() => (sent.get_mcp_tool_ui_uri ?? []).length === 1);

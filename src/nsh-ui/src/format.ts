@@ -2,7 +2,7 @@
 
 import type { TranscriptItemView, TranscriptToolView, TranscriptTurnView } from "./api";
 import { currentLocale, tr, type AppLocale, type MessageKey } from "./i18n";
-import { effectiveToolInvocation, isProminentToolCall, normalizeToolName, toolAwaitsApproval } from "./toolPresentation";
+import { effectiveToolInvocation } from "./toolPresentation";
 
 /**
  * Readers over the host's transcript view (`get_session_transcript_view`).
@@ -91,7 +91,7 @@ export interface ToolCallView {
   plan?: TranscriptToolView["plan"];
 }
 
-function summarizeInput(value: unknown, limit = 160): string {
+export function summarizeInput(value: unknown, limit = 160): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}…` : value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -158,7 +158,7 @@ export function toolCallsOf(turn: unknown): ToolCallView[] {
 }
 
 /**
- * One non-text process step that can fold into a collapsed activity group: a
+ * One non-text process step that folds into a collapsed activity group: a
  * reasoning block or a tool call, kept in chronological order.
  */
 export type FoldedProcessItem =
@@ -173,16 +173,23 @@ export type FoldedProcessItem =
     }
   | { kind: "tool"; key: string; call: ToolCallView };
 
+export interface FoldedProcessGroup {
+  kind: "explore";
+  key: string;
+  items: FoldedProcessItem[];
+  calls: ToolCallView[];
+}
+
 /**
- * One thing a reader sees in a turn, in the order it happened: a stretch of the
- * answer, a block of reasoning, a tool call, or a run of consecutive non-text
- * items (thinking and tool calls) folded into one collapsible row.
+ * One thing a reader sees in a turn, in the order it happened: only plain text
+ * renders outside a fold; a standalone thinking block stays collapsed as its
+ * own single toggle, and every tool call or multi-step non-text run folds into
+ * one collapsible group row.
  */
 export type TranscriptItem =
   | { kind: "text"; key: string; text: string }
-  | { kind: "thinking"; key: string; text: string; reasoningKind?: "reasoning" | "summary"; live?: boolean; roundId?: string }
-  | { kind: "tool"; key: string; call: ToolCallView }
-  | { kind: "explore"; key: string; items: FoldedProcessItem[]; calls: ToolCallView[] };
+  | Extract<FoldedProcessItem, { kind: "thinking" }>
+  | FoldedProcessGroup;
 
 /**
  * The turn's items as the transcript draws them. Keys are the host's item ids,
@@ -206,17 +213,17 @@ export function turnItems(turn: unknown): TranscriptItem[] {
 const turnItemsCache = new WeakMap<TranscriptTurnView, TranscriptItem[]>();
 
 function readTurnItems(view: TranscriptTurnView): TranscriptItem[] {
-  const items: TranscriptItem[] = [];
+  const raw: Array<{ kind: "text"; key: string; text: string } | FoldedProcessItem> = [];
   for (let index = 0; index < view.items.length; index += 1) {
     const item = view.items[index]!;
     if (item.kind === "text") {
       if (!item.text.trim()) continue;
-      items.push({ kind: "text", key: `text:${item.id || `${view.turnId}-${index}`}`, text: item.text });
+      raw.push({ kind: "text", key: `text:${item.id || `${view.turnId}-${index}`}`, text: item.text });
       continue;
     }
     if (item.kind === "thinking") {
       if (!item.text.trim()) continue;
-      items.push({
+      raw.push({
         kind: "thinking",
         key: `${view.turnId}|thinking|${index}`,
         text: item.text,
@@ -225,96 +232,54 @@ function readTurnItems(view: TranscriptTurnView): TranscriptItem[] {
       continue;
     }
     const call = toolCallOf(item.tool, view);
-    items.push({ kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call });
+    raw.push({ kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call });
   }
-  return groupExploreItems(items);
-}
-
-/** The tool names that only look around: reading, searching and listing. */
-export function isExploreTool(name: string): boolean {
-  const lower = normalizeToolName(name);
-  return (
-    lower === "read" ||
-    lower === "readfile" ||
-    lower === "grep" ||
-    lower === "glob" ||
-    lower === "ls" ||
-    lower === "listdir" ||
-    lower === "listdirectory" ||
-    lower === "findfiles" ||
-    lower === "searchfiles" ||
-    lower === "codebasesearch" ||
-    lower === "websearch" ||
-    lower === "webfetch" ||
-    lower === "viewimage"
-  );
+  return foldNonTextRuns(raw, (entry): entry is { kind: "text"; key: string; text: string } => entry.kind === "text");
 }
 
 /**
- * Consequential operations and attention states remain visible in the transcript.
- * Adjacent ambient calls can share a collapsed activity row.
+ * Universal transcript folding rule shared by settled and live turns:
+ * only plain text renders outside a fold. Every non-text run between text
+ * blocks folds together regardless of tool name, outcome, or count — with a
+ * lone thinking block staying a single collapsed toggle so it opens in one
+ * click instead of two.
  */
-export function isFoldableToolCall(call: ToolCallView): boolean {
-  if (isProminentToolCall(call)) return false;
-  const status = (call.status ?? "").toLowerCase();
-  return !call.error && call.success !== false && !toolAwaitsApproval(status) &&
-    status !== "failed" && status !== "error" && status !== "rejected" &&
-    status !== "cancelled" && status !== "interrupted";
-}
-
-/**
- * Folds two or more consecutive non-text items (thinking blocks and foldable
- * tool calls, with no visible text between them) into one collapsed group row.
- * Prominent calls and attention states break the run and stay visible.
- */
-export function groupExploreItems(items: TranscriptItem[]): TranscriptItem[] {
-  const grouped: TranscriptItem[] = [];
+export function foldNonTextRuns<TText extends { kind: string }>(
+  items: ReadonlyArray<TText | FoldedProcessItem | FoldedProcessGroup>,
+  isText: (item: TText | FoldedProcessItem | FoldedProcessGroup) => item is TText,
+): Array<TText | Extract<FoldedProcessItem, { kind: "thinking" }> | FoldedProcessGroup> {
+  const folded: Array<TText | Extract<FoldedProcessItem, { kind: "thinking" }> | FoldedProcessGroup> = [];
   let run: FoldedProcessItem[] = [];
   const flush = () => {
-    if (run.length >= 2) {
+    if (run.length === 0) return;
+    if (run.length === 1 && run[0]!.kind === "thinking") {
+      folded.push(run[0]!);
+    } else {
       const firstTool = run.find(entry => entry.kind === "tool");
       const calls = run.flatMap(entry => (entry.kind === "tool" ? [entry.call] : []));
-      grouped.push({
+      folded.push({
         kind: "explore",
         key: `explore:${(firstTool ?? run[0]!).key}`,
         items: run,
         calls,
       });
-    } else {
-      grouped.push(...run);
     }
     run = [];
   };
   for (const item of items) {
-    if (item.kind === "thinking") {
-      run.push(item);
-      continue;
-    }
-    if (item.kind === "tool" && isFoldableToolCall(item.call)) {
-      run.push(item);
+    if (isText(item)) {
+      flush();
+      folded.push(item);
       continue;
     }
     if (item.kind === "explore") {
       run.push(...item.items);
       continue;
     }
-    flush();
-    grouped.push(item);
+    run.push(item);
   }
   flush();
-  return grouped;
-}
-
-/** Counts what an explore group did: files read and searches run. */
-export function exploreCounts(calls: ToolCallView[]): { reads: number; searches: number } {
-  let reads = 0;
-  let searches = 0;
-  for (const call of calls) {
-    const lower = call.name.toLowerCase();
-    if (lower.includes("read")) reads += 1;
-    else searches += 1;
-  }
-  return { reads, searches };
+  return folded;
 }
 
 export interface ActivityCounts {
@@ -331,6 +296,14 @@ const READ_TOOL_NAMES = new Set(["read", "readfile", "webfetch", "viewimage"]);
 const SEARCH_TOOL_NAMES = new Set(["grep", "glob", "ls", "listdir", "listdirectory", "findfiles", "searchfiles", "codebasesearch", "websearch"]);
 const COMMAND_TOOL_NAMES = new Set(["bash", "execcommand", "runcode", "runcommand", "shell", "exec", "terminal", "writestdin", "execcontrol"]);
 const EDIT_TOOL_NAMES = new Set(["edit", "editfile", "multiedit", "strreplace", "strreplaceeditor", "searchreplace", "applypatch", "write", "writefile", "createfile", "delete", "deletefile"]);
+const OTHER_STEP_TOOL_NAMES = new Set([
+  "skill", "loadskill", "useskill", "invokeskill",
+  "todo", "todowrite", "createplan",
+  "task", "agentspawn", "agentfork",
+  "askuserquestion", "submitcodereview", "launchreviewagent",
+  "openbitfuncontrol", "controlhub", "worktree", "portforward",
+  "generativeui", "genui", "nativeui",
+]);
 
 /** Breaks down a folded non-text activity group by operation category. */
 export function activityCounts(items: readonly FoldedProcessItem[]): ActivityCounts {
@@ -355,6 +328,7 @@ export function activityCounts(items: readonly FoldedProcessItem[]): ActivityCou
     else if (SEARCH_TOOL_NAMES.has(normalized)) searches += 1;
     else if (COMMAND_TOOL_NAMES.has(normalized)) commands += 1;
     else if (EDIT_TOOL_NAMES.has(normalized)) edits += 1;
+    else if (OTHER_STEP_TOOL_NAMES.has(normalized)) otherTools += 1;
     else if (diffOf(call.input) !== null) edits += 1;
     else if (commandOf(call.input)) commands += 1;
     else otherTools += 1;

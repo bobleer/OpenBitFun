@@ -61,6 +61,9 @@ test("BTW shares thinking, tools, streamed answers and hover footer without pers
   await send("text-chunk", { text: "Before tool." });
   await app.waitFor("Before tool.");
   await send("tool-event", { toolEvent: { event_type: "Started", tool_id: "command", tool_name: "Bash", params: { command: "pwd" } } });
+  const liveGroup = `label:explore-group-btw-${request.requestId}-explore:tool:command`;
+  await app.waitFor(liveGroup);
+  await app.press(liveGroup);
   await app.waitFor("tool-card-Bash");
   await app.press("tool-card-Bash");
   await send("tool-event", { toolEvent: { event_type: "Completed", tool_id: "command", tool_name: "Bash", result: "/repo", duration_ms: 10 } });
@@ -115,6 +118,9 @@ test("BTW recovers missing reasoning, tool work and text from a journal after dr
   ] } });
   await app.host.send("openbitfun.event", { event: "backend://events-dropped", payload: {} });
   await app.waitFor("Recovered answer");
+  const recoveredGroup = `label:explore-group-btw-${request.requestId}-explore:tool:recovered`;
+  await app.waitFor(recoveredGroup);
+  await app.press(recoveredGroup);
   await app.waitFor("tool-card-Bash");
   await app.press(`thinking-btw-${request.requestId}-live-thinking`);
   await app.waitFor("Recovered reasoning");

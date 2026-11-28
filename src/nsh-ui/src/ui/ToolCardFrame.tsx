@@ -15,16 +15,13 @@ import { focusRingStyle } from "./primitives";
 export const toolCardMetrics = designTokens.metrics.toolCard;
 const metrics = toolCardMetrics;
 
-export function toolCardHeaderHeight(prominent: boolean): number {
+export function toolCardHeaderHeight(): number {
   if (compactLayout()) return layout.touchTarget;
-  if (!prominent) return textLineHeight(metrics.ambientBodySize, metrics.ambientBodyLineHeight);
-  return Math.max(metrics.prominentHeight - 2 * metrics.borderWidth,
-    textLineHeight(metrics.fontSize, metrics.lineHeight) + 2 * metrics.prominentPaddingBlock);
+  return textLineHeight(metrics.ambientBodySize, metrics.ambientBodyLineHeight);
 }
 
 export function ToolCardFrame(props: {
   name: string;
-  prominent: boolean;
   expanded: boolean;
   canExpand: boolean;
   muted: boolean;
@@ -39,43 +36,36 @@ export function ToolCardFrame(props: {
   actions?: JSX.Element;
   body: () => JSX.Element;
 }) {
-  const prominent = () => props.prominent;
   const expanded = () => props.canExpand && props.expanded;
   const hovered = signal(false);
   const focused = signal(false);
   const engaged = () => hovered() || focused();
-  const inlineAffordance = () => !prominent() && props.canExpand &&
-    (expanded() || engaged() || compactLayout());
-  const border = () => props.confirmation ? palette().warningBorder : palette().border;
-  const emphasisBorder = () => props.confirmation ? palette().warningBorder : palette().borderStrong;
+  const inlineAffordance = () => props.canExpand && (expanded() || engaged() || compactLayout());
 
   return (
-    <View testID={prominent() ? "prominent-tool-card" : "ambient-tool-card"} style={{
-      width: "100%", minWidth: 0, borderWidth: prominent() ? metrics.borderWidth : 0,
-      borderRadius: prominent() ? metrics.prominentRadius : radii.md, borderCurve: "continuous",
-      borderColor: prominent() ? border() : "transparent",
-      backgroundColor: prominent() ? designControlColors()?.toolCardSurface ?? palette().panelRaised : "transparent",
+    <View testID="tool-card" style={{
+      width: "100%", minWidth: 0,
+      borderRadius: radii.md, borderCurve: "continuous",
+      borderColor: props.confirmation ? palette().warningBorder : "transparent",
+      backgroundColor: "transparent",
       opacity: props.muted ? designControlColors()?.mutedOpacity ?? 0.75 : 1,
       ...paintTransition(MOTION_DURATION.base),
-    }} hoverStyle={prominent() ? { borderColor: emphasisBorder() } : undefined}
-      focusWithinStyle={prominent() ? { borderColor: emphasisBorder() } : undefined}>
+    }}>
       <SmoothDisclosure
         open={expanded}
-        contentGap={prominent() ? 0 : space.sm}
+        contentGap={space.sm}
         content={() => (
           <View style={{
             minWidth: 0, gap: space.sm, paddingHorizontal: metrics.expandedPaddingInline,
             paddingVertical: space.sm,
-            borderTopWidth: prominent() ? metrics.borderWidth : 0,
-            borderColor: palette().borderSubtle,
-            borderRadius: prominent() ? 0 : radii.md,
-            backgroundColor: prominent() ? "transparent" : palette().surfaceTertiary,
+            borderRadius: radii.md,
+            backgroundColor: palette().surfaceTertiary,
           }}>{props.body()}</View>
         )}
       >
         <View style={{
           flexDirection: "row", minWidth: 0, alignItems: "center", gap: space.xs,
-          paddingRight: prominent() ? metrics.prominentPaddingInline : space.sm,
+          paddingRight: space.sm,
         }}>
           <View role={props.canExpand ? "button" : undefined}
             accessibilityLabel={`tool-card-${props.name}`}
@@ -89,15 +79,15 @@ export function ToolCardFrame(props: {
             onBlur={() => focused.set(false)}
             style={{
               flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center",
-              gap: prominent() ? space.sm : metrics.iconGap,
-              minHeight: Math.max(toolCardHeaderHeight(prominent()), props.headerMinHeight ?? 0),
-              paddingLeft: prominent() ? metrics.prominentPaddingInline : 0,
-              paddingVertical: prominent() ? metrics.prominentPaddingBlock : 0,
-              borderRadius: prominent() ? metrics.prominentRadius : radii.sm,
+              gap: metrics.iconGap,
+              minHeight: Math.max(toolCardHeaderHeight(), props.headerMinHeight ?? 0),
+              paddingLeft: 0,
+              paddingVertical: 0,
+              borderRadius: radii.sm,
               cursor: props.canExpand ? "pointer" : "default", userSelect: "none",
               ...pressTransition(),
             }}
-            hoverStyle={props.canExpand && !prominent() ? { backgroundColor: palette().surfaceSubtle } : undefined}
+            hoverStyle={props.canExpand ? { backgroundColor: palette().surfaceSubtle } : undefined}
             focusVisibleStyle={props.canExpand ? focusRingStyle() : undefined}>
             <MorphSlot
               morphKey={() => (inlineAffordance() ? "chevron" : (props.leadingKey ?? "icon"))}

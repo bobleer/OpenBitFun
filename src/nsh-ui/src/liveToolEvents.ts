@@ -1,6 +1,6 @@
 // Shared live tool projection for foreground, background and ephemeral sessions.
 
-import { basename, type ToolCallView } from "./format";
+import { basename, summarizeInput, type ToolCallView } from "./format";
 import { appendPlanParameters, isPlanWritingTool } from "./planToolArtifact";
 import { effectiveToolInvocation, normalizeToolName, reviewProgressTool, toolInputRecord } from "./toolPresentation";
 
@@ -95,13 +95,7 @@ function cleanSingleLine(value: string, limit = 160): string {
 function summarizeLiveInput(value: unknown, limit = 160): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return cleanSingleLine(value, limit);
-  try {
-    const text = JSON.stringify(value);
-    if (!text) return "";
-    return cleanSingleLine(text, limit);
-  } catch {
-    return "";
-  }
+  return cleanSingleLine(summarizeInput(value, limit), limit);
 }
 
 function appendPartialParams(previous: string, fragment: string): string {

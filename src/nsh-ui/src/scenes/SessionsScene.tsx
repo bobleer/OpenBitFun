@@ -145,8 +145,7 @@ import {
   lineCountOf,
   markdownPreviewCut,
   markdownPreviewSlice,
-  groupExploreItems,
-  isFoldableToolCall,
+  foldNonTextRuns,
   pathOf,
   todosOf,
   toolCallsOf,
@@ -421,8 +420,6 @@ import { filterModelPickerCatalog, findModelPickerMatches, modelPickerCatalog, m
   readModelPickerCatalog, type ModelPickerGroup } from "../ui/modelPickerCatalog";
 import { composerReferenceDisplayText, mergeSessionReferences, sessionReferenceDraft, sessionReferenceKey, type SessionReferenceCandidate,
   type SessionReferenceDraft } from "../sessionReferences";
-import { toolCardHeaderHeight, toolCardMetrics } from "../ui/ToolCardFrame";
-import { isProminentToolCall } from "../toolPresentation";
 import { openImageLightbox } from "../ui/ImageLightbox";
 import { OpenBitFunLogoMark } from "../ui/studio";
 import { MERMAID_MARKDOWN_EXTENSIONS, renderMarkdownDiagram, documentWebViewsAvailable } from "../ui/markdownEditor";
@@ -3455,6 +3452,62 @@ function SessionToolCard(props: {
   </If>;
 }
 
+/** One folded tool step, rendered with full session capabilities when its group is expanded. */
+function SessionTranscriptTool(props: {
+  call: ToolCallView;
+  cardId: string;
+  pane: 0 | 1;
+  sessionKey: string | null;
+  turnId: string;
+  live?: boolean;
+  ephemeral?: boolean;
+}) {
+  const isGenUI = () => !props.ephemeral && isGenUICall(props.call);
+  const isNativeUi = () => !props.ephemeral && isNativeUiCall(props.call);
+  return (
+    <If
+      when={isGenUI()}
+      else={
+        <If
+          when={isNativeUi()}
+          else={
+            <SessionToolCard
+              call={props.call}
+              cardId={props.cardId}
+              pane={props.pane}
+              ephemeral={props.ephemeral}
+              sessionKey={props.sessionKey}
+              turnId={props.turnId}
+              live={props.live}
+            />
+          }
+        >
+          <NativeUiToolItem
+            call={props.call}
+            cardId={props.cardId}
+            status={persistedToolState(props.call)}
+            fallback={
+              <ToolCard
+                call={props.call}
+                cardId={props.cardId}
+                status={persistedToolState(props.call)}
+                live={props.live}
+              />
+            }
+          />
+        </If>
+      }
+    >
+      <SessionGenUIToolCard
+        call={props.call}
+        cardId={props.cardId}
+        sessionKey={props.sessionKey}
+        turnId={props.turnId}
+      />
+    </If>
+  );
+}
+
 function renderFoldedThinking(
   item: Extract<FoldedProcessItem, { kind: "thinking" }>,
   pane: LivePane = 0,
@@ -3477,8 +3530,8 @@ function renderFoldedThinking(
 
 /**
  * One ordered transcript item, drawn the same way whether it is live or
- * persisted. Branches reactively on `props.item.kind` so recycled virtualized
- * `<List>` cells can cleanly swap between text, thinking, tool, and explore rows.
+ * persisted. Only plain text renders directly; all non-text process steps
+ * render inside a collapsed thinking toggle or folded process group.
  */
 function TranscriptItemView(props: {
   item: TranscriptItem;
@@ -3493,8 +3546,6 @@ function TranscriptItemView(props: {
   stepsAsRows?: boolean;
 }) {
   const kind = () => props.item.kind;
-  const isGenUI = () => !props.ephemeral && kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
-  const isNativeUi = () => !props.ephemeral && kind() === "tool" && isNativeUiCall((props.item as ItemOf<"tool">).call);
   const pane = props.pane ?? 0;
   return (
     <View style={{ width: "100%" }}>
@@ -3526,38 +3577,6 @@ function TranscriptItemView(props: {
           );
         }}
       </If>
-      <If when={isGenUI()}>
-        <SessionGenUIToolCard
-          call={(props.item as ItemOf<"tool">).call}
-          cardId={props.item.key}
-          sessionKey={props.sessionKey ?? null}
-          turnId={props.turnId ?? ""}
-        />
-      </If>
-      <If when={isNativeUi()}>
-        <NativeUiToolItem
-          call={(props.item as ItemOf<"tool">).call}
-          cardId={props.item.key}
-          status={persistedToolState((props.item as ItemOf<"tool">).call)}
-          fallback={
-            <ToolCard
-              call={(props.item as ItemOf<"tool">).call}
-              cardId={props.item.key}
-              status={persistedToolState((props.item as ItemOf<"tool">).call)}
-            />
-          }
-        />
-      </If>
-      <If when={kind() === "tool" && !isGenUI() && !isNativeUi()}>
-        <SessionToolCard
-          call={(props.item as ItemOf<"tool">).call}
-          cardId={props.item.key}
-          pane={pane}
-          ephemeral={props.ephemeral}
-          sessionKey={props.sessionKey ?? null}
-          turnId={props.turnId ?? ""}
-        />
-      </If>
       <If when={kind() === "explore"}>
         <ExploreGroupCard
           items={(props.item as ItemOf<"explore">).items}
@@ -3565,6 +3584,17 @@ function TranscriptItemView(props: {
           cardId={props.item.key}
           stateOf={persistedToolState}
           renderThinking={entry => renderFoldedThinking(entry, pane)}
+          renderTool={(entry, cardId) => (
+            <SessionTranscriptTool
+              call={entry().call}
+              cardId={cardId()}
+              pane={pane}
+              ephemeral={props.ephemeral}
+              sessionKey={props.sessionKey ?? null}
+              turnId={props.turnId ?? ""}
+              live={props.live}
+            />
+          )}
           live={props.live}
           inlineSteps={!props.stepsAsRows}
         />
@@ -3613,32 +3643,23 @@ function livePaneHasTailText(pane: LivePane, round: LiveModelRound): boolean {
     : pane === 1 ? hasSecondaryLiveRoundTailText(round.roundId) : hasLiveRoundTailText(round.roundId);
 }
 
+type LiveTextBlock = { kind: "liveText"; key: string; roundId: string; start: number; end?: number };
+
 type LiveDisplayBlock =
-  | { kind: "liveText"; key: string; roundId: string; start: number; end?: number }
-  | { kind: "thinking"; key: string; roundId: string; reasoningKind?: "reasoning" | "summary"; live: boolean }
-  | { kind: "tool"; key: string; call: ToolCallView }
+  | LiveTextBlock
+  | Extract<FoldedProcessItem, { kind: "thinking" }>
   | { kind: "explore"; key: string; items: FoldedProcessItem[]; calls: ToolCallView[] };
 
-function isLiveProcessItemActive(item: FoldedProcessItem): boolean {
-  if (item.kind === "thinking") return Boolean(item.live);
-  return persistedToolState(item.call) === "running";
-}
-
 /**
- * Projects live rounds into the exact same folded structure `turnItems` produces
- * on settle, reading only coarse structural signals (`hasLiveRoundThinking`,
+ * Projects live rounds through the exact same `foldNonTextRuns` rule `turnItems`
+ * uses on settle, reading only coarse structural signals (`hasLiveRoundThinking`,
  * `hasLiveRoundText`, `hasLiveRoundTailText`) so steady-state streaming never
- * recomputes the block list.
- *
- * While a turn is running, settled process steps stay folded in one calm row
- * above any currently running tool or live thinking step. That way the settled
- * summary never flips back to "Running", the active command stays visible on
- * the single active row, and `TurnWaitingIndicator` occupies that exact same
- * slot during inter-tool LLM gaps without vertical ping-pong or double spinners.
+ * recomputes the block list. Only plain text renders directly; all thinking and
+ * tool calls stay inside collapsed folds with stable keys across live → settle.
  */
 function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: LivePane = 0): LiveDisplayBlock[] {
   const singleRound = rounds.length === 1;
-  const raw: LiveDisplayBlock[] = [];
+  const raw: Array<LiveTextBlock | FoldedProcessItem> = [];
   for (const round of rounds) {
     const hasThinking = typeof pane === "function" ? hasVisibleTextFrom(round.thinking)
       : pane === 1 ? hasSecondaryLiveRoundThinking(round.roundId) : hasLiveRoundThinking(round.roundId);
@@ -3648,6 +3669,7 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: LivePane = 0): L
       raw.push({
         kind: "thinking",
         key: round.roundId === "__default__" || singleRound ? "live-thinking" : `live-thinking-${round.roundId}`,
+        text: "",
         roundId: round.roundId,
         ...(round.reasoningKind ? { reasoningKind: round.reasoningKind } : {}),
         live: !round.completed && !round.thinkingEnded && !hasText && round.tools.length === 0,
@@ -3679,67 +3701,7 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: LivePane = 0): L
       });
     }
   }
-
-  const blocks: LiveDisplayBlock[] = [];
-  let run: FoldedProcessItem[] = [];
-  const emitRun = (items: FoldedProcessItem[], keyPrefix = "explore") => {
-    if (items.length >= 2) {
-      const firstTool = items.find(entry => entry.kind === "tool");
-      const calls = items.flatMap(entry => (entry.kind === "tool" ? [entry.call] : []));
-      blocks.push({
-        kind: "explore",
-        key: `${keyPrefix}:${(firstTool ?? items[0]!).key}`,
-        items,
-        calls,
-      });
-    } else if (items.length === 1) {
-      const only = items[0]!;
-      if (only.kind === "thinking") {
-        blocks.push({
-          kind: "thinking",
-          key: only.key,
-          roundId: only.roundId ?? "__default__",
-          ...(only.reasoningKind ? { reasoningKind: only.reasoningKind } : {}),
-          live: Boolean(only.live),
-        });
-      } else {
-        blocks.push(only);
-      }
-    }
-  };
-  const flush = () => {
-    if (run.length === 0) return;
-    const firstActiveIdx = run.findIndex(isLiveProcessItemActive);
-    if (firstActiveIdx > 0) {
-      emitRun(run.slice(0, firstActiveIdx), "explore");
-      emitRun(run.slice(firstActiveIdx), "explore-active");
-    } else {
-      emitRun(run, "explore");
-    }
-    run = [];
-  };
-
-  for (const item of raw) {
-    if (item.kind === "thinking") {
-      run.push({
-        kind: "thinking",
-        key: item.key,
-        text: "",
-        roundId: item.roundId,
-        ...(item.reasoningKind ? { reasoningKind: item.reasoningKind } : {}),
-        live: item.live,
-      });
-      continue;
-    }
-    if (item.kind === "tool" && isFoldableToolCall(item.call)) {
-      run.push(item);
-      continue;
-    }
-    flush();
-    blocks.push(item);
-  }
-  flush();
-  return blocks;
+  return foldNonTextRuns(raw, (entry): entry is LiveTextBlock => entry.kind === "liveText");
 }
 
 const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => buildLiveDisplayBlocks(liveRounds(), 0));
@@ -3772,15 +3734,10 @@ function liveBlocksHaveActiveMotion(
 ): boolean {
   for (const block of blocks) {
     if (block.kind === "thinking" && block.live) return true;
-    if (block.kind === "tool") {
-      if (persistedToolState(block.call) === "running") return true;
-    }
     if (block.kind === "explore") {
       for (const entry of block.items) {
         if (entry.kind === "thinking" && entry.live) return true;
-        if (entry.kind === "tool") {
-          if (persistedToolState(entry.call) === "running") return true;
-        }
+        if (entry.kind === "tool" && persistedToolState(entry.call) === "running") return true;
       }
     }
   }
@@ -3791,6 +3748,36 @@ function liveBlocksHaveActiveMotion(
     if (latestRound.tools.length === 0 ? hasText : hasTailText) return true;
   }
   return false;
+}
+
+/** True when any folded tool inside the live turn is waiting on user approval. */
+function liveBlocksAwaitApproval(blocks: ReadonlyArray<LiveDisplayBlock>): boolean {
+  for (const block of blocks) {
+    if (block.kind !== "explore") continue;
+    if (block.items.some(entry => entry.kind === "tool" && persistedToolState(entry.call) === "confirmation")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Where a running turn's inter-round waiting indicator belongs:
+ * - `"trailing-group"`: absorbed into the trailing folded group row (zero bounce)
+ * - `"indicator"`: standalone `TurnWaitingIndicator` (before first block or after text)
+ * - `"none"`: not waiting (active motion, awaiting approval, error, or settled)
+ */
+function liveWaitingPlacement(
+  working: boolean,
+  blocks: ReadonlyArray<LiveDisplayBlock>,
+  rounds: ReadonlyArray<LiveModelRound>,
+  pane: LivePane,
+): "none" | "trailing-group" | "indicator" {
+  if (!working) return "none";
+  if (liveBlocksAwaitApproval(blocks)) return "none";
+  if (liveBlocksHaveActiveMotion(blocks, rounds, pane)) return "none";
+  if (blocks.length > 0 && blocks[blocks.length - 1]!.kind === "explore") return "trailing-group";
+  return "indicator";
 }
 
 /**
@@ -3872,6 +3859,7 @@ function LiveTranscriptBlocks(props: {
   pane: LivePane;
   cardPrefix?: string;
   live?: boolean;
+  trailingGroupAwaitingNext?: () => boolean;
   startedAt?: () => number | undefined;
 }) {
   const prefix = props.cardPrefix ?? "";
@@ -3912,15 +3900,13 @@ function LiveTranscriptBlocks(props: {
         {block => {
           const enter = nextEnterMotion(untracked(block));
           const kind = () => block().kind;
-          const isGenUI = () => !ephemeral && kind() === "tool" && isGenUICall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
-          const isNativeUi = () => !ephemeral && kind() === "tool" && isNativeUiCall((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call);
           return (
             <View style={[{ width: "100%" }, enter?.style]}>
               <If when={kind() === "liveText"}>
                 <LiveTextSegment
-                  roundId={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).roundId}
-                  start={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).start}
-                  end={(block() as Extract<LiveDisplayBlock, { kind: "liveText" }>).end}
+                  roundId={(block() as LiveTextBlock).roundId}
+                  start={(block() as LiveTextBlock).start}
+                  end={(block() as LiveTextBlock).end}
                   pane={props.pane}
                   live={props.live}
                   itemKey={`${prefix}${block().key}`}
@@ -3928,12 +3914,12 @@ function LiveTranscriptBlocks(props: {
               </If>
               <If when={kind() === "thinking"}>
                 {() => {
-                  const item = () => block() as Extract<LiveDisplayBlock, { kind: "thinking" }>;
+                  const item = () => block() as Extract<FoldedProcessItem, { kind: "thinking" }>;
                   return (
                     <ThinkingBlock
                       partKey={`${prefix}${item().key}`}
                       text={() =>
-                        livePaneThinking(props.pane, item().roundId)
+                        livePaneThinking(props.pane, item().roundId ?? "__default__")
                       }
                       kind={item().reasoningKind}
                       live={item().live}
@@ -3942,39 +3928,6 @@ function LiveTranscriptBlocks(props: {
                   );
                 }}
               </If>
-              <If when={isGenUI()}>
-                <SessionGenUIToolCard
-                  call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
-                  cardId={`${prefix}${block().key}`}
-                  sessionKey={sourceSessionKey()}
-                  turnId={source()?.turnId ?? ""}
-                />
-              </If>
-              <If when={isNativeUi()}>
-                <NativeUiToolItem
-                  call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
-                  cardId={`${prefix}${block().key}`}
-                  status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
-                  fallback={
-                    <ToolCard
-                      call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
-                      cardId={`${prefix}${block().key}`}
-                      status={persistedToolState((block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call)}
-                    />
-                  }
-                />
-              </If>
-              <If when={kind() === "tool" && !isGenUI() && !isNativeUi()}>
-                <SessionToolCard
-                  live={props.live !== false}
-                  call={(block() as Extract<LiveDisplayBlock, { kind: "tool" }>).call}
-                  cardId={`${prefix}${block().key}`}
-                  pane={pane}
-                  ephemeral={ephemeral}
-                  sessionKey={sourceSessionKey()}
-                  turnId={source()?.turnId ?? ""}
-                />
-              </If>
               <If when={kind() === "explore"}>
                 <ExploreGroupCard
                   items={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).items}
@@ -3982,7 +3935,23 @@ function LiveTranscriptBlocks(props: {
                   cardId={`${prefix}${block().key}`}
                   stateOf={persistedToolState}
                   renderThinking={entry => renderFoldedThinking(entry, props.pane, prefix, props.startedAt)}
+                  renderTool={(entry, cardId) => (
+                    <SessionTranscriptTool
+                      call={entry().call}
+                      cardId={cardId()}
+                      pane={pane}
+                      ephemeral={ephemeral}
+                      sessionKey={sourceSessionKey()}
+                      turnId={source()?.turnId ?? ""}
+                      live={props.live !== false}
+                    />
+                  )}
                   live={props.live !== false}
+                  awaitingNext={
+                    Boolean(props.trailingGroupAwaitingNext?.()) &&
+                    block().key === props.blocks()[props.blocks().length - 1]?.key
+                  }
+                  startedAt={props.startedAt}
                 />
               </If>
             </View>
@@ -4524,17 +4493,20 @@ const pendingTurnImages = computed<UserImage[]>(() => {
   }));
 });
 
-const primaryAwaitingResponse = computed<boolean>(() => {
-  if (turnError()) return false;
-  if (activePermissions().length > 0 || activeQuestions().length > 0) return false;
+const primaryWaitingPlacement = computed<"none" | "trailing-group" | "indicator">(() => {
+  if (turnError()) return "none";
+  if (activePermissions().length > 0 || activeQuestions().length > 0) return "none";
   const live = liveTurn();
-  if (live?.settling) return false;
+  if (live?.settling) return "none";
   const hasPending = Boolean(optimisticUserText() || pendingTurnImages().length > 0);
   const hasRunning = Boolean(runningTurnId());
-  if (!hasPending && !hasRunning) return false;
-  if (liveFallbackItems().length > 0) return false;
-  return !liveBlocksHaveActiveMotion(liveDisplayBlocks(), liveRounds(), 0);
+  if (!hasPending && !hasRunning) return "none";
+  if (liveFallbackItems().length > 0) return "none";
+  return liveWaitingPlacement(true, liveDisplayBlocks(), liveRounds(), 0);
 });
+
+const primaryAwaitingResponse = computed<boolean>(() => primaryWaitingPlacement() === "indicator");
+const primaryTrailingGroupAwaitingNext = computed<boolean>(() => primaryWaitingPlacement() === "trailing-group");
 
 const primaryWaitingStartedAt = computed<number | undefined>(() => {
   const sid = activeSessionId();
@@ -4740,6 +4712,7 @@ type TranscriptBlockRow =
       key: string;
       turnKey: string;
       turnId: string;
+      sessionKey: string | null;
       groupCardId: string;
       entry: FoldedProcessItem;
       index: number;
@@ -4807,10 +4780,6 @@ function estimatedRowHeightOf(row: TranscriptBlockRow): number {
       return 72 + Math.min(6, Math.floor(row.text.length / 90)) * 22;
     case "item":
       if (row.item.kind === "text") return 48 + Math.min(18, Math.floor(row.item.text.length / 110)) * 22;
-      if (row.item.kind === "tool") {
-        const prominent = isProminentToolCall(row.item.call);
-        return toolCardHeaderHeight(prominent) + (prominent ? 2 * toolCardMetrics.borderWidth : 0);
-      }
       return controlHeight.sm;
     case "groupStep":
       return controlHeight.sm + space.hair;
@@ -4891,6 +4860,7 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
           key: `${key}|step:${entry.key || stepIndex}`,
           turnKey,
           turnId,
+          sessionKey: turnRow.sessionKey,
           groupCardId: item.key,
           entry,
           index: stepIndex,
@@ -5110,6 +5080,15 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
             first={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).first}
             stateOf={persistedToolState}
             renderThinking={entry => renderFoldedThinking(entry, props.pane ?? 0)}
+            renderTool={(entry, cardId) => (
+              <SessionTranscriptTool
+                call={entry().call}
+                cardId={cardId()}
+                pane={props.pane ?? 0}
+                sessionKey={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).sessionKey}
+                turnId={turnId()}
+              />
+            )}
           />
         </If>
 
@@ -5245,6 +5224,7 @@ interface SessionTranscriptListProps {
   liveDisplayBlocks: () => LiveDisplayBlock[];
   liveFallbackItems?: () => TranscriptItem[];
   awaitingResponse?: () => boolean;
+  trailingGroupAwaitingNext?: () => boolean;
   waitingStartedAt?: () => number | undefined;
   reserveFooterSpace?: () => boolean;
   cardPrefix?: string;
@@ -5381,6 +5361,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
                       blocks={props.liveDisplayBlocks}
                       pane={props.pane}
                       cardPrefix={props.cardPrefix}
+                      trailingGroupAwaitingNext={props.trailingGroupAwaitingNext}
                       startedAt={props.waitingStartedAt}
                     />
                   </If>
@@ -5623,6 +5604,7 @@ function Transcript() {
       liveDisplayBlocks={liveDisplayBlocks}
       liveFallbackItems={liveFallbackItems}
       awaitingResponse={primaryAwaitingResponse}
+      trailingGroupAwaitingNext={primaryTrailingGroupAwaitingNext}
       waitingStartedAt={primaryWaitingStartedAt}
       reserveFooterSpace={primaryReserveFooterSpace}
       turnError={turnError}
@@ -11018,16 +11000,19 @@ const secondaryPendingImages = computed<UserImage[]>(() => {
   }));
 });
 
-const secondaryAwaitingResponse = computed<boolean>(() => {
-  if (secondaryTurnError()) return false;
-  if (secondaryPermissions().length > 0 || secondaryQuestions().length > 0) return false;
+const secondaryWaitingPlacement = computed<"none" | "trailing-group" | "indicator">(() => {
+  if (secondaryTurnError()) return "none";
+  if (secondaryPermissions().length > 0 || secondaryQuestions().length > 0) return "none";
   const live = secondaryLiveTurn();
-  if (live?.settling) return false;
+  if (live?.settling) return "none";
   const hasPending = Boolean(secondaryOptimisticUserText() || secondaryPendingImages().length > 0);
   const hasRunning = Boolean(secondaryRunningTurnId());
-  if (!hasPending && !hasRunning) return false;
-  return !liveBlocksHaveActiveMotion(secondaryLiveDisplayBlocks(), secondaryLiveRounds(), 1);
+  if (!hasPending && !hasRunning) return "none";
+  return liveWaitingPlacement(true, secondaryLiveDisplayBlocks(), secondaryLiveRounds(), 1);
 });
+
+const secondaryAwaitingResponse = computed<boolean>(() => secondaryWaitingPlacement() === "indicator");
+const secondaryTrailingGroupAwaitingNext = computed<boolean>(() => secondaryWaitingPlacement() === "trailing-group");
 
 const secondaryWaitingStartedAt = computed<number | undefined>(() => {
   const sid = secondarySessionId();
@@ -11444,6 +11429,7 @@ function SecondaryTranscript() {
       pendingCreatedAt={() => secondaryPendingTurnState()?.createdAt}
       liveDisplayBlocks={secondaryLiveDisplayBlocks}
       awaitingResponse={secondaryAwaitingResponse}
+      trailingGroupAwaitingNext={secondaryTrailingGroupAwaitingNext}
       waitingStartedAt={secondaryWaitingStartedAt}
       reserveFooterSpace={secondaryReserveFooterSpace}
       cardPrefix="sec-"
@@ -11732,6 +11718,7 @@ function BtwTurn(props: { entry: SideQuestion }) {
       ? { ...tool, status: "cancelled" as const } : tool),
   })));
   const blocks = computed(() => buildLiveDisplayBlocks(rounds(), rounds));
+  const waitingPlacement = computed(() => liveWaitingPlacement(props.entry.state === "running", blocks(), rounds(), rounds));
   const prefix = () => `btw-${props.entry.requestId}-`;
   const footerTurn = computed(() => props.entry.transcript ?? {
     turnId: props.entry.turnId ?? `btw-turn-${props.entry.requestId}`,
@@ -11761,10 +11748,11 @@ function BtwTurn(props: { entry: SideQuestion }) {
             pane={rounds}
             cardPrefix={prefix()}
             live={props.entry.state === "running"}
+            trailingGroupAwaitingNext={() => waitingPlacement() === "trailing-group"}
             startedAt={() => props.entry.startedAt}
           />
         </If>
-        <If when={props.entry.state === "running" && !liveBlocksHaveActiveMotion(blocks(), rounds(), rounds)}>
+        <If when={waitingPlacement() === "indicator"}>
           <TurnWaitingIndicator startedAt={() => props.entry.startedAt} accessibilityLabel="side-question-state" />
         </If>
         <If when={props.entry.state !== "running"}>

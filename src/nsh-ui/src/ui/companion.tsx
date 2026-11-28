@@ -43,7 +43,7 @@ import { focusRingStyle, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
 
 /** Dimensions shared with `desktopPresence.tsx` so the pet window fits bubbles without clipping. */
-export const PET_BUBBLE_MAX_WIDTH = space.x6l * 2;
+export const PET_BUBBLE_MAX_WIDTH = space.x6l * 2 + space.x4l;
 export const PET_BUBBLE_HEIGHT = space.x3l + space.xs;
 export const PET_BUBBLE_GAP = space.sm;
 export const PET_BUBBLE_LIST_GAP = space.chip;

@@ -259,8 +259,10 @@ test("sending a message never flashes back to Welcome Studio and survives the co
     payload: { sessionId, settledTurnId: "turn-live-1" },
   });
 
-  // BUG 3A regression check: persisted text from `textItems` and tool from `toolItems` stay visible!
+  // BUG 3A regression check: persisted text from `textItems` stays directly visible and `toolItems` fold cleanly.
   await app.waitFor("OpenBitFun 是一个跨平台 AI 编程工作台。");
+  await app.waitFor("label:explore-group-explore:tool:tool-read-1");
+  await app.press("label:explore-group-explore:tool:tool-read-1");
   await app.waitFor("Cargo.toml");
 
   // BUG 4A regression check: live `session_title_generated` replaces "New session".

@@ -36,7 +36,7 @@ import { tr, type MessageKey } from "../i18n";
 import { addReviewNote, editingReviewNote, removeReviewNote, reviewNotesFor, updateReviewNote, type ReviewNote } from "../reviewStore";
 import { activeSessionKey, openInAuxPane, selectSession } from "../state";
 import { compactLayout, controlHeight, designControlColors, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
-import { isProminentToolCall, normalizeToolName, toolAwaitsApproval, toolInputRecord } from "../toolPresentation";
+import { normalizeToolName, toolAwaitsApproval, toolInputRecord } from "../toolPresentation";
 import { ToolCardFrame, toolCardHeaderHeight, toolCardMetrics } from "./ToolCardFrame";
 import { CodeReviewReport } from "./CodeReviewReport";
 import { ReviewCoverageRetry } from "./ReviewCoverageRetry";
@@ -1610,7 +1610,6 @@ export function ToolCard(props: {
 }) {
   const kind = computed(() => toolKindOf(props.call));
   const state = computed<ToolRunState>(() => props.status ?? persistedToolState(props.call));
-  const prominent = computed(() => isProminentToolCall(props.call));
   const expandable = computed(() => hasBody(props.call, kind()));
   const expanded = computed(() => isCardExpanded(props.cardId));
   const filePath = computed(() =>
@@ -1650,7 +1649,7 @@ export function ToolCard(props: {
   });
 
   return <ToolCardFrame
-    name={props.call.name} prominent={prominent()} expanded={expanded()} canExpand={expandable()}
+    name={props.call.name} expanded={expanded()} canExpand={expandable()}
     headerMinHeight={props.live ? transcriptRowMinHeight() : undefined}
     leadingKey={activelyRunning() ? "running" : waiting() ? "waiting" : `settled:${kind()}`}
     muted={muted()} confirmation={state() === "confirmation"} hint={hoverHint() || undefined}
@@ -1659,7 +1658,7 @@ export function ToolCard(props: {
       {path => <IconButton icon="external-link" size="xs" iconSize={toolCardMetrics.iconSize}
         accessibilityLabel={"open-tool-file-" + props.call.name}
         tooltip={tr("sessions.openInFiles")}
-        style={{ alignSelf: "center", width: toolCardHeaderHeight(false), height: toolCardHeaderHeight(false) }}
+        style={{ alignSelf: "center", width: toolCardHeaderHeight(), height: toolCardHeaderHeight() }}
         onPress={() => openInAuxPane("files", path())} />}
     </If>}
     leading={
@@ -1680,9 +1679,9 @@ export function ToolCard(props: {
         <ActiveFlowText
           active={activelyRunning}
           text={titleLabel}
-          mutedColor={() => (prominent() ? palette().textSecondary : palette().textMuted)}
+          mutedColor={() => palette().textMuted}
           brightColor={() => palette().text}
-          staticColor={() => (muted() || (!prominent() && !engaged()) ? palette().textMuted : palette().text)}
+          staticColor={() => (muted() || !engaged() ? palette().textMuted : palette().text)}
           style={{ ...textStyle(), fontWeight: toolCardMetrics.titleWeight }}
         />
       </MorphSlot>
@@ -1693,7 +1692,7 @@ export function ToolCard(props: {
         style={{ flex: 1, minWidth: 0 }}
       >
         <Text style={{ ...textStyle(), width: "100%",
-          color: prominent() ? palette().textSecondary : engaged() ? palette().text : palette().textMuted,
+          color: engaged() ? palette().text : palette().textMuted,
           fontFamily: kind() === "exec" ? fontMono() : undefined,
           textOverflow: filePath() ? "ellipsis-middle" : "ellipsis" }}>{targetLabel()}</Text>
       </MorphSlot>
@@ -1730,7 +1729,6 @@ export function ToolCard(props: {
           }}
         />
       </If>
-      <If when={prominent() && expandable()}><TranscriptRowChevron expanded={expanded} /></If>
     </>}
     body={() => <>
       <ToolBody call={detailedToolCall(props.call)} cardId={props.cardId} kind={kind()} reviewTarget={props.reviewTarget} />
@@ -1793,7 +1791,11 @@ export function ExploreGroupCard(props: {
   cardId: string;
   stateOf: (call: ToolCallView) => ToolRunState;
   renderThinking?: (item: Extract<FoldedProcessItem, { kind: "thinking" }>) => JSX.Element;
+  renderTool?: (item: () => Extract<FoldedProcessItem, { kind: "tool" }>, cardId: () => string) => JSX.Element;
   live?: boolean;
+  /** True on a live turn's trailing group while waiting for the next LLM round so it stays one calm row. */
+  awaitingNext?: boolean;
+  startedAt?: () => number | undefined;
   /**
    * Draw the open group's steps inside this card (default). A virtualized
    * transcript passes `false` and lays each step out as a row of its own
@@ -1811,11 +1813,32 @@ export function ExploreGroupCard(props: {
     }));
   });
   const expanded = computed(() => isCardExpanded(props.cardId));
-  const running = computed(() =>
-    resolvedItems().some(item =>
-      item.kind === "thinking" ? Boolean(item.live) : props.stateOf(item.call) === "running",
-    ),
+  const hasRunningTool = computed(() =>
+    resolvedItems().some(item => item.kind === "tool" && props.stateOf(item.call) === "running"),
   );
+  const hasLiveThinking = computed(() =>
+    resolvedItems().some(item => item.kind === "thinking" && Boolean(item.live)),
+  );
+  const waitingApproval = computed(() =>
+    !hasRunningTool() && resolvedItems().some(item => item.kind === "tool" && props.stateOf(item.call) === "confirmation"),
+  );
+  const awaitingNext = computed(() => Boolean(props.awaitingNext) && !hasRunningTool() && !waitingApproval());
+  const running = computed(() => hasRunningTool() || hasLiveThinking() || awaitingNext());
+  const failedCount = computed(() => {
+    let failed = 0;
+    for (const item of resolvedItems()) {
+      if (item.kind !== "tool") continue;
+      const st = props.stateOf(item.call);
+      if (st === "failed") {
+        failed += 1;
+        continue;
+      }
+      if (st !== "running" && toolKindOf(item.call) === "exec" && (exitCodeOf(item.call) ?? 0) !== 0) {
+        failed += 1;
+      }
+    }
+    return failed;
+  });
 
   const counts = computed(() => activityCounts(resolvedItems()));
   const reads = computed(() => counts().reads);
@@ -1848,17 +1871,42 @@ export function ExploreGroupCard(props: {
   });
 
   const headingLabel = computed(() => {
-    const active = running();
+    if (hasRunningTool()) {
+      switch (groupKind()) {
+        case "explore":
+          return tr("chat.tool.exploring");
+        case "exec":
+          return tr("chat.tool.exec.running");
+        case "thinking":
+          return tr("state.thinking");
+        default:
+          return tr("chat.tool.working");
+      }
+    }
+    if (hasLiveThinking() || awaitingNext()) {
+      return tr("state.thinking");
+    }
     switch (groupKind()) {
       case "explore":
-        return active ? tr("chat.tool.exploring") : tr("chat.tool.explored");
+        return tr("chat.tool.explored");
       case "exec":
-        return active ? tr("chat.tool.exec.running") : tr("chat.tool.exec.done");
+        return tr("chat.tool.exec.done");
       case "thinking":
-        return active ? tr("state.thinking") : tr("chat.thinking");
+        return tr("chat.thinking");
       default:
-        return active ? tr("chat.tool.working") : tr("chat.tool.worked");
+        return tr("chat.tool.worked");
     }
+  });
+
+  const groupStatus = computed<{ label: string; color: string; failed: boolean } | null>(() => {
+    if (running()) return null;
+    if (waitingApproval()) {
+      return { label: tr("chat.tool.awaitingApproval"), color: stateColor("needs_you"), failed: false };
+    }
+    if (failedCount() > 0) {
+      return { label: tr("chat.tool.failed"), color: stateColor("failed"), failed: true };
+    }
+    return null;
   });
 
   return (
@@ -1883,11 +1931,19 @@ export function ExploreGroupCard(props: {
               <If
                 when={entry().kind === "thinking"}
                 else={
-                  <ToolCard
-                    call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
-                    status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
-                    cardId={foldedStepCardId(props.cardId, entry(), index())}
-                  />
+                  props.renderTool ? (
+                    props.renderTool(
+                      () => entry() as Extract<FoldedProcessItem, { kind: "tool" }>,
+                      () => foldedStepCardId(props.cardId, entry(), index()),
+                    )
+                  ) : (
+                    <ToolCard
+                      call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
+                      status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
+                      cardId={foldedStepCardId(props.cardId, entry(), index())}
+                      live={props.live}
+                    />
+                  )
                 }
               >
                 {props.renderThinking?.(entry() as Extract<FoldedProcessItem, { kind: "thinking" }>)}
@@ -1971,6 +2027,39 @@ export function ExploreGroupCard(props: {
             <ExploreCountSegment count={thinkings} one="chat.tool.stepOne" other="chat.tool.stepOther" />
           </If>
         </View>
+        <If when={groupStatus()}>
+          {status => (
+            <View style={{ flexShrink: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+              <If when={status().failed}>
+                <Icon name="close" size={12} color={status().color} />
+              </If>
+              <Text
+                style={{
+                  color: status().color,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.35),
+                }}
+              >
+                {status().label}
+              </Text>
+            </View>
+          )}
+        </If>
+        <If when={Boolean(props.live) && running() && Boolean(props.startedAt)}>
+          <ElapsedDurationText
+            startedAt={props.startedAt}
+            active={running}
+            minSeconds={2}
+            style={{
+              flexShrink: 0,
+              color: palette().textMuted,
+              opacity: 0.72,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
+              fontVariant: ["tabular-nums"],
+            }}
+          />
+        </If>
         <TranscriptRowChevron expanded={expanded} />
       </View>
     </SmoothDisclosure>
@@ -1995,6 +2084,7 @@ export function FoldedGroupStep(props: {
   first: boolean;
   stateOf: (call: ToolCallView) => ToolRunState;
   renderThinking?: (item: Extract<FoldedProcessItem, { kind: "thinking" }>) => JSX.Element;
+  renderTool?: (item: () => Extract<FoldedProcessItem, { kind: "tool" }>, cardId: () => string) => JSX.Element;
 }) {
   return (
     <View
@@ -2009,11 +2099,18 @@ export function FoldedGroupStep(props: {
       <If
         when={props.entry.kind === "thinking"}
         else={
-          <ToolCard
-            call={(props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call}
-            status={props.stateOf((props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
-            cardId={foldedStepCardId(props.groupCardId, props.entry, props.index)}
-          />
+          props.renderTool ? (
+            props.renderTool(
+              () => props.entry as Extract<FoldedProcessItem, { kind: "tool" }>,
+              () => foldedStepCardId(props.groupCardId, props.entry, props.index),
+            )
+          ) : (
+            <ToolCard
+              call={(props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call}
+              status={props.stateOf((props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
+              cardId={foldedStepCardId(props.groupCardId, props.entry, props.index)}
+            />
+          )
         }
       >
         {props.renderThinking?.(props.entry as Extract<FoldedProcessItem, { kind: "thinking" }>)}

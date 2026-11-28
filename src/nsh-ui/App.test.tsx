@@ -928,9 +928,11 @@ test("a tool card expands into its checklist and its edit", async () => {
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  // Actionable edits and checklist updates remain visible in their own cards.
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-todo_write");
-  await app.waitFor("id:prominent-tool-card >> label:tool-card-edit");
+  // Every non-text step starts folded; expanding the group reveals the checklist and edit cards.
+  await app.waitFor("label:explore-group-explore:tool:turn-2-0-tool-0");
+  await app.press("label:explore-group-explore:tool:turn-2-0-tool-0");
+  await app.waitFor("id:tool-card >> label:tool-card-todo_write");
+  await app.waitFor("id:tool-card >> label:tool-card-edit");
   await app.waitFor("checklist 1/3");
   await app.press("tool-card-todo_write");
   await app.waitFor("Move the list");
@@ -1041,7 +1043,10 @@ test("the transcript shows tool cards from a turn", async () => {
 
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
-  // A read is titled by its verb and the file it read, not by the raw tool name.
+  // Tool calls start folded behind a summary row and reveal their verb and target when expanded.
+  await app.waitFor("label:explore-group-explore:tool:turn-1-0-tool-0");
+  expect(app.texts().join("\n")).not.toContain("NavPanel.tsx");
+  await app.press("label:explore-group-explore:tool:turn-1-0-tool-0");
   await app.waitFor("NavPanel.tsx");
   const texts = app.texts().join("\n");
   expect(texts).toContain("Read");

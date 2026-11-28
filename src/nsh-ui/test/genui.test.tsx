@@ -114,6 +114,7 @@ test("a settled GenerativeUI answer is an interactive interface in the transcrip
   ].join("\n")));
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
+  await app.press("label:explore-group-explore:tool:genui-1");
   await app.waitFor("Pasta night for 4 guests");
   expect(app.texts()).toContain("400 g spaghetti");
   // Not drawn as a generic tool row.
@@ -164,6 +165,7 @@ test("GenUI controls keep their card state and send to their session across a fl
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, platform: "web", host: { handlers: host.handlers } });
   await app.press("id:sidebar-session-s-a1");
+  await app.press("label:explore-group-explore:tool:genui-1");
   await app.waitFor("Entry menu for 2 guests");
   await app.type("composer", "Entry draft");
   await app.press("thread-actions-trigger");
@@ -187,6 +189,7 @@ test("GenUI controls keep their card state and send to their session across a fl
 
   await app.hover("id:split-divider-proximity-left");
   await app.press("split-divider-swap");
+  await app.press("id:primary-session-pane >> label:explore-group-explore:tool:genui-1");
   await app.waitFor("Owner menu for 5 guests");
   await app.waitFor("Entry menu for 2 guests");
   await app.press("genui-button-Suggest a wine");
@@ -208,6 +211,7 @@ test("a GenerativeUI source streamed live renders as it arrives", async () => {
     roundId: "r1",
     toolEvent: { event_type: "EarlyDetected", tool_id: "gen-live", tool_name: "GenerativeUI" },
   });
+  await app.press("label:explore-group-explore:tool:gen-live");
   await app.waitFor("label:genui-generating");
   const delta = (seq: number, text: string, reset = false) =>
     send("agentic://tool-event", {
@@ -248,8 +252,10 @@ test("a failed GenerativeUI candidate leaves no card; an unknown component is na
   ]);
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
+  await app.press("label:explore-group-explore:tool:genui-1");
   await app.waitFor("Mostly works");
   await app.waitFor("Let me fix that.");
+  await app.press("label:explore-group-explore:tool:genui-bad");
   expect(app.texts().join("\n")).toContain("Not drawn in this view: Hologram");
   expect(app.texts().join("\n")).not.toContain("invalid source");
 });
