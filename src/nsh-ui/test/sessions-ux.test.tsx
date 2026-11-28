@@ -1662,6 +1662,81 @@ test("the model menu validates and applies custom session context length", async
   await app.waitFor("label:bot-capsule-trigger >> text:64K");
 });
 
+test("hovering model picker rows keeps the list width and position steady across desktop widths", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("id:model-picker");
+  await app.waitFor("label:model-option-cfg-primary");
+
+  const assertNoOverlap = (list: { x: number; width: number }, side: { x: number; width: number }) => {
+    const onRight = side.x >= list.x + list.width - 0.5;
+    const onLeft = side.x + side.width <= list.x + 0.5;
+    expect(onRight || onLeft).toBe(true);
+  };
+
+  // Wide desktop: list stays at exact 348px width and fixed x/y before, during, and after hover.
+  const before = app.layout("id:model-picker")!;
+  expect(Math.abs(before.width - 348)).toBeLessThan(1);
+
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
+  const duringPrimary = app.layout("id:model-picker")!;
+  const sidePrimary = app.layout("id:model-config-side-panel")!;
+  expect(Math.abs(duringPrimary.width - before.width)).toBeLessThan(0.5);
+  expect(Math.abs(duringPrimary.x - before.x)).toBeLessThan(0.5);
+  expect(Math.abs(duringPrimary.y - before.y)).toBeLessThan(0.5);
+  expect(Math.abs(sidePrimary.width - 264)).toBeLessThan(1);
+  assertNoOverlap(duringPrimary, sidePrimary);
+
+  await app.hover("label:model-option-cfg-fast");
+  await app.waitFor("id:model-config-side-panel >> text:Fast model");
+  const duringFast = app.layout("id:model-picker")!;
+  expect(Math.abs(duringFast.width - before.width)).toBeLessThan(0.5);
+  expect(Math.abs(duringFast.x - before.x)).toBeLessThan(0.5);
+
+  // Interacting inside the nested submenu overlay must not dismiss the picker.
+  await app.press("context-option-500000");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as { contextWindowOverride?: number })?.contextWindowOverride === 500_000,
+    ),
+  );
+  expect(app.shows("id:model-picker")).toBe(true);
+
+  // Close and reopen on a tighter desktop viewport where trigger.x + 348 + 264 overflows the right edge.
+  await app.press("model-config-close");
+  await app.waitFor("id:model-picker", { state: "gone" });
+  await app.setViewport(900, 820);
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("id:model-picker");
+  await app.waitFor("label:model-option-cfg-primary");
+
+  const narrowBefore = app.layout("id:model-picker")!;
+  expect(Math.abs(narrowBefore.width - 348)).toBeLessThan(1);
+
+  await app.hover("label:model-option-cfg-primary");
+  await app.waitFor("id:model-config-side-panel");
+  const narrowDuring = app.layout("id:model-picker")!;
+  const narrowSide = app.layout("id:model-config-side-panel")!;
+  expect(Math.abs(narrowDuring.width - narrowBefore.width)).toBeLessThan(0.5);
+  expect(Math.abs(narrowDuring.x - narrowBefore.x)).toBeLessThan(0.5);
+  expect(Math.abs(narrowDuring.y - narrowBefore.y)).toBeLessThan(0.5);
+  expect(narrowSide.x).toBeGreaterThanOrEqual(0);
+  expect(narrowSide.x + narrowSide.width).toBeLessThanOrEqual(900);
+  assertNoOverlap(narrowDuring, narrowSide);
+
+  // Unhovering closes the hover submenu without shifting or resizing the list.
+  await app.hover("composer");
+  await app.waitFor("id:model-config-side-panel", { state: "gone" });
+  const narrowAfter = app.layout("id:model-picker")!;
+  expect(Math.abs(narrowAfter.width - narrowBefore.width)).toBeLessThan(0.5);
+  expect(Math.abs(narrowAfter.x - narrowBefore.x)).toBeLessThan(0.5);
+});
+
 test("left-side turn jump rail previews a turn on hover and jumps on press", async () => {
   const turns = Array.from({ length: 12 }, (_, index) => ({
     turnId: `turn-${index + 1}`,

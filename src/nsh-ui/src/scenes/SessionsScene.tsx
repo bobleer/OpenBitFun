@@ -9110,6 +9110,7 @@ function ModelPickerOverlay() {
   const provider = signal<string | null>(null);
   const filterOpen = signal(false);
   const composingSearch = signal(false);
+  const availableWidth = signal(0);
   let lastDismiss = -Infinity;
   const close = () => {
     modelPickerTarget.set(null);
@@ -9137,12 +9138,16 @@ function ModelPickerOverlay() {
       align="start"
       offset={6}
       margin={8}
-      onPosition={pos => modelPickerPlacement.set(pos.placement)}
+      onPosition={pos => {
+        modelPickerPlacement.set(pos.placement);
+        if (pos.available.width > 0) availableWidth.set(pos.available.width);
+      }}
       onPressOutside={close}
       onCancel={dismiss}
     >
       <ModelPickerSurface
         placement={modelPickerPlacement()}
+        availableWidth={availableWidth()}
         provider={provider()}
         onProviderChange={provider.set}
         filterOpen={filterOpen()}
@@ -9159,6 +9164,7 @@ function ModelPickerOverlay() {
 
 function ModelPickerSurface(props: {
   placement: Placement;
+  availableWidth: number;
   provider: string | null;
   onProviderChange: (id: string | null) => void;
   filterOpen: boolean;
@@ -9174,6 +9180,7 @@ function ModelPickerSurface(props: {
   const composing = signal(false);
   const rowRefs = new Map<string, ViewRef>();
   let input: InputRef | null = null;
+  const pickerCardRef = signal<ViewRef | null>(null);
   const filterAnchor = signal<ViewRef | null>(null);
 
   const targetDevice = computed(() => pickerTargetDeviceId());
@@ -9245,145 +9252,147 @@ function ModelPickerSurface(props: {
   }))]);
 
   const desktopSideModelId = computed(() =>
-    !compactLayout() && !pickerTargetIsBtw() ? (activeModelConfigId() ?? "") : "",
+    !compactLayout() && !pickerTargetIsBtw() && pickerCardRef() ? (activeModelConfigId() ?? "") : "",
   );
   const mobileTrayModelId = computed(() =>
     compactLayout() && !pickerTargetIsBtw() ? (modelConfigPinnedId() ?? "") : "",
   );
+  const panelWidth = () => {
+    const target = compactLayout() ? 332 : 348;
+    return props.availableWidth > 0 ? Math.min(target, Math.floor(props.availableWidth)) : target;
+  };
 
   return (
     <View
+      ref={pickerCardRef.set}
       testID="model-picker"
       style={[
+        overlayPopoverStyle(),
         {
-          flexDirection: compactLayout() ? "column" : "row",
-          alignItems: "flex-start",
-          gap: space.xs,
-          maxWidth: "96%",
+          width: panelWidth(),
+          padding: 0,
+          overflow: "hidden",
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
+      {/* Sticky Search & Provider Filter Header */}
       <View
-        style={[
-          overlayPopoverStyle(),
-          {
-            width: compactLayout() ? 332 : 348,
-            maxWidth: "94%",
-            padding: 0,
-            overflow: "hidden",
-          },
-        ]}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.xs,
+          paddingHorizontal: space.sm,
+          paddingVertical: space.sm,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+        }}
       >
-        {/* Sticky Search & Provider Filter Header */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.xs,
-            paddingHorizontal: space.sm,
-            paddingVertical: space.sm,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
+        <SearchInput
+          value={modelPickerSearch()}
+          size="sm"
+          autoFocus={!compactLayout()}
+          inputRef={node => { input = node; }}
+          placeholder={tr("models.searchPlaceholder")}
+          clearLabel={tr("common.clear")}
+          accessibilityLabel="model-picker-search"
+          accessibilityActiveDescendant={rowRefs.get(highlighted() ?? "") ?? null}
+          onFocus={() => inputFocused.set(true)}
+          onBlur={() => inputFocused.set(false)}
+          onCompositionChange={active => { composing.set(active); props.onCompositionChange(active); }}
+          onSubmit={submitSearch}
+          onChange={value => {
+            modelPickerSearch.set(value);
+            highlighted.set(null);
           }}
-        >
-          <SearchInput
-            value={modelPickerSearch()}
+          style={{ flex: 1 }}
+        />
+        <If when={providers().length > 0}>
+          <IconButton
+            icon="filter"
             size="sm"
-            autoFocus={!compactLayout()}
-            inputRef={node => { input = node; }}
-            placeholder={tr("models.searchPlaceholder")}
-            clearLabel={tr("common.clear")}
-            accessibilityLabel="model-picker-search"
-            accessibilityActiveDescendant={rowRefs.get(highlighted() ?? "") ?? null}
-            onFocus={() => inputFocused.set(true)}
-            onBlur={() => inputFocused.set(false)}
-            onCompositionChange={active => { composing.set(active); props.onCompositionChange(active); }}
-            onSubmit={submitSearch}
-            onChange={value => {
-              modelPickerSearch.set(value);
-              highlighted.set(null);
-            }}
-            style={{ flex: 1 }}
+            accessibilityLabel="model-picker-provider-filter"
+            buttonRef={filterAnchor.set}
+            tooltip={activeProvider()?.label ?? tr("sessions.modelFilterProvider")}
+            active={Boolean(activeProvider())}
+            disabled={savingModel()}
+            onPress={() => props.onFilterOpen(!props.filterOpen)}
           />
-          <If when={providers().length > 0}>
-            <IconButton
-              icon="filter"
-              size="sm"
-              accessibilityLabel="model-picker-provider-filter"
-              buttonRef={filterAnchor.set}
-              tooltip={activeProvider()?.label ?? tr("sessions.modelFilterProvider")}
-              active={Boolean(activeProvider())}
-              disabled={savingModel()}
-              onPress={() => props.onFilterOpen(!props.filterOpen)}
-            />
-          </If>
-          <DropdownMenu
-            open={props.filterOpen}
-            anchor={filterAnchor()}
-            align="end"
-            items={filterItems()}
-            onClose={() => props.onFilterOpen(false)}
-          />
-        </View>
-
-        {/* Scrollable Model List */}
-        <If
-          when={catalogStatus() !== "ready"}
-          else={
-            <ModelPickerList
-              groups={visible()}
-              disabled={savingModel()}
-              highlighted={highlighted()}
-              rowRefs={rowRefs}
-            />
-          }
-        >
-          <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>
-            {tr(catalogStatus() === "loading" ? "common.loading" : "sessions.modelCatalogUnavailable")}
-          </Text>
-        </If>
-
-        {/* Mobile / Compact Inline Config Tray (shown after tapping a model) */}
-        <If when={mobileTrayModelId()}>
-          {modelId => (
-            <View
-              testID="model-config-inline-panel"
-              style={{
-                borderTopWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().canvasSubtle,
-                padding: space.sm,
-                gap: space.sm,
-              }}
-            >
-              <ModelConfigPanelContent modelId={modelId()} compact={true} deviceId={targetDevice()} groups={catalog()} />
-            </View>
-          )}
         </If>
       </View>
 
-      {/* Desktop Right-Side Config Submenu (hover or click-pinned) */}
-      <If when={desktopSideModelId()}>
+      {/* Scrollable Model List */}
+      <If
+        when={catalogStatus() !== "ready"}
+        else={
+          <ModelPickerList
+            groups={visible()}
+            disabled={savingModel()}
+            highlighted={highlighted()}
+            rowRefs={rowRefs}
+          />
+        }
+      >
+        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), padding: space.md }}>
+          {tr(catalogStatus() === "loading" ? "common.loading" : "sessions.modelCatalogUnavailable")}
+        </Text>
+      </If>
+
+      {/* Mobile / Compact Inline Config Tray (shown after tapping a model) */}
+      <If when={mobileTrayModelId()}>
         {modelId => (
           <View
-            testID="model-config-side-panel"
-            onMouseEnter={cancelModelConfigHoverLeave}
-            onMouseLeave={scheduleModelConfigHoverLeave}
-            style={[
-              overlayPopoverStyle(),
-              {
-                width: 264,
-                padding: space.sm,
-                gap: space.sm,
-              },
-            ]}
+            testID="model-config-inline-panel"
+            style={{
+              borderTopWidth: 1,
+              borderColor: palette().borderSubtle,
+              backgroundColor: palette().canvasSubtle,
+              padding: space.sm,
+              gap: space.sm,
+            }}
           >
-            <ModelConfigPanelContent modelId={modelId()} compact={false} deviceId={targetDevice()} groups={catalog()} />
+            <ModelConfigPanelContent modelId={modelId()} compact={true} deviceId={targetDevice()} groups={catalog()} />
           </View>
         )}
       </If>
+
+      {/* Desktop Right-Side Config Submenu (independent Overlay so hovering never resizes or shifts the list) */}
+      <If when={desktopSideModelId()}>
+        {modelId => (
+          <Overlay
+            anchor={pickerCardRef()}
+            placement="right"
+            align="start"
+            offset={space.xs}
+            margin={8}
+          >
+            <View
+              testID="model-config-side-panel"
+              onMouseEnter={cancelModelConfigHoverLeave}
+              onMouseLeave={scheduleModelConfigHoverLeave}
+              style={[
+                overlayPopoverStyle(),
+                {
+                  width: 264,
+                  padding: space.sm,
+                  gap: space.sm,
+                },
+              ]}
+            >
+              <ModelConfigPanelContent modelId={modelId()} compact={false} deviceId={targetDevice()} groups={catalog()} />
+            </View>
+          </Overlay>
+        )}
+      </If>
+
+      <DropdownMenu
+        open={props.filterOpen}
+        anchor={filterAnchor()}
+        align="end"
+        items={filterItems()}
+        onClose={() => props.onFilterOpen(false)}
+      />
     </View>
   );
 }
