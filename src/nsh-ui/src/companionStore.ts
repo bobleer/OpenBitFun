@@ -21,7 +21,7 @@ import { tr } from "./i18n";
 import { acknowledgedAt, statusOfSession } from "./sessionStatusStore";
 import { deviceContext, isSessionArchived, runningTurns, sessionKey, sessionLastActivityMs, sessions } from "./state";
 import { isDeviceOnThisMachine } from "./shared/deviceScope";
-import type { MarkState } from "./ui/fleet";
+import { localSessionMarkState, sessionMarkState, type MarkState } from "./ui/fleet";
 
 export const COMPANION_ENABLED_PATH = "app.ai_experience.enable_agent_companion";
 export const COMPANION_PET_PATH = "app.ai_experience.agent_companion_pet";
@@ -344,10 +344,10 @@ export function releasePetSheets(): void {
 
 // ── What the pet shows ───────────────────────────────────────────────────────
 
-/** Maximum number of session bubbles shown on the left of the companion pet. */
+/** Maximum number of session bubbles visible at once to the left of the companion pet; more are revealed by scrolling. */
 export const MAX_PET_BUBBLES = 2;
 
-export type PetBubbleState = "needs_you" | "running" | "failed" | "unread";
+export type PetBubbleState = Extract<MarkState, "needs_you" | "working" | "failed" | "done">;
 
 export interface PetSessionBubble {
   /** Stable deduplication key: `${deviceId}/${sessionId}` or `cloud/${conversationId}`. */
@@ -372,13 +372,25 @@ interface PetBubbleDismissRecord {
 
 const PET_BUBBLE_PRIORITY: Readonly<Record<PetBubbleState, number>> = {
   needs_you: 0,
-  running: 1,
+  working: 1,
   failed: 2,
-  unread: 3,
+  done: 3,
 };
 
+function toPetBubbleState(mark: MarkState): PetBubbleState | null {
+  switch (mark) {
+    case "needs_you":
+    case "working":
+    case "failed":
+    case "done":
+      return mark;
+    default:
+      return null;
+  }
+}
+
 function petBubbleDismissBucket(state: PetBubbleState): PetBubbleDismissBucket {
-  return state === "running" ? "active" : "notice";
+  return state === "working" ? "active" : "notice";
 }
 
 const dismissedPetBubbles = signal<Record<string, PetBubbleDismissRecord>>({});
@@ -447,7 +459,7 @@ const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
       } else if (group.id === "failed" && item.unread !== false) {
         state = "failed";
       } else if (group.id === "done" && item.unread === true) {
-        state = "unread";
+        state = "done";
       }
       if (!state) continue;
       const deviceId = item.source.deviceId ?? "";
@@ -489,17 +501,14 @@ const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
             session.status === "waiting" ||
             (session.needsAttention === true && !session.failed && session.status !== "error");
           const ackedHere = isAcked(key, activityMs, session.sessionId);
-          const failed = (session.status === "error" || session.failed === true) && !ackedHere;
-          const unread = session.unread === true && !ackedHere;
-          const state: PetBubbleState | null = waiting
+          const rawMark: MarkState = waiting
             ? "needs_you"
             : liveRunning
-              ? "running"
-              : failed
-                ? "failed"
-                : unread
-                  ? "unread"
-                  : null;
+              ? "working"
+              : ackedHere
+                ? "idle"
+                : sessionMarkState(session);
+          const state = toPetBubbleState(rawMark);
           if (!state) continue;
           upsert({
             key,
@@ -523,15 +532,8 @@ const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
     if (isSessionArchived(row)) continue;
     const activityMs = sessionLastActivityMs(row) ?? 0;
     const mark = statusOf(row.sessionId, activityMs, row.messageCount, row.deviceId);
-    if (!mark || mark.kind === "queued") continue;
-    const state: PetBubbleState =
-      mark.kind === "approval"
-        ? "needs_you"
-        : mark.kind === "running"
-          ? "running"
-          : mark.kind === "failed"
-            ? "failed"
-            : "unread";
+    const state = toPetBubbleState(localSessionMarkState(mark?.kind));
+    if (!state) continue;
     const deviceId = row.deviceId ?? fallbackDevice;
     const key = sessionKey(row.sessionId, deviceId);
     upsert({
@@ -554,12 +556,10 @@ const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
   );
 });
 
-/** Up to `MAX_PET_BUBBLES` (2) active/unread session bubbles shown to the left of the pet. */
+/** All eligible active/unread session bubbles shown to the left of the pet (up to `MAX_PET_BUBBLES` visible at once, scrollable for more). */
 export const petSessionBubbles = computed<PetSessionBubble[]>(() => {
   const dismissed = dismissedPetBubbles();
-  return candidatePetBubbles()
-    .filter(bubble => !isBubbleDismissed(bubble, dismissed))
-    .slice(0, MAX_PET_BUBBLES);
+  return candidatePetBubbles().filter(bubble => !isBubbleDismissed(bubble, dismissed));
 });
 
 /** Closes one session bubble (silences its current active or notice bucket until state/activity changes). */

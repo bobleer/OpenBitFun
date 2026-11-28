@@ -79,6 +79,14 @@ const DOT_KIND: Readonly<Record<StateColorToken, StatusDotKind>> = {
   textMuted: "muted",
 };
 
+const STATE_BORDER_TOKEN: Readonly<Record<StateColorToken, keyof Palette>> = {
+  accent: "accentBorder",
+  warning: "warningBorder",
+  success: "successBorder",
+  danger: "dangerBorder",
+  textMuted: "border",
+};
+
 /** Narrows any string to a `MarkState`; an unknown value is `idle`. */
 export function markState(value: string | null | undefined): MarkState {
   return value && value in STATE_VISUALS ? (value as MarkState) : "idle";
@@ -88,6 +96,12 @@ export function markState(value: string | null | undefined): MarkState {
 export function stateColorToken(state: MarkState, seen = false): keyof Palette {
   if (state === "done" && seen) return "textMuted";
   return STATE_VISUALS[markState(state)].color;
+}
+
+/** The palette border token matching a state's indicator color (`done` + `seen` falls back to `border`). */
+export function stateBorderColorToken(state: MarkState, seen = false): keyof Palette {
+  const token = stateColorToken(state, seen) as StateColorToken;
+  return STATE_BORDER_TOKEN[token];
 }
 
 /** The state's color in the active palette, adapting automatically on dark split-chrome planes. */
@@ -100,6 +114,11 @@ export function stateColor(
   if (token === "accent") return surfaceWorkingColor(surface);
   if (token === "textMuted" && surface === "chrome") return palette().chromeTextMuted;
   return palette()[token] as string;
+}
+
+/** The state's border color in the active palette, matching its indicator color. */
+export function stateBorderColor(state: MarkState, seen = false): string {
+  return palette()[stateBorderColorToken(state, seen)] as string;
 }
 
 /** The state's word (`Working`, `Needs you`, `Waiting for {device}` ...). */

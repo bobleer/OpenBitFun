@@ -6,7 +6,14 @@
 // (`fixtures/installTestPresence.ts` records them).
 
 import { expect, open, test } from "nsh/test";
-import { PET_BUBBLE_GAP, PET_BUBBLE_HEIGHT, PET_BUBBLE_MAX_WIDTH } from "../src/ui/companion";
+import {
+  PET_BUBBLE_GAP,
+  PET_BUBBLE_HEIGHT,
+  PET_BUBBLE_MAX_WIDTH,
+  PET_BUBBLE_STRIDE,
+  PET_BUBBLE_VIEWPORT_MAX_HEIGHT,
+} from "../src/ui/companion";
+import { stateBorderColorToken } from "../src/ui/fleet";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, type Backend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -426,7 +433,7 @@ test("the native desktop announces the pet operations, answers them, and Setting
   expect(state.configWrites.find(write => write.path === "app.ai_experience.enable_desktop_cards")?.value).toBe(false);
 });
 
-test("the pet shows at most two running/unread session bubbles on its left with right-click close and close-all", async () => {
+test("the pet displays at most two session bubbles at once, scrolls to reveal more, and supports right-click close/close-all", async () => {
   const state = freshState(true);
   const backend = withPresence(createBackend(), state);
   const posts: Array<Record<string, unknown>> = [];
@@ -444,20 +451,22 @@ test("the pet shows at most two running/unread session bubbles on its left with 
             name: "OpenBitFun",
             rootPath: "/repo",
             sessions: [
-              { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 400), status: "idle", unread: false },
-              { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Hi", baseMs + 300), status: "running", unread: false },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 600), status: "idle", unread: false },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Hi", baseMs + 500), status: "running", unread: false },
               {
                 ...fleetSessionRow(
                   "dev-a",
                   "ws-1",
                   "s-unread-1",
                   "A very long session title that must stay capped at the maximum bubble width",
-                  baseMs + 200,
+                  baseMs + 400,
                 ),
                 status: "idle",
                 unread: true,
               },
-              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 100), status: "idle", unread: true },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 300), status: "idle", unread: true },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-3", "Unread third", baseMs + 200), status: "idle", unread: true },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-4", "Unread oldest", baseMs + 100), status: "idle", unread: true },
             ],
           },
         ],
@@ -466,7 +475,7 @@ test("the pet shows at most two running/unread session bubbles on its left with 
       fleetDeviceRow("dev-b", "LinuxServer", [], { hostKind: "cli" }),
     ],
     removedDeviceIds: [] as string[],
-    totals: { running: 1, waiting: 0, unread: 2 },
+    totals: { running: 1, waiting: 0, unread: 4 },
   };
   const host = fleetObpHost(backend, {
     fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
@@ -480,31 +489,51 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   const app = await open(PRESENCE, { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitUntil(() => posts.some(post => post.action === "open" && post.id === "openbitfun-pet"));
 
-  // At most 2 bubbles appear (running first, then newest unread); 3rd unread and idle session are hidden.
+  // At most 2 bubbles fit in the viewport at once (running first, then newest unread); idle session is never shown.
   await app.waitFor("id:pet-bubble-s-run");
   await app.waitFor("id:pet-bubble-s-unread-1");
-  expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
   expect(app.shows("id:pet-bubble-s-idle")).toBe(false);
 
   // Bubbles sit on the left side of the pet sprite, vertically centered against it,
-  // showing only title and right-side status indicator (no status text or device subtitle).
-  expect(app.shows("Running")).toBe(false);
-  expect(app.shows("Unread")).toBe(false);
-  expect(app.shows("Needs you")).toBe(false);
-  expect(app.shows("Failed")).toBe(false);
+  // reusing `StateMark` as the right-side indicator with matching state border colors (no status text or device subtitle).
+  expect(app.shows("text:Working")).toBe(false);
+  expect(app.shows("text:Done")).toBe(false);
+  expect(app.shows("text:Running")).toBe(false);
+  expect(app.shows("text:Unread")).toBe(false);
+  expect(app.shows("text:Needs you")).toBe(false);
+  expect(app.shows("text:Failed")).toBe(false);
   expect(app.shows("MacBook")).toBe(false);
+  expect(app.accessibility("id:pet-bubble-indicator-s-run")?.label).toBe("Working");
+  expect(app.accessibility("id:pet-bubble-indicator-s-unread-1")?.label).toBe("Done");
+  expect(stateBorderColorToken("working")).toBe("accentBorder");
+  expect(stateBorderColorToken("needs_you")).toBe("warningBorder");
+  expect(stateBorderColorToken("done")).toBe("successBorder");
+  expect(stateBorderColorToken("done", true)).toBe("border");
+  expect(stateBorderColorToken("failed")).toBe("dangerBorder");
+  expect(stateBorderColorToken("idle")).toBe("border");
   const listLayout = app.layout("id:pet-session-bubbles");
   const bubbleLayout = app.layout("id:pet-bubble-s-run");
   const longBubbleLayout = app.layout("id:pet-bubble-s-unread-1");
+  const thirdBubbleInitial = app.layout("id:pet-bubble-s-unread-2");
+  const fourthBubbleInitial = app.layout("id:pet-bubble-s-unread-3");
   const titleLayout = app.layout("id:pet-bubble-title-s-run");
   const indicatorLayout = app.layout("id:pet-bubble-indicator-s-run");
   const petLayout = app.layout("label:pet-open-inbox");
   expect(listLayout).not.toBeNull();
   expect(bubbleLayout).not.toBeNull();
   expect(longBubbleLayout).not.toBeNull();
+  expect(thirdBubbleInitial).not.toBeNull();
+  expect(fourthBubbleInitial).not.toBeNull();
   expect(titleLayout).not.toBeNull();
   expect(indicatorLayout).not.toBeNull();
   expect(petLayout).not.toBeNull();
+  // Viewport height is capped to 2 bubbles even when 4 sessions are eligible.
+  expect(listLayout!.height).toBe(PET_BUBBLE_VIEWPORT_MAX_HEIGHT);
+  expect(bubbleLayout!.clipped).toBe(false);
+  expect(longBubbleLayout!.clipped).toBe(false);
+  expect(thirdBubbleInitial!.clipped).toBe(true);
+  expect(thirdBubbleInitial!.y).toBeGreaterThanOrEqual(listLayout!.y + listLayout!.height - 1);
+  expect(fourthBubbleInitial!.clipped).toBe(true);
   expect(bubbleLayout!.x + bubbleLayout!.width).toBeLessThanOrEqual(petLayout!.x + 1);
   // Short bubbles hug the pet tightly (right-aligned) and shrink below the max width; long titles cap at max width.
   expect(petLayout!.x - (bubbleLayout!.x + bubbleLayout!.width)).toBeLessThanOrEqual(PET_BUBBLE_GAP + 2);
@@ -518,11 +547,53 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(
     Math.abs(listLayout!.y + listLayout!.height / 2 - (petLayout!.y + petLayout!.height / 2)),
   ).toBeLessThanOrEqual(1);
+  // Pet window stays compact (sized for at most 2 visible bubbles, not all 4).
+  const petWinBounds = app.window("openbitfun-pet").state()?.bounds;
+  expect(petWinBounds?.size.height).toBeLessThanOrEqual(Math.max(petLayout!.height, PET_BUBBLE_VIEWPORT_MAX_HEIGHT) + 20);
 
-  // Left-clicking a bubble opens that session.
+  // Scrolling reveals the 3rd, 4th, and 5th sessions, which can be clicked to open.
+  await app.scroll("id:pet-session-bubbles", PET_BUBBLE_STRIDE * 3);
+  await app.waitUntil(() => {
+    const fifth = app.layout("id:pet-bubble-s-unread-4");
+    return fifth !== null && !fifth.clipped;
+  });
+  const fourthScrolled = app.layout("id:pet-bubble-s-unread-3");
+  const fifthScrolled = app.layout("id:pet-bubble-s-unread-4");
+  const firstScrolled = app.layout("id:pet-bubble-s-run");
+  expect(fourthScrolled?.clipped).toBe(false);
+  expect(fifthScrolled?.clipped).toBe(false);
+  expect(firstScrolled?.clipped).toBe(true);
+
+  await app.press("id:pet-bubble-s-unread-4");
+  await app.waitUntil(() =>
+    posts.some(post => post.action === "openSession" && (post.target as { sessionId?: string })?.sessionId === "s-unread-4"),
+  );
+
+  // Closing the scrolled-to bottom bubble clamps the scroll offset and keeps the remaining bubbles visible.
+  await app.rightClick("id:pet-bubble-s-unread-4");
+  await app.chooseMenuItem("Close bubble");
+  await app.waitUntil(() => !app.shows("id:pet-bubble-s-unread-4"));
+  await app.waitUntil(() => {
+    const third = app.layout("id:pet-bubble-s-unread-2");
+    const fourth = app.layout("id:pet-bubble-s-unread-3");
+    return third !== null && !third.clipped && fourth !== null && !fourth.clipped;
+  });
+
+  // Scrolling back up brings the newest session back into view.
+  await app.scroll("id:pet-session-bubbles", -PET_BUBBLE_STRIDE * 2);
+  await app.waitUntil(() => {
+    const first = app.layout("id:pet-bubble-s-run");
+    return first !== null && !first.clipped;
+  });
+
+  // Left-clicking the top bubble opens that session.
   await app.press("id:pet-bubble-s-run");
-  await app.waitUntil(() => posts.some(post => post.action === "openSession"));
-  const opened = posts.find(post => post.action === "openSession")?.target as Record<string, unknown>;
+  await app.waitUntil(() =>
+    posts.some(post => post.action === "openSession" && (post.target as { sessionId?: string })?.sessionId === "s-run"),
+  );
+  const opened = posts.find(
+    post => post.action === "openSession" && (post.target as { sessionId?: string })?.sessionId === "s-run",
+  )?.target as Record<string, unknown>;
   expect(opened?.sessionId).toBe("s-run");
   expect(opened?.deviceId).toBe("dev-a");
 
@@ -533,17 +604,23 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(menuLabels).toContain("Close all bubbles");
   await app.chooseMenuItem("Close bubble");
 
-  // Closing the running bubble removes it and lets the 3rd queued unread session take the 2nd slot.
+  // Closing the running bubble removes it and shifts s-unread-2 into the 2nd visible slot (with s-unread-3 still off-screen below).
   await app.waitUntil(() => !app.shows("id:pet-bubble-s-run"));
-  await app.waitFor("id:pet-bubble-s-unread-2");
-  expect(app.shows("id:pet-bubble-s-unread-1")).toBe(true);
+  await app.waitUntil(() => {
+    const second = app.layout("id:pet-bubble-s-unread-2");
+    return second !== null && !second.clipped;
+  });
+  expect(app.layout("id:pet-bubble-s-unread-1")?.clipped).toBe(false);
+  expect(app.layout("id:pet-bubble-s-unread-3")?.clipped).toBe(true);
 
-  // Right-clicking a bubble and choosing "Close all bubbles" clears every bubble at once.
+  // Right-clicking a bubble and choosing "Close all bubbles" clears every bubble at once (including off-screen ones).
   await app.rightClick("id:pet-bubble-s-unread-1");
   await app.chooseMenuItem("Close all bubbles");
   await app.waitUntil(() => !app.shows("id:pet-session-bubbles"));
   expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
   expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
+  expect(app.shows("id:pet-bubble-s-unread-3")).toBe(false);
+  expect(app.shows("id:pet-bubble-s-unread-4")).toBe(false);
 
   // When the previously closed running session later finishes unread, its completion notice still gets through.
   const finishedMs = Date.now() + 5_000;
@@ -558,17 +635,19 @@ test("the pet shows at most two running/unread session bubbles on its left with 
           name: "OpenBitFun",
           rootPath: "/repo",
           sessions: [
-            { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 400), status: "idle", unread: false },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 600), status: "idle", unread: false },
             { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Running build", finishedMs), status: "idle", unread: true },
-            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-1", "Unread newer", baseMs + 200), status: "idle", unread: true },
-            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 100), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-1", "Unread newer", baseMs + 400), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 300), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-3", "Unread third", baseMs + 200), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-4", "Unread oldest", baseMs + 100), status: "idle", unread: true },
           ],
         },
       ],
       { hostKind: "desktop" },
     ),
   ];
-  navigatorPayload.totals = { running: 0, waiting: 0, unread: 3 };
+  navigatorPayload.totals = { running: 0, waiting: 0, unread: 5 };
   await app.host.send("openbitfun.obpFrames", [eventFrame("fleet://index-changed", { revision: 2, deviceIds: ["dev-a"] })]);
   await app.waitFor("id:pet-bubble-s-run");
   expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
@@ -580,6 +659,7 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(singleListLayout).not.toBeNull();
   expect(singlePetLayout).not.toBeNull();
   expect(singleBubbleLayout!.height).toBe(PET_BUBBLE_HEIGHT);
+  expect(singleListLayout!.height).toBe(PET_BUBBLE_HEIGHT);
   expect(
     Math.abs(singleListLayout!.y + singleListLayout!.height / 2 - (singlePetLayout!.y + singlePetLayout!.height / 2)),
   ).toBeLessThanOrEqual(1);

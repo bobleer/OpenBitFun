@@ -7,7 +7,8 @@
 // Everything it shows comes from `companionStore.ts`; colors come only from
 // the palette (the selection ring), the pet itself is its artwork.
 
-import { cleanup, effect, Image, platform, reduceMotion, signal, Text, untracked, View } from "nsh";
+import { cleanup, effect, Image, platform, reduceMotion, Scroll, signal, Text, untracked, View, type ScrollRef, type WheelEvent } from "nsh";
+import { Scrollbar } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import {
   companionBusy,
@@ -17,6 +18,7 @@ import {
   dismissPetBubble,
   loadPetSheet,
   loadPetStill,
+  MAX_PET_BUBBLES,
   PET_COLUMNS,
   PET_FRAME_MS,
   PET_ROW_FRAMES,
@@ -31,14 +33,13 @@ import {
   selectCompanionPet,
   selectedPet,
   type CompanionPet,
-  type PetBubbleState,
   type PetSessionBubble,
 } from "../companionStore";
 import { tr } from "../i18n";
 import { compactLayout, palette, radii, space, textLineHeight, textSize, textStyle, touchSlop } from "../theme";
-import { stateWord, type MarkState } from "./fleet";
+import { StateMark, stateBorderColor, stateWord, type MarkState } from "./fleet";
 import { Icon } from "./icons";
-import { Spinner, pressTransition, tactileActiveStyle } from "./motion";
+import { pressTransition, tactileActiveStyle } from "./motion";
 import { focusRingStyle, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
 
@@ -47,6 +48,22 @@ export const PET_BUBBLE_MAX_WIDTH = space.x6l * 2 + space.x4l;
 export const PET_BUBBLE_HEIGHT = space.x3l + space.xs;
 export const PET_BUBBLE_GAP = space.sm;
 export const PET_BUBBLE_LIST_GAP = space.chip;
+export const PET_BUBBLE_STRIDE = PET_BUBBLE_HEIGHT + PET_BUBBLE_LIST_GAP;
+export const PET_BUBBLE_VIEWPORT_MAX_HEIGHT =
+  MAX_PET_BUBBLES * PET_BUBBLE_HEIGHT +
+  Math.max(0, MAX_PET_BUBBLES - 1) * PET_BUBBLE_LIST_GAP;
+
+/** Visible viewport height for `count` session bubbles, capped at `MAX_PET_BUBBLES` visible rows. */
+export function petBubbleViewportHeight(count: number): number {
+  const visible = Math.min(Math.max(0, count), MAX_PET_BUBBLES);
+  if (visible <= 0) return 0;
+  return visible * PET_BUBBLE_HEIGHT + (visible - 1) * PET_BUBBLE_LIST_GAP;
+}
+
+function petBubbleMaxScrollY(count: number): number {
+  if (count <= MAX_PET_BUBBLES) return 0;
+  return (count - MAX_PET_BUBBLES) * PET_BUBBLE_STRIDE;
+}
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
 const DEFAULT_CELL_ASPECT = 192 / 208;
@@ -202,31 +219,6 @@ export interface PetWindowContentProps {
   onSettings: () => void;
 }
 
-function bubbleBorderColor(state: PetBubbleState): string {
-  switch (state) {
-    case "needs_you":
-      return palette().warningBorder;
-    case "failed":
-      return palette().dangerBorder;
-    case "unread":
-      return palette().accentBorder;
-    default:
-      return palette().border;
-  }
-}
-
-function bubbleStatusColor(state: PetBubbleState): string {
-  switch (state) {
-    case "needs_you":
-      return palette().warning;
-    case "failed":
-      return palette().danger;
-    case "running":
-    case "unread":
-      return palette().accent;
-  }
-}
-
 function PetSessionBubbleCard(props: {
   bubble: PetSessionBubble;
   onOpenSession?: (bubble: PetSessionBubble) => void;
@@ -261,6 +253,7 @@ function PetSessionBubbleCard(props: {
         boxSizing: "border-box",
         maxWidth: PET_BUBBLE_MAX_WIDTH,
         height: PET_BUBBLE_HEIGHT,
+        flexShrink: 0,
         flexDirection: "row",
         alignItems: "center",
         gap: space.sm,
@@ -269,7 +262,7 @@ function PetSessionBubbleCard(props: {
         borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: bubbleBorderColor(b().state),
+        borderColor: stateBorderColor(b().state),
         backgroundColor: palette().popoverBg,
         opacity: 0.88,
         cursor: "pointer",
@@ -292,47 +285,71 @@ function PetSessionBubbleCard(props: {
       >
         {b().title}
       </Text>
-      <View
+      <StateMark
         testID={`pet-bubble-indicator-${targetId()}`}
-        style={{
-          width: 14,
-          height: titleLineHeight(),
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-        }}
-      >
-        <If when={b().state === "running"}>
-          <Spinner size={12} color={palette().accent} />
-        </If>
-        <If when={b().state === "needs_you" || b().state === "failed"}>
-          <Icon name="alert-circle" size={12} color={bubbleStatusColor(b().state)} />
-        </If>
-        <If when={b().state === "unread"}>
-          <View
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: radii.pill,
-              backgroundColor: palette().accent,
-            }}
-          />
-        </If>
-      </View>
+        state={b().state}
+      />
     </View>
   );
 }
 
 /**
- * The pet window's content: up to two active/unread session bubbles to the left
- * of the pet, vertically centered against the pet on a transparent ground. The
- * pet drags the window, opens the Inbox on press, and carries its own context
- * menu; each bubble opens its session on press and offers Close / Close all on
+ * The pet window's content: active/unread session bubbles to the left of the
+ * pet, vertically centered against the pet on a transparent ground. At most
+ * `MAX_PET_BUBBLES` (2) bubbles are visible at once; when more than 2 sessions
+ * are active/unread, mouse-wheel/trackpad scrolling reveals the rest. The pet
+ * drags the window, opens the Inbox on press, and carries its own context menu;
+ * each bubble opens its session on press and offers Close / Close all on
  * right-click.
  */
 export function PetWindowContent(props: PetWindowContentProps) {
   const bubbles = () => petSessionBubbles();
   const isWindows = platform.os === "windows";
+  // Match one wheel notch to one bubble stride: Windows sends 3 lines per notch,
+  // macOS and Linux send 1 line per notch; precision trackpads bypass this.
+  const wheelLineHeight = isWindows ? Math.round(PET_BUBBLE_STRIDE / 3) : PET_BUBBLE_STRIDE;
+  const scrollRef = signal<ScrollRef | null>(null);
+  const scrollOffsetY = signal(0);
+  let petWheelTargetY = 0;
+  let petWheelAt = 0;
+
+  effect(() => {
+    const count = bubbles().length;
+    if (count === 0) {
+      scrollOffsetY.set(0);
+      petWheelTargetY = 0;
+      petWheelAt = 0;
+      untracked(() => scrollRef.set(null));
+      return;
+    }
+    const maxY = petBubbleMaxScrollY(count);
+    const node = scrollRef();
+    const currentY = untracked(() => scrollOffsetY());
+    if (currentY > maxY) {
+      scrollOffsetY.set(maxY);
+      petWheelTargetY = maxY;
+      node?.scrollTo({ y: maxY, animated: false });
+    }
+  });
+
+  const handlePetWheel = (event: WheelEvent) => {
+    const count = bubbles().length;
+    if (count <= MAX_PET_BUBBLES) return;
+    const node = scrollRef();
+    if (!node) return;
+    const dy = event.delta.y;
+    if (!Number.isFinite(dy) || dy === 0) return;
+    const maxY = petBubbleMaxScrollY(count);
+    const step = event.deltaMode === "lines" ? dy * wheelLineHeight : dy;
+    const now = Date.now();
+    const base = now - petWheelAt < 250 ? petWheelTargetY : scrollOffsetY();
+    const nextY = Math.max(0, Math.min(maxY, base + step));
+    petWheelTargetY = nextY;
+    petWheelAt = now;
+    scrollOffsetY.set(nextY);
+    node.scrollTo({ y: nextY, animated: event.deltaMode === "lines" && !reduceMotion() });
+  };
+
   return (
     <View
       accessibilityLabel="pet-window"
@@ -341,32 +358,81 @@ export function PetWindowContent(props: PetWindowContentProps) {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "flex-end",
-        gap: PET_BUBBLE_GAP,
         padding: space.sm,
         backgroundColor: "transparent",
       }}
     >
       <If when={bubbles().length > 0}>
         <View
-          testID="pet-session-bubbles"
-          accessibilityLabel="pet-session-bubbles"
           style={{
-            width: PET_BUBBLE_MAX_WIDTH,
-            flexDirection: "column",
-            alignItems: "flex-end",
-            justifyContent: "center",
-            gap: PET_BUBBLE_LIST_GAP,
+            flexDirection: "row",
+            alignItems: "stretch",
+            height: petBubbleViewportHeight(bubbles().length),
             flexShrink: 0,
           }}
         >
-          <Each of={bubbles()} key={item => item.key}>
-            {item => (
-              <PetSessionBubbleCard
-                bubble={item()}
-                onOpenSession={props.onOpenSession}
-              />
-            )}
-          </Each>
+          <Scroll
+            ref={node => scrollRef.set(node)}
+            testID="pet-session-bubbles"
+            accessibilityLabel="pet-session-bubbles"
+            smoothWheel
+            wheelLineHeight={wheelLineHeight}
+            scrollbar={false}
+            scrollable={bubbles().length > MAX_PET_BUBBLES}
+            onScroll={event => {
+              scrollOffsetY.set(event.offset.y);
+            }}
+            style={{
+              width: PET_BUBBLE_MAX_WIDTH,
+              height: petBubbleViewportHeight(bubbles().length),
+              minHeight: 0,
+              flexShrink: 0,
+            }}
+            contentStyle={{
+              width: PET_BUBBLE_MAX_WIDTH,
+              flexDirection: "column",
+              alignItems: "flex-end",
+              gap: PET_BUBBLE_LIST_GAP,
+            }}
+          >
+            <Each of={bubbles()} key={item => item.key}>
+              {item => (
+                <PetSessionBubbleCard
+                  bubble={item()}
+                  onOpenSession={props.onOpenSession}
+                />
+              )}
+            </Each>
+          </Scroll>
+          <View
+            style={{
+              width: PET_BUBBLE_GAP,
+              alignSelf: "stretch",
+              position: "relative",
+              flexShrink: 0,
+            }}
+          >
+            <Scrollbar
+              scroll={scrollRef() ?? undefined}
+              axis="vertical"
+              mode="always"
+              minThumbLength={space.lg}
+              accessibilityLabel="pet-session-bubbles-scrollbar"
+              style={{
+                position: "absolute",
+                top: space.hair,
+                bottom: space.hair,
+                left: 0,
+                right: 0,
+                paddingHorizontal: space.hair,
+                backgroundColor: "transparent",
+              }}
+              thumbStyle={{
+                borderRadius: radii.pill,
+                backgroundColor: palette().scrollbarThumb,
+              }}
+            />
+          </View>
         </View>
       </If>
       <View
@@ -375,6 +441,10 @@ export function PetWindowContent(props: PetWindowContentProps) {
         accessibilityLabel="pet-open-inbox"
         hitSlop={touchSlop(props.height)}
         onPress={() => props.onOpen()}
+        onWheel={handlePetWheel}
+        onMouseLeave={() => {
+          petWheelAt = 0;
+        }}
         onContextMenu={event =>
           void Menu.popup(
             [
