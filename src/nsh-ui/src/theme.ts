@@ -1205,6 +1205,10 @@ export const layout = {
   navMediumWidth: 240,
   /** 720–959: the sidebar is an overlay drawer this wide. */
   navDrawerWidth: 264,
+  /** Desktop left-sidebar button height (shared navigation panel item height, 30 px). */
+  navItemHeight: designTokens.metrics.navigationPanel.itemHeight,
+  /** Vertical gap between adjacent left-sidebar buttons (1 px). */
+  navItemGap: 1,
   canvasInset: 8,
   canvasRadius: designTokens.metrics.radius.scene,
   inspectorWidth: 420,

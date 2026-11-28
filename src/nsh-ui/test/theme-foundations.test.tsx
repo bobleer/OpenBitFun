@@ -146,6 +146,8 @@ test("spacing, radii and control heights are on their scales", () => {
   expect(radii.surface).toBe(layout.canvasRadius);
   expect(controlHeight).toEqual({ xs: 24, sm: 32, md: 40, lg: 48 });
   expect(layout.navDefaultWidth).toBe(264);
+  expect(layout.navItemHeight).toBe(30);
+  expect(layout.navItemGap).toBe(1);
   expect(layout.conversationWidth).toBe(900);
 });
 

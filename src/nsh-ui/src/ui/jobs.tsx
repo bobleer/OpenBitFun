@@ -1420,7 +1420,7 @@ export interface ConversationRowProps {
 }
 
 /**
- * One history row (spec §3): 32 high, padding 0 8, radius 8; a 16 mark slot
+ * One history row (spec §3): `layout.navItemHeight` (30) high, padding 0 8, radius 8; a 16 mark slot
  * (empty when the roll-up is none), gap 8; title 13/400 `chromeText`, 600 when
  * unread; no age. Hover `chromeHover` and a 20 ⋯ (Rename, Delete).
  */
@@ -1444,7 +1444,7 @@ export function ConversationRow(props: ConversationRowProps) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        height: compactLayout() ? layout.touchTarget : controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : layout.navItemHeight,
         paddingHorizontal: space.sm,
         gap: space.sm,
         borderRadius: radii.md,
@@ -1531,10 +1531,10 @@ function groupLabel(id: string, label?: string): string {
 export function ConversationHistory(props: { onOpen?: () => void } = {}) {
   startSuperagentStore();
   return (
-    <View testID="conversation-history" style={{ flex: 1, minHeight: 0, gap: space.hair, paddingTop: space.lg }}>
+    <View testID="conversation-history" style={{ flex: 1, minHeight: 0, gap: layout.navItemGap, paddingTop: space.lg }}>
       <Each of={conversationGroups()} key={(group, index) => `${index}:${group.id}`}>
         {(group, index) => (
-          <View style={{ gap: space.hair, paddingTop: index() > 0 ? space.md : 0 }}>
+          <View style={{ gap: layout.navItemGap, paddingTop: index() > 0 ? space.md : 0 }}>
             <If when={groupLabel(group().id, group().label)}>
               {label => (
                 <Text
@@ -1571,7 +1571,7 @@ export function ConversationHistory(props: { onOpen?: () => void } = {}) {
           accessibilityLabel={tr("history.showMore")}
           onPress={() => void loadMoreConversations()}
           style={{
-            height: compactLayout() ? layout.touchTarget : controlHeight.md,
+            height: compactLayout() ? layout.touchTarget : layout.navItemHeight,
             justifyContent: "center",
             paddingHorizontal: space.sm,
             paddingLeft: space.sm + space.lg + space.sm,

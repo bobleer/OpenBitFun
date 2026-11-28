@@ -34,7 +34,7 @@ export function SpaceShortcuts(props: { onNavigate?: () => void }) {
 
   return (
     <If when={pinnedSpaces().length > 0}>
-      <View accessibilityLabel="space-shortcuts" style={{ gap: space.hair, marginBottom: space.sm }}>
+      <View accessibilityLabel="space-shortcuts" style={{ gap: layout.navItemGap, marginBottom: space.sm }}>
         <Each of={pinnedSpaces()} key={item => item.id}>
           {item => (
             <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0 }}>

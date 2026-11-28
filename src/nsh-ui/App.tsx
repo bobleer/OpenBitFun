@@ -921,7 +921,7 @@ function AccountRow() {
         style={{
           flex: 1,
           minWidth: 0,
-          height: controlHeight.md,
+          height: layout.navItemHeight,
           paddingLeft: avatarInset,
           paddingRight: space.sm,
           borderRadius: radii.md,
@@ -958,7 +958,12 @@ function AccountRow() {
         iconColor={activeScene() === "settings" ? palette().chromeAccent : undefined}
         accessibilityLabel={tr("nav.settings")}
         tooltip={<TooltipBubble text={tr("nav.settings")} shortcut={shortcutLabel("mod+,", "⌘,")} />}
-        style={{ borderWidth: 0, borderColor: "transparent" }}
+        style={{
+          width: layout.navItemHeight,
+          height: layout.navItemHeight,
+          borderWidth: 0,
+          borderColor: "transparent",
+        }}
         onPress={() => {
           if (activeScene() === "settings") {
             if (canGoBack()) {
@@ -1031,7 +1036,7 @@ function NavPanel(props: { onNavigate?: () => void }) {
 function DeviceNavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
-      <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
+      <View style={{ paddingHorizontal: space.sm, gap: layout.navItemGap, flexShrink: 0 }}>
         <SidebarRow
           label={tr("nav.search")}
           icon="search"
@@ -1086,7 +1091,7 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
 function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
-      <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
+      <View style={{ paddingHorizontal: space.sm, gap: layout.navItemGap, flexShrink: 0 }}>
         <SidebarRow
           label={tr("nav.superAgent")}
           leading={<BitMatrixGlyph size={14} color={palette().chromeText} />}
@@ -1155,10 +1160,10 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
           borderTopWidth: 1,
           borderColor: palette().chromeBorder,
           paddingTop: space.sm,
-          gap: space.hair,
+          gap: layout.navItemGap,
         }}
       >
-        <View style={{ paddingHorizontal: space.sm, gap: space.hair }}>
+        <View style={{ paddingHorizontal: space.sm, gap: layout.navItemGap }}>
           <SidebarRow
             label={tr("nav.library")}
             icon="package"

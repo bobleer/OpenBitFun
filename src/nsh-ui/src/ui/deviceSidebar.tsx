@@ -43,7 +43,7 @@ import {
   type DeviceTreeNode,
 } from "../deviceTree";
 import { deviceCanCreateWorkspace, deviceMenuItems, newWorkspaceOn } from "../deviceActions";
-import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
+import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { formatRelativeTime } from "../format";
 import { StateMark, deviceException, deviceGlyphIcon, stateColor, type MarkState } from "./fleet";
 import { Icon, type IconName } from "./icons";
@@ -132,7 +132,7 @@ function workspaceIcon(workspace: TreeWorkspace, open: boolean): IconName {
 
 // ── Building blocks ──────────────────────────────────────────────────────────
 
-/** A chrome row: 32 high (a touch target on a phone), radius 8, hover and selection tints, keyboard focus ring. */
+/** A chrome row: 30 high (a touch target on a phone), radius 8, hover and selection tints, keyboard focus ring. */
 function TreeRow(props: {
   indent: number;
   active?: boolean;
@@ -151,7 +151,7 @@ function TreeRow(props: {
       onMouseEnter={() => props.onHover?.(true)}
       onMouseLeave={() => props.onHover?.(false)}
       style={{
-        height: compactLayout() ? layout.touchTarget : controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : layout.navItemHeight,
         paddingLeft: space.sm + props.indent,
         paddingRight: space.xs,
         borderRadius: radii.md,
@@ -377,7 +377,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
   const childIndent = () => props.indent;
   const host = () => remoteWorkspaceHost(props.workspace);
   return (
-    <View accessibilityLabel={`sidebar-workspace-${props.workspace.workspaceId}`}>
+    <View accessibilityLabel={`sidebar-workspace-${props.workspace.workspaceId}`} style={{ gap: layout.navItemGap }}>
       <TreeRow
         indent={props.indent}
         testID={`sidebar-workspace-row-${props.workspace.workspaceId}`}
@@ -457,8 +457,8 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
           )}
         </If>
       </TreeRow>
-      <If when={open()}>
-        <View>
+      <If when={open() && (rows().length > 0 || hasMore() || canShowLess())}>
+        <View style={{ gap: layout.navItemGap }}>
           <Each of={rows()} key={row => row.sessionId}>
             {row => (
               <SessionRow
@@ -594,7 +594,7 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
   });
   const id = () => props.node.deviceId || "local";
   return (
-    <View accessibilityLabel={`sidebar-device-${id()}`} style={{ gap: space.hair }}>
+    <View accessibilityLabel={`sidebar-device-${id()}`} style={{ gap: layout.navItemGap }}>
       <TreeRow
         indent={0}
         testID={`sidebar-device-row-${id()}`}
@@ -696,7 +696,7 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
 
 function WorkspaceList(props: { node: DeviceTreeNode; indent: number; single: boolean; onNavigate?: () => void }) {
   return (
-    <View style={{ gap: space.hair }}>
+    <View style={{ gap: layout.navItemGap }}>
       <Each of={props.node.workspaces} key={workspace => workspace.workspaceId}>
         {workspace => (
           <WorkspaceBranch node={props.node} workspace={workspace()} indent={props.indent} onNavigate={props.onNavigate} />
@@ -740,7 +740,7 @@ function RecentlyClosed(props: { node: DeviceTreeNode; indent: number }) {
   };
   return (
     <If when={rows().length > 0}>
-      <View style={{ gap: space.hair }}>
+      <View style={{ gap: layout.navItemGap }}>
         <TreeRow
           indent={props.indent}
           accessibilityLabel="sidebar-recently-closed"
@@ -815,7 +815,7 @@ function SectionHeader(props: { label: string; action?: JSX.Element }) {
   return (
     <View
       style={{
-        height: controlHeight.sm,
+        height: layout.navItemHeight,
         paddingLeft: space.sm,
         paddingRight: space.xs,
         flexDirection: "row",
@@ -850,7 +850,7 @@ export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Eleme
   const nodes = deviceTree;
   const single = () => nodes().length <= 1;
   return (
-    <View accessibilityLabel="sidebar-device-tree" style={{ gap: space.hair }}>
+    <View accessibilityLabel="sidebar-device-tree" style={{ gap: layout.navItemGap }}>
       <If
         when={single()}
         else={

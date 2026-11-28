@@ -1,5 +1,5 @@
 import { Text, View, type JSX } from "nsh";
-import { controlHeight, layout, palette, radii, space, textStyle } from "../theme";
+import { layout, palette, radii, space, textStyle } from "../theme";
 import { Icon, type IconName } from "./icons";
 import { MOTION_DURATION, paintTransition } from "./motion";
 
@@ -23,7 +23,7 @@ export function SidebarRow(props: {
       tooltip={props.tooltip}
       onPress={props.disabled ? undefined : props.onPress}
       style={{
-        height: props.touchSized ? layout.touchTarget : controlHeight.md,
+        height: props.touchSized ? layout.touchTarget : layout.navItemHeight,
         paddingHorizontal: space.sm,
         borderRadius: radii.md,
         borderCurve: "continuous",

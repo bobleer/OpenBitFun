@@ -7,7 +7,7 @@
 // retired: what they offered lives here.
 
 import { expect, open, test } from "nsh/test";
-import { space } from "../src/theme";
+import { layout, space } from "../src/theme";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, showDevices } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -515,4 +515,83 @@ test("temporary dev route tag shows P2P/Relay and latency on the right side of p
   expect(routeBox!.x).toBeGreaterThan(nameBox!.x + nameBox!.width);
   expect(routeBox!.x + routeBox!.width).toBeLessThanOrEqual(sectionBox!.x + sectionBox!.width + 2);
   expect(Math.abs((routeBox!.y + routeBox!.height / 2) - (nameBox!.y + nameBox!.height / 2))).toBeLessThanOrEqual(4);
+});
+
+test("desktop sidebar buttons use compact nav item height with a 1px gap between adjacent buttons", async () => {
+  const nav = {
+    revision: 8,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-1",
+            name: "Assistant",
+            rootPath: "/assistant",
+            kind: "assistant",
+            isHostCurrent: true,
+            sessions: [
+              fleetSessionRow("dev-a", "ws-1", "s-1", "New session"),
+              fleetSessionRow("dev-a", "ws-1", "s-2", "Second session"),
+              fleetSessionRow("dev-a", "ws-1", "s-3", "Third session"),
+              fleetSessionRow("dev-a", "ws-1", "s-4", "Fourth session"),
+            ],
+          },
+          {
+            workspaceId: "ws-empty",
+            name: "Empty project",
+            rootPath: "/empty",
+            sessions: [],
+          },
+          {
+            workspaceId: "ws-2",
+            name: "OpenBitFun",
+            rootPath: "/repo",
+            sessions: [fleetSessionRow("dev-a", "ws-2", "s-5", "Repo thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+      fleetDeviceRow("dev-b", "linux-box", [], { hostKind: "cli" }),
+    ],
+  };
+  const { app } = await openFleet(nav);
+  await app.waitFor("id:sidebar-session-s-5");
+  await app.waitFor("label:sidebar-show-more-ws-1");
+
+  const search = app.layout("label:global-search-trigger");
+  const library = app.layout("label:nav-library");
+  const deviceRow = app.layout("id:sidebar-device-row-dev-a");
+  const ws1 = app.layout("id:sidebar-workspace-row-ws-1");
+  const s1 = app.layout("id:sidebar-session-s-1");
+  const s2 = app.layout("id:sidebar-session-s-2");
+  const s3 = app.layout("id:sidebar-session-s-3");
+  const showMore = app.layout("label:sidebar-show-more-ws-1");
+  const wsEmpty = app.layout("id:sidebar-workspace-row-ws-empty");
+  const ws2 = app.layout("id:sidebar-workspace-row-ws-2");
+  const s5 = app.layout("id:sidebar-session-s-5");
+  const account = app.layout("label:account-row");
+
+  const all = [search, library, deviceRow, ws1, s1, s2, s3, showMore, wsEmpty, ws2, s5, account];
+  for (const box of all) {
+    expect(box).not.toBeNull();
+    expect(box!.height).toBe(layout.navItemHeight);
+  }
+
+  const gapBetween = (upper: NonNullable<typeof search>, lower: NonNullable<typeof search>) =>
+    lower.y - (upper.y + upper.height);
+
+  expect(gapBetween(search!, library!)).toBe(layout.navItemGap);
+  expect(gapBetween(deviceRow!, ws1!)).toBe(layout.navItemGap);
+  expect(gapBetween(ws1!, s1!)).toBe(layout.navItemGap);
+  expect(gapBetween(s1!, s2!)).toBe(layout.navItemGap);
+  expect(gapBetween(s2!, s3!)).toBe(layout.navItemGap);
+  expect(gapBetween(s3!, showMore!)).toBe(layout.navItemGap);
+  expect(gapBetween(showMore!, wsEmpty!)).toBe(layout.navItemGap);
+  expect(gapBetween(wsEmpty!, ws2!)).toBe(layout.navItemGap);
+  expect(gapBetween(ws2!, s5!)).toBe(layout.navItemGap);
 });
