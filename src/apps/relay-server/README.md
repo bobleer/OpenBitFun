@@ -17,34 +17,33 @@ as the account device directory (`DEFAULT_ACCOUNT_DIRECTORY_URL`, also
 `DEFAULT_RELAY_URL`), while device traffic flows over OpenBitFun Link rather
 than the legacy 1.x relay transport.
 
-For device-to-device control, the Relay forwards opaque encrypted payloads.
-Each device generates an X25519 private key locally and registers its public key
-after account identity verification. Peers obtain public keys through the authenticated same-account
-directory and derive an AES-GCM key with X25519 and HKDF-SHA256. The Relay does
-not receive device private keys or upload copies of settings and sessions.
-Sessions and files are read from the owning online device on demand. Account,
-device, public-key, and routing metadata remain visible to the service. Published
-Pages and their server-side storage/functions are separate from this encrypted
-device-control path; see the [privacy boundary](FAQ.md#what-can-the-services-see).
+For device-to-device control in 2.0, traffic flows over **OpenBitFun Link**
+(`link-node` and `link-gateway` in this directory) rather than the legacy 1.x
+Socket.IO relay transport. Each device generates an X25519 private key locally
+and registers its public key in the authenticated same-account directory
+(`RELAY_PROFILE=directory`). Peers retrieve public keys through the directory
+and authenticate / end-to-end encrypt OBP sessions with the derived device pair
+key (browsers use `obp-e2e-v1` through `link-gateway`). The hosted services do
+not receive device private keys or upload copies of settings and sessions;
+sessions and files are read from the owning online device on demand. Account,
+device, public-key, and routing metadata remain visible to the services.
+Published Pages and their server-side storage/functions are separate from this
+encrypted device-control path; see the [privacy boundary](FAQ.md#what-can-the-services-see).
 
-Selecting **Same network** starts the same Relay implementation inside the
-Desktop host at `http://<LAN-IP>:9700`. Its SQLite database is local to that
-host (`<product-home>/relay-v1.0.0/local-server/relay.db`), separate from the
-official server database. The official and embedded LAN connections can run
-concurrently. Each connection uses its own Relay for device registration,
-discovery, public-key lookup, RPC, and presence; the local Relay does not forward
-its device traffic to the official Relay. **My devices**, Peer Device Mode,
-account synchronization, and account-device Detached Dispatch continue to use
-the official account endpoint. Starting or stopping LAN mode does not switch
-that endpoint. See the [Desktop connection lifecycle](../desktop/README.md#remote-connect).
+The 1.x **Same network** mode (the Desktop host's embedded LAN Relay at
+`http://<LAN-IP>:9700`), the standalone OBP LAN listener, LAN pairing QR codes,
+and 1.x Relay pairing invitations (`/#/pair?did=<device-id>`) were retired in
+OpenBitFun 2.0. Devices on the same network automatically connect directly over
+OpenBitFun Link (LAN P2P) once signed in with the same account, with no
+separate LAN mode or embedded Relay server to start. See the
+[Desktop connection lifecycle](../desktop/README.md#remote-connect) and
+[Mesh only: LAN sunset](../../../docs/architecture/unified-client-architecture.md#mesh-only-lan-sunset-and-a-domain-only-server).
 
-Both modes verify account identity through `auth.openbitfun.com`, so signing in
-requires internet access. An invitation contains only the selected endpoint
-and device id (`/#/pair?did=<device-id>`); scanning it grants no authority.
-The controller must sign in and resolve that id in its same-account directory.
-Anonymous room pairing and tunnel-provider startup have been removed.
+Account sign-in verifies identity through `auth.openbitfun.com`, so signing in
+requires internet access. Anonymous room pairing and tunnel-provider startup
+have been removed.
 
-SSH and Docker workspace connections remain independent of Relay login.
+SSH and Docker workspace connections remain independent of account sign-in.
 
 ## For community developers and forks
 

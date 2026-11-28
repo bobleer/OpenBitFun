@@ -103,26 +103,27 @@ completion quality, total latency, model/cache usage and auxiliary request cost.
 ## Remote Connect
 
 Sign in with the same OpenBitFun account on each device, using the same GitHub
-or email-code login method. The official Relay needs no user deployment. The
-official Relay and **Same network** (the embedded LAN Relay) can run at the same
-time. Each tab shows its own connection and connected browsers; **Disconnect** affects that tab only.
-Closing a connection code keeps an established connection running.
+or email-code login method. Official 2.0 services (`https://super.openbitfun.com`)
+need no user deployment. While signed in with remote control enabled, Desktop
+automatically joins the account's **OpenBitFun Link** device network so other
+account devices, the phone app, and browsers signed in at
+`https://super.openbitfun.com/` can operate it over OBP.
 
-**My devices**, Peer Device Mode, account synchronization and account-device detached dispatch
-use the official Relay. Starting or stopping the LAN Relay does not switch their
-account or endpoint. LAN invitations advertise the selected network interface;
-select it again and create a new invitation after changing networks.
+The 1.x **Same network** mode (the embedded LAN Relay), the standalone OBP LAN
+listener, LAN pairing QR codes, and 1.x Relay pairing invitations were retired
+in OpenBitFun 2.0. Devices on the same network automatically use a direct LAN
+P2P route over OpenBitFun Link without switching modes or starting a local
+Relay server; otherwise Link uses hole punching or peer/server relay fallback.
+Desktop still keeps a loopback-only OBP listener on `127.0.0.1` for browsers on
+the same computer.
 
-Desktop restores the official device session on restart and uses the shared
-[device credential renewal schedule](../cli/README.md#always-on-account-device-host). The embedded LAN connection
-is temporary and starts when requested. Builds that previously saved a temporary
-LAN session in the account slot attempt to restore the official Relay from the
-shared identity; failed sign-in leaves the previous credential on disk. Signing
-out closes both connections.
+Desktop restores the account directory session on restart and uses the shared
+[device credential renewal schedule](../cli/README.md#always-on-account-device-host).
+Signing out leaves OpenBitFun Link and clears the local device session.
 
-Both modes require the online identity service for sign-in. Same-network mode
-does not provide offline login. See the [Relay FAQ](../relay-server/FAQ.md) for
-privacy, service availability, and private-deployment requirements.
+Account sign-in requires the online identity service (`auth.openbitfun.com`);
+there is no offline login flow. See the [Relay & connection FAQ](../relay-server/FAQ.md)
+for privacy, service availability, and self-hosting requirements.
 
 ## Writing a LaTeX paper
 

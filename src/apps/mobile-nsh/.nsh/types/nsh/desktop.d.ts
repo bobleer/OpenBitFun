@@ -620,15 +620,22 @@ export declare function windows(): WindowRef[];
 export declare function focusedWindow(): WindowRef | null;
 
 /**
- * The current window's state (reactive): `currentWindow().state()`.
- * `null` off desktops.
+ * The current window's state (reactive): `currentWindow().state()` while
+ * rendering, or the open `"main"` window's outside a render (event
+ * handlers, timers, async callbacks, for compatibility). Returns `null`
+ * off desktops, before the window shows, or when no matching window is
+ * open. In multi-window apps, capture `currentWindow()` while rendering
+ * and call `win.state()`.
  */
 export declare function windowState(): WindowState | null;
 
 /**
  * The current window's hidden title bar area, in points (reactive):
- * `currentWindow().titleBar()`. All 0 while the system shows its title
- * bar, and off desktops.
+ * `currentWindow().titleBar()` while rendering, or the open `"main"`
+ * window's outside a render (event handlers, timers, async callbacks, for
+ * compatibility). All 0 while the system shows its title bar, off
+ * desktops, or when no matching window is open. In multi-window apps,
+ * capture `currentWindow()` while rendering and call `win.titleBar()`.
  */
 export declare function titleBar(): TitleBarArea;
 
