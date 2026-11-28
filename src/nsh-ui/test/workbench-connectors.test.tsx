@@ -891,6 +891,89 @@ test("subscription quotas are read per account slot and drawn from the host's me
   await app.waitFor("Weekly · 20% left");
 });
 
+test("add model dialog stays in place while typing, clearing and resolving the request URL", async () => {
+  const backend = createWorkbenchBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let finishPreview: (() => void) | undefined;
+  let markPreviewRequested!: () => void;
+  const previewRequested = new Promise<void>(resolve => { markPreviewRequested = resolve; });
+  const previousPreview = "text:Request URL: https://proxy.example/v1/chat/completions";
+  const app = await open("../App.tsx", {
+    ...DESKTOP,
+    reducedMotion: true,
+    host: {
+      handlers: {
+        ...backend.handlers,
+        "openbitfun.invoke": (data: unknown) => {
+          const call = data as { action: string; request?: { baseUrl?: string } };
+          if (call.action === "resolve_ai_model_request_url" && call.request?.baseUrl === "https://proxy.example/v1x") {
+            return new Promise(resolve => {
+              finishPreview = () => resolve(invoke(data));
+              markPreviewRequested();
+            });
+          }
+          return invoke(data);
+        },
+      },
+    },
+  });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.press("add-model");
+  await app.waitFor("model-filter");
+
+  const dialogLayout = () => [app.layout("modal-close"), app.layout("save-model")];
+  const initial = dialogLayout();
+  const apiKeyLayout = app.layout("model-api-key");
+  expect(initial.every(Boolean) && Boolean(apiKeyLayout)).toBe(true);
+
+  await app.paste("model-base-url", { text: "https://proxy.example/v1" });
+  await app.waitFor(previousPreview);
+  const withPreview = dialogLayout();
+  const apiKeyWithPreview = app.layout("model-api-key");
+
+  const typing = app.type("model-base-url", "x");
+  await Promise.race([previewRequested, typing]);
+  const pending = dialogLayout();
+  const pendingApiKey = app.layout("model-api-key");
+  const keptPreviousPreview = app.shows(previousPreview);
+  finishPreview?.();
+  await typing;
+  await app.waitFor("text:Request URL: https://proxy.example/v1x/chat/completions");
+  expect(keptPreviousPreview).toBe(true);
+  expect(app.shows(previousPreview)).toBe(false);
+  const resolved = dialogLayout();
+  const apiKeyResolved = app.layout("model-api-key");
+
+  await app.clear("model-base-url");
+  expect(app.value("model-base-url")).toBe("");
+  expect(app.shows("model-request-url-preview")).toBe(false);
+  const cleared = dialogLayout();
+
+  await app.type("model-filter", "zzzzzz");
+  expect(app.shows("model-catalog-provider-anthropic")).toBe(false);
+  const filtered = dialogLayout();
+  await app.clear("model-filter");
+  await app.waitFor("model-catalog-provider-anthropic");
+
+  expect(finishPreview).toBeDefined();
+  for (const snapshot of [apiKeyWithPreview, pendingApiKey, apiKeyResolved]) {
+    expect(snapshot).toEqual(apiKeyLayout);
+  }
+  for (const snapshot of [withPreview, pending, resolved, cleared, filtered, dialogLayout()]) {
+    expect(snapshot).toEqual(initial);
+  }
+
+  await app.setViewport(680, 500);
+  const footer = app.layout("save-model")!;
+  expect(footer.y + footer.height).toBeLessThanOrEqual(500);
+  await app.scroll("model-base-url", 500);
+  await app.press("model-more-options");
+  await app.waitFor("model-custom-headers");
+  expect(app.layout("save-model")).toEqual(footer);
+});
+
 test("settings scene resolves model URL preview, tests connections, discovers remote models, and caps batch max_tokens", async () => {
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });

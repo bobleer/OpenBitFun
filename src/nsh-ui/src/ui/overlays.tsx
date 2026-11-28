@@ -366,6 +366,8 @@ export interface ModalDialogProps {
   subtitle?: string;
   leading?: JSX.Element;
   size?: ModalSize;
+  /** Keep the card at this height, capped by the viewport, while its body scrolls. */
+  height?: number;
   footer?: JSX.Element;
   closeOnBackdropPress?: boolean;
   closeOnEscape?: boolean;
@@ -402,6 +404,7 @@ function ModalCard(props: ModalDialogProps & { onEscapeKey: () => void; escapeAr
         {
           width: "100%",
           maxWidth: compactLayout() ? "100%" : dialog.width[props.size ?? "md"],
+          height: props.height,
           maxHeight: compactLayout() ? "90%" : "100%",
           flexShrink: 1,
           borderTopLeftRadius: dialog.surfaceRadius,
@@ -444,7 +447,9 @@ function ModalCard(props: ModalDialogProps & { onEscapeKey: () => void; escapeAr
           />
         )}
       </If>
-      <ModalBody hasHeader={Boolean(props.title)}>{props.children}</ModalBody>
+      <ModalBody hasHeader={Boolean(props.title)} style={props.height === undefined ? undefined : { flexGrow: 1 }}>
+        {props.children}
+      </ModalBody>
       <If when={props.escapeArmed()}>
         <Text
           accessibilityLabel="modal-escape-again"

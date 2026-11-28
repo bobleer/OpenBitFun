@@ -6090,8 +6090,19 @@ function ModelSection() {
     const key = id.trim().toLowerCase();
     return selectedDiscoveredIds().some(item => item.trim().toLowerCase() === key);
   };
-  const urlPreview = (): string =>
-    previewRequestUrl(modelDraft().baseUrl, modelDraft().provider, modelDraft().modelName);
+  const urlPreview = signal("");
+  effect(() => {
+    if (!modelFormOpen()) {
+      urlPreview.set("");
+      return;
+    }
+    const { baseUrl, provider, modelName } = modelDraft();
+    const next = previewRequestUrl(baseUrl, provider, modelName);
+    // Keep the line visible until the host settles the current input.
+    if (next !== undefined) urlPreview.set(next);
+  });
+  const previewLines = 2;
+  const previewTypography = designTokens.typography.caption;
   const testStatus = () => draftTestOutcome();
 
   const filteredModels = () => {
@@ -6344,6 +6355,7 @@ function ModelSection() {
             modelDraft().editingId ? tr("settings.models.editModalSubtitle") : tr("settings.models.addModalSubtitle")
           }
           size="lg"
+          height={designTokens.metrics.dialog.panelBlockSize}
           accessibilityLabel="model-editor-modal"
           onClose={() => {
             resetRemoteDiscovery();
@@ -6459,23 +6471,26 @@ function ModelSection() {
                   updateDraft({ baseUrl: value });
                 }}
               />
-              <If when={urlPreview()}>
-                {preview => (
-                  <Text
-                    accessibilityLabel="model-request-url-preview"
-                    style={{
-                      ...textStyle("caption", { color: palette().textMuted }),
-                      fontFamily: fontMono(),
-                      minWidth: 0,
-                      numberOfLines: 2,
-                      textOverflow: "ellipsis-middle",
-                      userSelect: "text",
-                    }}
-                  >
-                    {tr("settings.models.requestUrl", { url: preview() })}
-                  </Text>
-                )}
-              </If>
+              {/* Keep the fields below the preview in place while the host resolves it. */}
+              <View style={{ height: previewLines * textLineHeight(previewTypography.size, previewTypography.lineHeight) }}>
+                <If when={urlPreview()}>
+                  {preview => (
+                    <Text
+                      accessibilityLabel="model-request-url-preview"
+                      style={{
+                        ...textStyle("caption", { color: palette().textMuted }),
+                        fontFamily: fontMono(),
+                        minWidth: 0,
+                        numberOfLines: previewLines,
+                        textOverflow: "ellipsis-middle",
+                        userSelect: "text",
+                      }}
+                    >
+                      {tr("settings.models.requestUrl", { url: preview() })}
+                    </Text>
+                  )}
+                </If>
+              </View>
             </View>
             <ModelFormField
               label={tr("settings.models.apiKey")}

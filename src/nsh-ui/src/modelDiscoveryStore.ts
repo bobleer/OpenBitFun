@@ -203,11 +203,10 @@ function rememberPreview(key: string, value: string): void {
 }
 
 /**
- * The request URL the editor shows for the form as typed. Reactive: it answers
- * from the cache and asks the host once per new input. A host without the
- * command says so instead of showing a URL this surface guessed.
+ * Returns the cached preview or undefined while the host resolves this input.
+ * An empty string is a settled result with no preview to show.
  */
-export function previewRequestUrl(baseUrl: string, provider: string, modelName?: string): string {
+export function previewRequestUrl(baseUrl: string, provider: string, modelName?: string): string | undefined {
   const base = baseUrl.trim();
   if (!base) return "";
   const key = JSON.stringify([base, provider.trim(), (modelName ?? "").trim()]);
@@ -228,7 +227,7 @@ export function previewRequestUrl(baseUrl: string, provider: string, modelName?:
         ),
       );
   }
-  return "";
+  return undefined;
 }
 
 interface DiscoveryOperation {
