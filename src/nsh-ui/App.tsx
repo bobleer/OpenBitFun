@@ -2994,7 +2994,10 @@ function StudioApp() {
         navigateScene("sessions");
       }
     },
-    openPetSettings: () => requestSettingsPage("pet"), // wave22-p3
+    openPetSettings: () => {
+      navigateScene("settings");
+      requestSettingsPage("pet", undefined, true);
+    },
   });
   cleanup(() => stopShellIntegration());
 

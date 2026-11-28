@@ -26,6 +26,8 @@ mod folder_picker;
 mod genui_card;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod miniapp_launch;
+#[cfg(windows)]
+mod panel_context_menu;
 #[cfg(target_os = "macos")]
 mod panel_drag;
 
@@ -109,6 +111,8 @@ fn main() -> ExitCode {
 
     #[cfg(target_os = "macos")]
     panel_drag::install();
+    #[cfg(windows)]
+    native_registry.setup(panel_context_menu::install);
 
     platform::set_ui_sets(vec![nsh_base::registry(), native_registry]);
     openbitfun_nsh_native::set_native_cards_available(platform::register_native_cards());
