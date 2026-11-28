@@ -68,7 +68,16 @@ impl DispatchAccountAccess for AccountRuntimeDispatchAccess {
         if !self.account.is_logged_in().await {
             bail!("This host is not signed in to an OpenBitFun account");
         }
-        self.account.list_devices().await
+        let mut devices = self.account.list_devices().await?;
+        let mesh_online =
+            openbitfun_services_integrations::remote_connect::mesh_route::mesh_online_device_ids()
+                .await;
+        for device in &mut devices {
+            if mesh_online.contains(&device.device_id) {
+                device.online = true;
+            }
+        }
+        Ok(devices)
     }
 
     fn device_rpc(&self) -> Arc<dyn DeviceDispatchRpc> {

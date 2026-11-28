@@ -167,4 +167,11 @@ impl AccountDeviceMeshRoute for DesktopMeshRoute {
         }
         Some(self.call_device(&runtime, device_id, command, args).await)
     }
+
+    async fn online_device_ids(&self) -> Vec<String> {
+        let Some(runtime) = super::global() else {
+            return Vec::new();
+        };
+        runtime.online_peer_ids()
+    }
 }

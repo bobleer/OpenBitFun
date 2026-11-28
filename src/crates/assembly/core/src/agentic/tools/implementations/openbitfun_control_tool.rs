@@ -8,8 +8,8 @@ use crate::agentic::tools::openbitfun_control_config::{
     global_shared_product_control_executor, SharedProductControlExecutor,
 };
 use crate::agentic::tools::openbitfun_control_host::{
-    invoke_openbitfun_control, openbitfun_control_host_available, OpenBitFunControlHostRequest,
-    ProductControlAction,
+    invoke_openbitfun_control, openbitfun_control_host_available, with_caller_model_id,
+    OpenBitFunControlHostRequest, ProductControlAction,
 };
 #[cfg(test)]
 use crate::service::config::ConfigService;
@@ -329,7 +329,7 @@ impl Tool for OpenBitFunControlTool {
 
     async fn description(&self) -> OpenBitFunResult<String> {
         Ok(
-            "Control OpenBitFun features, settings, and same-account Fleet devices (`target`), including workspaces, Skills/MCP/ACP, review, models, permissions, agents, automation, and Detached Dispatch. Prefer this over ComputerUse. Use the two-step flow: `list` or `search`, then `get` and follow its schema to `configure`, `execute`, or `open`. Pass optional `target` on `get`/`configure`/`execute` to operate a peer device. Never guess IDs or values."
+            "Control OpenBitFun features, settings, and same-account Fleet devices (`target`), including direct remote file, terminal, and Git operations, workspaces, Skills/MCP/ACP, models, agents, and Detached Dispatch. Prefer direct `feature.fleet` file/terminal/Git ops over spawning remote sessions, and prefer this over ComputerUse. Use the two-step flow: `list` or `search`, then `get` and follow its schema to `configure`, `execute`, or `open`. Never guess IDs or values."
                 .to_string(),
         )
     }
@@ -456,9 +456,14 @@ impl Tool for OpenBitFunControlTool {
     }
 
     fn is_concurrency_safe(&self, input: Option<&Value>) -> bool {
-        input
-            .and_then(Self::action)
-            .is_some_and(|action| matches!(action, "list" | "search" | "get"))
+        let Some(input) = input else {
+            return false;
+        };
+        match Self::action(input) {
+            Some("list" | "search" | "get") => true,
+            Some("execute") => Self::operation_is_readonly(input),
+            _ => false,
+        }
     }
 
     fn permission_intents(
@@ -747,111 +752,119 @@ impl Tool for OpenBitFunControlTool {
             source: ProductControlSource::Agent,
         };
 
-        let result = match typed_action {
-            ProductControlAction::List | ProductControlAction::Search => {
-                discover_product_capabilities(&request).map_err(OpenBitFunError::tool)?
-            }
-            ProductControlAction::Get => {
-                let capability_id = request.capability_id.as_deref().ok_or_else(|| {
-                    OpenBitFunError::tool("capability_id is required".to_string())
-                })?;
-                let mut result = if openbitfun_control_host_available() {
-                    match invoke_openbitfun_control(request.clone()).await {
-                        Ok(result) => result,
-                        Err(error) if remote_target => {
-                            // Never fall back to local config when targeting a peer device.
-                            return Err(OpenBitFunError::tool(error));
-                        }
-                        Err(error) => {
-                            let mut result = self.inspect_shared_capability(capability_id).await?;
-                            if let Some(object) = result.as_object_mut() {
-                                object.insert(
-                                    "hostAdapterAvailability".to_string(),
-                                    json!({
-                                        "status": "degraded",
-                                        "reason": error,
-                                    }),
-                                );
-                            }
-                            result
-                        }
-                    }
-                } else if remote_target {
-                    return Err(OpenBitFunError::tool(
-                        "remote_target_unavailable: OpenBitFunControl host is unavailable to route to a peer device"
-                            .to_string(),
-                    ));
-                } else {
-                    self.inspect_shared_capability(capability_id).await?
-                };
-                if let Some(object) = result.as_object_mut() {
-                    let capability =
-                        product_capability(capability_id).map_err(OpenBitFunError::tool)?;
-                    object.insert(
-                        "toolInput".to_string(),
-                        json!({ "capability_id": capability_id }),
-                    );
-                    object.insert(
-                        "nextToolCalls".to_string(),
-                        json!({
-                            "openCapabilityRoot": {
-                                "action": "open",
-                                "capability_id": capability_id,
-                            },
-                            "delegateTool": capability
-                                .agent_control
-                                .as_ref()
-                                .map(|control| control.tool.as_str()),
-                            "validItemIds": capability
-                                .items
-                                .iter()
-                                .map(|item| item.id.as_str())
-                                .collect::<Vec<_>>(),
-                            "validOperationIds": capability
-                                .operations
-                                .iter()
-                                .map(|operation| operation.id.as_str())
-                                .collect::<Vec<_>>(),
-                            "validOptionIds": capability
-                                .options
-                                .iter()
-                                .map(|option| option.id.as_str())
-                                .collect::<Vec<_>>(),
-                        }),
-                    );
-                    object.insert(
-                        "idNamespaceRules".to_string(),
-                        json!({
-                            "destinationActionIdCallable": false,
-                            "note": "capability.destination and item.destination are presentation metadata. Use only returned item, operation, and option IDs in their matching OpenBitFunControl fields.",
-                        }),
-                    );
+        let caller_model_id = (!context.primary_model_facts.model_id.trim().is_empty())
+            .then(|| context.primary_model_facts.model_id.trim().to_string());
+
+        let result = with_caller_model_id(caller_model_id, async {
+            let result = match typed_action {
+                ProductControlAction::List | ProductControlAction::Search => {
+                    discover_product_capabilities(&request).map_err(OpenBitFunError::tool)?
                 }
-                result
-            }
-            ProductControlAction::Configure => {
-                if openbitfun_control_host_available() {
+                ProductControlAction::Get => {
+                    let capability_id = request.capability_id.as_deref().ok_or_else(|| {
+                        OpenBitFunError::tool("capability_id is required".to_string())
+                    })?;
+                    let mut result = if openbitfun_control_host_available() {
+                        match invoke_openbitfun_control(request.clone()).await {
+                            Ok(result) => result,
+                            Err(error) if remote_target => {
+                                // Never fall back to local config when targeting a peer device.
+                                return Err(OpenBitFunError::tool(error));
+                            }
+                            Err(error) => {
+                                let mut result =
+                                    self.inspect_shared_capability(capability_id).await?;
+                                if let Some(object) = result.as_object_mut() {
+                                    object.insert(
+                                        "hostAdapterAvailability".to_string(),
+                                        json!({
+                                            "status": "degraded",
+                                            "reason": error,
+                                        }),
+                                    );
+                                }
+                                result
+                            }
+                        }
+                    } else if remote_target {
+                        return Err(OpenBitFunError::tool(
+                            "remote_target_unavailable: OpenBitFunControl host is unavailable to route to a peer device"
+                                .to_string(),
+                        ));
+                    } else {
+                        self.inspect_shared_capability(capability_id).await?
+                    };
+                    if let Some(object) = result.as_object_mut() {
+                        let capability =
+                            product_capability(capability_id).map_err(OpenBitFunError::tool)?;
+                        object.insert(
+                            "toolInput".to_string(),
+                            json!({ "capability_id": capability_id }),
+                        );
+                        object.insert(
+                            "nextToolCalls".to_string(),
+                            json!({
+                                "openCapabilityRoot": {
+                                    "action": "open",
+                                    "capability_id": capability_id,
+                                },
+                                "delegateTool": capability
+                                    .agent_control
+                                    .as_ref()
+                                    .map(|control| control.tool.as_str()),
+                                "validItemIds": capability
+                                    .items
+                                    .iter()
+                                    .map(|item| item.id.as_str())
+                                    .collect::<Vec<_>>(),
+                                "validOperationIds": capability
+                                    .operations
+                                    .iter()
+                                    .map(|operation| operation.id.as_str())
+                                    .collect::<Vec<_>>(),
+                                "validOptionIds": capability
+                                    .options
+                                    .iter()
+                                    .map(|option| option.id.as_str())
+                                    .collect::<Vec<_>>(),
+                            }),
+                        );
+                        object.insert(
+                            "idNamespaceRules".to_string(),
+                            json!({
+                                "destinationActionIdCallable": false,
+                                "note": "capability.destination and item.destination are presentation metadata. Use only returned item, operation, and option IDs in their matching OpenBitFunControl fields.",
+                            }),
+                        );
+                    }
+                    result
+                }
+                ProductControlAction::Configure => {
+                    if openbitfun_control_host_available() {
+                        invoke_openbitfun_control(request)
+                            .await
+                            .map_err(OpenBitFunError::tool)?
+                    } else if remote_target {
+                        return Err(OpenBitFunError::tool(
+                            "remote_target_unavailable: OpenBitFunControl host is unavailable to route configure to a peer device"
+                                .to_string(),
+                        ));
+                    } else {
+                        self.configure_shared_option(&request).await?
+                    }
+                }
+                ProductControlAction::Open | ProductControlAction::Execute => {
+                    if !openbitfun_control_host_available() {
+                        return Err(OpenBitFunError::tool(Self::headless_unsupported(&request)));
+                    }
                     invoke_openbitfun_control(request)
                         .await
                         .map_err(OpenBitFunError::tool)?
-                } else if remote_target {
-                    return Err(OpenBitFunError::tool(
-                        "remote_target_unavailable: OpenBitFunControl host is unavailable to route configure to a peer device"
-                            .to_string(),
-                    ));
-                } else {
-                    self.configure_shared_option(&request).await?
                 }
-            }
-            ProductControlAction::Open | ProductControlAction::Execute => {
-                if !openbitfun_control_host_available() {
-                    return Err(OpenBitFunError::tool(Self::headless_unsupported(&request)));
-                }
-                invoke_openbitfun_control(request)
-                    .await
-                    .map_err(OpenBitFunError::tool)?
-            }
-        };
+            };
+            Ok::<Value, OpenBitFunError>(result)
+        })
+        .await?;
 
         // The model needs the IDs, schemas, availability, and effective values
         // to perform the second step. A prose success summary would hide the

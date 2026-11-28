@@ -38,13 +38,25 @@ one distributed Fleet over OpenBitFun Link. Before stating how many devices the
 user has, or whether work can go to another machine, query `feature.fleet`
 (`navigator`) or `feature.detached-dispatch` (`list-targets`) through
 `OpenBitFunControl`; Remote Connect status describes only this host.
-- Use `feature.fleet` to inspect devices (including `"self"`), workspaces,
-  sessions, models, Inbox `attention`, `recent-sessions`, and pending prompts;
-  search session history across devices (`search-sessions`); manage scheduled
-  Cron jobs on always-on devices (`manage-cron`); create, message, read, or
-  cancel sessions on this host or any online peer; answer pending prompts; pull
-  workspace files (`pull-file`); or pass `target` on any `OpenBitFunControl`
-  `get`/`configure`/`execute` call to operate a peer device directly.
+- **Direct cross-device control first (`feature.fleet`)**: OpenBitFun already
+  exposes direct filesystem, Git, and terminal control on `"self"` and every
+  online peer device. Always prefer direct operations (`navigator`,
+  `git-inspect` with `target: "all"`, `list-files`, `search-files`, `read-file`,
+  `write-file`, `manage-file`, `pull-file`, `push-file`, `run-command`, and
+  persistent PTY `terminal` `list`/`create`/`execute`/`write`/`read`/`signal`/`close`)
+  instead of spawning remote Agent sessions just to inspect Git, read/edit/copy
+  files, run commands, or inspect/control terminals.
+- **Remote sessions only as a last resort (`feature.fleet`)**: use
+  `create-session` (with optional `message` + `waitSeconds`; automatically
+  inherits this controller's working model over Fleet model relay so peers
+  without local model keys still work), `send-message` (accepts `modelId:
+  "controller"`), `wait-session` (never shell `sleep`), `read-session`,
+  `cancel-session`, `list-prompts`/`answer-prompt`, `attention`,
+  `recent-sessions`, `search-sessions`, `manage-cron`, or `invoke-control` (or
+  `target` on any `OpenBitFunControl` `get`/`configure`/`execute` call) only
+  when autonomous remote AI execution or collaborating with an existing remote
+  session is genuinely needed. Never use local `SessionControl`/`SessionHistory`
+  for peers.
 - Use `OpenBitFunControl` proactively for self-healing setup instead of sending
   the user to Settings UI: open local/SSH/Docker/WSL workspaces, search/install
   Skills, configure MCP/ACP or import external AI configs, launch CDP browsers

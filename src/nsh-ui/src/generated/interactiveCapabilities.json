@@ -1,5 +1,5 @@
 {
-  "digest": "7cfd8ddea6a8c5423dad971493534947a10e63183583cfd2c56bef00bd828038",
+  "digest": "e54d9f17091b3e1e87b0330930e1966746c774ffa22883e6b5d76470436a503c",
   "capabilities": [
     {
       "id": "feature.home-search",
@@ -2589,8 +2589,8 @@
       "kind": "feature",
       "titleZh": "多设备 Fleet 协同",
       "titleEn": "Multi-Device Fleet Collaboration",
-      "summaryZh": "在同一个输入框里统一调度本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：浏览所有设备的工作区、模型目录与待审批提示，直接跨设备创建、驱动、查看或取消会话，并按需把远端工作区文件拉回本机。",
-      "summaryEn": "Orchestrate this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: browse devices, workspaces, account-wide models, and pending prompts; create, drive, read, or cancel sessions on any host; and pull workspace files locally.",
+      "summaryZh": "在同一个输入框里统一掌控本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：优先直接跨设备查看 Git 状态、读写与管理文件、操控持久终端和执行命令（无需拉起远端智能体）；仅在真正需要独立多步 AI 协同才使用跨设备会话（自动共享主控会话模型，无需远端单独配模型）。",
+      "summaryEn": "Control this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: directly inspect Git, read/write/manage/transfer files, run commands, and drive persistent terminals without spawning remote LLM sessions; use cross-device sessions (automatically sharing the controller's working model via Fleet model relay) only when autonomous multi-step AI work is genuinely needed.",
       "searchTerms": [
         "feature.fleet",
         "多设备 Fleet 协同",
@@ -2600,45 +2600,57 @@
         "Fleet",
         "多设备协同",
         "互联互控",
+        "跨设备文件管理",
+        "跨设备终端",
+        "跨设备Git",
+        "跨设备执行命令",
         "跨设备会话",
         "分布式运行时",
         "OpenBitFun Link",
         "设备列表",
         "跨设备拉取文件",
-        "跨设备模型",
+        "跨设备推送文件",
+        "跨设备模型共享",
         "fleet",
         "multi-device",
         "distributed runtime",
+        "remote file management",
+        "remote terminal",
+        "remote git",
+        "run remote command",
         "cross-device session",
         "openbitfun link",
         "device mesh",
         "pull remote file",
+        "push file",
         "fleet models",
         "fleet prompts",
-        "本机（self）与同账号所有在线设备对称建模，跨会话、跨工作区、跨设备一套动作搞定",
-        "直接读取全账号设备拓扑、Link 路由延迟、已打开工作区、运行中会话与全网可用模型目录",
-        "在任意在线设备（含本机）上创建会话、发送指令、查看紧凑回合摘要、取消任务并统一回应权限/提问",
-        "支持从任意已打开工作区按 base64 拉取文件落盘到本机并校验 SHA-256",
-        "Treats this local device (self) and every online same-account peer symmetrically for seamless cross-session, cross-workspace, and cross-device work",
-        "Inspect account-wide topology, Link routes, opened workspaces, running sessions, and available chat models in one call",
-        "Create, message, inspect, and cancel sessions—and answer pending permission prompts or questions—on any local or peer runtime",
-        "Pull files from any device's workspace directly to a local destination path with SHA-256 verification",
+        "直接掌控每台在线设备的 Git、文件系统与持久终端（git-inspect / list-files / search-files / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal），90% 跨设备任务无需拉起远端 Agent 会话",
+        "一行 git-inspect(target=\"all\") 即可并行盘点全账号所有在线设备的分支、超前/落后与未提交状态，离线设备明确标明跳过",
+        "跨设备会话作为真正需要独立多步 AI 协同的后备手段：create-session 支持自动继承主控会话可用模型（通过 Fleet 模型中继，远端无 API Key 也能跑）、一步发消息并等待（wait-session 替代 sleep）",
+        "统一查看并回应全账号设备的待审批权限/提问、收件箱通知、会话全文检索、定时任务与任意产品控制转发",
+        "Directly control Git, files, and persistent terminals on every online device (git-inspect, list-files, search-files, read-file, write-file, manage-file, pull-file, push-file, run-command, terminal) without spawning remote LLM sessions",
+        "One git-inspect(target=\"all\") inspects branches, ahead/behind, dirty counts, and recent commits across every online device while reporting offline peers clearly",
+        "Reserve cross-device sessions for genuine autonomous multi-step AI work: create-session automatically shares this controller's working model over Fleet model relay, supports initial message + waitSeconds, and pairs with wait-session (no shell sleep)",
+        "Unify fleet-wide prompts, Inbox attention, cross-device session search, Cron jobs, and forwarded OpenBitFunControl actions",
         "查看全账号设备拓扑、单机详情、工作区清单与全网模型目录",
         "Inspect account-wide devices, device details, workspaces, and fleet model catalog",
-        "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
-        "List, create, message, read, and cancel sessions on this device or any online peer",
+        "直接跨设备浏览、搜索、读写、管理与收发工作区文件",
+        "Browse, search, read, write, manage, pull, and push workspace files on any device",
+        "直接跨设备巡检 Git、执行命令与操控持久 PTY 终端",
+        "Directly inspect Git, run shell commands, and control persistent PTY terminals on any device",
+        "跨设备会话协同与控制（需独立多步 AI 执行时使用）",
+        "Cross-device Agent sessions, Cron, and forwarded control (when autonomous remote AI is needed)",
         "统一查看并回复全账号设备上的待审批权限与提问",
         "Inspect and answer pending permission prompts and user questions across all devices",
-        "从本机或同账号设备的工作区拉取文件到本机",
-        "Pull a file from any device's workspace to this host",
-        "列出我账号下所有在线设备和它们当前打开的工作区（包括这台电脑）",
-        "在我的 Windows 电脑和 Linux 服务器上同时启动编译会话，本机也同步编一份 macOS",
+        "看看所有在线设备上 OpenBitFun 仓库分别在哪个分支、是不是最新提交",
+        "直接看下 Linux 服务器当前开着的终端日志，并把配置改完重启服务",
+        "把本机这个 patch 文件推到 Windows 电脑的工作区，直接跑一次单元测试把结果告诉我",
         "看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认",
-        "把 Windows 电脑那个工作区里的构建日志拉到我本机 /tmp/win-build.log",
-        "List every device on my account (including this computer) and their opened workspaces",
-        "Start build sessions on my Windows and Linux machines while also building macOS locally",
-        "Check if any session across my devices is waiting for permission approval",
-        "Pull the build log from my Windows workspace to /tmp/win-build.log on this machine"
+        "Check which Git branch and commit every online device's OpenBitFun repo is on",
+        "Tail the running terminal logs on my Linux server, update its config file, and restart the service",
+        "Push this local patch file to my Windows workspace and run the unit tests directly",
+        "Check if any session across my devices is waiting for permission approval"
       ],
       "destination": {
         "kind": "event",
@@ -2654,19 +2666,24 @@
           "titleEn": "Inspect account-wide devices, device details, workspaces, and fleet model catalog"
         },
         {
+          "id": "direct-file-management",
+          "titleZh": "直接跨设备浏览、搜索、读写、管理与收发工作区文件",
+          "titleEn": "Browse, search, read, write, manage, pull, and push workspace files on any device"
+        },
+        {
+          "id": "direct-terminal-and-git",
+          "titleZh": "直接跨设备巡检 Git、执行命令与操控持久 PTY 终端",
+          "titleEn": "Directly inspect Git, run shell commands, and control persistent PTY terminals on any device"
+        },
+        {
           "id": "cross-device-sessions",
-          "titleZh": "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
-          "titleEn": "List, create, message, read, and cancel sessions on this device or any online peer"
+          "titleZh": "跨设备会话协同与控制（需独立多步 AI 执行时使用）",
+          "titleEn": "Cross-device Agent sessions, Cron, and forwarded control (when autonomous remote AI is needed)"
         },
         {
           "id": "fleet-prompts",
           "titleZh": "统一查看并回复全账号设备上的待审批权限与提问",
           "titleEn": "Inspect and answer pending permission prompts and user questions across all devices"
-        },
-        {
-          "id": "workspace-file-pull",
-          "titleZh": "从本机或同账号设备的工作区拉取文件到本机",
-          "titleEn": "Pull a file from any device's workspace to this host"
         }
       ]
     },

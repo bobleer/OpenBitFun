@@ -1030,12 +1030,19 @@ pub(crate) async fn create_session(state: &PeerHostState, args: &Value) -> Resul
     }
     .map_err(|error| peer_runtime_session_error("Failed to create session", error))?;
 
-    Ok(json!({
+    let mut response = json!({
         "sessionId": session.session_id,
         "sessionName": session.session_name,
         "agentType": session.agent_type,
         "modelId": session.model_id,
-    }))
+    });
+    if let Some(id) = session.workspace_id {
+        response["workspaceId"] = Value::String(id);
+    }
+    if let Some(path) = session.workspace_path {
+        response["workspacePath"] = Value::String(path);
+    }
+    Ok(response)
 }
 
 pub(crate) async fn delete_session(state: &PeerHostState, args: &Value) -> Result<Value, String> {

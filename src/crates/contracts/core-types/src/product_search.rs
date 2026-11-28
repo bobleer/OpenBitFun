@@ -22,6 +22,7 @@ pub struct SessionContentSearchRequest {
     /// then only a legacy projection for older peers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    #[serde(default)]
     pub workspace_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_connection_id: Option<String>,

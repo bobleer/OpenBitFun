@@ -38,6 +38,10 @@ const CALL_ONLY_CREDIT_BYTES: u64 = 64 * 1024;
 trait DeviceDialer: Send + Sync {
     /// Whether `device_id` is a backend device on the account's Link network.
     async fn on_link(&self, device_id: &str) -> bool;
+    /// Backend device IDs currently visible on Link.
+    async fn online_device_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Opens an authenticated account-device OBP connection to `device_id`.
     async fn connect(&self, device_id: &str) -> Result<Arc<dyn RouteConnection>, String>;
 }
@@ -87,6 +91,19 @@ impl DeviceDialer for LinkDialer {
         status
             .peer(device_id)
             .is_some_and(|peer| !peer.role.is_controller())
+    }
+
+    async fn online_device_ids(&self) -> Vec<String> {
+        self.link
+            .status()
+            .peers
+            .into_iter()
+            .filter(|peer| {
+                !peer.role.is_controller()
+                    && openbitfun_link::handshake::valid_device_id(&peer.hostname)
+            })
+            .map(|peer| peer.hostname)
+            .collect()
     }
 
     async fn connect(&self, device_id: &str) -> Result<Arc<dyn RouteConnection>, String> {
@@ -217,6 +234,13 @@ impl AccountDeviceMeshRoute for CliMeshRoute {
             }
             other => other.map_err(|error| error.message),
         })
+    }
+
+    async fn online_device_ids(&self) -> Vec<String> {
+        let Some(dialer) = self.dialer() else {
+            return Vec::new();
+        };
+        dialer.online_device_ids().await
     }
 }
 

@@ -50,13 +50,33 @@ impl DeviceDispatchRpc for AccountDeviceDispatchRpc {
     }
 }
 
+/// Account devices merged with live OpenBitFun Link mesh presence.
+///
+/// OpenBitFun 2.0 peers connect over Link rather than the retired 1.x relay, and
+/// account-directory HTTP presence can lag behind live Link peers. Merging live
+/// Link peer IDs keeps Detached Dispatch aligned with `feature.fleet:navigator`.
+async fn list_account_devices_with_mesh_presence(
+) -> Result<Vec<super::remote_connect_api::AccountDeviceInfo>, String> {
+    let mut devices = super::remote_connect_api::account_list_devices().await?;
+    let mesh_online =
+        openbitfun_services_integrations::remote_connect::mesh_route::mesh_online_device_ids()
+            .await;
+    for device in &mut devices {
+        if mesh_online.contains(&device.device_id) {
+            device.online = true;
+            device.presence = "mesh";
+        }
+    }
+    Ok(devices)
+}
+
 /// Desktop account session for the shared Agent dispatch-control executor.
 struct DesktopDispatchAccountAccess;
 
 #[async_trait]
 impl DispatchAccountAccess for DesktopDispatchAccountAccess {
     async fn list_devices(&self) -> anyhow::Result<Vec<AccountDevice>> {
-        let devices = super::remote_connect_api::account_list_devices()
+        let devices = list_account_devices_with_mesh_presence()
             .await
             .map_err(anyhow::Error::msg)?;
         Ok(devices
@@ -128,7 +148,7 @@ pub async fn dispatch_list_targets(
         .await
         .ok()
         .map(|device| device.device_id);
-    if let Ok(devices) = super::remote_connect_api::account_list_devices().await {
+    if let Ok(devices) = list_account_devices_with_mesh_presence().await {
         targets.extend(devices.into_iter().filter_map(|device| {
             if current_device_id.as_deref() == Some(device.device_id.as_str()) {
                 return None;
@@ -186,7 +206,7 @@ pub async fn dispatch_submit(
     request: DispatchSubmitRequest,
 ) -> Result<Value, String> {
     if let DispatchTargetRequest::Device { device_id, .. } = &request.target {
-        let display_name = super::remote_connect_api::account_list_devices()
+        let display_name = list_account_devices_with_mesh_presence()
             .await
             .map_err(|error| format!("list account devices before dispatch: {error}"))?
             .into_iter()
@@ -370,7 +390,7 @@ pub async fn dispatch_list_jobs(
     request: DispatchListJobsRequest,
 ) -> Result<Value, String> {
     if let Some(DispatchTargetRequest::Device { device_id, .. }) = &request.target {
-        let display_name = super::remote_connect_api::account_list_devices()
+        let display_name = list_account_devices_with_mesh_presence()
             .await
             .map_err(|error| format!("list account devices before observing dispatch: {error}"))?
             .into_iter()

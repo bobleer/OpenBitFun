@@ -230,6 +230,22 @@ pub fn global() -> Option<Arc<MeshRuntime>> {
     RUNTIME.get().cloned()
 }
 
+impl MeshRuntime {
+    /// Non-controller backend device IDs currently visible on OpenBitFun Link.
+    pub fn online_peer_ids(&self) -> Vec<String> {
+        self.link
+            .status()
+            .peers
+            .into_iter()
+            .filter(|peer| {
+                !peer.role.is_controller()
+                    && openbitfun_link::handshake::valid_device_id(&peer.hostname)
+            })
+            .map(|peer| peer.hostname)
+            .collect()
+    }
+}
+
 fn emit_status(status: &MeshStatus) {
     if let Some(app) = crate::api::remote_connect_api::account_app_handle() {
         if let Err(error) = app.emit(MESH_STATUS_CHANGED_EVENT, status.clone()) {

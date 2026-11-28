@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "7cfd8ddea6a8c5423dad971493534947a10e63183583cfd2c56bef00bd828038",
+  "catalogDigest": "e54d9f17091b3e1e87b0330930e1966746c774ffa22883e6b5d76470436a503c",
   "commandCount": 727,
   "coverage": {
     "commandCount": 727,
-    "documentedCommandCount": 633,
-    "implementationCommandCount": 94,
-    "implementationDigest": "2cda42ebb8a5b23cb24861977720b292ceedbd2519f23ee2973d54543958ed4a"
+    "documentedCommandCount": 634,
+    "implementationCommandCount": 93,
+    "implementationDigest": "6cac33f43a412c239a45eafef50d2c055a2c43d046e13239355da3d8f4f8ac2d"
   },
   "commands": [
     {
@@ -2454,12 +2454,14 @@
     {
       "id": "execute_tool",
       "moduleId": "tool",
-      "capabilityId": "feature.ai-assistant",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.ai-assistant"
+        "feature.ai-assistant",
+        "feature.fleet"
       ],
       "documentedItemIds": [
-        "feature.ai-assistant:tool-activity"
+        "feature.ai-assistant:tool-activity",
+        "feature.fleet:direct-terminal-and-git"
       ],
       "visibility": "documented",
       "rustPath": "execute_tool",
@@ -2647,7 +2649,8 @@
       ],
       "documentedItemIds": [
         "feature.fleet:cross-device-sessions",
-        "feature.fleet:workspace-file-pull",
+        "feature.fleet:direct-file-management",
+        "feature.fleet:direct-terminal-and-git",
         "feature.remote-connect:peer-device"
       ],
       "visibility": "documented",
@@ -3229,12 +3232,14 @@
     {
       "id": "get_directory_children_paginated",
       "moduleId": "commands",
-      "capabilityId": "feature.files-editor",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.files-editor"
+        "feature.files-editor",
+        "feature.fleet"
       ],
       "documentedItemIds": [
-        "feature.files-editor:file-tree"
+        "feature.files-editor:file-tree",
+        "feature.fleet:direct-file-management"
       ],
       "visibility": "documented",
       "rustPath": "get_directory_children_paginated",
@@ -4842,11 +4847,13 @@
     {
       "id": "git_get_repository",
       "moduleId": "git",
-      "capabilityId": "feature.git",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.git"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.git:status-diff"
       ],
       "visibility": "documented",
@@ -4890,11 +4897,13 @@
     {
       "id": "git_get_status",
       "moduleId": "git",
-      "capabilityId": "feature.git",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.git"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.git:status-diff"
       ],
       "visibility": "documented",
@@ -7374,7 +7383,7 @@
       ],
       "documentedItemIds": [
         "feature.files-editor:edit-save",
-        "feature.fleet:workspace-file-pull",
+        "feature.fleet:direct-file-management",
         "feature.personal-assistants:persona-documents"
       ],
       "visibility": "documented",
@@ -9072,11 +9081,13 @@
     {
       "id": "search_files",
       "moduleId": "commands",
-      "capabilityId": "feature.projects",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.projects"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-file-management",
         "feature.projects:workspace-search"
       ],
       "visibility": "documented",
@@ -10738,11 +10749,13 @@
     {
       "id": "terminal_create",
       "moduleId": "terminal",
-      "capabilityId": "feature.terminal",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.terminal"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.terminal:create-terminal",
         "feature.terminal:working-directory"
       ],
@@ -10755,11 +10768,13 @@
     {
       "id": "terminal_execute",
       "moduleId": "terminal",
-      "capabilityId": "feature.terminal",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.terminal"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.terminal:command-control"
       ],
       "visibility": "documented",
@@ -10787,11 +10802,13 @@
     {
       "id": "terminal_get_history",
       "moduleId": "terminal",
-      "capabilityId": "feature.terminal",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.terminal"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.terminal:history-integration"
       ],
       "visibility": "documented",
@@ -10837,11 +10854,13 @@
     {
       "id": "terminal_list",
       "moduleId": "terminal",
-      "capabilityId": "feature.terminal",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.fleet",
         "feature.terminal"
       ],
       "documentedItemIds": [
+        "feature.fleet:direct-terminal-and-git",
         "feature.terminal:terminal-session-management"
       ],
       "visibility": "documented",
@@ -11410,12 +11429,14 @@
     {
       "id": "workspace_file_upload",
       "moduleId": "commands",
-      "capabilityId": "feature.projects",
+      "capabilityId": "feature.fleet",
       "capabilityIds": [
-        "feature.projects"
+        "feature.fleet"
       ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
+      "documentedItemIds": [
+        "feature.fleet:direct-file-management"
+      ],
+      "visibility": "documented",
       "rustPath": "workspace_file_upload",
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn workspace_file_upload( request: openbitfun_core::service::filesystem::upload::WorkspaceUploadRequest, ) -> Result<serde_json::Value, String>",
@@ -11573,10 +11594,12 @@
       "capabilityId": null,
       "capabilityIds": [
         "feature.files-editor",
+        "feature.fleet",
         "feature.personal-assistants"
       ],
       "documentedItemIds": [
         "feature.files-editor:edit-save",
+        "feature.fleet:direct-file-management",
         "feature.personal-assistants:persona-documents"
       ],
       "visibility": "documented",

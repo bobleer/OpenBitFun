@@ -11,6 +11,34 @@ pub use openbitfun_product_domains::product_control::{
 
 static OPENBITFUN_CONTROL_PORT: OnceLock<Arc<dyn ProductControlPort>> = OnceLock::new();
 
+tokio::task_local! {
+    static CALLER_MODEL_ID: Option<String>;
+}
+
+/// Active model ID of the controller session currently invoking `OpenBitFunControl`,
+/// when called from inside an Agent turn. Used by Fleet session orchestration to
+/// inherit the controller's working model over `fleet_model_v1` instead of relying
+/// on an unconfigured or unreachable peer-local model.
+pub fn current_caller_model_id() -> Option<String> {
+    CALLER_MODEL_ID
+        .try_with(|id| id.clone())
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Run `fut` with the calling session's active model ID visible to product-control handlers.
+pub async fn with_caller_model_id<F, T>(model_id: Option<String>, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let normalized = model_id
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    CALLER_MODEL_ID.scope(normalized, fut).await
+}
+
 /// Register the product adapter. The first registered host owns the process.
 pub fn set_openbitfun_control_port(port: Arc<dyn ProductControlPort>) {
     let _ = OPENBITFUN_CONTROL_PORT.set(port);

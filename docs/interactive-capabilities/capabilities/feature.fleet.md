@@ -11,18 +11,18 @@ title_en: "Multi-Device Fleet Collaboration"
 
 > 功能 / Feature
 
-在同一个输入框里统一调度本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：浏览所有设备的工作区、模型目录与待审批提示，直接跨设备创建、驱动、查看或取消会话，并按需把远端工作区文件拉回本机。
+在同一个输入框里统一掌控本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：优先直接跨设备查看 Git 状态、读写与管理文件、操控持久终端和执行命令（无需拉起远端智能体）；仅在真正需要独立多步 AI 协同才使用跨设备会话（自动共享主控会话模型，无需远端单独配模型）。
 
-Orchestrate this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: browse devices, workspaces, account-wide models, and pending prompts; create, drive, read, or cancel sessions on any host; and pull workspace files locally.
+Control this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: directly inspect Git, read/write/manage/transfer files, run commands, and drive persistent terminals without spawning remote LLM sessions; use cross-device sessions (automatically sharing the controller's working model via Fleet model relay) only when autonomous multi-step AI work is genuinely needed.
 
 ## 适用场景 / When to use it
 
-- 单输入框统一调度：在本机 Mac 会话里同时让本机、Windows 台式机和 Linux 服务器各自打开对应工作区跑构建与测试并汇总报告
-  - Single-input orchestration: from one Mac session, drive builds and tests across your Mac, Windows desktop, and Linux server and collect results together
-- 跨工作区联动开发：在后端工作区会话中直接向本机或另一台电脑上的前端工作区会话发消息联动联调
-  - Cross-workspace coordination: message a sibling frontend session on this computer or another online machine directly from your backend conversation
-- 统一收口待审批提示：一次查清多台设备上哪些会话卡在权限确认或提问，直接放行无需来回切窗口
-  - Unified approval triage: inspect and answer waiting permissions or questions across every online runtime without switching windows
+- 秒级跨设备巡检：一条 git-inspect(target="all") 查清 Mac、Windows 和 Linux 上同一仓库的分支、领先/落后和未提交改动，再用 run-command 按需 git fetch
+  - Instant multi-device repo check: one git-inspect(target="all") checks branches, ahead/behind, and dirty state across Mac, Windows, and Linux without spawning remote sessions
+- 直接跨设备改文件与控终端：直接用 read-file/write-file/push-file 更新远端配置，再用 terminal 查看已有服务终端日志、发 Ctrl-C 或执行重启命令，无需启动远端 Agent
+  - Direct remote files & terminals: read/edit/push files and list/tail/drive/signal persistent terminals on any online device directly, matching the UI
+- 真正需要多机并行 AI 开发时：create-session 自动共享主控会话模型（远端无需单独配 API Key），并用 wait-session 一次等待多机完工或及时审批提示
+  - Autonomous multi-machine AI when needed: create-session automatically inherits this controller's working model over Fleet model relay and waits cleanly via wait-session
 
 ## 完整功能清单 / Everything included
 
@@ -30,29 +30,33 @@ Orchestrate this machine (self) and every same-account device connected over Ope
   - Inspect account-wide devices, device details, workspaces, and fleet model catalog
   - 说明：一次看清本机与所有同账号设备的在线状态、OpenBitFun Link 路由、工作区列表以及每台设备共享出来的可用模型。
   - Why & how: View this device and all peers with live Link routes, opened workspaces, running activity, and every device's published chat models.
-- **智能体可直接控制 / Direct Agent control** · 在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话
-  - List, create, message, read, and cancel sessions on this device or any online peer
-  - 说明：无需手动在界面切换设备或工作区，直接在本机或另一台同账号设备上创建新会话、发送任务消息、读取最新回合摘要或取消执行。
-  - Why & how: Coordinate work across workspaces and machines without switching UI views: list, create, message, read summaries of, or cancel sessions on self or any online peer.
+- **智能体可直接控制 / Direct Agent control** · 直接跨设备浏览、搜索、读写、管理与收发工作区文件
+  - Browse, search, read, write, manage, pull, and push workspace files on any device
+  - 说明：像 OpenBitFun UI 文件树一样直接操作本机或任意在线同账号设备上的文件与目录（支持工作区相对路径与 SHA-256 校验），无需创建远端智能体会话。
+  - Why & how: Operate files and directories directly on self or any online peer (supporting workspace-relative paths and SHA-256 transfers) without spawning a remote Agent session.
+- **智能体可直接控制 / Direct Agent control** · 直接跨设备巡检 Git、执行命令与操控持久 PTY 终端
+  - Directly inspect Git, run shell commands, and control persistent PTY terminals on any device
+  - 说明：一行盘点所有在线设备仓库的分支与提交状态，直接执行单次命令，或像 UI 终端面板一样列举、创建、执行、写入、读取日志、发送信号和关闭远端持久终端，无需启动远端智能体会话。
+  - Why & how: Inspect Git across all online devices in one call, run one-shot shell commands, or list/create/execute/write/tail/signal/close persistent PTY terminals directly without spawning a remote Agent session.
+- **智能体可直接控制 / Direct Agent control** · 跨设备会话协同与控制（需独立多步 AI 执行时使用）
+  - Cross-device Agent sessions, Cron, and forwarded control (when autonomous remote AI is needed)
+  - 说明：仅当任务确实需要在另一台设备上运行独立多步 AI 代理或延续现有会话时使用；创建远端会话默认自动继承主控会话可用模型（经由 Fleet 模型中继），并用 wait-session 替代 sleep 等待。
+  - Why & how: Use when a task genuinely requires an independent autonomous AI loop or an existing conversation on another device. Remote sessions automatically inherit this controller's working model via Fleet model relay and wait cleanly with wait-session.
 - **智能体可直接控制 / Direct Agent control** · 统一查看并回复全账号设备上的待审批权限与提问
   - Inspect and answer pending permission prompts and user questions across all devices
   - 说明：汇总本机与所有同账号设备的实时会话及后台派发任务提示，自动按路由完成权限放行或回答提问。
   - Why & how: Aggregate waiting permission requests and AskUserQuestion prompts across local and peer sessions or dispatch jobs, and answer them directly.
-- **智能体可直接控制 / Direct Agent control** · 从本机或同账号设备的工作区拉取文件到本机
-  - Pull a file from any device's workspace to this host
-  - 说明：通过 OpenBitFun Link 直接读取目标设备工作区内的文件并原子写入本机路径，附带 SHA-256 校验。
-  - Why & how: Read a file from a workspace on any online device over OpenBitFun Link and write it atomically to a local path with SHA-256 verification.
 
 ## 怎么用 / How to use it
 
 1. 在多台设备（macOS / Windows / Linux）登录同一个 OpenBitFun 账号，保持 OpenBitFun Link 在线。
    Sign in with the same OpenBitFun account on your macOS, Windows, and Linux machines so they join OpenBitFun Link.
-2. 在当前任意会话输入框中直接提出跨工作区或跨设备目标，智能体会先通过 feature.fleet:navigator 查看本机与各在线设备。
-   Describe your cross-workspace or multi-device task in one chat box; the Agent inspects local and peer runtimes via feature.fleet:navigator.
-3. 智能体可在对应设备（含本机 self）创建或驱动会话，或结合 feature.detached-dispatch 派发隔离编译/测试任务。
-   The Agent creates or messages sessions on self or peer hosts, or combines with feature.detached-dispatch for isolated Git-worktree jobs.
-4. 执行完毕后，通过 read-session、pull-file 或 detached-dispatch:fetch-file 把结果与产物汇总回本机。
-   Collect results and artifacts back locally with read-session, pull-file, or detached-dispatch:fetch-file.
+2. 智能体先通过 feature.fleet:navigator 查看紧凑的本机与在线设备/工作区拓扑。
+   The Agent reads the compact topology via feature.fleet:navigator.
+3. 优先直接操作远端文件、Git 与终端（git-inspect / list-files / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal），秒级完成检查、改配置、跑命令或看终端日志，无需启动远端 Agent 会话。
+   Prefer direct remote Git, file, and terminal operations (git-inspect, list-files, read-file, write-file, manage-file, pull-file, push-file, run-command, terminal) for fast inspection, edits, commands, and terminal logs without spawning remote Agent sessions.
+4. 仅当确实需要目标机独立开展多步 AI 编码/排障时，再通过 create-session / send-message / wait-session 协同远端会话（自动共享主控可用模型），或用 feature.detached-dispatch 跑可断网持续执行的隔离 Git 任务。
+   Only when autonomous multi-step AI work is genuinely needed on another device, use create-session / send-message / wait-session (auto-sharing the controller's working model over Fleet relay) or feature.detached-dispatch for offline-capable isolated Git worktree jobs.
 
 入口 / Entry: 在任意会话输入框中直接让智能体协同多台设备，或查看左侧边栏的账号设备 → 工作区 → 会话列表 / Ask the Agent directly in any chat box to coordinate across devices, or view the account devices → workspaces → sessions tree in the sidebar
 
@@ -60,22 +64,32 @@ Orchestrate this machine (self) and every same-account device connected over Ope
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
-| 查看多设备 Fleet 导航视图 / Inspect fleet navigator | 返回账号下所有设备（含本机 isCurrentDevice=true）、在线状态、Link 路由、工作区与会话摘要。支持传 target 过滤单台设备。 | Return all account devices (including this device with isCurrentDevice=true), online state, Link route, workspaces, and session summaries. |
+| 查看多设备 Fleet 导航视图 / Inspect fleet navigator | 紧凑返回账号下所有设备（含本机 isCurrentDevice=true）、在线状态、Link 路由、工作区与有上限的近期会话摘要（默认省略 hostCapabilities，需要时传 includeCapabilities: true）。 | Return a compact view of all account devices (including this device with isCurrentDevice=true), online state, Link route, workspaces, and bounded recent sessions (omit hostCapabilities by default). |
+| 直查跨设备 Git 状态 / Inspect Git status across devices | 直接查询本机（self）、指定在线设备或全部在线设备（all）工作区的当前分支、ahead/behind、改动计数、最近提交与可选分支/diff，无需拉起远端智能体会话。 | Directly inspect current branch, ahead/behind, dirty file counts, recent commits, and optional branches/diff on self, one peer, or all online devices without spawning LLM sessions. |
+| 跨设备直接执行命令 / Run a shell command on any device | 在本机（self）或任意在线设备上直接执行一条非交互 shell 命令并返回退出码与输出（如 git fetch、测试、诊断），无需拉起远端智能体会话。 | Execute a one-shot shell command directly on self or any online peer and return exit code and output without spawning a remote Agent session. |
+| 跨设备操控持久 PTY 终端 / Control persistent PTY terminals on any device | 像 OpenBitFun UI 终端面板一样直接操作目标设备的持久终端：list（查看已有终端）、create（新建）、execute（在持久会话中执行）、write（写 stdin）、read（按偏移增量读取最新输出）、signal（发 SIGINT/SIGTSTP）、close（关闭）。 | Control persistent PTY terminals directly on self or any online peer (just like the UI terminal panel): list, create, execute, write stdin, read/tail history, signal, and close. |
+| 直接读取设备工作区文本文件 / Read a text file inline from any device | 直接按行区间读取本机或任意在线设备工作区内的文本文件内容（支持工作区相对路径与绝对路径），无需落盘或拉起远端智能体。 | Read a text file inline (with optional startLine/endLine) from a workspace on self or any online peer, resolving relative paths against the target workspace root. |
+| 直接写入设备工作区文本文件 / Write a UTF-8 text file directly on any device | 直接写入或更新本机或任意在线设备工作区内的 UTF-8 文本文件（支持工作区相对路径与可选 expectedHash 并发校验），无需拉起远端智能体会话。 | Directly write or update a UTF-8 text file on self or any online peer (supporting workspace-relative paths and optional expectedHash concurrency checks) without spawning a remote session. |
+| 跨设备管理文件与目录 / Manage files and directories on any device | 在目标设备工作区直接执行 stat（元信息）、exists（存在性）、mkdir（建目录）、rename（重命名/移动）、delete（删除文件或目录）。 | Run direct filesystem operations (stat, exists, mkdir, rename, delete) in a workspace on self or any online peer. |
+| 浏览设备工作区目录 / List directory entries on any device | 分页列出本机或任意在线设备工作区根目录或指定子目录下的文件与文件夹。 | List files and directories (paginated) in a workspace or subpath on self or any online peer. |
+| 跨设备搜索工作区文件名或内容 / Search filenames or contents on any device | 在本机或任意在线设备的目标工作区内直接按文件名或文件内容检索（searchContent: true 搜内容）。 | Search filenames or file contents (searchContent: true) directly inside a workspace on self or any online peer. |
 | 查看设备运行详情 / Inspect device runtime detail | 查看单台设备（默认 self 本机）的详细事实、运行中会话、派发任务、待处理提示与能力位。 | Inspect one device's runtime facts, active sessions, dispatch jobs, waiting prompts, and capabilities (defaults to self). |
-| 查看全账号模型目录 / List account-wide fleet models | 按指定设备（默认 self 本机）视角列出本机与同账号其他在线设备共享的聊天模型目录。 | List chat models available on this device and published by other online devices on the account. |
+| 查看全账号模型目录 / List account-wide fleet models | 按指定设备（默认 self 本机）视角列出本机与同账号其他在线设备共享的聊天模型目录（含可直接跨机使用的 fleet:<deviceId>/<modelId> 引用）。 | List chat models available on this device and published by other online devices on the account (including cross-device fleet:<deviceId>/<modelId> refs). |
 | 列出设备工作区 / List device workspaces | 列出本机（默认 self）、全部设备（all）或指定设备上已打开和最近使用过的工作区。 | List opened and recent workspaces on self (default), all devices, or a chosen device. |
 | 列出工作区会话 / List workspace sessions on a device | 列出本机（默认 self）或指定在线设备上某个工作区的会话列表。 | List persisted sessions for a workspace on self (default) or any online peer device. |
-| 在指定设备创建会话 / Create a session on a device | 在本机（默认 self）或指定在线设备的目标工作区创建一个新会话，可指定 agentType 与 modelName。 | Create a new session in a workspace on self (default) or any online peer device, with optional agentType and modelName. |
-| 向指定设备会话发送消息 / Send a message to a session on any device | 向本机（默认 self）或任意在线设备上的指定 sessionId 发送消息并启动一轮对话执行。 | Submit a user message and start a dialog turn in a session on self (default) or any online peer device. |
-| 读取指定设备会话摘要 / Read session turns and state on any device | 读取本机（默认 self）或任意在线设备上指定会话的最新若干轮紧凑摘要、运行状态与待审批信箱。 | Read bounded latest turns, live status, and pending interaction mailbox for a session on self (default) or any online peer device. |
+| 在指定设备创建会话（后备） / Create a session on a device (last resort) | 仅当需要远端独立多步 AI 执行时使用。在目标工作区创建会话，支持直接附带首条 message 与 waitSeconds；未指定 modelName 时在远端设备上自动继承主控会话的可用模型（经 Fleet 模型中继，传 target-default 可强制用对端默认）。 | Reserve for autonomous multi-step remote AI work. Creates a session with optional initial message and waitSeconds; automatically inherits this controller's working model over Fleet model relay on peers unless modelName is explicitly set. |
+| 向指定设备会话发送消息 / Send a message to a session on any device | 向本机或任意在线设备上的指定 sessionId 发送消息并启动对话；支持 waitSeconds 等待完工，支持传 modelId: "controller" 走主控会话模型中继。 | Submit a user message to a session on self or any online peer, with optional waitSeconds and modelId (including 'controller' to route through this controller's working model). |
+| 等待一个或多个跨设备会话 / Wait for one or more fleet sessions | 阻塞等待一台或多台设备上的指定会话完成当前回合、出现待审批提示或状态变化，直接返回回合摘要，替代低效的 shell sleep 轮询。 | Block until one or more sessions across devices finish their turn, pause on a prompt, or change state—returning turn summaries directly without shell sleep loops. |
+| 读取指定设备会话摘要 / Read session turns and state on any device | 读取本机或任意在线设备上指定会话的最新回合文本、工具调用摘要、运行状态与待审批信箱；若远端回合因模型失败会自动给出可用主控中继模型提示。 | Read bounded latest turns (assistant text, tool calls, failures), live status, and pending interaction mailbox for a session on self or any online peer. |
 | 取消指定设备会话当前回合 / Cancel an active session turn on any device | 取消本机（默认 self）或任意在线设备上指定 sessionId 正在运行的回合。 | Cancel the active dialog turn of a session on self (default) or any online peer device. |
 | 列出全账号待处理提示 / List pending prompts across the fleet | 列出全账号设备（默认 all，可传 self 或单台设备）上所有等待确认的权限请求与提问（含实时会话与后台派发任务）。 | List pending permission requests and user questions across all devices (default all), covering both live sessions and dispatch jobs. |
 | 回复指定设备的权限或提问 / Answer a fleet permission prompt or question | 回复本机或任意在线设备上的权限请求（reply）或提问（answers），自动区分实时会话与后台派发路由。 | Answer a pending permission prompt or user question on self or any online peer, automatically routing to session or dispatch. |
-| 从指定设备工作区拉取文件 / Pull a workspace file from a device locally | 从本机（默认 self）或任意在线设备工作区读取文件并原子写入本机 localPath，附带 SHA-256 校验（超大构建产物建议用 feature.detached-dispatch:fetch-file）。 | Pull a file from a workspace on self or any online peer to an absolute localPath on this host with SHA-256 verification (use feature.detached-dispatch:fetch-file for very large streaming artifacts). |
+| 从指定设备工作区拉取文件 / Pull a workspace file from a device locally | 从本机或任意在线设备工作区读取文件（支持工作区相对路径与 workspaceId/workspacePath）并原子写入本机 localPath，附带 SHA-256 校验（超大构建产物用 feature.detached-dispatch:fetch-file）。 | Pull a file (relative or absolute) from a workspace on self or any online peer to an absolute localPath on this host with SHA-256 verification (use feature.detached-dispatch:fetch-file for >128 MiB binaries). |
+| 将本机文件推送到目标设备工作区 / Push a local file to any device's workspace | 将本机 localPath 文件（支持文本与二进制，默认上限 64 MiB，最高 128 MiB）分块校验 SHA-256 上传到目标设备工作区 remotePath。 | Upload a local file (text or binary, up to 128 MiB) from localPath on this host to remotePath in a workspace on self or any online peer with chunked SHA-256 verification. |
 | 查看跨设备收件箱 / Inspect cross-device inbox | 汇总全账号所有设备的待审批提示、阻塞任务以及未读的完成/失败通知。 | Aggregate pending prompts, blocked runs, and unread Done/Failed notifications across all devices. |
 | 标记跨设备收件箱已读 / Mark fleet inbox read | 将指定 revision 之前的已完成/失败收件箱条目标记为已读。 | Mark Done/Failed fleet inbox entries read up to the given revision. |
 | 查看跨设备最近会话 / List recent sessions across fleet | 按最新活跃时间分页列出全账号所有设备上的最近会话。 | List recent sessions across all devices of the account, newest first. |
-| 跨设备全文搜索会话历史 / Search sessions across devices | 在本机（self）、指定在线设备或全部在线设备（all）中全文检索历史会话内容。 | Full-text search session content on self, a specific online peer, or all online devices. |
+| 跨设备全文搜索会话历史 / Search sessions across devices | 在本机（self）、指定在线设备或全部在线设备（all）中全文检索历史会话内容（未指定工作区时自动遍历各设备已打开工作区）。 | Full-text search session content on self, a specific online peer, or all online devices (automatically fans out across each device's workspaces when omitted). |
 | 跨设备管理定时任务 / Manage Cron jobs on any device | 在本机或任意常开同账号设备上查看、创建、修改或删除 Cron 定时任务。 | List, create, update, or delete scheduled Cron jobs on self or any always-on peer device. |
 | 向目标设备转发产品控制 / Forward OpenBitFunControl to device | 向本机或任意在线同账号设备转发 get/configure/execute 产品控制请求。 | Forward a typed OpenBitFunControl get, configure, or execute request to self or any online peer device. |
 
@@ -87,23 +101,23 @@ Orchestrate this machine (self) and every same-account device connected over Ope
 
 ## 可以直接对智能体说 / Try saying
 
-- “列出我账号下所有在线设备和它们当前打开的工作区（包括这台电脑）”
-  - “List every device on my account (including this computer) and their opened workspaces”
-- “在我的 Windows 电脑和 Linux 服务器上同时启动编译会话，本机也同步编一份 macOS”
-  - “Start build sessions on my Windows and Linux machines while also building macOS locally”
+- “看看所有在线设备上 OpenBitFun 仓库分别在哪个分支、是不是最新提交”
+  - “Check which Git branch and commit every online device's OpenBitFun repo is on”
+- “直接看下 Linux 服务器当前开着的终端日志，并把配置改完重启服务”
+  - “Tail the running terminal logs on my Linux server, update its config file, and restart the service”
+- “把本机这个 patch 文件推到 Windows 电脑的工作区，直接跑一次单元测试把结果告诉我”
+  - “Push this local patch file to my Windows workspace and run the unit tests directly”
 - “看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认”
   - “Check if any session across my devices is waiting for permission approval”
-- “把 Windows 电脑那个工作区里的构建日志拉到我本机 /tmp/win-build.log”
-  - “Pull the build log from my Windows workspace to /tmp/win-build.log on this machine”
 
 ## 实用贴士 / Good to know
 
-- 本机也是 Fleet 的一等成员：省略 target 或传 self / local 即可操作当前设备，离线未登录时仍可操作本机工作区与会话。
-  - This device is a first-class fleet member: omit target or pass self/local to act on this machine—local operations continue working even while signed out or offline.
-- 离线设备明确报错：指定了离线或不存在的远端设备时会直接返回错误，绝不会静默退回本机执行。
-  - Loud offline errors: naming an offline or unknown peer fails explicitly instead of falling back to local execution.
-- 超大二进制产物用 Detached Dispatch：pull-file 适合常规文件（默认上限 64 MiB，最高 128 MiB）；大型安装包或二进制请使用 feature.detached-dispatch:fetch-file 分块流式拉取（最高 2 GiB）。
-  - Use Detached Dispatch for huge binaries: pull-file is ideal for regular workspace files (up to 128 MiB), while feature.detached-dispatch:fetch-file streams larger build artifacts up to 2 GiB.
+- 直接能力优先、远端会话兜底：查 Git、读写/管理/收发文件、跑命令、看/控持久终端请直接调用 git-inspect / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal，不要为了这些操作去创建远端 Agent 会话。
+  - Direct primitives first, remote sessions last: use git-inspect, file management ops, run-command, and terminal directly instead of spawning remote Agent sessions for routine inspection, file edits, commands, or terminal logs.
+- 跨设备模型共享：确实需要拉起远端会话时，create-session 默认通过 Fleet 模型中继继承主控会话当前可用模型（凭证不离开主控机）；若已有旧会话遇到对端模型不通，可用 send-message 传 modelId: "controller" 切回主控模型。
+  - Seamless model sharing: when a remote session IS needed, create-session automatically inherits this controller's working model via Fleet model relay (credentials never leave the controller); pass modelId: "controller" on send-message to recover an existing session whose peer-local model fails.
+- 离线设备明确报错：指定离线或不存在的远端设备时直接失败，绝不会静默退回本机执行；超大构建产物（>128 MiB）或需断网续跑的任务请用 feature.detached-dispatch。
+  - Loud offline errors: naming an offline or unknown peer fails explicitly without local fallback; use feature.detached-dispatch for >128 MiB artifacts or offline-capable isolated Git jobs.
 
 关联条目 / Related: `feature.detached-dispatch`, `feature.remote-connect`, `feature.projects`, `feature.ai-assistant`
 

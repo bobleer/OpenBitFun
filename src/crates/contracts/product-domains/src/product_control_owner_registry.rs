@@ -454,10 +454,146 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
             "navigator",
             Read,
             json!({"type": "object", "properties": {
-                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Optional device filter ('self', 'local', 'all', deviceId, device:<id>, or device name/alias)"}
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Optional device filter ('self', 'local', 'all', deviceId, device:<id>, or device name/alias)"},
+                "includeCapabilities": {"type": "boolean", "description": "Include full per-device hostCapabilities arrays (defaults to false for compact output)"},
+                "maxSessionsPerWorkspace": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Max recent sessions returned per workspace (defaults to 3)"}
             }, "required": [], "additionalProperties": false}),
             &[],
             operation_provider("fleet", "navigator"),
+        ),
+        operation(
+            "feature.fleet",
+            "git-inspect",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "'self' (default), 'all' (every online runtime device), or a specific device selector"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "workspaceName": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional case-insensitive workspace name or path filter (ideal with target='all')"},
+                "includeBranches": {"type": "boolean"},
+                "includeDiff": {"type": "boolean"},
+                "maxCommits": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Latest commits to include per repository (defaults to 3)"}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "git-inspect"),
+        ),
+        operation(
+            "feature.fleet",
+            "run-command",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "command": {"type": "string", "minLength": 1, "maxLength": 16384, "description": "Shell command to run directly on the target device (no remote LLM session spawned)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "cwd": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Optional working directory (relative to workspace root or absolute)"},
+                "timeoutMs": {"type": "integer", "minimum": 1000, "maximum": 300000, "description": "Command timeout in ms (defaults to 30000)"}
+            }, "required": ["command"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "run-command"),
+        ),
+        operation(
+            "feature.fleet",
+            "terminal",
+            Execute,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "action": {"type": "string", "enum": ["list", "create", "execute", "write", "read", "signal", "close"], "description": "Direct PTY terminal control on the target device (same capability as the UI terminal panel)"},
+                "terminalId": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Required for execute, write, read, signal, and close"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "cwd": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Optional working directory for create"},
+                "name": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional terminal label for create"},
+                "command": {"type": "string", "minLength": 1, "maxLength": 16384, "description": "Shell command for action=execute"},
+                "data": {"type": "string", "minLength": 1, "maxLength": 16384, "description": "Raw stdin characters for action=write (include \\n to submit)"},
+                "signal": {"type": "string", "minLength": 1, "maxLength": 32, "description": "Signal name for action=signal (e.g. SIGINT, SIGTSTP)"},
+                "afterOffset": {"type": "integer", "minimum": 0, "description": "Byte offset for incremental tailing on action=read"},
+                "maxChars": {"type": "integer", "minimum": 1, "maximum": 131072, "description": "Max characters returned (tails most recent output on read; defaults to 16000)"},
+                "timeoutMs": {"type": "integer", "minimum": 1000, "maximum": 300000, "description": "Timeout in ms for action=execute (defaults to 30000)"},
+                "immediate": {"type": "boolean", "description": "Force immediate termination on action=close (defaults to true)"}
+            }, "required": ["action"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "terminal"),
+        ),
+        operation(
+            "feature.fleet",
+            "read-file",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "path": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "File path on the target device (workspace-relative or absolute)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "startLine": {"type": "integer", "minimum": 1},
+                "endLine": {"type": "integer", "minimum": 1},
+                "maxChars": {"type": "integer", "minimum": 1, "maximum": 131072}
+            }, "required": ["path"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "read-file"),
+        ),
+        operation(
+            "feature.fleet",
+            "write-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "path": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Destination file path on the target device (workspace-relative or absolute)"},
+                "content": {"type": "string", "maxLength": 4194304, "description": "Full UTF-8 text content to write (for large or binary files use push-file)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "expectedHash": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Optional optimistic concurrency SHA-256 hash"}
+            }, "required": ["path", "content"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "write-file"),
+        ),
+        operation(
+            "feature.fleet",
+            "manage-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "action": {"type": "string", "enum": ["stat", "exists", "mkdir", "rename", "delete"], "description": "Direct filesystem operation on the target device"},
+                "path": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Target path (workspace-relative or absolute)"},
+                "newPath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Destination path required for action=rename (workspace-relative or absolute)"},
+                "isDirectory": {"type": "boolean", "description": "Set true when deleting a directory with action=delete"},
+                "recursive": {"type": "boolean", "description": "Delete directory contents recursively when action=delete and isDirectory=true"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048}
+            }, "required": ["action", "path"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "manage-file"),
+        ),
+        operation(
+            "feature.fleet",
+            "list-files",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "path": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Optional subdirectory (relative to workspace root or absolute); defaults to workspace root"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "list-files"),
+        ),
+        operation(
+            "feature.fleet",
+            "search-files",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Target device selector; defaults to 'self' (this device)"},
+                "pattern": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "searchContent": {"type": "boolean", "description": "Search inside file contents when true, or filenames when false (default)"},
+                "caseSensitive": {"type": "boolean"},
+                "useRegex": {"type": "boolean"},
+                "maxResults": {"type": "integer", "minimum": 1, "maximum": 100}
+            }, "required": ["pattern"], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "search-files"),
         ),
         operation(
             "feature.fleet",
@@ -512,7 +648,9 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
                 "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "sessionName": {"type": "string", "minLength": 1, "maxLength": 200},
                 "agentType": {"type": "string", "minLength": 1, "maxLength": 128},
-                "modelName": {"type": "string", "minLength": 1, "maxLength": 256}
+                "modelName": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional model selector or fleet:<deviceId>/<modelId>. When omitted on a remote peer, automatically inherits this controller session's working model over Fleet model relay; pass 'target-default' to use the peer's own local default."},
+                "message": {"type": "string", "minLength": 1, "maxLength": 65536, "description": "Optional initial user message to start immediately after creating the session"},
+                "waitSeconds": {"type": "integer", "minimum": 1, "maximum": 180, "description": "Optional wait duration (seconds) for the initial turn to finish or pause on a prompt"}
             }, "required": ["sessionName"], "additionalProperties": false}),
             &[],
             operation_provider("fleet", "create-session"),
@@ -528,10 +666,42 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
                 "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
                 "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "agentType": {"type": "string", "minLength": 1, "maxLength": 128},
-                "modelId": {"type": "string", "minLength": 1, "maxLength": 256}
+                "modelId": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional model override, fleet:<deviceId>/<modelId>, or 'controller' to route the turn through this controller session's working model via Fleet model relay"},
+                "waitSeconds": {"type": "integer", "minimum": 1, "maximum": 180, "description": "Optional wait duration (seconds) for this turn to finish or pause on a prompt"}
             }, "required": ["sessionId", "message"], "additionalProperties": false}),
             &[],
             operation_provider("fleet", "send-message"),
+        ),
+        operation(
+            "feature.fleet",
+            "wait-session",
+            Read,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Shorthand device selector when watching one session"},
+                "sessionId": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Shorthand sessionId when watching one session"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "sessions": {
+                    "type": "array",
+                    "description": "Watch 1..=16 sessions across devices in parallel",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "minLength": 1, "maxLength": 512},
+                            "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048}
+                        },
+                        "required": ["sessionId"],
+                        "additionalProperties": false
+                    }
+                },
+                "until": {"type": "string", "enum": ["all_done", "any_done", "any_prompt", "state_change"]},
+                "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+                "tailTurnCount": {"type": "integer", "minimum": 1, "maximum": 16}
+            }, "required": [], "additionalProperties": false}),
+            &[],
+            operation_provider("fleet", "wait-session"),
         ),
         operation(
             "feature.fleet",
@@ -591,14 +761,31 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
             Write,
             json!({"type": "object", "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Source device selector; defaults to 'self' (this device)"},
-                "remotePath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "File path on the source device (within an opened workspace)"},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "File path on the source device (workspace-relative or absolute)"},
                 "localPath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Absolute destination file path on this host"},
                 "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "overwrite": {"type": "boolean"},
                 "maxBytes": {"type": "integer", "minimum": 1, "maximum": 134217728_u64}
             }, "required": ["remotePath", "localPath"], "additionalProperties": false}),
             &[("localPath", ProductHostLocal)],
             operation_provider("fleet", "pull-file"),
+        ),
+        operation(
+            "feature.fleet",
+            "push-file",
+            Write,
+            json!({"type": "object", "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Destination device selector; defaults to 'self' (this device)"},
+                "localPath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Absolute source file path on this host"},
+                "remotePath": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Destination file path on the target device (workspace-relative or absolute)"},
+                "workspaceId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "workspacePath": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "expectedHash": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Optional target SHA-256 guard"},
+                "maxBytes": {"type": "integer", "minimum": 1, "maximum": 134217728_u64}
+            }, "required": ["localPath", "remotePath"], "additionalProperties": false}),
+            &[("localPath", ProductHostLocal)],
+            operation_provider("fleet", "push-file"),
         ),
         operation(
             "feature.fleet",

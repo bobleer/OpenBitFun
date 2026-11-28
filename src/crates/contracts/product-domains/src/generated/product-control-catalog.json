@@ -4,8 +4,8 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "7cfd8ddea6a8c5423dad971493534947a10e63183583cfd2c56bef00bd828038",
-  "ownerDigest": "c57f4a06c280225f68ff4f61da83a1d905316468d931895c6309199c9e49f2cf",
+  "digest": "e54d9f17091b3e1e87b0330930e1966746c774ffa22883e6b5d76470436a503c",
+  "ownerDigest": "48edc9f88a35a8dddba83137de5c632e2315ebb39337c8c091e3d305e419dce0",
   "searchAcceptance": [
     {
       "id": "native-office-generation",
@@ -178,9 +178,9 @@
     "features": 24,
     "settings": 24,
     "userFacing": 48,
-    "documentedItems": 360,
+    "documentedItems": 361,
     "controlCoverage": {
-      "direct": 131,
+      "direct": 132,
       "delegated": 67,
       "interactive": 162,
       "unsupported": 0
@@ -13194,9 +13194,10 @@
       "capabilityId": "feature.fleet",
       "itemIds": [
         "topology-and-models",
+        "direct-file-management",
+        "direct-terminal-and-git",
         "cross-device-sessions",
-        "fleet-prompts",
-        "workspace-file-pull"
+        "fleet-prompts"
       ],
       "kind": "query",
       "risk": "read",
@@ -13273,6 +13274,16 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "includeCapabilities": {
+            "description": "Include full per-device hostCapabilities arrays (defaults to false for compact output)",
+            "type": "boolean"
+          },
+          "maxSessionsPerWorkspace": {
+            "description": "Max recent sessions returned per workspace (defaults to 3)",
+            "maximum": 20,
+            "minimum": 0,
+            "type": "integer"
+          },
           "target": {
             "description": "Optional device filter ('self', 'local', 'all', deviceId, device:<id>, or device name/alias)",
             "maxLength": 512,
@@ -13281,6 +13292,784 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:git-inspect",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-terminal-and-git"
+      ],
+      "kind": "operation",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "includeBranches": {
+            "type": "boolean"
+          },
+          "includeDiff": {
+            "type": "boolean"
+          },
+          "maxCommits": {
+            "description": "Latest commits to include per repository (defaults to 3)",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "description": "'self' (default), 'all' (every online runtime device), or a specific device selector",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceName": {
+            "description": "Optional case-insensitive workspace name or path filter (ideal with target='all')",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:run-command",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-terminal-and-git"
+      ],
+      "kind": "operation",
+      "risk": "execute",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "description": "Shell command to run directly on the target device (no remote LLM session spawned)",
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "cwd": {
+            "description": "Optional working directory (relative to workspace root or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutMs": {
+            "description": "Command timeout in ms (defaults to 30000)",
+            "maximum": 300000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:terminal",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-terminal-and-git"
+      ],
+      "kind": "operation",
+      "risk": "execute",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "Direct PTY terminal control on the target device (same capability as the UI terminal panel)",
+            "enum": [
+              "list",
+              "create",
+              "execute",
+              "write",
+              "read",
+              "signal",
+              "close"
+            ],
+            "type": "string"
+          },
+          "afterOffset": {
+            "description": "Byte offset for incremental tailing on action=read",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "Shell command for action=execute",
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "cwd": {
+            "description": "Optional working directory for create",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "data": {
+            "description": "Raw stdin characters for action=write (include \\n to submit)",
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "immediate": {
+            "description": "Force immediate termination on action=close (defaults to true)",
+            "type": "boolean"
+          },
+          "maxChars": {
+            "description": "Max characters returned (tails most recent output on read; defaults to 16000)",
+            "maximum": 131072,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Optional terminal label for create",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "signal": {
+            "description": "Signal name for action=signal (e.g. SIGINT, SIGTSTP)",
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "terminalId": {
+            "description": "Required for execute, write, read, signal, and close",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutMs": {
+            "description": "Timeout in ms for action=execute (defaults to 30000)",
+            "maximum": 300000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:read-file",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "endLine": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxChars": {
+            "maximum": 131072,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "File path on the target device (workspace-relative or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "startLine": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:write-file",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "write",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "Full UTF-8 text content to write (for large or binary files use push-file)",
+            "maxLength": 4194304,
+            "type": "string"
+          },
+          "expectedHash": {
+            "description": "Optional optimistic concurrency SHA-256 hash",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "path": {
+            "description": "Destination file path on the target device (workspace-relative or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:manage-file",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "write",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "Direct filesystem operation on the target device",
+            "enum": [
+              "stat",
+              "exists",
+              "mkdir",
+              "rename",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "isDirectory": {
+            "description": "Set true when deleting a directory with action=delete",
+            "type": "boolean"
+          },
+          "newPath": {
+            "description": "Destination path required for action=rename (workspace-relative or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "path": {
+            "description": "Target path (workspace-relative or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "recursive": {
+            "description": "Delete directory contents recursively when action=delete and isDirectory=true",
+            "type": "boolean"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:list-files",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Optional subdirectory (relative to workspace root or absolute); defaults to workspace root",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:search-files",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "caseSensitive": {
+            "type": "boolean"
+          },
+          "maxResults": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pattern": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "searchContent": {
+            "description": "Search inside file contents when true, or filenames when false (default)",
+            "type": "boolean"
+          },
+          "target": {
+            "description": "Target device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "useRegex": {
+            "type": "boolean"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
         "type": "object"
       },
       "outputSchema": {
@@ -13589,7 +14378,14 @@
             "minLength": 1,
             "type": "string"
           },
+          "message": {
+            "description": "Optional initial user message to start immediately after creating the session",
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
           "modelName": {
+            "description": "Optional model selector or fleet:<deviceId>/<modelId>. When omitted on a remote peer, automatically inherits this controller session's working model over Fleet model relay; pass 'target-default' to use the peer's own local default.",
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
@@ -13604,6 +14400,12 @@
             "maxLength": 512,
             "minLength": 1,
             "type": "string"
+          },
+          "waitSeconds": {
+            "description": "Optional wait duration (seconds) for the initial turn to finish or pause on a prompt",
+            "maximum": 180,
+            "minimum": 1,
+            "type": "integer"
           },
           "workspaceId": {
             "maxLength": 256,
@@ -13682,6 +14484,7 @@
             "type": "string"
           },
           "modelId": {
+            "description": "Optional model override, fleet:<deviceId>/<modelId>, or 'controller' to route the turn through this controller session's working model via Fleet model relay",
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
@@ -13696,6 +14499,12 @@
             "maxLength": 512,
             "minLength": 1,
             "type": "string"
+          },
+          "waitSeconds": {
+            "description": "Optional wait duration (seconds) for this turn to finish or pause on a prompt",
+            "maximum": 180,
+            "minimum": 1,
+            "type": "integer"
           },
           "workspaceId": {
             "maxLength": 256,
@@ -13712,6 +14521,133 @@
           "sessionId",
           "message"
         ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:wait-session",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "cross-device-sessions"
+      ],
+      "kind": "operation",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "sessionId": {
+            "description": "Shorthand sessionId when watching one session",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sessions": {
+            "description": "Watch 1..=16 sessions across devices in parallel",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "sessionId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "target": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "workspacePath": {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tailTurnCount": {
+            "maximum": 16,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "description": "Shorthand device selector when watching one session",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutSeconds": {
+            "maximum": 300,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "until": {
+            "enum": [
+              "all_done",
+              "any_done",
+              "any_prompt",
+              "state_change"
+            ],
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "outputSchema": {
@@ -14042,7 +14978,7 @@
       "id": "feature.fleet:operation:pull-file",
       "capabilityId": "feature.fleet",
       "itemIds": [
-        "workspace-file-pull"
+        "direct-file-management"
       ],
       "kind": "operation",
       "risk": "write",
@@ -14087,7 +15023,7 @@
             "type": "boolean"
           },
           "remotePath": {
-            "description": "File path on the source device (within an opened workspace)",
+            "description": "File path on the source device (workspace-relative or absolute)",
             "maxLength": 2048,
             "minLength": 1,
             "type": "string"
@@ -14102,11 +15038,112 @@
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
           "remotePath",
           "localPath"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "provider",
+        "providerId": "fleet"
+      },
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect",
+        "detail": {
+          "group": "account"
+        }
+      }
+    },
+    {
+      "id": "feature.fleet:operation:push-file",
+      "capabilityId": "feature.fleet",
+      "itemIds": [
+        "direct-file-management"
+      ],
+      "kind": "operation",
+      "risk": "write",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_native_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "A detached dispatch job may inspect the fleet but cannot execute mutating fleet operations"
+        }
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedHash": {
+            "description": "Optional target SHA-256 guard",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "localPath": {
+            "description": "Absolute source file path on this host",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxBytes": {
+            "maximum": 134217728,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "remotePath": {
+            "description": "Destination file path on the target device (workspace-relative or absolute)",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Destination device selector; defaults to 'self' (this device)",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspacePath": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "localPath",
+          "remotePath"
         ],
         "type": "object"
       },
@@ -34664,41 +35701,51 @@
       "categoryId": "connect",
       "titleZh": "多设备 Fleet 协同",
       "titleEn": "Multi-Device Fleet Collaboration",
-      "summaryZh": "在同一个输入框里统一调度本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：浏览所有设备的工作区、模型目录与待审批提示，直接跨设备创建、驱动、查看或取消会话，并按需把远端工作区文件拉回本机。",
-      "summaryEn": "Orchestrate this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: browse devices, workspaces, account-wide models, and pending prompts; create, drive, read, or cancel sessions on any host; and pull workspace files locally.",
+      "summaryZh": "在同一个输入框里统一掌控本机（self）和同账号下通过 OpenBitFun Link 互联的每一台设备（macOS / Windows / Linux）：优先直接跨设备查看 Git 状态、读写与管理文件、操控持久终端和执行命令（无需拉起远端智能体）；仅在真正需要独立多步 AI 协同才使用跨设备会话（自动共享主控会话模型，无需远端单独配模型）。",
+      "summaryEn": "Control this machine (self) and every same-account device connected over OpenBitFun Link (macOS, Windows, Linux) from one conversation: directly inspect Git, read/write/manage/transfer files, run commands, and drive persistent terminals without spawning remote LLM sessions; use cross-device sessions (automatically sharing the controller's working model via Fleet model relay) only when autonomous multi-step AI work is genuinely needed.",
       "keywordsZh": [
         "Fleet",
         "多设备协同",
         "互联互控",
+        "跨设备文件管理",
+        "跨设备终端",
+        "跨设备Git",
+        "跨设备执行命令",
         "跨设备会话",
         "分布式运行时",
         "OpenBitFun Link",
         "设备列表",
         "跨设备拉取文件",
-        "跨设备模型"
+        "跨设备推送文件",
+        "跨设备模型共享"
       ],
       "keywordsEn": [
         "fleet",
         "multi-device",
         "distributed runtime",
+        "remote file management",
+        "remote terminal",
+        "remote git",
+        "run remote command",
         "cross-device session",
         "openbitfun link",
         "device mesh",
         "pull remote file",
+        "push file",
         "fleet models",
         "fleet prompts"
       ],
       "highlightsZh": [
-        "本机（self）与同账号所有在线设备对称建模，跨会话、跨工作区、跨设备一套动作搞定",
-        "直接读取全账号设备拓扑、Link 路由延迟、已打开工作区、运行中会话与全网可用模型目录",
-        "在任意在线设备（含本机）上创建会话、发送指令、查看紧凑回合摘要、取消任务并统一回应权限/提问",
-        "支持从任意已打开工作区按 base64 拉取文件落盘到本机并校验 SHA-256"
+        "直接掌控每台在线设备的 Git、文件系统与持久终端（git-inspect / list-files / search-files / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal），90% 跨设备任务无需拉起远端 Agent 会话",
+        "一行 git-inspect(target=\"all\") 即可并行盘点全账号所有在线设备的分支、超前/落后与未提交状态，离线设备明确标明跳过",
+        "跨设备会话作为真正需要独立多步 AI 协同的后备手段：create-session 支持自动继承主控会话可用模型（通过 Fleet 模型中继，远端无 API Key 也能跑）、一步发消息并等待（wait-session 替代 sleep）",
+        "统一查看并回应全账号设备的待审批权限/提问、收件箱通知、会话全文检索、定时任务与任意产品控制转发"
       ],
       "highlightsEn": [
-        "Treats this local device (self) and every online same-account peer symmetrically for seamless cross-session, cross-workspace, and cross-device work",
-        "Inspect account-wide topology, Link routes, opened workspaces, running sessions, and available chat models in one call",
-        "Create, message, inspect, and cancel sessions—and answer pending permission prompts or questions—on any local or peer runtime",
-        "Pull files from any device's workspace directly to a local destination path with SHA-256 verification"
+        "Directly control Git, files, and persistent terminals on every online device (git-inspect, list-files, search-files, read-file, write-file, manage-file, pull-file, push-file, run-command, terminal) without spawning remote LLM sessions",
+        "One git-inspect(target=\"all\") inspects branches, ahead/behind, dirty counts, and recent commits across every online device while reporting offline peers clearly",
+        "Reserve cross-device sessions for genuine autonomous multi-step AI work: create-session automatically shares this controller's working model over Fleet model relay, supports initial message + waitSeconds, and pairs with wait-session (no shell sleep)",
+        "Unify fleet-wide prompts, Inbox attention, cross-device session search, Cron jobs, and forwarded OpenBitFunControl actions"
       ],
       "items": [
         {
@@ -34718,15 +35765,48 @@
           }
         },
         {
+          "id": "direct-file-management",
+          "titleZh": "直接跨设备浏览、搜索、读写、管理与收发工作区文件",
+          "titleEn": "Browse, search, read, write, manage, pull, and push workspace files on any device",
+          "control": {
+            "kind": "direct",
+            "operations": [
+              "list-files",
+              "search-files",
+              "read-file",
+              "write-file",
+              "manage-file",
+              "pull-file",
+              "push-file"
+            ],
+            "options": []
+          }
+        },
+        {
+          "id": "direct-terminal-and-git",
+          "titleZh": "直接跨设备巡检 Git、执行命令与操控持久 PTY 终端",
+          "titleEn": "Directly inspect Git, run shell commands, and control persistent PTY terminals on any device",
+          "control": {
+            "kind": "direct",
+            "operations": [
+              "git-inspect",
+              "run-command",
+              "terminal"
+            ],
+            "options": []
+          }
+        },
+        {
           "id": "cross-device-sessions",
-          "titleZh": "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
-          "titleEn": "List, create, message, read, and cancel sessions on this device or any online peer",
+          "titleZh": "跨设备会话协同与控制（需独立多步 AI 执行时使用）",
+          "titleEn": "Cross-device Agent sessions, Cron, and forwarded control (when autonomous remote AI is needed)",
           "control": {
             "kind": "direct",
             "operations": [
               "list-sessions",
               "create-session",
               "send-message",
+              "wait-session",
               "read-session",
               "cancel-session",
               "search-sessions",
@@ -34750,43 +35830,31 @@
             ],
             "options": []
           }
-        },
-        {
-          "id": "workspace-file-pull",
-          "titleZh": "从本机或同账号设备的工作区拉取文件到本机",
-          "titleEn": "Pull a file from any device's workspace to this host",
-          "control": {
-            "kind": "direct",
-            "operations": [
-              "pull-file"
-            ],
-            "options": []
-          }
         }
       ],
       "stepsZh": [
         "在多台设备（macOS / Windows / Linux）登录同一个 OpenBitFun 账号，保持 OpenBitFun Link 在线。",
-        "在当前任意会话输入框中直接提出跨工作区或跨设备目标，智能体会先通过 feature.fleet:navigator 查看本机与各在线设备。",
-        "智能体可在对应设备（含本机 self）创建或驱动会话，或结合 feature.detached-dispatch 派发隔离编译/测试任务。",
-        "执行完毕后，通过 read-session、pull-file 或 detached-dispatch:fetch-file 把结果与产物汇总回本机。"
+        "智能体先通过 feature.fleet:navigator 查看紧凑的本机与在线设备/工作区拓扑。",
+        "优先直接操作远端文件、Git 与终端（git-inspect / list-files / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal），秒级完成检查、改配置、跑命令或看终端日志，无需启动远端 Agent 会话。",
+        "仅当确实需要目标机独立开展多步 AI 编码/排障时，再通过 create-session / send-message / wait-session 协同远端会话（自动共享主控可用模型），或用 feature.detached-dispatch 跑可断网持续执行的隔离 Git 任务。"
       ],
       "stepsEn": [
         "Sign in with the same OpenBitFun account on your macOS, Windows, and Linux machines so they join OpenBitFun Link.",
-        "Describe your cross-workspace or multi-device task in one chat box; the Agent inspects local and peer runtimes via feature.fleet:navigator.",
-        "The Agent creates or messages sessions on self or peer hosts, or combines with feature.detached-dispatch for isolated Git-worktree jobs.",
-        "Collect results and artifacts back locally with read-session, pull-file, or detached-dispatch:fetch-file."
+        "The Agent reads the compact topology via feature.fleet:navigator.",
+        "Prefer direct remote Git, file, and terminal operations (git-inspect, list-files, read-file, write-file, manage-file, pull-file, push-file, run-command, terminal) for fast inspection, edits, commands, and terminal logs without spawning remote Agent sessions.",
+        "Only when autonomous multi-step AI work is genuinely needed on another device, use create-session / send-message / wait-session (auto-sharing the controller's working model over Fleet relay) or feature.detached-dispatch for offline-capable isolated Git worktree jobs."
       ],
       "agentExamplesZh": [
-        "列出我账号下所有在线设备和它们当前打开的工作区（包括这台电脑）",
-        "在我的 Windows 电脑和 Linux 服务器上同时启动编译会话，本机也同步编一份 macOS",
-        "看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认",
-        "把 Windows 电脑那个工作区里的构建日志拉到我本机 /tmp/win-build.log"
+        "看看所有在线设备上 OpenBitFun 仓库分别在哪个分支、是不是最新提交",
+        "直接看下 Linux 服务器当前开着的终端日志，并把配置改完重启服务",
+        "把本机这个 patch 文件推到 Windows 电脑的工作区，直接跑一次单元测试把结果告诉我",
+        "看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认"
       ],
       "agentExamplesEn": [
-        "List every device on my account (including this computer) and their opened workspaces",
-        "Start build sessions on my Windows and Linux machines while also building macOS locally",
-        "Check if any session across my devices is waiting for permission approval",
-        "Pull the build log from my Windows workspace to /tmp/win-build.log on this machine"
+        "Check which Git branch and commit every online device's OpenBitFun repo is on",
+        "Tail the running terminal logs on my Linux server, update its config file, and restart the service",
+        "Push this local patch file to my Windows workspace and run the unit tests directly",
+        "Check if any session across my devices is waiting for permission approval"
       ],
       "destination": {
         "kind": "event",
@@ -34800,12 +35868,22 @@
           "id": "navigator",
           "titleZh": "查看多设备 Fleet 导航视图",
           "titleEn": "Inspect fleet navigator",
-          "descriptionZh": "返回账号下所有设备（含本机 isCurrentDevice=true）、在线状态、Link 路由、工作区与会话摘要。支持传 target 过滤单台设备。",
-          "descriptionEn": "Return all account devices (including this device with isCurrentDevice=true), online state, Link route, workspaces, and session summaries.",
+          "descriptionZh": "紧凑返回账号下所有设备（含本机 isCurrentDevice=true）、在线状态、Link 路由、工作区与有上限的近期会话摘要（默认省略 hostCapabilities，需要时传 includeCapabilities: true）。",
+          "descriptionEn": "Return a compact view of all account devices (including this device with isCurrentDevice=true), online state, Link route, workspaces, and bounded recent sessions (omit hostCapabilities by default).",
           "risk": "read",
           "inputSchema": {
             "additionalProperties": false,
             "properties": {
+              "includeCapabilities": {
+                "description": "Include full per-device hostCapabilities arrays (defaults to false for compact output)",
+                "type": "boolean"
+              },
+              "maxSessionsPerWorkspace": {
+                "description": "Max recent sessions returned per workspace (defaults to 3)",
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
               "target": {
                 "description": "Optional device filter ('self', 'local', 'all', deviceId, device:<id>, or device name/alias)",
                 "maxLength": 512,
@@ -34820,6 +35898,516 @@
             "kind": "provider",
             "providerId": "fleet",
             "operationId": "navigator"
+          }
+        },
+        {
+          "id": "git-inspect",
+          "titleZh": "直查跨设备 Git 状态",
+          "titleEn": "Inspect Git status across devices",
+          "descriptionZh": "直接查询本机（self）、指定在线设备或全部在线设备（all）工作区的当前分支、ahead/behind、改动计数、最近提交与可选分支/diff，无需拉起远端智能体会话。",
+          "descriptionEn": "Directly inspect current branch, ahead/behind, dirty file counts, recent commits, and optional branches/diff on self, one peer, or all online devices without spawning LLM sessions.",
+          "risk": "read",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "includeBranches": {
+                "type": "boolean"
+              },
+              "includeDiff": {
+                "type": "boolean"
+              },
+              "maxCommits": {
+                "description": "Latest commits to include per repository (defaults to 3)",
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "target": {
+                "description": "'self' (default), 'all' (every online runtime device), or a specific device selector",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceName": {
+                "description": "Optional case-insensitive workspace name or path filter (ideal with target='all')",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "git-inspect"
+          }
+        },
+        {
+          "id": "run-command",
+          "titleZh": "跨设备直接执行命令",
+          "titleEn": "Run a shell command on any device",
+          "descriptionZh": "在本机（self）或任意在线设备上直接执行一条非交互 shell 命令并返回退出码与输出（如 git fetch、测试、诊断），无需拉起远端智能体会话。",
+          "descriptionEn": "Execute a one-shot shell command directly on self or any online peer and return exit code and output without spawning a remote Agent session.",
+          "risk": "execute",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "description": "Shell command to run directly on the target device (no remote LLM session spawned)",
+                "maxLength": 16384,
+                "minLength": 1,
+                "type": "string"
+              },
+              "cwd": {
+                "description": "Optional working directory (relative to workspace root or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timeoutMs": {
+                "description": "Command timeout in ms (defaults to 30000)",
+                "maximum": 300000,
+                "minimum": 1000,
+                "type": "integer"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "run-command"
+          }
+        },
+        {
+          "id": "terminal",
+          "titleZh": "跨设备操控持久 PTY 终端",
+          "titleEn": "Control persistent PTY terminals on any device",
+          "descriptionZh": "像 OpenBitFun UI 终端面板一样直接操作目标设备的持久终端：list（查看已有终端）、create（新建）、execute（在持久会话中执行）、write（写 stdin）、read（按偏移增量读取最新输出）、signal（发 SIGINT/SIGTSTP）、close（关闭）。",
+          "descriptionEn": "Control persistent PTY terminals directly on self or any online peer (just like the UI terminal panel): list, create, execute, write stdin, read/tail history, signal, and close.",
+          "risk": "execute",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "description": "Direct PTY terminal control on the target device (same capability as the UI terminal panel)",
+                "enum": [
+                  "list",
+                  "create",
+                  "execute",
+                  "write",
+                  "read",
+                  "signal",
+                  "close"
+                ],
+                "type": "string"
+              },
+              "afterOffset": {
+                "description": "Byte offset for incremental tailing on action=read",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command": {
+                "description": "Shell command for action=execute",
+                "maxLength": 16384,
+                "minLength": 1,
+                "type": "string"
+              },
+              "cwd": {
+                "description": "Optional working directory for create",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "data": {
+                "description": "Raw stdin characters for action=write (include \\n to submit)",
+                "maxLength": 16384,
+                "minLength": 1,
+                "type": "string"
+              },
+              "immediate": {
+                "description": "Force immediate termination on action=close (defaults to true)",
+                "type": "boolean"
+              },
+              "maxChars": {
+                "description": "Max characters returned (tails most recent output on read; defaults to 16000)",
+                "maximum": 131072,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Optional terminal label for create",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "signal": {
+                "description": "Signal name for action=signal (e.g. SIGINT, SIGTSTP)",
+                "maxLength": 32,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "terminalId": {
+                "description": "Required for execute, write, read, signal, and close",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timeoutMs": {
+                "description": "Timeout in ms for action=execute (defaults to 30000)",
+                "maximum": 300000,
+                "minimum": 1000,
+                "type": "integer"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "terminal"
+          }
+        },
+        {
+          "id": "read-file",
+          "titleZh": "直接读取设备工作区文本文件",
+          "titleEn": "Read a text file inline from any device",
+          "descriptionZh": "直接按行区间读取本机或任意在线设备工作区内的文本文件内容（支持工作区相对路径与绝对路径），无需落盘或拉起远端智能体。",
+          "descriptionEn": "Read a text file inline (with optional startLine/endLine) from a workspace on self or any online peer, resolving relative paths against the target workspace root.",
+          "risk": "read",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "endLine": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxChars": {
+                "maximum": 131072,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "description": "File path on the target device (workspace-relative or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "startLine": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "read-file"
+          }
+        },
+        {
+          "id": "write-file",
+          "titleZh": "直接写入设备工作区文本文件",
+          "titleEn": "Write a UTF-8 text file directly on any device",
+          "descriptionZh": "直接写入或更新本机或任意在线设备工作区内的 UTF-8 文本文件（支持工作区相对路径与可选 expectedHash 并发校验），无需拉起远端智能体会话。",
+          "descriptionEn": "Directly write or update a UTF-8 text file on self or any online peer (supporting workspace-relative paths and optional expectedHash concurrency checks) without spawning a remote session.",
+          "risk": "write",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "description": "Full UTF-8 text content to write (for large or binary files use push-file)",
+                "maxLength": 4194304,
+                "type": "string"
+              },
+              "expectedHash": {
+                "description": "Optional optimistic concurrency SHA-256 hash",
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "description": "Destination file path on the target device (workspace-relative or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "write-file"
+          }
+        },
+        {
+          "id": "manage-file",
+          "titleZh": "跨设备管理文件与目录",
+          "titleEn": "Manage files and directories on any device",
+          "descriptionZh": "在目标设备工作区直接执行 stat（元信息）、exists（存在性）、mkdir（建目录）、rename（重命名/移动）、delete（删除文件或目录）。",
+          "descriptionEn": "Run direct filesystem operations (stat, exists, mkdir, rename, delete) in a workspace on self or any online peer.",
+          "risk": "write",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "description": "Direct filesystem operation on the target device",
+                "enum": [
+                  "stat",
+                  "exists",
+                  "mkdir",
+                  "rename",
+                  "delete"
+                ],
+                "type": "string"
+              },
+              "isDirectory": {
+                "description": "Set true when deleting a directory with action=delete",
+                "type": "boolean"
+              },
+              "newPath": {
+                "description": "Destination path required for action=rename (workspace-relative or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "description": "Target path (workspace-relative or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "recursive": {
+                "description": "Delete directory contents recursively when action=delete and isDirectory=true",
+                "type": "boolean"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "path"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "manage-file"
+          }
+        },
+        {
+          "id": "list-files",
+          "titleZh": "浏览设备工作区目录",
+          "titleEn": "List directory entries on any device",
+          "descriptionZh": "分页列出本机或任意在线设备工作区根目录或指定子目录下的文件与文件夹。",
+          "descriptionEn": "List files and directories (paginated) in a workspace or subpath on self or any online peer.",
+          "risk": "read",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Optional subdirectory (relative to workspace root or absolute); defaults to workspace root",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "list-files"
+          }
+        },
+        {
+          "id": "search-files",
+          "titleZh": "跨设备搜索工作区文件名或内容",
+          "titleEn": "Search filenames or contents on any device",
+          "descriptionZh": "在本机或任意在线设备的目标工作区内直接按文件名或文件内容检索（searchContent: true 搜内容）。",
+          "descriptionEn": "Search filenames or file contents (searchContent: true) directly inside a workspace on self or any online peer.",
+          "risk": "read",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "caseSensitive": {
+                "type": "boolean"
+              },
+              "maxResults": {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "pattern": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              "searchContent": {
+                "description": "Search inside file contents when true, or filenames when false (default)",
+                "type": "boolean"
+              },
+              "target": {
+                "description": "Target device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "useRegex": {
+                "type": "boolean"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "search-files"
           }
         },
         {
@@ -34852,8 +36440,8 @@
           "id": "list-models",
           "titleZh": "查看全账号模型目录",
           "titleEn": "List account-wide fleet models",
-          "descriptionZh": "按指定设备（默认 self 本机）视角列出本机与同账号其他在线设备共享的聊天模型目录。",
-          "descriptionEn": "List chat models available on this device and published by other online devices on the account.",
+          "descriptionZh": "按指定设备（默认 self 本机）视角列出本机与同账号其他在线设备共享的聊天模型目录（含可直接跨机使用的 fleet:<deviceId>/<modelId> 引用）。",
+          "descriptionEn": "List chat models available on this device and published by other online devices on the account (including cross-device fleet:<deviceId>/<modelId> refs).",
           "risk": "read",
           "inputSchema": {
             "additionalProperties": false,
@@ -34943,10 +36531,10 @@
         },
         {
           "id": "create-session",
-          "titleZh": "在指定设备创建会话",
-          "titleEn": "Create a session on a device",
-          "descriptionZh": "在本机（默认 self）或指定在线设备的目标工作区创建一个新会话，可指定 agentType 与 modelName。",
-          "descriptionEn": "Create a new session in a workspace on self (default) or any online peer device, with optional agentType and modelName.",
+          "titleZh": "在指定设备创建会话（后备）",
+          "titleEn": "Create a session on a device (last resort)",
+          "descriptionZh": "仅当需要远端独立多步 AI 执行时使用。在目标工作区创建会话，支持直接附带首条 message 与 waitSeconds；未指定 modelName 时在远端设备上自动继承主控会话的可用模型（经 Fleet 模型中继，传 target-default 可强制用对端默认）。",
+          "descriptionEn": "Reserve for autonomous multi-step remote AI work. Creates a session with optional initial message and waitSeconds; automatically inherits this controller's working model over Fleet model relay on peers unless modelName is explicitly set.",
           "risk": "execute",
           "inputSchema": {
             "additionalProperties": false,
@@ -34956,7 +36544,14 @@
                 "minLength": 1,
                 "type": "string"
               },
+              "message": {
+                "description": "Optional initial user message to start immediately after creating the session",
+                "maxLength": 65536,
+                "minLength": 1,
+                "type": "string"
+              },
               "modelName": {
+                "description": "Optional model selector or fleet:<deviceId>/<modelId>. When omitted on a remote peer, automatically inherits this controller session's working model over Fleet model relay; pass 'target-default' to use the peer's own local default.",
                 "maxLength": 256,
                 "minLength": 1,
                 "type": "string"
@@ -34971,6 +36566,12 @@
                 "maxLength": 512,
                 "minLength": 1,
                 "type": "string"
+              },
+              "waitSeconds": {
+                "description": "Optional wait duration (seconds) for the initial turn to finish or pause on a prompt",
+                "maximum": 180,
+                "minimum": 1,
+                "type": "integer"
               },
               "workspaceId": {
                 "maxLength": 256,
@@ -34998,8 +36599,8 @@
           "id": "send-message",
           "titleZh": "向指定设备会话发送消息",
           "titleEn": "Send a message to a session on any device",
-          "descriptionZh": "向本机（默认 self）或任意在线设备上的指定 sessionId 发送消息并启动一轮对话执行。",
-          "descriptionEn": "Submit a user message and start a dialog turn in a session on self (default) or any online peer device.",
+          "descriptionZh": "向本机或任意在线设备上的指定 sessionId 发送消息并启动对话；支持 waitSeconds 等待完工，支持传 modelId: \"controller\" 走主控会话模型中继。",
+          "descriptionEn": "Submit a user message to a session on self or any online peer, with optional waitSeconds and modelId (including 'controller' to route through this controller's working model).",
           "risk": "execute",
           "inputSchema": {
             "additionalProperties": false,
@@ -35015,6 +36616,7 @@
                 "type": "string"
               },
               "modelId": {
+                "description": "Optional model override, fleet:<deviceId>/<modelId>, or 'controller' to route the turn through this controller session's working model via Fleet model relay",
                 "maxLength": 256,
                 "minLength": 1,
                 "type": "string"
@@ -35029,6 +36631,12 @@
                 "maxLength": 512,
                 "minLength": 1,
                 "type": "string"
+              },
+              "waitSeconds": {
+                "description": "Optional wait duration (seconds) for this turn to finish or pause on a prompt",
+                "maximum": 180,
+                "minimum": 1,
+                "type": "integer"
               },
               "workspaceId": {
                 "maxLength": 256,
@@ -35054,11 +36662,105 @@
           }
         },
         {
+          "id": "wait-session",
+          "titleZh": "等待一个或多个跨设备会话",
+          "titleEn": "Wait for one or more fleet sessions",
+          "descriptionZh": "阻塞等待一台或多台设备上的指定会话完成当前回合、出现待审批提示或状态变化，直接返回回合摘要，替代低效的 shell sleep 轮询。",
+          "descriptionEn": "Block until one or more sessions across devices finish their turn, pause on a prompt, or change state—returning turn summaries directly without shell sleep loops.",
+          "risk": "read",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "sessionId": {
+                "description": "Shorthand sessionId when watching one session",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "sessions": {
+                "description": "Watch 1..=16 sessions across devices in parallel",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "sessionId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "target": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "workspacePath": {
+                      "maxLength": 2048,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sessionId"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "tailTurnCount": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "target": {
+                "description": "Shorthand device selector when watching one session",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timeoutSeconds": {
+                "maximum": 300,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "until": {
+                "enum": [
+                  "all_done",
+                  "any_done",
+                  "any_prompt",
+                  "state_change"
+                ],
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "wait-session"
+          }
+        },
+        {
           "id": "read-session",
           "titleZh": "读取指定设备会话摘要",
           "titleEn": "Read session turns and state on any device",
-          "descriptionZh": "读取本机（默认 self）或任意在线设备上指定会话的最新若干轮紧凑摘要、运行状态与待审批信箱。",
-          "descriptionEn": "Read bounded latest turns, live status, and pending interaction mailbox for a session on self (default) or any online peer device.",
+          "descriptionZh": "读取本机或任意在线设备上指定会话的最新回合文本、工具调用摘要、运行状态与待审批信箱；若远端回合因模型失败会自动给出可用主控中继模型提示。",
+          "descriptionEn": "Read bounded latest turns (assistant text, tool calls, failures), live status, and pending interaction mailbox for a session on self or any online peer.",
           "risk": "read",
           "inputSchema": {
             "additionalProperties": false,
@@ -35231,8 +36933,8 @@
           "id": "pull-file",
           "titleZh": "从指定设备工作区拉取文件",
           "titleEn": "Pull a workspace file from a device locally",
-          "descriptionZh": "从本机（默认 self）或任意在线设备工作区读取文件并原子写入本机 localPath，附带 SHA-256 校验（超大构建产物建议用 feature.detached-dispatch:fetch-file）。",
-          "descriptionEn": "Pull a file from a workspace on self or any online peer to an absolute localPath on this host with SHA-256 verification (use feature.detached-dispatch:fetch-file for very large streaming artifacts).",
+          "descriptionZh": "从本机或任意在线设备工作区读取文件（支持工作区相对路径与 workspaceId/workspacePath）并原子写入本机 localPath，附带 SHA-256 校验（超大构建产物用 feature.detached-dispatch:fetch-file）。",
+          "descriptionEn": "Pull a file (relative or absolute) from a workspace on self or any online peer to an absolute localPath on this host with SHA-256 verification (use feature.detached-dispatch:fetch-file for >128 MiB binaries).",
           "risk": "write",
           "inputSchema": {
             "additionalProperties": false,
@@ -35252,7 +36954,7 @@
                 "type": "boolean"
               },
               "remotePath": {
-                "description": "File path on the source device (within an opened workspace)",
+                "description": "File path on the source device (workspace-relative or absolute)",
                 "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
@@ -35265,6 +36967,11 @@
               },
               "workspaceId": {
                 "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               }
@@ -35282,6 +36989,71 @@
             "kind": "provider",
             "providerId": "fleet",
             "operationId": "pull-file"
+          }
+        },
+        {
+          "id": "push-file",
+          "titleZh": "将本机文件推送到目标设备工作区",
+          "titleEn": "Push a local file to any device's workspace",
+          "descriptionZh": "将本机 localPath 文件（支持文本与二进制，默认上限 64 MiB，最高 128 MiB）分块校验 SHA-256 上传到目标设备工作区 remotePath。",
+          "descriptionEn": "Upload a local file (text or binary, up to 128 MiB) from localPath on this host to remotePath in a workspace on self or any online peer with chunked SHA-256 verification.",
+          "risk": "write",
+          "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "expectedHash": {
+                "description": "Optional target SHA-256 guard",
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "localPath": {
+                "description": "Absolute source file path on this host",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxBytes": {
+                "maximum": 134217728,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "remotePath": {
+                "description": "Destination file path on the target device (workspace-relative or absolute)",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "description": "Destination device selector; defaults to 'self' (this device)",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "workspacePath": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "localPath",
+              "remotePath"
+            ],
+            "type": "object"
+          },
+          "argumentScopes": {
+            "localPath": "productHostLocal"
+          },
+          "handler": {
+            "kind": "provider",
+            "providerId": "fleet",
+            "operationId": "push-file"
           }
         },
         {
@@ -35361,8 +37133,8 @@
           "id": "search-sessions",
           "titleZh": "跨设备全文搜索会话历史",
           "titleEn": "Search sessions across devices",
-          "descriptionZh": "在本机（self）、指定在线设备或全部在线设备（all）中全文检索历史会话内容。",
-          "descriptionEn": "Full-text search session content on self, a specific online peer, or all online devices.",
+          "descriptionZh": "在本机（self）、指定在线设备或全部在线设备（all）中全文检索历史会话内容（未指定工作区时自动遍历各设备已打开工作区）。",
+          "descriptionEn": "Full-text search session content on self, a specific online peer, or all online devices (automatically fans out across each device's workspaces when omitted).",
           "risk": "read",
           "inputSchema": {
             "additionalProperties": false,
@@ -35545,45 +37317,57 @@
         "Fleet",
         "多设备协同",
         "互联互控",
+        "跨设备文件管理",
+        "跨设备终端",
+        "跨设备Git",
+        "跨设备执行命令",
         "跨设备会话",
         "分布式运行时",
         "OpenBitFun Link",
         "设备列表",
         "跨设备拉取文件",
-        "跨设备模型",
+        "跨设备推送文件",
+        "跨设备模型共享",
         "fleet",
         "multi-device",
         "distributed runtime",
+        "remote file management",
+        "remote terminal",
+        "remote git",
+        "run remote command",
         "cross-device session",
         "openbitfun link",
         "device mesh",
         "pull remote file",
+        "push file",
         "fleet models",
         "fleet prompts",
-        "本机（self）与同账号所有在线设备对称建模，跨会话、跨工作区、跨设备一套动作搞定",
-        "直接读取全账号设备拓扑、Link 路由延迟、已打开工作区、运行中会话与全网可用模型目录",
-        "在任意在线设备（含本机）上创建会话、发送指令、查看紧凑回合摘要、取消任务并统一回应权限/提问",
-        "支持从任意已打开工作区按 base64 拉取文件落盘到本机并校验 SHA-256",
-        "Treats this local device (self) and every online same-account peer symmetrically for seamless cross-session, cross-workspace, and cross-device work",
-        "Inspect account-wide topology, Link routes, opened workspaces, running sessions, and available chat models in one call",
-        "Create, message, inspect, and cancel sessions—and answer pending permission prompts or questions—on any local or peer runtime",
-        "Pull files from any device's workspace directly to a local destination path with SHA-256 verification",
+        "直接掌控每台在线设备的 Git、文件系统与持久终端（git-inspect / list-files / search-files / read-file / write-file / manage-file / pull-file / push-file / run-command / terminal），90% 跨设备任务无需拉起远端 Agent 会话",
+        "一行 git-inspect(target=\"all\") 即可并行盘点全账号所有在线设备的分支、超前/落后与未提交状态，离线设备明确标明跳过",
+        "跨设备会话作为真正需要独立多步 AI 协同的后备手段：create-session 支持自动继承主控会话可用模型（通过 Fleet 模型中继，远端无 API Key 也能跑）、一步发消息并等待（wait-session 替代 sleep）",
+        "统一查看并回应全账号设备的待审批权限/提问、收件箱通知、会话全文检索、定时任务与任意产品控制转发",
+        "Directly control Git, files, and persistent terminals on every online device (git-inspect, list-files, search-files, read-file, write-file, manage-file, pull-file, push-file, run-command, terminal) without spawning remote LLM sessions",
+        "One git-inspect(target=\"all\") inspects branches, ahead/behind, dirty counts, and recent commits across every online device while reporting offline peers clearly",
+        "Reserve cross-device sessions for genuine autonomous multi-step AI work: create-session automatically shares this controller's working model over Fleet model relay, supports initial message + waitSeconds, and pairs with wait-session (no shell sleep)",
+        "Unify fleet-wide prompts, Inbox attention, cross-device session search, Cron jobs, and forwarded OpenBitFunControl actions",
         "查看全账号设备拓扑、单机详情、工作区清单与全网模型目录",
         "Inspect account-wide devices, device details, workspaces, and fleet model catalog",
-        "在本机或任意在线同账号设备上列举、创建、驱动、查看与取消会话",
-        "List, create, message, read, and cancel sessions on this device or any online peer",
+        "直接跨设备浏览、搜索、读写、管理与收发工作区文件",
+        "Browse, search, read, write, manage, pull, and push workspace files on any device",
+        "直接跨设备巡检 Git、执行命令与操控持久 PTY 终端",
+        "Directly inspect Git, run shell commands, and control persistent PTY terminals on any device",
+        "跨设备会话协同与控制（需独立多步 AI 执行时使用）",
+        "Cross-device Agent sessions, Cron, and forwarded control (when autonomous remote AI is needed)",
         "统一查看并回复全账号设备上的待审批权限与提问",
         "Inspect and answer pending permission prompts and user questions across all devices",
-        "从本机或同账号设备的工作区拉取文件到本机",
-        "Pull a file from any device's workspace to this host",
-        "列出我账号下所有在线设备和它们当前打开的工作区（包括这台电脑）",
-        "在我的 Windows 电脑和 Linux 服务器上同时启动编译会话，本机也同步编一份 macOS",
+        "看看所有在线设备上 OpenBitFun 仓库分别在哪个分支、是不是最新提交",
+        "直接看下 Linux 服务器当前开着的终端日志，并把配置改完重启服务",
+        "把本机这个 patch 文件推到 Windows 电脑的工作区，直接跑一次单元测试把结果告诉我",
         "看看现在全账号有没有卡在权限审批上的会话，有的话列出来让我确认",
-        "把 Windows 电脑那个工作区里的构建日志拉到我本机 /tmp/win-build.log",
-        "List every device on my account (including this computer) and their opened workspaces",
-        "Start build sessions on my Windows and Linux machines while also building macOS locally",
-        "Check if any session across my devices is waiting for permission approval",
-        "Pull the build log from my Windows workspace to /tmp/win-build.log on this machine"
+        "Check which Git branch and commit every online device's OpenBitFun repo is on",
+        "Tail the running terminal logs on my Linux server, update its config file, and restart the service",
+        "Push this local patch file to my Windows workspace and run the unit tests directly",
+        "Check if any session across my devices is waiting for permission approval"
       ],
       "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.fleet/"
     },

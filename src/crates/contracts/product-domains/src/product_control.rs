@@ -749,6 +749,9 @@ fn public_capability_value(capability: &ProductCapability) -> Result<Value, Stri
     let object = value
         .as_object_mut()
         .ok_or_else(|| "Product capability did not serialize to an object".to_string())?;
+    // `searchTerms` is an internal discovery index; stripping it keeps `get`
+    // responses compact so Agents spend context on schemas rather than search tokens.
+    object.remove("searchTerms");
     for collection in ["operations", "options"] {
         for entry in object
             .get_mut(collection)

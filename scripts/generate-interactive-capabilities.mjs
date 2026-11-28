@@ -1546,10 +1546,15 @@ function definitionAvailability(kind, handler, risk = 'write') {
   if (handler?.kind === 'provider' && handler.providerId === 'fleet') {
     const readOnly = [
       'navigator',
+      'git-inspect',
+      'read-file',
+      'list-files',
+      'search-files',
       'device-detail',
       'list-models',
       'list-workspaces',
       'list-sessions',
+      'wait-session',
       'read-session',
       'list-prompts',
       'attention',

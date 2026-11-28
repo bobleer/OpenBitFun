@@ -41,6 +41,15 @@ pub trait AccountDeviceMeshRoute: Send + Sync {
         command: &str,
         args: Value,
     ) -> Option<Result<Value, String>>;
+
+    /// Backend device IDs currently visible as online on this host's OpenBitFun Link mesh.
+    ///
+    /// Account-directory HTTP presence can lag behind live Link peer state (and 2.0 peers
+    /// connect over Link rather than the retired 1.x relay), so dispatch target discovery
+    /// merges this live mesh set with the directory listing.
+    async fn online_device_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 static ROUTE: RwLock<Option<Arc<dyn AccountDeviceMeshRoute>>> = RwLock::new(None);
@@ -58,6 +67,14 @@ pub fn mesh_route() -> Option<Arc<dyn AccountDeviceMeshRoute>> {
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+/// Live backend device IDs currently visible on the installed Link mesh, if any.
+pub async fn mesh_online_device_ids() -> std::collections::HashSet<String> {
+    let Some(route) = mesh_route() else {
+        return std::collections::HashSet::new();
+    };
+    route.online_device_ids().await.into_iter().collect()
 }
 
 /// Stable prefix of the refusal for a device that is not reachable over Link
